@@ -196,6 +196,13 @@ fn lighten(c: Color, amount: f32) -> Color {
     )
 }
 
+/// Multiply rgb channels by `factor` (0..1). Same hue, lower luminance —
+/// useful for low-strain stripes derived from a base color.
+fn darken(c: Color, factor: f32) -> Color {
+    let s: bevy::color::Srgba = c.into();
+    Color::srgb(s.red * factor, s.green * factor, s.blue * factor)
+}
+
 /// Cached mesh handles for short-lived effects so we don't allocate per spawn.
 #[derive(Resource)]
 struct EffectMeshes {
@@ -252,7 +259,7 @@ struct TurretSlot {
 #[derive(Component)]
 struct BarrelIndex(u8);
 
-const BARREL_LATERAL: f32 = 0.9; // lateral offset in twin-barrel mode
+const BARREL_LATERAL: f32 = 1.15; // lateral offset in twin-barrel mode
 // Friendly barrel: offset 3.0 + half-length 2.0 = 5.0 (tip in turret-local Y).
 // Enemy barrel:    offset 1.8 + half-length 1.75 = 3.55.
 const FRIENDLY_BARREL_TIP: f32 = 5.0;
@@ -661,7 +668,14 @@ fn update_hash_image(
 ) {
     if !palette.is_changed() && !night.is_changed() { return; }
     let Some(hash) = hash else { return; };
-    let dark = if night.active { hex("#0c0e1a") } else { hex("#3b5dc9") };
+    // Day mode: derive the dark stripe from the ocean (same hue, ~70%
+    // luminance) so the hashing reads as a "shaded ocean" instead of a
+    // separate saturated blue. Night mode keeps a near-black hash.
+    let dark = if night.active {
+        hex("#0c0e1a")
+    } else {
+        darken(palette.ocean, 0.7)
+    };
     let new_img = make_hash_image(palette.ocean, dark);
     if let Some(img) = images.get_mut(&hash.0) {
         *img = new_img;
