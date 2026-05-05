@@ -1,0 +1,22 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Cargo lock — keep for binaries (this is a binary crate), but uncomment to ignore for libraries.
+# Cargo.lock
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Rust analyzer / Bevy assets cache
+.rustfmt.toml.bak
+*.pdb
+*.exp
+*.lib
+
+# Local dev files
+*.log

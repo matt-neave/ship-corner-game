@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo --version)",
+      "Bash(rustc --version)",
+      "Bash(cargo build *)",
+      "Bash(powershell -Command \"\\(Get-Content src\\\\main.rs -Raw\\) -replace 'Capsule2d::new\\\\\\(1\\\\.5, 4\\\\.0\\\\\\)', 'Capsule2d::new\\(0.7, 1.8\\)' | Set-Content -NoNewline src\\\\main.rs\")",
+      "Bash(powershell -Command \"\\(Get-Content src\\\\main.rs -Raw\\) -replace 'Capsule2d::new\\\\\\(0\\\\.7, 1\\\\.8\\\\\\)', 'Rectangle::new\\(2.5, 4.0\\)' | Set-Content -NoNewline src\\\\main.rs\")",
+      "Bash(taskkill /F /IM ship-game.exe)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(cargo build *)",
+      "Bash(cargo clean *)"
+    ]
+  }
+}
