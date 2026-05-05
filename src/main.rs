@@ -2,10 +2,13 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::image::{ImageSampler, ImageSamplerDescriptor};
 use bevy::render::camera::RenderTarget;
+use bevy::sprite::SpriteImageMode;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::view::{Msaa, RenderLayers};
 use bevy::window::PrimaryWindow;
+use bevy::winit::WinitWindows;
+use winit::window::ResizeDirection;
 use rand::Rng;
 use std::collections::VecDeque;
 
@@ -250,6 +253,15 @@ struct TurretSlot {
 struct BarrelIndex(u8);
 
 const BARREL_LATERAL: f32 = 0.9; // lateral offset in twin-barrel mode
+// Friendly barrel: offset 3.0 + half-length 2.0 = 5.0 (tip in turret-local Y).
+// Enemy barrel:    offset 1.8 + half-length 1.75 = 3.55.
+const FRIENDLY_BARREL_TIP: f32 = 5.0;
+const ENEMY_BARREL_TIP: f32 = 3.55;
+// Half lengths of the OUTER bullet capsules (Capsule2d::new(r, length).total = length + 2r):
+//   Friendly outer Capsule(2.0, 1.5) → total 5.5 → half 2.75
+//   Enemy    outer Capsule(1.5, 1.5) → total 4.5 → half 2.25
+const FRIENDLY_BULLET_HALF_LEN: f32 = 2.75;
+const ENEMY_BULLET_HALF_LEN: f32 = 2.25;
 
 #[derive(Component)]
 struct TurretBarrel; // child barrel rectangle entity
@@ -340,7 +352,19 @@ struct ScoreText;
 struct PlayCamera;
 
 #[derive(Component)]
+struct UpscaleCamera;
+
+#[derive(Component)]
 struct UpscaleSprite;
+
+/// Tiled diagonal-hash sprite that fills the full window behind the play
+/// area. Visible only in the "letterbox" region around the play sprite —
+/// the play sprite covers the centre and the UI panel covers the left.
+#[derive(Component)]
+struct HashSprite;
+
+#[derive(Resource)]
+struct HashImage(Handle<Image>);
 
 // ---------- Resources ----------
 #[derive(Resource)]
@@ -372,6 +396,7 @@ enum ButtonKind {
     RateUp, RateDown,
     BarrelsUp, BarrelsDown,
     ToggleDesktopMode,
+    ToggleNightMode,
 }
 
 #[derive(Component)]
@@ -391,8 +416,23 @@ struct WindowMode {
     last_applied: Option<bool>,
 }
 
+/// Toggled by the NIGHT button. When active, swaps `Palette.ocean` to a
+/// near-black navy (#1a1c2c). The previous ocean color is stashed and
+/// restored on toggle-off so it composes with future palette changes.
+#[derive(Resource, Default)]
+struct NightMode {
+    active: bool,
+    last_applied: Option<bool>,
+    saved_ocean: Option<Color>,
+}
+
 #[derive(Component)]
 struct UiPanel;
+
+/// Hint text shown only in desktop mode. The player presses Escape to return
+/// to the windowed UI.
+#[derive(Component)]
+struct DesktopHint;
 
 // ---------- App ----------
 fn main() {
@@ -418,10 +458,12 @@ fn main() {
         .insert_resource(Palette::aap64_naval())
         .insert_resource(ShipPath::default())
         .insert_resource(WindowMode::default())
+        .insert_resource(NightMode::default())
         .add_systems(Startup, (setup_render, setup_world, setup_ui).chain())
         .add_systems(Update, (
-            // Sim / movement
-            apply_palette,
+            // Sim / movement. apply_night_mode → apply_palette must be ordered
+            // so a night-mode toggle propagates to the camera in the same frame.
+            (apply_night_mode, apply_palette, update_hash_image).chain(),
             friendly_movement,
             enemy_ai,
             apply_velocity,
@@ -444,6 +486,8 @@ fn main() {
             ui_button_system,
             update_slot_labels,
             resize_upscale_sprite,
+            handle_desktop_escape,
+            handle_desktop_drag_resize,
             apply_window_mode,
         ))
         .run();
@@ -452,53 +496,175 @@ fn main() {
 /// Snap the upscale sprite to an integer multiple of the internal resolution.
 /// Without this, fractional sampling (e.g. one internal pixel mapping to 3.5
 /// screen pixels) shimmers as objects move — that's the "laggy" feel.
+/// Escape exits desktop mode back to the windowed UI. No-op in windowed mode.
+fn handle_desktop_escape(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut mode: ResMut<WindowMode>,
+) {
+    if mode.desktop && keys.just_pressed(KeyCode::Escape) {
+        mode.desktop = false;
+    }
+}
+
+/// In desktop mode the window has no decorations, so the OS won't drag or
+/// resize it for us. On LMB press we hand the gesture off to winit:
+///   * cursor near a corner / edge → start a system-resize in that direction
+///   * cursor anywhere else → start a system-drag (window follows mouse)
+/// Both gestures end automatically when the user releases the mouse, so we
+/// only have to react to the press.
+fn handle_desktop_drag_resize(
+    mode: Res<WindowMode>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<(Entity, &Window), With<PrimaryWindow>>,
+    winit_windows: NonSend<WinitWindows>,
+) {
+    if !mode.desktop { return; }
+    if !mouse.just_pressed(MouseButton::Left) { return; }
+    let Ok((entity, window)) = windows.single() else { return; };
+    let Some(cursor) = window.cursor_position() else { return; };
+    let Some(winit_win) = winit_windows.get_window(entity) else { return; };
+
+    let w = window.width();
+    let h = window.height();
+    let m = 8.0;
+    let near_left   = cursor.x < m;
+    let near_right  = cursor.x > w - m;
+    let near_top    = cursor.y < m;
+    let near_bottom = cursor.y > h - m;
+
+    let dir = match (near_left, near_right, near_top, near_bottom) {
+        (true,  false, true,  false) => Some(ResizeDirection::NorthWest),
+        (false, true,  true,  false) => Some(ResizeDirection::NorthEast),
+        (true,  false, false, true ) => Some(ResizeDirection::SouthWest),
+        (false, true,  false, true ) => Some(ResizeDirection::SouthEast),
+        (true,  false, false, false) => Some(ResizeDirection::West),
+        (false, true,  false, false) => Some(ResizeDirection::East),
+        (false, false, true,  false) => Some(ResizeDirection::North),
+        (false, false, false, true ) => Some(ResizeDirection::South),
+        _ => None,
+    };
+    let _ = match dir {
+        Some(d) => winit_win.drag_resize_window(d),
+        None    => winit_win.drag_window(),
+    };
+}
+
+/// On toggle, write the night-mode override into the live `Palette` so that
+/// `apply_palette` propagates the new ocean color to the camera + materials.
+fn apply_night_mode(
+    mut night: ResMut<NightMode>,
+    mut palette: ResMut<Palette>,
+) {
+    if night.last_applied == Some(night.active) { return; }
+    night.last_applied = Some(night.active);
+    if night.active {
+        if night.saved_ocean.is_none() {
+            night.saved_ocean = Some(palette.ocean);
+        }
+        palette.ocean = hex("#1a1c2c");
+    } else if let Some(c) = night.saved_ocean.take() {
+        palette.ocean = c;
+    }
+}
+
 /// Toggle between full-window mode (UI panel + play area) and "desktop"
 /// mode (play area only, window shrunk + repositioned to the bottom-right of
 /// the primary monitor with no decorations). Runs only when WindowMode flips.
 fn apply_window_mode(
     mut mode: ResMut<WindowMode>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
-    monitors: Query<&bevy::window::Monitor>,
-    mut panels: Query<&mut Visibility, (With<UiPanel>, Without<ScoreText>)>,
-    mut score: Query<&mut Visibility, (With<ScoreText>, Without<UiPanel>)>,
+    mut panels: Query<&mut Visibility, (With<UiPanel>, Without<ScoreText>, Without<DesktopHint>)>,
+    mut score: Query<&mut Visibility, (With<ScoreText>, Without<UiPanel>, Without<DesktopHint>)>,
+    mut hint: Query<&mut Visibility, (With<DesktopHint>, Without<UiPanel>, Without<ScoreText>)>,
 ) {
     if mode.last_applied == Some(mode.desktop) { return; }
     mode.last_applied = Some(mode.desktop);
     let Ok(mut window) = windows.single_mut() else { return; };
 
     if mode.desktop {
-        // Hide UI panel + score banner.
+        // Hide UI panel + score banner; show the ESC hint.
         for mut v in &mut panels { *v = Visibility::Hidden; }
         for mut v in &mut score  { *v = Visibility::Hidden; }
-        // Pick a square play size that's an integer multiple of the internal res.
-        let target_logical: u32 = 480; // 200 internal × 2.4 → 200 internal × floor(480/200)=2 → 400 px play
-        // Actually compute the largest integer multiple ≤ target_logical.
+        for mut v in &mut hint   { *v = Visibility::Inherited; }
+
+        // Square window at the largest integer multiple of PLAY_INTERNAL ≤ ~480 px.
+        let target_logical: u32 = 480;
         let scale = (target_logical as f32 / PLAY_INTERNAL as f32).floor().max(1.0) as u32;
         let logical_size = (PLAY_INTERNAL * scale) as f32;
-        window.resolution.set(logical_size, logical_size);
+
+        // Drop decorations FIRST so the size we set is the actual content
+        // size — otherwise winit shrinks the content to fit a phantom title bar.
         window.decorations = false;
+        window.resolution.set(logical_size, logical_size);
         window.window_level = bevy::window::WindowLevel::AlwaysOnTop;
-        // Bottom-right of the primary monitor (in physical pixels).
-        if let Some(monitor) = monitors.iter().next() {
-            let phys_w = monitor.physical_size().x as i32;
-            let phys_h = monitor.physical_size().y as i32;
-            let win_phys_w = (logical_size * window.scale_factor()) as i32;
-            let win_phys_h = (logical_size * window.scale_factor()) as i32;
-            let pad = 12;
-            window.position = bevy::window::WindowPosition::At(IVec2::new(
-                phys_w - win_phys_w - pad,
-                phys_h - win_phys_h - pad,
-            ));
-        }
+        window.resizable = true;
+        // Position is left where it is — the user drags / resizes the window
+        // with the mouse via `handle_desktop_drag_resize`.
     } else {
         for mut v in &mut panels { *v = Visibility::Inherited; }
         for mut v in &mut score  { *v = Visibility::Inherited; }
+        for mut v in &mut hint   { *v = Visibility::Hidden; }
         window.resolution.set(WINDOW_W, WINDOW_H);
         window.decorations = true;
         window.window_level = bevy::window::WindowLevel::Normal;
         window.position = bevy::window::WindowPosition::Centered(
             bevy::window::MonitorSelection::Primary,
         );
+    }
+}
+
+/// Build a 192×192 BGRA tile with equal-width diagonal stripes — `light`
+/// stripes on `(x+y) % period < period/2`, otherwise `dark`. Tileable.
+/// Band width = 96 px; the 192-period repeats seamlessly along both axes.
+fn make_hash_image(light: Color, dark: Color) -> Image {
+    const TILE: u32 = 192;
+    const HALF: u32 = TILE / 2;
+    let to_bgra = |c: Color| {
+        let s: bevy::color::Srgba = c.into();
+        [
+            (s.blue  * 255.0).round() as u8,
+            (s.green * 255.0).round() as u8,
+            (s.red   * 255.0).round() as u8,
+            255u8,
+        ]
+    };
+    let lb = to_bgra(light);
+    let db = to_bgra(dark);
+    let mut data = Vec::with_capacity((TILE * TILE * 4) as usize);
+    for y in 0..TILE {
+        for x in 0..TILE {
+            let band = ((x + y) % TILE) < HALF;
+            let bgra = if band { lb } else { db };
+            data.extend_from_slice(&bgra);
+        }
+    }
+    let mut img = Image::new(
+        Extent3d { width: TILE, height: TILE, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Bgra8UnormSrgb,
+        bevy::render::render_asset::RenderAssetUsages::default(),
+    );
+    img.sampler = ImageSampler::nearest();
+    img
+}
+
+/// Regenerate the hash tile when the palette OR night mode changes so the
+/// stripes always match the current ocean. Day-mode dark = #3b5dc9; in
+/// night mode the dark stripe is much lower-luminance so the hashing stays
+/// subtle against the dark ocean instead of looking like bright stripes.
+fn update_hash_image(
+    palette: Res<Palette>,
+    night: Res<NightMode>,
+    hash: Option<Res<HashImage>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if !palette.is_changed() && !night.is_changed() { return; }
+    let Some(hash) = hash else { return; };
+    let dark = if night.active { hex("#0c0e1a") } else { hex("#3b5dc9") };
+    let new_img = make_hash_image(palette.ocean, dark);
+    if let Some(img) = images.get_mut(&hash.0) {
+        *img = new_img;
     }
 }
 
@@ -527,20 +693,25 @@ fn effective_ui_width(mode: &WindowMode) -> f32 {
 fn resize_upscale_sprite(
     windows: Query<&Window, With<PrimaryWindow>>,
     mode: Res<WindowMode>,
-    mut sprites: Query<(&mut Sprite, &mut Transform), With<UpscaleSprite>>,
+    mut play_sprites: Query<(&mut Sprite, &mut Transform), (With<UpscaleSprite>, Without<HashSprite>)>,
+    mut hash_sprites: Query<&mut Sprite, (With<HashSprite>, Without<UpscaleSprite>)>,
 ) {
     let Ok(window) = windows.single() else { return; };
     let logical_w = window.width();
     let logical_h = window.height();
     let (left, _top, size) = play_area_screen_rect(logical_w, logical_h, effective_ui_width(&mode));
-    // 2D camera puts world (0,0) at window center; sprite sits centered in
-    // the available area to the right of the UI panel.
+    // Play sprite — centred in the available area to the right of the UI.
     let world_x = left + size / 2.0 - logical_w / 2.0;
     let target = Vec2::splat(size);
-    for (mut s, mut tf) in &mut sprites {
+    for (mut s, mut tf) in &mut play_sprites {
         if s.custom_size != Some(target) { s.custom_size = Some(target); }
         if (tf.translation.x - world_x).abs() > 0.001 { tf.translation.x = world_x; }
         if tf.translation.y != 0.0 { tf.translation.y = 0.0; }
+    }
+    // Hash backdrop — covers the entire window. Tiled mode handles the rest.
+    let win_size = Vec2::new(logical_w, logical_h);
+    for mut s in &mut hash_sprites {
+        if s.custom_size != Some(win_size) { s.custom_size = Some(win_size); }
     }
 }
 
@@ -550,7 +721,7 @@ fn apply_palette(
     palette: Res<Palette>,
     pm: Option<Res<PaletteMaterials>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut cameras: Query<&mut Camera, With<PlayCamera>>,
+    mut cameras: Query<&mut Camera, Or<(With<PlayCamera>, With<UpscaleCamera>)>>,
 ) {
     if !palette.is_changed() { return; }
     let Some(pm) = pm else { return; };
@@ -620,11 +791,36 @@ fn setup_render(
 
     // UI / upscale camera (default layer + upscale layer). Also MSAA off so
     // the upscale sprite samples the internal image without smoothing.
+    // Clear color = ocean so any pixels outside the play sprite (e.g. between
+    // the UI panel and the play area, or in desktop mode if the window
+    // mismatches by 1 px) match the water seamlessly — no black border.
     commands.spawn((
         Camera2d,
-        Camera { order: 0, ..default() },
+        Camera {
+            order: 0,
+            clear_color: ClearColorConfig::Custom(palette.ocean),
+            ..default()
+        },
         RenderLayers::from_layers(&[0, UPSCALE_LAYER]),
         Msaa::Off,
+        UpscaleCamera,
+    ));
+
+    // Diagonal-hash backdrop, tiled across the entire window. Sits BEHIND the
+    // play sprite (z=-1) so the play area covers the centre and the hashing
+    // shows in the surrounding letterbox / right-of-UI region.
+    let hash_image = images.add(make_hash_image(palette.ocean, hex("#3b5dc9")));
+    commands.insert_resource(HashImage(hash_image.clone()));
+    commands.spawn((
+        Sprite {
+            image: hash_image,
+            custom_size: Some(Vec2::new(WINDOW_W, WINDOW_H)),
+            image_mode: SpriteImageMode::Tiled { tile_x: true, tile_y: true, stretch_value: 1.0 },
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, -1.0),
+        RenderLayers::layer(UPSCALE_LAYER),
+        HashSprite,
     ));
 
     // Sprite that displays the render target, on UPSCALE_LAYER, positioned in screen space.
@@ -815,6 +1011,23 @@ fn setup_ui(mut commands: Commands) {
         ScoreText,
     ));
 
+    // Desktop-mode hint — small grey text at top-center, hidden by default.
+    commands.spawn((
+        Text::new("Press ESC to return"),
+        TextFont { font_size: 9.0, ..default() },
+        TextColor(Color::srgb(0.7, 0.72, 0.78)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(4.0),
+            left: Val::Px(0.0),
+            right: Val::Px(0.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        Visibility::Hidden,
+        DesktopHint,
+    ));
+
     // Left control panel.
     commands.spawn((
         Node {
@@ -858,25 +1071,15 @@ fn setup_ui(mut commands: Commands) {
                     TextColor(UI_TEXT_DIM),
                 ));
             });
-            // Desktop-mode toggle. `slot: 0` is unused by this button kind.
-            h.spawn((
-                Button,
-                Node {
-                    padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
-                    ..default()
-                },
-                BackgroundColor(UI_BTN_BG),
-                BorderRadius::all(Val::Px(2.0)),
-                SlotButton { slot: 0, kind: ButtonKind::ToggleDesktopMode },
-            ))
-            .with_children(|b| {
-                b.spawn((
-                    Text::new("DESKTOP"),
-                    TextFont { font_size: 10.0, ..default() },
-                    TextColor(UI_TEXT),
-                ));
+            // Right side: stacked NIGHT + DESKTOP toggles. `slot: 0` unused.
+            h.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(4.0),
+                ..default()
+            })
+            .with_children(|btns| {
+                spawn_header_button(btns, "NIGHT", ButtonKind::ToggleNightMode);
+                spawn_header_button(btns, "DESKTOP", ButtonKind::ToggleDesktopMode);
             });
         });
         // Divider
@@ -1070,6 +1273,28 @@ fn spawn_stat_row(
         ));
         spawn_step_button(r, slot, down_kind, "−");
         spawn_step_button(r, slot, up_kind,   "+");
+    });
+}
+
+fn spawn_header_button(parent: &mut ChildSpawnerCommands, label: &str, kind: ButtonKind) {
+    parent.spawn((
+        Button,
+        Node {
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        BackgroundColor(UI_BTN_BG),
+        BorderRadius::all(Val::Px(2.0)),
+        SlotButton { slot: 0, kind },
+    ))
+    .with_children(|b| {
+        b.spawn((
+            Text::new(label.to_string()),
+            TextFont { font_size: 10.0, ..default() },
+            TextColor(UI_TEXT),
+        ));
     });
 }
 
@@ -1606,7 +1831,7 @@ fn turret_aim_fire(
     cfg: Res<TurretConfig>,
     ship_q: Query<(&Transform, &Heading), With<Friendly>>,
     enemies: Query<(&Transform, &Faction), With<Enemy>>,
-    mut turrets: Query<(&mut TurretSlot, &mut Transform, &Children, &Visibility), (Without<Friendly>, Without<Enemy>, Without<TurretBarrel>)>,
+    mut turrets: Query<(Entity, &mut TurretSlot, &mut Transform, &Children, &Visibility), (Without<Friendly>, Without<Enemy>, Without<TurretBarrel>)>,
     mut barrels: Query<&mut Transform, (With<TurretBarrel>, Without<TurretSlot>, Without<Friendly>, Without<Enemy>)>,
 ) {
     let Some(pm) = pm else { return; };
@@ -1616,7 +1841,7 @@ fn turret_aim_fire(
     let ship_pos = ship_tf.translation.truncate();
     let ship_h = ship_heading.0;
 
-    for (mut slot, mut tf, children, vis) in &mut turrets {
+    for (turret_entity, mut slot, mut tf, children, vis) in &mut turrets {
         if matches!(*vis, Visibility::Hidden) { continue; }
         if !cfg.slots[slot.index].equipped { continue; }
         slot.fire_cd -= dt;
@@ -1676,18 +1901,24 @@ fn turret_aim_fire(
                 // Twin barrels = twice the effective rate (alternating barrels).
                 slot.fire_cd = 1.0 / (slot.fire_rate.max(0.1) * barrels);
                 // Spawn bullet from turret world pos toward ep
-                let dir = (ep - turret_world).normalize_or_zero();
-                if dir.length_squared() > 0.0 {
+                // Use the actual barrel orientation (not the slightly-off
+                // bullet trajectory) so muzzle position lines up visually.
+                let total_angle = ship_h + slot.barrel_angle;
+                let barrel_forward = Vec2::new(-total_angle.sin(), total_angle.cos());
+                let barrel_right = Vec2::new(barrel_forward.y, -barrel_forward.x);
+                let dir = barrel_forward;
+                {
                     // Lateral offset to the active barrel: 0 in single mode,
                     // ±BARREL_LATERAL in twin mode, alternating per shot.
                     let lateral = if slot.barrels >= 2 {
                         if slot.next_barrel == 0 { -BARREL_LATERAL } else { BARREL_LATERAL }
                     } else { 0.0 };
-                    let right = Vec2::new(dir.y, -dir.x);
-                    // Two-tone bullet: darker outer + bright inner core.
-                    // Spawn at the active barrel's tip so the muzzle flash
-                    // and bullet line up with the barrel that fired.
-                    let muzzle_pos = turret_world + dir * 5.0 + right * lateral;
+                    // Push spawn forward by the bullet's half-length so the
+                    // BACK of the bullet sits at the barrel tip — bullet
+                    // appears to emerge from the muzzle, not the turret base.
+                    let muzzle_pos = turret_world
+                        + barrel_forward * (FRIENDLY_BARREL_TIP + FRIENDLY_BULLET_HALF_LEN)
+                        + barrel_right * lateral;
                     slot.next_barrel = (slot.next_barrel + 1) % slot.barrels.max(1);
                     let bullet = commands.spawn((
                         Mesh2d(meshes.add(Capsule2d::new(2.0, 1.5))),
@@ -1706,15 +1937,18 @@ fn turret_aim_fire(
                     )).id();
                     commands.entity(inner).insert(ChildOf(bullet));
 
-                    // Muzzle flash at the same barrel tip the bullet emerged from.
-                    commands.spawn((
+                    // Muzzle flash is parented to the turret (which is a
+                    // child of the ship) so it stays glued to the barrel as
+                    // the ship moves and the turret rotates. Local position
+                    // = (lateral, BARREL_TIP) in turret frame.
+                    let flash = commands.spawn((
                         Mesh2d(em.muzzle_flash.clone()),
                         MeshMaterial2d(pm.bullet_friendly.clone()),
-                        Transform::from_xyz(muzzle_pos.x, muzzle_pos.y, 5.0)
-                            .with_rotation(Quat::from_rotation_z((-dir.x).atan2(dir.y))),
+                        Transform::from_xyz(lateral, FRIENDLY_BARREL_TIP, 2.0),
                         MuzzleFlash { life: 0.18, max_life: 0.18 },
                         RenderLayers::layer(PLAY_LAYER),
-                    ));
+                    )).id();
+                    commands.entity(flash).insert(ChildOf(turret_entity));
                 }
             }
         }
@@ -1732,7 +1966,7 @@ fn enemy_fire(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     friendly: Query<&Transform, (With<Friendly>, Without<Enemy>)>,
-    mut enemies: Query<(&Transform, &Heading, &mut Enemy)>,
+    mut enemies: Query<(Entity, &Transform, &Heading, &mut Enemy)>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
@@ -1740,7 +1974,7 @@ fn enemy_fire(
     let Ok(ftf) = friendly.single() else { return; };
     let fpos = ftf.translation.truncate();
 
-    for (tf, heading, mut enemy) in &mut enemies {
+    for (enemy_entity, tf, heading, mut enemy) in &mut enemies {
         enemy.fire_cd -= dt;
         let pos = tf.translation.truncate();
         let to = fpos - pos;
@@ -1752,12 +1986,13 @@ fn enemy_fire(
         if enemy.fire_cd > 0.0 { continue; }
         enemy.fire_cd = 1.0 / ENEMY_FIRE_RATE;
         let dir = forward;
-        // Spawn at the barrel tip (enemy barrel offset 1.8 + half-length 1.75 ≈ 3.5).
-        let muzzle_pos = pos + forward * 3.5;
+        // Bullet spawn — push forward by half its length so its BACK sits at
+        // the barrel tip and the bullet appears to emerge from the muzzle.
+        let bullet_pos = pos + forward * (ENEMY_BARREL_TIP + ENEMY_BULLET_HALF_LEN);
         let bullet = commands.spawn((
             Mesh2d(meshes.add(Capsule2d::new(1.5, 1.5))),
             MeshMaterial2d(pm.bullet_enemy_outer.clone()),
-            Transform::from_xyz(muzzle_pos.x, muzzle_pos.y, 4.0)
+            Transform::from_xyz(bullet_pos.x, bullet_pos.y, 4.0)
                 .with_rotation(Quat::from_rotation_z(heading.0)),
             Bullet { faction: FactionKind::Enemy, damage: 1, remaining: ENEMY_RANGE },
             Velocity(dir * BULLET_SPEED),
@@ -1771,15 +2006,16 @@ fn enemy_fire(
         )).id();
         commands.entity(inner).insert(ChildOf(bullet));
 
-        // Muzzle flash at the same barrel tip the bullet emerged from.
-        commands.spawn((
+        // Parent to the enemy so the flash follows the ship; local +Y axis
+        // matches the enemy's forward direction (turrets fire straight ahead).
+        let flash = commands.spawn((
             Mesh2d(em.muzzle_flash.clone()),
             MeshMaterial2d(pm.bullet_enemy.clone()),
-            Transform::from_xyz(muzzle_pos.x, muzzle_pos.y, 5.0)
-                .with_rotation(Quat::from_rotation_z(heading.0)),
+            Transform::from_xyz(0.0, ENEMY_BARREL_TIP, 4.0),
             MuzzleFlash { life: 0.18, max_life: 0.18 },
             RenderLayers::layer(PLAY_LAYER),
-        ));
+        )).id();
+        commands.entity(flash).insert(ChildOf(enemy_entity));
     }
 }
 
@@ -1861,6 +2097,7 @@ fn ui_button_system(
     mut interactions: Query<(&Interaction, &SlotButton), Changed<Interaction>>,
     mut cfg: ResMut<TurretConfig>,
     mut window_mode: ResMut<WindowMode>,
+    mut night: ResMut<NightMode>,
 ) {
     for (interaction, btn) in &mut interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
@@ -1869,11 +2106,15 @@ fn ui_button_system(
                 window_mode.desktop = !window_mode.desktop;
                 continue;
             }
+            ButtonKind::ToggleNightMode => {
+                night.active = !night.active;
+                continue;
+            }
             _ => {}
         }
         let s = &mut cfg.slots[btn.slot];
         match btn.kind {
-            ButtonKind::ToggleDesktopMode => unreachable!(),
+            ButtonKind::ToggleDesktopMode | ButtonKind::ToggleNightMode => unreachable!(),
             ButtonKind::Equip       => { if !s.equipped { s.equipped = true; } }
             ButtonKind::DamageUp    => { if s.equipped { s.damage += 1; } }
             ButtonKind::DamageDown  => { if s.equipped && s.damage > 1 { s.damage -= 1; } }
