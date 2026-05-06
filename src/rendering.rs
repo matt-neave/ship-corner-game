@@ -20,10 +20,11 @@ use bevy::window::PrimaryWindow;
 use crate::balance::{
     PLAY_INTERNAL, PLAY_LAYER, PLAY_WORLD, UI_WIDTH, UPSCALE_LAYER, WINDOW_H, WINDOW_W,
 };
+use crate::map::MAP_LAYER;
 use crate::modes::{
     effective_ui_width, play_area_screen_rect, NightMode, ScanlineSprite, WindowMode,
 };
-use crate::palette::{darken, hex, Palette, PlayCamera, UpscaleCamera};
+use crate::palette::{darken, hex, MapCamera, Palette, PlayCamera, UpscaleCamera};
 
 // ---------- Components & resources for the upscale pipeline ----------
 
@@ -130,26 +131,47 @@ pub fn setup_render(
     let handle = images.add(img);
     commands.insert_resource(PlayRenderImage(handle.clone()));
 
-    // Play camera renders to image, sees only PLAY_LAYER. MSAA off — multi-
-    // sampling against a low-res render target softens every primitive edge,
-    // killing the chunky-pixel look.
+    // Two cameras both render to this same image, but only one is active at
+    // a time (toggled by `apply_view_mode`). PlayCamera renders combat
+    // (PLAY_LAYER); MapCamera renders the map view (MAP_LAYER). Default
+    // ViewMode is Map, so we start with PlayCamera disabled. MSAA off —
+    // multi-sampling against a low-res render target softens every
+    // primitive edge, killing the chunky-pixel look.
+    let proj = || Projection::Orthographic(OrthographicProjection {
+        scaling_mode: bevy::render::camera::ScalingMode::Fixed {
+            width: PLAY_WORLD,
+            height: PLAY_WORLD,
+        },
+        ..OrthographicProjection::default_2d()
+    });
+
     commands.spawn((
         Camera2d,
         Camera {
             target: RenderTarget::Image(handle.clone().into()),
             clear_color: ClearColorConfig::Custom(palette.ocean),
             order: -1,
+            is_active: false, // map view is the default
             ..default()
         },
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: bevy::render::camera::ScalingMode::Fixed {
-                width: PLAY_WORLD,
-                height: PLAY_WORLD,
-            },
-            ..OrthographicProjection::default_2d()
-        }),
+        proj(),
         RenderLayers::layer(PLAY_LAYER),
         PlayCamera,
+        Msaa::Off,
+    ));
+
+    commands.spawn((
+        Camera2d,
+        Camera {
+            target: RenderTarget::Image(handle.clone().into()),
+            clear_color: ClearColorConfig::Custom(palette.ocean),
+            order: -1,
+            is_active: true,
+            ..default()
+        },
+        proj(),
+        RenderLayers::layer(MAP_LAYER),
+        MapCamera,
         Msaa::Off,
     ));
 

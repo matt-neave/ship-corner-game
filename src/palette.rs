@@ -176,9 +176,14 @@ pub struct PaletteMaterials {
     pub frost: Handle<ColorMaterial>,
     /// Shock-rune lightning + particle color (electric yellow).
     pub shock: Handle<ColorMaterial>,
-    /// Translucent green tint for owned territory on the map view.
+    /// Translucent green tint for owned territory. Currently unused —
+    /// section fills are rendered via a pre-rasterized sprite in `map.rs`
+    /// (single-quad rendering avoids alpha-blend triangle seams). Left in
+    /// place because `apply_palette` still tracks them for future re-use.
+    #[allow(dead_code)]
     pub map_owned:   Handle<ColorMaterial>,
-    /// Translucent red tint for unowned ("enemy") territory on the map view.
+    /// Translucent red tint for unowned territory. See `map_owned`.
+    #[allow(dead_code)]
     pub map_enemy:   Handle<ColorMaterial>,
     /// Subtle dark divider lines between map sections.
     pub map_divider: Handle<ColorMaterial>,
@@ -222,19 +227,36 @@ impl PaletteMaterials {
             fire:                  materials.add(hex(FIRE_HEX)),
             frost:                 materials.add(hex(FROST_HEX)),
             shock:                 materials.add(hex(SHOCK_HEX)),
+            // Map tints: opaque pre-blended colors. Alpha-blended translucent
+            // tints over a fan-triangulated mesh leave faint visible "rays"
+            // along each fan-edge (the alpha math doesn't perfectly
+            // reconcile at triangle seams in Bevy 2D), so we bake the blend
+            // result into a solid color and render Opaque — same look,
+            // zero seam artifacts.
+            //
+            // Each color = `lerp(ocean, target, 0.30)`, computed against the
+            // AAP-64 naval ocean (0.255, 0.651, 0.965). If the palette
+            // changes at runtime these stay frozen — a follow-up could
+            // recompute them in `apply_palette` if that becomes important.
+            // Map tints: alpha-blended so the ocean reads through. Vibrant
+            // source colors at moderate alpha — green needs less because
+            // it lands closer to ocean's hue, red needs more because the
+            // ocean's blue otherwise drags it toward purple.
             map_owned:             materials.add(ColorMaterial {
-                color: Color::srgba(0.30, 0.78, 0.38, 0.40),
+                color: Color::srgba(0.18, 0.98, 0.40, 0.45),
                 alpha_mode: bevy::sprite::AlphaMode2d::Blend,
                 ..default()
             }),
             map_enemy:             materials.add(ColorMaterial {
-                color: Color::srgba(0.88, 0.30, 0.30, 0.40),
+                color: Color::srgba(1.00, 0.05, 0.15, 0.55),
                 alpha_mode: bevy::sprite::AlphaMode2d::Blend,
                 ..default()
             }),
+            // Divider: kept opaque for clean seams — it's a thin ribbon, so
+            // there's no perceived "block" feel even without translucence.
             map_divider:           materials.add(ColorMaterial {
-                color: Color::srgba(0.18, 0.22, 0.30, 0.55),
-                alpha_mode: bevy::sprite::AlphaMode2d::Blend,
+                color: Color::srgb(0.18, 0.42, 0.60),
+                alpha_mode: bevy::sprite::AlphaMode2d::Opaque,
                 ..default()
             }),
         }
@@ -247,6 +269,12 @@ impl PaletteMaterials {
 pub struct PlayCamera;
 #[derive(Component)]
 pub struct UpscaleCamera;
+/// Dedicated camera for the map view — spawned alongside `PlayCamera` and
+/// targets the same render image, but only renders `MAP_LAYER` entities.
+/// Toggled active/inactive by `apply_view_mode`; combat and map never
+/// render simultaneously, so there's no z-conflict at the target.
+#[derive(Component)]
+pub struct MapCamera;
 
 /// Push the current `Palette` into shared materials + camera clear color
 /// whenever the resource is changed (and once on first frame).
@@ -254,7 +282,7 @@ pub fn apply_palette(
     palette: Res<Palette>,
     pm: Option<Res<PaletteMaterials>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut cameras: Query<&mut Camera, Or<(With<PlayCamera>, With<UpscaleCamera>)>>,
+    mut cameras: Query<&mut Camera, Or<(With<PlayCamera>, With<UpscaleCamera>, With<MapCamera>)>>,
 ) {
     if !palette.is_changed() { return; }
     let Some(pm) = pm else { return; };

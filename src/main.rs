@@ -54,7 +54,7 @@ use effects::{
 };
 use enemy::{bomber_detonate, enemy_ai, enemy_death_check, enemy_fire, spawn_enemies};
 use map::{
-    apply_view_mode, map_boat_movement, map_click_input, setup_map, update_map_visuals,
+    apply_view_mode, in_combat_view, map_boat_movement, map_click_input, setup_map,
     MapState, ViewMode,
 };
 use modes::{
@@ -139,9 +139,13 @@ fn main() {
         .insert_resource(MapState::new())
         .add_systems(Startup, (setup_render, setup_world, setup_ui, setup_map).chain())
         .add_systems(Update, (
-            // Sim / movement. apply_night_mode → apply_palette must be ordered
-            // so a night-mode toggle propagates to the camera in the same frame.
+            // Always-on visual setup. apply_night_mode → apply_palette must
+            // be ordered so a night-mode toggle propagates to the camera in
+            // the same frame.
             (apply_night_mode, apply_palette, update_hash_image).chain(),
+        ))
+        .add_systems(Update, (
+            // Combat sim — paused while on the map view.
             friendly_movement,
             enemy_ai,
             apply_velocity,
@@ -158,7 +162,7 @@ fn main() {
             // `enemy_death_check` despawns anything that hit zero. Chained so
             // sources see consistent HP and only one despawn fires per kill.
             (bullet_collisions, tick_on_fire, tick_on_frost, enemy_death_check).chain(),
-        ))
+        ).run_if(in_combat_view))
         .add_systems(Update, (
             // Visuals / FX / UI. Split from the sim block so we don't blow
             // past Bevy's 20-system tuple limit.
@@ -185,6 +189,7 @@ fn main() {
         .add_systems(Update, (
             // Wave-mode + ally systems live in their own bundle so we don't
             // blow past the 20-system tuple limit on the visuals/UI block.
+            // All combat-side; paused with the rest while on the map.
             wave_orchestrator,
             update_wave_ui,
             sync_pier_visuals,
@@ -193,13 +198,12 @@ fn main() {
             ally_ai,
             ally_turret_aim_fire,
             ally_death_check,
-        ))
+        ).run_if(in_combat_view))
         .add_systems(Update, (
-            // Map view — camera-layer swap, click input, boat steering, tints.
+            // Map view — camera toggle, click target, boat steering.
             apply_view_mode,
             map_click_input,
             map_boat_movement,
-            update_map_visuals,
             update_map_button,
         ))
         .run();
