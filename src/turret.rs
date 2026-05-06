@@ -21,8 +21,8 @@ use crate::effects::{EffectMeshes, MuzzleFlash};
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
 use crate::pier::{pier_damage_bonus, pier_range_mult, Pier};
+use crate::ship::approach_angle;
 use crate::weapon::WeaponType;
-use crate::approach_angle;
 
 // ---------- Components & resources ----------
 

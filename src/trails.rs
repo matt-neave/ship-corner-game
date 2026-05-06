@@ -15,7 +15,7 @@ use crate::balance::{
     HULL_HALF_LEN, TRAIL_HEAD_WIDTH, TRAIL_MAX_POINTS, TRAIL_SAMPLE_HZ,
 };
 use crate::components::Friendly;
-use crate::Enemy;
+use crate::enemy::Enemy;
 
 /// Marker for the single friendly trail entity. Mesh positions live in world
 /// space, so the entity transform stays at origin.

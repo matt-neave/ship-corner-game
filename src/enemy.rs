@@ -16,7 +16,6 @@ use bevy::render::view::RenderLayers;
 use rand::Rng;
 use std::collections::VecDeque;
 
-use crate::approach_angle;
 use crate::balance::{
     BOMBER_DETONATE_DIST, BULLET_SPEED, ENEMY_BARREL_TIP, ENEMY_BULLET_HALF_LEN, ENEMY_LEN,
     ENEMY_RANGE, PLAY_LAYER, PLAY_WORLD,
@@ -25,6 +24,7 @@ use crate::bullet::Bullet;
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
 use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx, MuzzleFlash};
 use crate::palette::PaletteMaterials;
+use crate::ship::approach_angle;
 use crate::trails::{empty_dynamic_mesh, EnemyTrail};
 use crate::weapon::WeaponType;
 use crate::{GameMode, SpawnTimer};
