@@ -1,0 +1,36 @@
+key,en
+score_label,SCORE
+wave_label,WAVE
+hp_label,HP
+title_battleship,BATTLESHIP CONTROL
+subtitle_cuniberti,Cuniberti refit · 8 turret slots
+btn_wave,WAVE
+btn_crt,CRT
+btn_night,NIGHT
+btn_desktop,DESKTOP
+btn_equip_gun,EQUIP GUN
+btn_press_esc,Press ESC to return
+turret_bow,BOW
+turret_fore_port,FORE PORT
+turret_fore_stbd,FORE STBD
+turret_mid_port,MID PORT
+turret_mid_stbd,MID STBD
+turret_aft_port,AFT PORT
+turret_aft_stbd,AFT STBD
+turret_stern,STERN
+weapon_standard,STANDARD
+weapon_sniper,SNIPER
+weapon_mg,MG
+weapon_shotgun,SHOTGUN
+weapon_railgun,RAILGUN
+building_munitions,MUNITIONS
+building_watchtower,WATCHTOWER
+building_drydock,DRYDOCK
+building_munitions_desc,+1 dmg to adjacent turrets
+building_watchtower_desc,+25% range to adjacent turrets
+building_drydock_desc,+5 HP/wave (chain bonus)
+draft_instruction,CHOOSE AN UPGRADE · CLICK A PIER CELL TO PLACE
+stat_dmg,DMG
+stat_rate,RATE
+stat_brrl,BRRL
+stat_share,SHARE

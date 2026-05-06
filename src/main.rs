@@ -3,458 +3,92 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, T
 use bevy::image::{ImageSampler, ImageSamplerDescriptor};
 use bevy::render::camera::RenderTarget;
 use bevy::sprite::SpriteImageMode;
-use bevy::render::mesh::{Indices, PrimitiveTopology};
-use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::view::{Msaa, RenderLayers};
 use bevy::window::PrimaryWindow;
-use bevy::winit::WinitWindows;
-use winit::window::ResizeDirection;
-use rand::Rng;
-use std::collections::VecDeque;
 
-// ---------- Config ----------
-const WINDOW_W: f32 = 1280.0;
-const WINDOW_H: f32 = 800.0;
-const UI_WIDTH: f32 = 280.0;
-// Low-res render target — 1:1 world unit per internal pixel.
-// Display upscales ~3.6x → chunky stair-stepped pixel edges.
-const PLAY_INTERNAL: u32 = 200;
-const PLAY_WORLD: f32 = 200.0;
+mod balance;
+mod beam;
+mod bullet;
+mod components;
+mod effects;
+mod enemy;
+mod i18n;
+mod modes;
+mod palette;
+mod pier;
+mod trails;
+mod turret;
+mod ui;
+mod wave;
+mod weapon;
 
-const PLAY_LAYER: usize = 1;
-const UPSCALE_LAYER: usize = 2;
+use balance::*;
+use beam::{beam_apply_damage, update_beams};
+use bullet::{bullet_collisions, bullet_update};
+use components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
+use effects::{
+    apply_hit_fx_visuals, tick_hit_fx, update_hit_particles, update_muzzle_flashes,
+    EffectMeshes, HitFx,
+};
+use enemy::{bomber_detonate, enemy_ai, enemy_fire, spawn_enemies, Enemy};
+use modes::{
+    apply_crt_mode, apply_night_mode, apply_window_mode,
+    effective_ui_width, handle_desktop_drag_resize, handle_desktop_escape,
+    play_area_screen_rect,
+    CrtMode, GameMode, NightMode, ScanlineSprite, WindowMode,
+};
+use palette::{
+    Palette, PaletteMaterials, PlayCamera, UpscaleCamera,
+    apply_palette, darken, hex,
+};
+use pier::{draft_input, sync_pier_visuals, update_draft_ui, Pier, PierVisual, WaveDraft};
+use trails::{empty_dynamic_mesh, update_enemy_trails, update_trail, ShipPath, Trail};
+use turret::{
+    sync_turret_config, turret_aim_fire,
+    BarrelIndex, SlotCfg, TurretBarrel, TurretConfig, TurretSlot,
+};
+use ui::{
+    setup_ui, ui_button_system, update_damage_bars, update_score_text, update_slot_labels,
+    update_wave_ui, DamageStats,
+};
+use wave::{wave_orchestrator, WaveState};
+use weapon::WeaponType;
 
-const FRIENDLY_SPEED: f32 = 28.0;
-const FRIENDLY_TURN_RATE: f32 = 3.6; // rad/s
-const ENEMY_SPEED: f32 = 18.0;
-const ENEMY_TURN_RATE: f32 = 0.9;
-const TURRET_RANGE: f32 = 60.0;
-const TURRET_PIVOT: f32 = std::f32::consts::FRAC_PI_2; // 90°/s
-const ENEMY_RANGE: f32 = 45.0;
-const ENEMY_FIRE_RATE: f32 = 1.0;
-const ENEMY_HP: i32 = 10;
-const BULLET_SPEED: f32 = 110.0;
+// All numeric/layout constants live in `balance.rs` (re-exported via
+// `use balance::*`). Translation strings live in `data/translations.csv` and
+// are looked up via `tr("key")`. Colors live in `palette.rs`.
 
-// Palette is defined as a Resource — see Palette / PaletteMaterials below.
-// Swap palettes by mutating the Palette resource; apply_palette propagates.
+// `Palette`, `PaletteMaterials`, `apply_palette`, helpers, and weapon hexes
+// are in `palette.rs`. The `PaletteMaterials::*_for` weapon-lookup methods
+// live with `WeaponType` in `weapon.rs`.
 
-// Hull dimensions (world units == internal pixels).
-// Spec target: enemy ~10px long, friendly larger but still chunky.
-const HULL_LEN: f32 = 22.0;
-const HULL_WIDTH: f32 = 8.0;
-const HULL_HALF_LEN: f32 = HULL_LEN / 2.0;
-const ENEMY_LEN: f32 = 10.0;
-const ENEMY_WIDTH: f32 = 5.0;
+// `EffectMeshes` and FX components live in `effects.rs` now.
+// Generic components (Friendly, Health, Velocity, Heading, Faction*) live
+// in `components.rs`.
 
-// Cuniberti turret layout. Local hull coords: ship faces +Y (up).
-// 0=bow, 7=stern, 1-6 wings (port/starboard pairs); mid pair widest beam.
-const TURRET_POSITIONS: [(f32, f32); 8] = [
-    ( 0.0,  9.0),  // bow centerline
-    (-2.0,  5.0),  // fore wing pair (port)
-    ( 2.0,  5.0),  //                  (stbd)
-    (-3.0,  0.0),  // mid wing pair  (port, widest beam)
-    ( 3.0,  0.0),  //                  (stbd)
-    (-2.0, -5.0),  // aft wing pair  (port)
-    ( 2.0, -5.0),  //                  (stbd)
-    ( 0.0, -9.0),  // stern centerline
-];
+// Enemy / EnemyState / EnemyVariant moved to `enemy.rs`.
 
-// Mount angle per turret + half-arc per turret. Hull frame, 0 = +Y forward.
-// Heading convention: dir = (-sin(a), cos(a)). +PI/2 = port (-X), -PI/2 = stbd (+X).
-//
-// The 4 wing turrets (idx 1,2,5,6) sit on diagonals from the ship center and
-// rest along that diagonal. They get a 120° firing arc (±60°), so each can
-// swing from "fully forward" through its diagonal to "fully sideways".
-// The 4 axial turrets (bow, stern, mid port/stbd) keep a 90° arc.
-const PI_2: f32 = std::f32::consts::FRAC_PI_2;
-const PI_3: f32 = std::f32::consts::FRAC_PI_3;
-const PI_4: f32 = std::f32::consts::FRAC_PI_4;
-const PI_F: f32 = std::f32::consts::PI;
-const TURRET_MOUNTS: [f32; 8] = [
-     0.0,         // bow centerline → forward
-     PI_4,        // fore port wing → forward-port (NW diagonal)
-    -PI_4,        // fore stbd wing → forward-stbd (NE diagonal)
-     PI_2,        // mid port → port (sideways left)
-    -PI_2,        // mid stbd → starboard
-     3.0 * PI_4,  // aft port wing → backward-port (SW diagonal)
-    -3.0 * PI_4,  // aft stbd wing → backward-stbd (SE diagonal)
-     PI_F,        // stern centerline → backward
-];
-const TURRET_NAMES: [&str; 8] = [
-    "BOW",
-    "FORE PORT",
-    "FORE STBD",
-    "MID PORT",
-    "MID STBD",
-    "AFT PORT",
-    "AFT STBD",
-    "STERN",
-];
+// Bomber, wave-mode, and pier-layout tunables moved to `balance.rs`.
 
-const TURRET_ARC_HALVES: [f32; 8] = [
-    PI_4, // bow: ±45°
-    PI_3, // fore port: ±60°
-    PI_3, // fore stbd: ±60°
-    PI_4, // mid port: ±45°
-    PI_4, // mid stbd: ±45°
-    PI_3, // aft port: ±60°
-    PI_3, // aft stbd: ±60°
-    PI_4, // stern: ±45°
-];
+// BuildingType + Pier + WaveDraft + pier helpers + draft systems  →  pier.rs
 
-// ---------- Palette ----------
-// Each role names a single semantic color. To recolor the game, mutate the
-// `Palette` resource at runtime (or change the active palette below at compile
-// time). `apply_palette` watches for changes and propagates them to all
-// shared materials + the play camera's clear color in one place.
-#[derive(Resource, Clone, Debug)]
-struct Palette {
-    ocean: Color,
-    border: Color,
-    hull: Color,
-    hull_accent: Color,
-    turret: Color,
-    enemy: Color,
-    enemy_accent: Color,
-    bullet_friendly: Color,
-    bullet_enemy: Color,
-    trail: Color,
-}
+// Health, Velocity, Heading, Faction(Kind), Friendly  →  components.rs
+// WeaponType + impl + PaletteMaterials::*_for          →  weapon.rs
+// Shotgun + beam tunables                              →  balance.rs
 
-fn hex(s: &str) -> Color {
-    let s = s.trim_start_matches('#');
-    let r = u8::from_str_radix(&s[0..2], 16).unwrap_or(255);
-    let g = u8::from_str_radix(&s[2..4], 16).unwrap_or(0);
-    let b = u8::from_str_radix(&s[4..6], 16).unwrap_or(255);
-    Color::srgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
-}
+// TurretSlot / BarrelIndex / TurretBarrel  →  turret.rs
+// Barrel + bullet geometry constants       →  balance.rs
 
-impl Palette {
-    /// Selection from the AAP-64 palette — dark naval hull + arcadey bullets.
-    fn aap64_naval() -> Self {
-        Self {
-            ocean:           hex("#41a6f6"), //  deep cobalt water
-            border:          hex("#c7cfdd"), //  cool pale grey-blue frame
-            hull:            hex("#94b0c2"), //  jet black ship body
-            hull_accent:     hex("#333c57"), //  steel blue (reserved)
-            turret:          hex("#566c86"), //  light grey turrets — pops on jet hull
-            enemy:           hex("#b13e53"), //  oxide red
-            enemy_accent:    hex("#571c27"), //  dark wine superstructure
-            bullet_friendly: hex("#ffcd75"), //  vivid warm gold
-            bullet_enemy:    hex("#ff5000"), //  vivid orange
-            trail:           hex("#c7cfdd"), //  cool foam white
-        }
-    }
+// Bullet  →  bullet.rs
+// Beam / BeamHit / BeamPending  →  beam.rs
+// Trail / EnemyTrail / ShipPath + ribbon-mesh helpers + trail systems  →  trails.rs
+// MuzzleFlash / HitParticle / HitFx + impls + tickers  →  effects.rs
 
-    /// Previous palette — kept around so swapping is one line.
-    #[allow(dead_code)]
-    fn iris() -> Self {
-        Self {
-            ocean:           hex("#7194f0"),
-            border:          hex("#abc9f1"),
-            hull:            hex("#280732"),
-            hull_accent:     hex("#5b4f6e"),
-            turret:          hex("#b2b1c0"),
-            enemy:           hex("#e15e6e"),
-            enemy_accent:    hex("#280732"),
-            bullet_friendly: hex("#f3a8a8"),
-            bullet_enemy:    hex("#e15e6e"),
-            trail:           hex("#e6ecef"),
-        }
-    }
-}
+// ScoreText, UiPanel, DamageStats, all UI marker components, button/label
+// enums, setup_ui, and every update_*_text/labels/bars system live in `ui.rs`.
 
-/// Material handles, one per palette role. Entities reference these so a
-/// runtime palette change updates every existing entity in one place.
-#[derive(Resource)]
-struct PaletteMaterials {
-    border: Handle<ColorMaterial>,
-    hull: Handle<ColorMaterial>,
-    hull_accent: Handle<ColorMaterial>,
-    turret: Handle<ColorMaterial>,
-    enemy: Handle<ColorMaterial>,
-    enemy_accent: Handle<ColorMaterial>,
-    bullet_friendly: Handle<ColorMaterial>,
-    bullet_enemy: Handle<ColorMaterial>,
-    /// Darker outer ring — surrounds the bright inner core.
-    bullet_friendly_outer: Handle<ColorMaterial>,
-    bullet_enemy_outer: Handle<ColorMaterial>,
-    trail: Handle<ColorMaterial>,
-    /// Always-white material used for hit-flashes; not driven by the palette.
-    flash: Handle<ColorMaterial>,
-    /// Sniper weapon — fixed color, not palette-driven.
-    turret_sniper: Handle<ColorMaterial>,
-    bullet_sniper: Handle<ColorMaterial>,
-    bullet_sniper_outer: Handle<ColorMaterial>,
-    /// Machine gun weapon — fixed color, not palette-driven.
-    turret_mg: Handle<ColorMaterial>,
-    bullet_mg: Handle<ColorMaterial>,
-    bullet_mg_outer: Handle<ColorMaterial>,
-}
-
-impl PaletteMaterials {
-    /// Turret base + barrel material for the given weapon type.
-    fn turret_for(&self, w: WeaponType) -> &Handle<ColorMaterial> {
-        match w {
-            WeaponType::Standard   => &self.turret,
-            WeaponType::Sniper     => &self.turret_sniper,
-            WeaponType::MachineGun => &self.turret_mg,
-        }
-    }
-    /// Outer (darker) bullet material for the weapon.
-    fn bullet_outer_for(&self, w: WeaponType) -> &Handle<ColorMaterial> {
-        match w {
-            WeaponType::Standard   => &self.bullet_friendly_outer,
-            WeaponType::Sniper     => &self.bullet_sniper_outer,
-            WeaponType::MachineGun => &self.bullet_mg_outer,
-        }
-    }
-    /// Inner (brighter) bullet material — also used for muzzle flash + sparks.
-    fn bullet_inner_for(&self, w: WeaponType) -> &Handle<ColorMaterial> {
-        match w {
-            WeaponType::Standard   => &self.bullet_friendly,
-            WeaponType::Sniper     => &self.bullet_sniper,
-            WeaponType::MachineGun => &self.bullet_mg,
-        }
-    }
-}
-
-/// Weapon-specific colors. Not part of the recolorable Palette — these define
-/// the weapon's identity, so they stay fixed when the palette changes.
-/// `*_BRIGHT_HEX` is the bullet *inner* core + muzzle flash color: a vivid
-/// variant of the weapon hue. Hand-picked because mechanically lightening the
-/// dark base hexes produces muddy desaturated tones that vanish on the water.
-const SNIPER_HEX:        &str = "#5d275d";
-const SNIPER_BRIGHT_HEX: &str = "#ff70d4";
-const MG_HEX:            &str = "#29366f";
-const MG_BRIGHT_HEX:     &str = "#6bd5ff";
-
-/// Inner core is lighter than the base by this factor (0 = unchanged, 1 = white).
-const BULLET_INNER_LIGHTEN: f32 = 0.55;
-
-fn lighten(c: Color, amount: f32) -> Color {
-    let s: bevy::color::Srgba = c.into();
-    Color::srgb(
-        s.red   + (1.0 - s.red)   * amount,
-        s.green + (1.0 - s.green) * amount,
-        s.blue  + (1.0 - s.blue)  * amount,
-    )
-}
-
-/// Multiply rgb channels by `factor` (0..1). Same hue, lower luminance —
-/// useful for low-strain stripes derived from a base color.
-fn darken(c: Color, factor: f32) -> Color {
-    let s: bevy::color::Srgba = c.into();
-    Color::srgb(s.red * factor, s.green * factor, s.blue * factor)
-}
-
-/// Cached mesh handles for short-lived effects so we don't allocate per spawn.
-#[derive(Resource)]
-struct EffectMeshes {
-    muzzle_flash: Handle<Mesh>,
-    particle: Handle<Mesh>,
-}
-
-// ---------- Components ----------
-#[derive(Component)]
-struct Friendly;
-
-#[derive(Component)]
-struct Enemy {
-    state: EnemyState,
-    state_timer: f32,
-    waypoint: Vec2,
-    fire_cd: f32,
-}
-
-#[derive(PartialEq, Eq, Clone, Copy)]
-enum EnemyState { Wander, Approach, Attack, Reposition }
-
-#[derive(Component)]
-struct Health(i32);
-
-#[derive(Component)]
-struct Velocity(Vec2);
-
-#[derive(Component)]
-struct Heading(f32); // radians, 0 = +Y up
-
-#[derive(Component)]
-struct Faction(FactionKind);
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FactionKind { Friendly, Enemy }
-
-/// Weapon family for an equipped turret. Drives turret + bullet color and
-/// firing behaviour (rate/damage defaults, MG accuracy spread).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-enum WeaponType {
-    #[default]
-    Standard,
-    Sniper,
-    MachineGun,
-}
-
-impl WeaponType {
-    /// Forward-cycle through equipped weapon types. None = unequip.
-    fn next(self) -> Option<Self> {
-        match self {
-            WeaponType::Standard => Some(WeaponType::Sniper),
-            WeaponType::Sniper => Some(WeaponType::MachineGun),
-            WeaponType::MachineGun => None,
-        }
-    }
-    /// (damage, fire_rate) defaults applied when this type is selected.
-    fn defaults(self) -> (i32, f32) {
-        match self {
-            WeaponType::Standard   => (1, 4.0),
-            WeaponType::Sniper     => (10, 0.25),
-            WeaponType::MachineGun => (1, 8.0),
-        }
-    }
-    fn label(self) -> &'static str {
-        match self {
-            WeaponType::Standard   => "STANDARD",
-            WeaponType::Sniper     => "SNIPER",
-            WeaponType::MachineGun => "MG",
-        }
-    }
-    /// Half-angle (rad) of random firing cone. 0 = perfectly accurate.
-    fn spread(self) -> f32 {
-        match self {
-            WeaponType::MachineGun => 0.18, // ~±10°
-            _ => 0.0,
-        }
-    }
-}
-
-#[derive(Component)]
-struct TurretSlot {
-    index: usize,
-    barrel_angle: f32,  // current local rotation rel to hull (0 = forward = +Y)
-    mount_angle: f32,   // arc center / rest direction in hull frame
-    fire_cd: f32,
-    damage: i32,
-    fire_rate: f32,
-    weapon: WeaponType,
-    /// 1 = single barrel, 2 = twin (fires twice as fast, alternating barrels).
-    barrels: u8,
-    /// Which barrel fires next (0 or 1) when `barrels == 2`. Alternates so
-    /// the visible left/right barrel matches the bullet that comes out.
-    next_barrel: u8,
-}
-
-/// Marks a barrel mesh child of a turret base. Index 0 is port-side / single,
-/// index 1 is starboard-side and only shown when the slot has twin barrels.
-#[derive(Component)]
-struct BarrelIndex(u8);
-
-const BARREL_LATERAL: f32 = 1.15; // lateral offset in twin-barrel mode
-// Friendly barrel: offset 3.0 + half-length 2.0 = 5.0 (tip in turret-local Y).
-// Enemy barrel:    offset 1.8 + half-length 1.75 = 3.55.
-const FRIENDLY_BARREL_TIP: f32 = 5.0;
-const ENEMY_BARREL_TIP: f32 = 3.55;
-// Half lengths of the OUTER bullet capsules (Capsule2d::new(r, length).total = length + 2r):
-//   Friendly outer Capsule(2.0, 1.5) → total 5.5 → half 2.75
-//   Enemy    outer Capsule(1.5, 1.5) → total 4.5 → half 2.25
-const FRIENDLY_BULLET_HALF_LEN: f32 = 2.75;
-const ENEMY_BULLET_HALF_LEN: f32 = 2.25;
-
-#[derive(Component)]
-struct TurretBarrel; // child barrel rectangle entity
-
-#[derive(Component)]
-struct Bullet {
-    faction: FactionKind,
-    damage: i32,
-    remaining: f32,
-    /// Weapon that fired this bullet — drives spark/impact colors on hit.
-    /// For enemy bullets this is unused (always Standard).
-    weapon: WeaponType,
-    /// Originating turret slot index (0-7) for friendly bullets. None for
-    /// enemy bullets — they don't contribute to the slot damage tally.
-    slot: Option<u8>,
-}
-
-#[derive(Component)]
-struct Trail;
-
-/// Per-enemy trail. Each enemy gets its own short ribbon mesh; this carries
-/// the back-reference + sampled path. The trail entity is not parented to
-/// the enemy (mesh positions live in world space) — when the enemy
-/// despawns, `update_enemy_trails` cleans the orphan up.
-#[derive(Component)]
-struct EnemyTrail {
-    enemy: Entity,
-    points: VecDeque<Vec2>,
-    sample_timer: f32,
-}
-
-const ENEMY_TRAIL_SAMPLE_HZ: f32 = 25.0;
-const ENEMY_TRAIL_MAX_POINTS: usize = 18;   // ~0.7 s of history → readable but short
-const ENEMY_TRAIL_HEAD_WIDTH: f32 = 4.0;    // wide enough to register on the water
-
-/// Short-lived burst placed at a turret muzzle when it fires; fades + shrinks.
-#[derive(Component)]
-struct MuzzleFlash {
-    life: f32,
-    max_life: f32,
-}
-
-/// Hit particle that drifts and fades after an enemy takes damage / is destroyed.
-#[derive(Component)]
-struct HitParticle {
-    life: f32,
-    max_life: f32,
-    /// Per-particle base scale so the fade keeps the random spawn size variation.
-    base_scale: f32,
-}
-
-/// Per-entity hit feedback — damped spring drives a render-scale pulse, plus
-/// a brief white-flash by swapping the entity's material handle.
-/// `a = -k(x-1) - dv` snaps the spring back; `pulse()` adds an impulse.
-#[derive(Component)]
-struct HitFx {
-    spring_x: f32,
-    spring_v: f32,
-    flash_remaining: f32,
-    base_material: Handle<ColorMaterial>,
-}
-
-const HIT_PULSE: f32 = 0.5;
-const HIT_K: f32 = 200.0;
-const HIT_D: f32 = 10.0;
-const FLASH_DURATION: f32 = 0.12;
-
-impl HitFx {
-    fn new(base_material: Handle<ColorMaterial>) -> Self {
-        Self { spring_x: 1.0, spring_v: 0.0, flash_remaining: 0.0, base_material }
-    }
-    fn pulse(&mut self) {
-        self.spring_x += HIT_PULSE;
-        self.flash_remaining = FLASH_DURATION;
-    }
-}
-
-/// Sampled history of the friendly ship's position; rebuilt into a ribbon mesh.
-/// Index 0 = newest sample, index n-1 = oldest. Width tapers from front to back.
-#[derive(Resource, Default)]
-struct ShipPath {
-    points: VecDeque<Vec2>,
-    sample_timer: f32,
-}
-
-const TRAIL_SAMPLE_HZ: f32 = 30.0;
-const TRAIL_MAX_POINTS: usize = 30;
-const TRAIL_HEAD_WIDTH: f32 = 6.0;
-
-#[derive(Component)]
-struct ScoreText;
-
-#[derive(Component)]
-struct PlayCamera;
-
-#[derive(Component)]
-struct UpscaleCamera;
+// PlayCamera + UpscaleCamera markers live in `palette.rs` so apply_palette
+// can reach them without depending on rendering internals.
 
 #[derive(Component)]
 struct UpscaleSprite;
@@ -468,94 +102,39 @@ struct HashSprite;
 #[derive(Resource)]
 struct HashImage(Handle<Image>);
 
+// ScanlineSprite  →  modes.rs (lives with the CRT toggle that drives it)
+
 // ---------- Resources ----------
 #[derive(Resource)]
-struct Score(u32);
+pub struct Score(pub u32);
 
 #[derive(Resource)]
-struct SpawnTimer { t: f32, elapsed: f32 }
+pub struct SpawnTimer { pub t: f32, pub elapsed: f32 }
 
 #[derive(Resource)]
 struct PlayRenderImage(Handle<Image>);
 
-#[derive(Resource, Default)]
-struct TurretConfig {
-    // [slot] -> (equipped, damage, fire_rate)
-    slots: [SlotCfg; 8],
-}
-#[derive(Default, Clone, Copy)]
-struct SlotCfg {
-    equipped: bool,
-    weapon: WeaponType,
-    damage: i32,
-    fire_rate: f32,
-    barrels: u8,
-}
+// TurretConfig + SlotCfg  →  turret.rs
 
 #[derive(Resource, Default)]
 struct ConfigDirty(bool);
 
-/// Per-slot tally of damage actually dealt to enemies (overkill is clamped to
-/// the enemy's remaining HP so a sniper one-shotting a 1-HP enemy doesn't
-/// inflate its share). The LHS UI bars read this resource each frame.
-#[derive(Resource, Default)]
-struct DamageStats {
-    per_slot: [u64; 8],
-    total: u64,
-}
-
-#[derive(Component)]
-struct SlotDamageBar { slot: usize }
-
-#[derive(Component)]
-struct SlotShareText { slot: usize }
-
-#[derive(Component)]
-struct SlotButton { slot: usize, kind: ButtonKind }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ButtonKind {
-    Equip,
-    DamageUp, DamageDown,
-    RateUp, RateDown,
-    BarrelsUp, BarrelsDown,
-    ToggleDesktopMode,
-    ToggleNightMode,
-}
-
-#[derive(Component)]
-struct SlotLabel { slot: usize, kind: LabelKind }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LabelKind { Damage, Rate, Status, Barrels }
+// DamageStats + all UI marker components + button/label enums  →  ui.rs
 
 #[derive(Resource)]
 struct TrailTimer(f32);
 
-/// Toggled by the DESKTOP button. When `desktop` is true, the LHS UI panel
-/// is hidden, the window shrinks to play-area-only, and is repositioned to
-/// the bottom-right corner of the primary monitor.
-#[derive(Resource, Default, Clone, Copy)]
-struct WindowMode {
-    desktop: bool,
-    last_applied: Option<bool>,
-}
+// GameMode + WindowMode + NightMode + CrtMode  →  modes.rs
+// Their `apply_*_mode` systems + `handle_desktop_*` + layout helpers also
+// live there.
 
-/// Toggled by the NIGHT button. When active, swaps `Palette.ocean` to a
-/// near-black navy (#1a1c2c). The previous ocean color is stashed and
-/// restored on toggle-off so it composes with future palette changes.
-#[derive(Resource, Default)]
-struct NightMode {
-    active: bool,
-    last_applied: Option<bool>,
-    saved_ocean: Option<Color>,
-}
+// WavePhase + WaveState                            →  wave.rs
+// PierVisual + PierBuildingMarker                  →  pier.rs
+// DraftPanel + DraftCard{Button,Title,Desc}        →  pier.rs
 
-#[derive(Component)]
-struct UiPanel;
+// WaveHpUi/Fill/Text + UiPanel  →  ui.rs
 
-/// Hint text shown only in desktop mode. The player presses Escape to return
-/// to the windowed UI.
-#[derive(Component)]
-struct DesktopHint;
+// DesktopHint  →  modes.rs
 
 // ---------- App ----------
 fn main() {
@@ -585,6 +164,11 @@ fn main() {
         .insert_resource(ShipPath::default())
         .insert_resource(WindowMode::default())
         .insert_resource(NightMode::default())
+        .insert_resource(CrtMode::default())
+        .insert_resource(GameMode::default())
+        .insert_resource(WaveState::default())
+        .insert_resource(Pier::default())
+        .insert_resource(WaveDraft::default())
         .add_systems(Startup, (setup_render, setup_world, setup_ui).chain())
         .add_systems(Update, (
             // Sim / movement. apply_night_mode → apply_palette must be ordered
@@ -593,9 +177,13 @@ fn main() {
             friendly_movement,
             enemy_ai,
             apply_velocity,
+            bomber_detonate,
             spawn_enemies,
             sync_turret_config,
-            turret_aim_fire,
+            // Beam damage must run AFTER turret_aim_fire so the BeamPending
+            // entities it spawns are visible. .chain() inserts the apply-
+            // deferred sync point we need to see them this frame.
+            (turret_aim_fire, beam_apply_damage).chain(),
             enemy_fire,
             bullet_update,
             bullet_collisions,
@@ -607,14 +195,26 @@ fn main() {
             tick_hit_fx,
             apply_hit_fx_visuals,
             update_muzzle_flashes,
+            update_beams,
             update_hit_particles,
             update_score_text,
             ui_button_system,
             update_slot_labels,
+            update_damage_bars,
             resize_upscale_sprite,
             handle_desktop_escape,
             handle_desktop_drag_resize,
             apply_window_mode,
+            apply_crt_mode,
+        ))
+        .add_systems(Update, (
+            // Wave-mode systems live in their own bundle so we don't blow
+            // past the 20-system tuple limit on the visuals/UI block.
+            wave_orchestrator,
+            update_wave_ui,
+            sync_pier_visuals,
+            draft_input,
+            update_draft_ui,
         ))
         .run();
 }
@@ -622,121 +222,51 @@ fn main() {
 /// Snap the upscale sprite to an integer multiple of the internal resolution.
 /// Without this, fractional sampling (e.g. one internal pixel mapping to 3.5
 /// screen pixels) shimmers as objects move — that's the "laggy" feel.
+// handle_desktop_escape, handle_desktop_drag_resize, apply_crt_mode  →  modes.rs
 /// Escape exits desktop mode back to the windowed UI. No-op in windowed mode.
-fn handle_desktop_escape(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut mode: ResMut<WindowMode>,
-) {
-    if mode.desktop && keys.just_pressed(KeyCode::Escape) {
-        mode.desktop = false;
-    }
-}
 
-/// In desktop mode the window has no decorations, so the OS won't drag or
-/// resize it for us. On LMB press we hand the gesture off to winit:
-///   * cursor near a corner / edge → start a system-resize in that direction
-///   * cursor anywhere else → start a system-drag (window follows mouse)
-/// Both gestures end automatically when the user releases the mouse, so we
-/// only have to react to the press.
-fn handle_desktop_drag_resize(
-    mode: Res<WindowMode>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<(Entity, &Window), With<PrimaryWindow>>,
-    winit_windows: NonSend<WinitWindows>,
-) {
-    if !mode.desktop { return; }
-    if !mouse.just_pressed(MouseButton::Left) { return; }
-    let Ok((entity, window)) = windows.single() else { return; };
-    let Some(cursor) = window.cursor_position() else { return; };
-    let Some(winit_win) = winit_windows.get_window(entity) else { return; };
+// ArenaDisposeFilter, clear_arena, place_friendly_at_dock,
+// spawn_wave, wave_orchestrator  →  wave.rs
 
-    let w = window.width();
-    let h = window.height();
-    let m = 8.0;
-    let near_left   = cursor.x < m;
-    let near_right  = cursor.x > w - m;
-    let near_top    = cursor.y < m;
-    let near_bottom = cursor.y > h - m;
 
-    let dir = match (near_left, near_right, near_top, near_bottom) {
-        (true,  false, true,  false) => Some(ResizeDirection::NorthWest),
-        (false, true,  true,  false) => Some(ResizeDirection::NorthEast),
-        (true,  false, false, true ) => Some(ResizeDirection::SouthWest),
-        (false, true,  false, true ) => Some(ResizeDirection::SouthEast),
-        (true,  false, false, false) => Some(ResizeDirection::West),
-        (false, true,  false, false) => Some(ResizeDirection::East),
-        (false, false, true,  false) => Some(ResizeDirection::North),
-        (false, false, false, true ) => Some(ResizeDirection::South),
-        _ => None,
-    };
-    let _ = match dir {
-        Some(d) => winit_win.drag_resize_window(d),
-        None    => winit_win.drag_window(),
-    };
-}
+// update_wave_ui  →  ui.rs
+
+
+// pier_cell_world, pier_cell_at, pier_damage_bonus, pier_range_mult,
+// pier_drydock_heal, generate_draft, rebuild_pier_buildings,
+// sync_pier_visuals, draft_input, update_draft_ui  →  pier.rs
+
 
 /// On toggle, write the night-mode override into the live `Palette` so that
+// apply_night_mode + apply_window_mode  →  modes.rs
 /// `apply_palette` propagates the new ocean color to the camera + materials.
-fn apply_night_mode(
-    mut night: ResMut<NightMode>,
-    mut palette: ResMut<Palette>,
-) {
-    if night.last_applied == Some(night.active) { return; }
-    night.last_applied = Some(night.active);
-    if night.active {
-        if night.saved_ocean.is_none() {
-            night.saved_ocean = Some(palette.ocean);
-        }
-        palette.ocean = hex("#1a1c2c");
-    } else if let Some(c) = night.saved_ocean.take() {
-        palette.ocean = c;
+
+/// CRT scanline overlay: `PLAY_INTERNAL × PLAY_INTERNAL` BGRA texture where
+/// every other row is a translucent black band. Sized to match the play-area
+/// internal resolution so when nearest-neighbor upscaled, each band lands on
+/// exactly one internal pixel of screen height.
+fn make_scanline_image() -> Image {
+    let w = PLAY_INTERNAL;
+    let h = PLAY_INTERNAL;
+    // ~38% black on darkened rows — visible scanlines without smothering the
+    // colors underneath. Alpha-blended over the play sprite by Bevy's default
+    // sprite shader.
+    const DARK_ALPHA: u8 = 96;
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let dark = (y % 2) == 0;
+        let bgra = if dark { [0u8, 0, 0, DARK_ALPHA] } else { [0u8, 0, 0, 0] };
+        for _ in 0..w { data.extend_from_slice(&bgra); }
     }
-}
-
-/// Toggle between full-window mode (UI panel + play area) and "desktop"
-/// mode (play area only, window shrunk + repositioned to the bottom-right of
-/// the primary monitor with no decorations). Runs only when WindowMode flips.
-fn apply_window_mode(
-    mut mode: ResMut<WindowMode>,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>,
-    mut panels: Query<&mut Visibility, (With<UiPanel>, Without<ScoreText>, Without<DesktopHint>)>,
-    mut score: Query<&mut Visibility, (With<ScoreText>, Without<UiPanel>, Without<DesktopHint>)>,
-    mut hint: Query<&mut Visibility, (With<DesktopHint>, Without<UiPanel>, Without<ScoreText>)>,
-) {
-    if mode.last_applied == Some(mode.desktop) { return; }
-    mode.last_applied = Some(mode.desktop);
-    let Ok(mut window) = windows.single_mut() else { return; };
-
-    if mode.desktop {
-        // Hide UI panel + score banner; show the ESC hint.
-        for mut v in &mut panels { *v = Visibility::Hidden; }
-        for mut v in &mut score  { *v = Visibility::Hidden; }
-        for mut v in &mut hint   { *v = Visibility::Inherited; }
-
-        // Square window at the largest integer multiple of PLAY_INTERNAL ≤ ~480 px.
-        let target_logical: u32 = 480;
-        let scale = (target_logical as f32 / PLAY_INTERNAL as f32).floor().max(1.0) as u32;
-        let logical_size = (PLAY_INTERNAL * scale) as f32;
-
-        // Drop decorations FIRST so the size we set is the actual content
-        // size — otherwise winit shrinks the content to fit a phantom title bar.
-        window.decorations = false;
-        window.resolution.set(logical_size, logical_size);
-        window.window_level = bevy::window::WindowLevel::AlwaysOnTop;
-        window.resizable = true;
-        // Position is left where it is — the user drags / resizes the window
-        // with the mouse via `handle_desktop_drag_resize`.
-    } else {
-        for mut v in &mut panels { *v = Visibility::Inherited; }
-        for mut v in &mut score  { *v = Visibility::Inherited; }
-        for mut v in &mut hint   { *v = Visibility::Hidden; }
-        window.resolution.set(WINDOW_W, WINDOW_H);
-        window.decorations = true;
-        window.window_level = bevy::window::WindowLevel::Normal;
-        window.position = bevy::window::WindowPosition::Centered(
-            bevy::window::MonitorSelection::Primary,
-        );
-    }
+    let mut img = Image::new(
+        Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Bgra8UnormSrgb,
+        bevy::render::render_asset::RenderAssetUsages::default(),
+    );
+    img.sampler = ImageSampler::nearest();
+    img
 }
 
 /// Build a 192×192 BGRA tile with equal-width diagonal stripes — `light`
@@ -800,25 +330,8 @@ fn update_hash_image(
         *img = new_img;
     }
 }
+// play_area_screen_rect + effective_ui_width  →  modes.rs
 
-/// Authoritative layout: play area's screen-space rect for the current
-/// window size. Both the upscale sprite placement and cursor→world mapping
-/// use this so they can't drift out of sync as the window resizes.
-/// `ui_width` is 0 in desktop mode (panel hidden) and `UI_WIDTH` otherwise.
-fn play_area_screen_rect(logical_w: f32, logical_h: f32, ui_width: f32) -> (f32, f32, f32) {
-    let avail_w = (logical_w - ui_width).max(0.0);
-    let scale_x = (avail_w / PLAY_INTERNAL as f32).floor();
-    let scale_y = (logical_h / PLAY_INTERNAL as f32).floor();
-    let scale = scale_x.min(scale_y).max(1.0);
-    let size = PLAY_INTERNAL as f32 * scale;
-    let left = ui_width + (avail_w - size) / 2.0;
-    let top = (logical_h - size) / 2.0;
-    (left, top, size)
-}
-
-fn effective_ui_width(mode: &WindowMode) -> f32 {
-    if mode.desktop { 0.0 } else { UI_WIDTH }
-}
 
 /// Snap the upscale sprite to an integer multiple of the internal resolution
 /// AND reposition it within the window each frame. Without integer snapping
@@ -826,8 +339,18 @@ fn effective_ui_width(mode: &WindowMode) -> f32 {
 fn resize_upscale_sprite(
     windows: Query<&Window, With<PrimaryWindow>>,
     mode: Res<WindowMode>,
-    mut play_sprites: Query<(&mut Sprite, &mut Transform), (With<UpscaleSprite>, Without<HashSprite>)>,
-    mut hash_sprites: Query<&mut Sprite, (With<HashSprite>, Without<UpscaleSprite>)>,
+    mut play_sprites: Query<
+        (&mut Sprite, &mut Transform),
+        (With<UpscaleSprite>, Without<HashSprite>, Without<ScanlineSprite>),
+    >,
+    mut hash_sprites: Query<
+        &mut Sprite,
+        (With<HashSprite>, Without<UpscaleSprite>, Without<ScanlineSprite>),
+    >,
+    mut scanline_sprites: Query<
+        (&mut Sprite, &mut Transform),
+        (With<ScanlineSprite>, Without<UpscaleSprite>, Without<HashSprite>),
+    >,
 ) {
     let Ok(window) = windows.single() else { return; };
     let logical_w = window.width();
@@ -841,6 +364,12 @@ fn resize_upscale_sprite(
         if (tf.translation.x - world_x).abs() > 0.001 { tf.translation.x = world_x; }
         if tf.translation.y != 0.0 { tf.translation.y = 0.0; }
     }
+    // Scanline overlay — locked to the play sprite's screen rect.
+    for (mut s, mut tf) in &mut scanline_sprites {
+        if s.custom_size != Some(target) { s.custom_size = Some(target); }
+        if (tf.translation.x - world_x).abs() > 0.001 { tf.translation.x = world_x; }
+        if tf.translation.y != 0.0 { tf.translation.y = 0.0; }
+    }
     // Hash backdrop — covers the entire window. Tiled mode handles the rest.
     let win_size = Vec2::new(logical_w, logical_h);
     for mut s in &mut hash_sprites {
@@ -848,36 +377,7 @@ fn resize_upscale_sprite(
     }
 }
 
-/// Push the current `Palette` into shared materials + camera clear color
-/// whenever the resource is changed (and once on first frame).
-fn apply_palette(
-    palette: Res<Palette>,
-    pm: Option<Res<PaletteMaterials>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut cameras: Query<&mut Camera, Or<(With<PlayCamera>, With<UpscaleCamera>)>>,
-) {
-    if !palette.is_changed() { return; }
-    let Some(pm) = pm else { return; };
-    let pairs: [(&Handle<ColorMaterial>, Color); 11] = [
-        (&pm.border,                palette.border),
-        (&pm.hull,                  palette.hull),
-        (&pm.hull_accent,           palette.hull_accent),
-        (&pm.turret,                palette.turret),
-        (&pm.enemy,                 palette.enemy),
-        (&pm.enemy_accent,          palette.enemy_accent),
-        (&pm.bullet_friendly,       lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN)),
-        (&pm.bullet_enemy,          lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN)),
-        (&pm.bullet_friendly_outer, palette.bullet_friendly),
-        (&pm.bullet_enemy_outer,    palette.bullet_enemy),
-        (&pm.trail,                 palette.trail),
-    ];
-    for (h, c) in pairs {
-        if let Some(m) = materials.get_mut(h) { m.color = c; }
-    }
-    for mut cam in &mut cameras {
-        cam.clear_color = ClearColorConfig::Custom(palette.ocean);
-    }
-}
+// `apply_palette` lives in `palette.rs`.
 
 // ---------- Setup ----------
 fn setup_render(
@@ -971,6 +471,21 @@ fn setup_render(
         RenderLayers::layer(UPSCALE_LAYER),
         UpscaleSprite,
     ));
+
+    // Scanline overlay — same size + position as the play sprite, layered
+    // just in front (z=1.0). Hidden until CrtMode is toggled on.
+    let scanline_handle = images.add(make_scanline_image());
+    commands.spawn((
+        Sprite {
+            image: scanline_handle,
+            custom_size: Some(Vec2::splat(size0)),
+            ..default()
+        },
+        Transform::from_xyz(world_x0, 0.0, 1.0),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        ScanlineSprite,
+    ));
 }
 
 fn setup_world(
@@ -982,30 +497,7 @@ fn setup_world(
 ) {
     // Build palette-material handles once. Every entity in the play world
     // references one of these — runtime palette swaps update them all.
-    // Bullets are two-tone: base color = outer ring, lighter version = bright
-    // inner core. Muzzle flashes / hit sparks reuse the bright inner color.
-    let sniper = hex(SNIPER_HEX);
-    let mg     = hex(MG_HEX);
-    let pm = PaletteMaterials {
-        border:                materials.add(palette.border),
-        hull:                  materials.add(palette.hull),
-        hull_accent:           materials.add(palette.hull_accent),
-        turret:                materials.add(palette.turret),
-        enemy:                 materials.add(palette.enemy),
-        enemy_accent:          materials.add(palette.enemy_accent),
-        bullet_friendly:       materials.add(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN)),
-        bullet_enemy:          materials.add(lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN)),
-        bullet_friendly_outer: materials.add(palette.bullet_friendly),
-        bullet_enemy_outer:    materials.add(palette.bullet_enemy),
-        trail:                 materials.add(palette.trail),
-        flash:                 materials.add(Color::WHITE),
-        turret_sniper:         materials.add(sniper),
-        bullet_sniper:         materials.add(hex(SNIPER_BRIGHT_HEX)),
-        bullet_sniper_outer:   materials.add(sniper),
-        turret_mg:             materials.add(mg),
-        bullet_mg:             materials.add(hex(MG_BRIGHT_HEX)),
-        bullet_mg_outer:       materials.add(mg),
-    };
+    let pm = PaletteMaterials::build(&palette, &mut materials);
 
     // --- 1px play-area border, drawn inside the play world ---
     let border_h = meshes.add(Rectangle::new(PLAY_WORLD, 1.0));
@@ -1046,6 +538,7 @@ fn setup_world(
         Mesh2d(hull_mesh),
         MeshMaterial2d(pm.hull.clone()),
         Transform::from_xyz(0.0, 0.0, 1.0),
+        Visibility::Inherited,
         Friendly,
         Faction(FactionKind::Friendly),
         Health(100),
@@ -1054,6 +547,38 @@ fn setup_world(
         HitFx::new(pm.hull.clone()),
         RenderLayers::layer(PLAY_LAYER),
     )).id();
+
+    // Pier grid — 8 stacked cells along the LHS wall, drawn as thin grid
+    // lines (no filled rectangles). Doubles as the dock visual and the
+    // placement surface for upgrade buildings. Hidden until Wave mode.
+    let pier_top    = PIER_Y_START - PIER_Y_STEP / 2.0;
+    let pier_bottom = PIER_Y_START + (8.0 - 1.0) * PIER_Y_STEP + PIER_Y_STEP / 2.0;
+    let pier_height = pier_bottom - pier_top;
+    let h_line_mesh = meshes.add(Rectangle::new(PIER_CELL_W, 1.0));
+    let v_line_mesh = meshes.add(Rectangle::new(1.0, pier_height));
+
+    // 9 horizontal lines (top + bottom + 7 separators) and 2 vertical edges.
+    for i in 0..=8 {
+        let y = pier_top + i as f32 * PIER_Y_STEP;
+        commands.spawn((
+            Mesh2d(h_line_mesh.clone()),
+            MeshMaterial2d(pm.border.clone()),
+            Transform::from_xyz(PIER_CELL_X, y, 0.4),
+            Visibility::Hidden,
+            PierVisual,
+            RenderLayers::layer(PLAY_LAYER),
+        ));
+    }
+    for x_off in [-PIER_CELL_W / 2.0, PIER_CELL_W / 2.0] {
+        commands.spawn((
+            Mesh2d(v_line_mesh.clone()),
+            MeshMaterial2d(pm.border.clone()),
+            Transform::from_xyz(PIER_CELL_X + x_off, (pier_top + pier_bottom) / 2.0, 0.4),
+            Visibility::Hidden,
+            PierVisual,
+            RenderLayers::layer(PLAY_LAYER),
+        ));
+    }
 
     // Friendly turrets. Barrel kept ≥1.5 wide so it doesn't alias to zero
     // pixels at off-axis rotations now that MSAA is off — sub-pixel rects
@@ -1079,6 +604,7 @@ fn setup_world(
                 damage: slot.damage,
                 fire_rate: slot.fire_rate,
                 weapon: slot.weapon,
+                range_mult: 1.0,
                 barrels: slot.barrels.max(1),
                 next_barrel: 0,
             },
@@ -1115,360 +641,36 @@ fn setup_world(
     // Cache effect meshes once so muzzle flashes / hit particles don't allocate.
     // Muzzle flash is a chunky elongated capsule (more obvious than the old slim one).
     // Particle is a small streak capsule, oriented along its velocity vector.
+    // Bullet + enemy primitives are also cached here so every bullet / enemy
+    // can share the same mesh handle and benefit from Bevy's draw-call batching.
     commands.insert_resource(EffectMeshes {
-        muzzle_flash: meshes.add(Capsule2d::new(1.6, 4.0)),
-        particle:     meshes.add(Capsule2d::new(0.7, 1.6)),
+        muzzle_flash:          meshes.add(Capsule2d::new(1.6, 4.0)),
+        particle:              meshes.add(Capsule2d::new(0.7, 1.6)),
+        bullet_friendly_outer: meshes.add(Capsule2d::new(2.0, 1.5)),
+        bullet_friendly_inner: meshes.add(Capsule2d::new(1.3, 1.5)),
+        bullet_enemy_outer:    meshes.add(Capsule2d::new(1.5, 1.5)),
+        bullet_enemy_inner:    meshes.add(Capsule2d::new(0.8, 1.5)),
+        enemy_body:            meshes.add(Capsule2d::new(ENEMY_WIDTH / 2.0, ENEMY_LEN - ENEMY_WIDTH)),
+        enemy_turret_base:     meshes.add(Circle::new(1.0)),
+        enemy_turret_barrel:   meshes.add(Rectangle::new(0.9, 3.5)),
+        bomber_warhead:        meshes.add(Circle::new(1.4)),
+        beam:                  meshes.add(Rectangle::new(1.0, BEAM_LENGTH)),
     });
 }
 
+// setup_ui + every UI spawn helper  →  ui.rs
 // ---------- UI ----------
 // Theme palette for the LHS panel — kept separate from the gameplay Palette
 // so the panel stays legible regardless of the in-game color choices.
-const UI_BG:        Color = Color::srgb(0.07, 0.08, 0.11);
-const UI_ROW_BG:    Color = Color::srgb(0.12, 0.13, 0.17);
-const UI_ROW_DIV:   Color = Color::srgb(0.22, 0.24, 0.30);
-const UI_TEXT:      Color = Color::srgb(0.92, 0.93, 0.96);
-const UI_TEXT_DIM:  Color = Color::srgb(0.55, 0.60, 0.70);
-const UI_VALUE:     Color = Color::srgb(1.00, 0.85, 0.30);
-const UI_BTN_BG:    Color = Color::srgb(0.22, 0.24, 0.30);
-const UI_EQUIP_BG:  Color = Color::srgb(0.18, 0.40, 0.26);
-const UI_ACTIVE_BG: Color = Color::srgb(0.20, 0.28, 0.40);
-const UI_HULL:      Color = Color::srgb(0.30, 0.34, 0.42);
-const UI_DOT_OFF:   Color = Color::srgb(0.32, 0.35, 0.42);
-const UI_DOT_ON:    Color = Color::srgb(1.00, 0.85, 0.30);
+// UI theme constants moved to `palette.rs` — re-exported via `use palette::*`.
 
-fn setup_ui(mut commands: Commands) {
-    // Score banner over the play area.
-    commands.spawn((
-        Text::new("SCORE 0"),
-        TextFont { font_size: 36.0, ..default() },
-        TextColor(UI_VALUE),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(8.0),
-            left: Val::Px(UI_WIDTH),
-            right: Val::Px(0.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        ScoreText,
-    ));
-
-    // Desktop-mode hint — small grey text at top-center, hidden by default.
-    commands.spawn((
-        Text::new("Press ESC to return"),
-        TextFont { font_size: 9.0, ..default() },
-        TextColor(Color::srgb(0.7, 0.72, 0.78)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(4.0),
-            left: Val::Px(0.0),
-            right: Val::Px(0.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        Visibility::Hidden,
-        DesktopHint,
-    ));
-
-    // Left control panel.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(0.0),
-            top: Val::Px(0.0),
-            width: Val::Px(UI_WIDTH),
-            height: Val::Percent(100.0),
-            flex_direction: FlexDirection::Column,
-            padding: UiRect::all(Val::Px(8.0)),
-            row_gap: Val::Px(4.0),
-            ..default()
-        },
-        BackgroundColor(UI_BG),
-        UiPanel,
-    ))
-    .with_children(|p| {
-        // --- Header ---
-        p.spawn(Node {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::SpaceBetween,
-            margin: UiRect { bottom: Val::Px(4.0), ..default() },
-            ..default()
-        })
-        .with_children(|h| {
-            h.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(2.0),
-                ..default()
-            })
-            .with_children(|t| {
-                t.spawn((
-                    Text::new("BATTLESHIP CONTROL"),
-                    TextFont { font_size: 16.0, ..default() },
-                    TextColor(UI_TEXT),
-                ));
-                t.spawn((
-                    Text::new("Cuniberti refit · 8 turret slots"),
-                    TextFont { font_size: 10.0, ..default() },
-                    TextColor(UI_TEXT_DIM),
-                ));
-            });
-            // Right side: stacked NIGHT + DESKTOP toggles. `slot: 0` unused.
-            h.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(4.0),
-                ..default()
-            })
-            .with_children(|btns| {
-                spawn_header_button(btns, "NIGHT", ButtonKind::ToggleNightMode);
-                spawn_header_button(btns, "DESKTOP", ButtonKind::ToggleDesktopMode);
-            });
-        });
-        // Divider
-        p.spawn((
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Px(1.0),
-                margin: UiRect { bottom: Val::Px(4.0), ..default() },
-                ..default()
-            },
-            BackgroundColor(UI_ROW_DIV),
-        ));
-
-        // --- 8 turret slot rows ---
-        for slot in 0..8 {
-            spawn_slot_row(p, slot);
-        }
-    });
-}
-
-fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slot: usize) {
-    parent.spawn((
-        Node {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Stretch,
-            column_gap: Val::Px(8.0),
-            padding: UiRect::all(Val::Px(6.0)),
-            ..default()
-        },
-        BackgroundColor(UI_ROW_BG),
-        BorderRadius::all(Val::Px(3.0)),
-    ))
-    .with_children(|row| {
-        spawn_ship_schematic(row, slot);
-        spawn_slot_controls(row, slot);
-    });
-}
-
-/// Mini top-down ship silhouette with all 8 turret dots; the slot's own
-/// turret dot is highlighted in `UI_DOT_ON`, the rest are dimmed. Mirrors
-/// the layout of `TURRET_POSITIONS` so the panel reads as a real schematic.
-fn spawn_ship_schematic(parent: &mut ChildSpawnerCommands, slot: usize) {
-    const SIZE: f32 = 56.0;
-    const HULL_W: f32 = 12.0;
-    const HULL_H: f32 = 38.0;
-    // Scale from world hull units to schematic pixels.
-    let sx = HULL_W / HULL_WIDTH;       // 12 / 8 = 1.5
-    let sy = HULL_H / HULL_LEN;         // 38 / 22 ≈ 1.73
-    let center = SIZE / 2.0;
-
-    parent.spawn((
-        Node {
-            width: Val::Px(SIZE),
-            height: Val::Px(SIZE),
-            position_type: PositionType::Relative,
-            flex_shrink: 0.0,
-            ..default()
-        },
-        BackgroundColor(UI_BG),
-        BorderRadius::all(Val::Px(2.0)),
-    ))
-    .with_children(|s| {
-        // Hull silhouette (rounded rectangle = capsule).
-        s.spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(center - HULL_W / 2.0),
-                top:  Val::Px(center - HULL_H / 2.0),
-                width: Val::Px(HULL_W),
-                height: Val::Px(HULL_H),
-                ..default()
-            },
-            BackgroundColor(UI_HULL),
-            BorderRadius::all(Val::Px(HULL_W / 2.0)),
-        ));
-
-        // 8 turret dots (4×4 px, rounded). Active slot gets the bright color.
-        for i in 0..8 {
-            let (lx, ly) = TURRET_POSITIONS[i];
-            // World +y = bow (up); UI +y = window-down. Flip y.
-            let dot_x = center + lx * sx;
-            let dot_y = center - ly * sy;
-            let dot = 4.0;
-            let color = if i == slot { UI_DOT_ON } else { UI_DOT_OFF };
-            s.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(dot_x - dot / 2.0),
-                    top:  Val::Px(dot_y - dot / 2.0),
-                    width: Val::Px(dot),
-                    height: Val::Px(dot),
-                    ..default()
-                },
-                BackgroundColor(color),
-                BorderRadius::all(Val::Px(dot / 2.0)),
-            ));
-        }
-    });
-}
-
-fn spawn_slot_controls(parent: &mut ChildSpawnerCommands, slot: usize) {
-    parent.spawn(Node {
-        flex_direction: FlexDirection::Column,
-        flex_grow: 1.0,
-        row_gap: Val::Px(3.0),
-        ..default()
-    })
-    .with_children(|c| {
-        // Slot title row: "01  BOW"
-        c.spawn(Node {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            column_gap: Val::Px(6.0),
-            ..default()
-        })
-        .with_children(|t| {
-            t.spawn((
-                Text::new(format!("{:02}", slot + 1)),
-                TextFont { font_size: 11.0, ..default() },
-                TextColor(UI_TEXT_DIM),
-            ));
-            t.spawn((
-                Text::new(TURRET_NAMES[slot]),
-                TextFont { font_size: 12.0, ..default() },
-                TextColor(UI_TEXT),
-            ));
-        });
-
-        // Equip / Active button (always shown; the button text is updated by
-        // update_slot_labels and the click handler is a no-op when equipped).
-        c.spawn((
-            Button,
-            Node {
-                width: Val::Percent(100.0),
-                padding: UiRect::axes(Val::Px(4.0), Val::Px(3.0)),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(if slot == 0 { UI_ACTIVE_BG } else { UI_EQUIP_BG }),
-            BorderRadius::all(Val::Px(2.0)),
-            SlotButton { slot, kind: ButtonKind::Equip },
-        ))
-        .with_children(|b| {
-            b.spawn((
-                Text::new(if slot == 0 { "ACTIVE" } else { "EQUIP GUN" }),
-                TextFont { font_size: 11.0, ..default() },
-                TextColor(UI_TEXT),
-                SlotLabel { slot, kind: LabelKind::Status },
-            ));
-        });
-
-        // DMG / RATE / BRRL stat rows.
-        spawn_stat_row(c, slot, "DMG",  "1",   LabelKind::Damage,
-                       ButtonKind::DamageDown, ButtonKind::DamageUp);
-        spawn_stat_row(c, slot, "RATE", "4.0", LabelKind::Rate,
-                       ButtonKind::RateDown,   ButtonKind::RateUp);
-        spawn_stat_row(c, slot, "BRRL", "1",   LabelKind::Barrels,
-                       ButtonKind::BarrelsDown, ButtonKind::BarrelsUp);
-    });
-}
-
-fn spawn_stat_row(
-    parent: &mut ChildSpawnerCommands,
-    slot: usize,
-    label: &str,
-    initial: &str,
-    label_kind: LabelKind,
-    down_kind: ButtonKind,
-    up_kind: ButtonKind,
-) {
-    parent.spawn(Node {
-        flex_direction: FlexDirection::Row,
-        align_items: AlignItems::Center,
-        column_gap: Val::Px(4.0),
-        ..default()
-    })
-    .with_children(|r| {
-        r.spawn((
-            Text::new(label.to_string()),
-            TextFont { font_size: 10.0, ..default() },
-            TextColor(UI_TEXT_DIM),
-            Node { width: Val::Px(32.0), ..default() },
-        ));
-        r.spawn((
-            Text::new(initial.to_string()),
-            TextFont { font_size: 12.0, ..default() },
-            TextColor(UI_VALUE),
-            SlotLabel { slot, kind: label_kind },
-            Node { width: Val::Px(28.0), ..default() },
-        ));
-        spawn_step_button(r, slot, down_kind, "−");
-        spawn_step_button(r, slot, up_kind,   "+");
-    });
-}
-
-fn spawn_header_button(parent: &mut ChildSpawnerCommands, label: &str, kind: ButtonKind) {
-    parent.spawn((
-        Button,
-        Node {
-            padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        BackgroundColor(UI_BTN_BG),
-        BorderRadius::all(Val::Px(2.0)),
-        SlotButton { slot: 0, kind },
-    ))
-    .with_children(|b| {
-        b.spawn((
-            Text::new(label.to_string()),
-            TextFont { font_size: 10.0, ..default() },
-            TextColor(UI_TEXT),
-        ));
-    });
-}
-
-fn spawn_step_button(parent: &mut ChildSpawnerCommands, slot: usize, kind: ButtonKind, label: &str) {
-    parent.spawn((
-        Button,
-        Node {
-            width: Val::Px(20.0),
-            height: Val::Px(18.0),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        BackgroundColor(UI_BTN_BG),
-        BorderRadius::all(Val::Px(2.0)),
-        SlotButton { slot, kind },
-    ))
-    .with_children(|b| {
-        b.spawn((
-            Text::new(label.to_string()),
-            TextFont { font_size: 14.0, ..default() },
-            TextColor(UI_TEXT),
-        ));
-    });
-}
 
 // ---------- Systems ----------
 fn friendly_movement(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mode: Res<WindowMode>,
+    game_mode: Res<GameMode>,
     enemies: Query<&Transform, (With<Enemy>, Without<Friendly>)>,
     mut q: Query<(&mut Transform, &mut Velocity, &mut Heading), With<Friendly>>,
 ) {
@@ -1479,17 +681,23 @@ fn friendly_movement(
     let (play_left, play_top, play_screen) =
         play_area_screen_rect(win.width(), win.height(), effective_ui_width(&mode));
 
-    let target_world: Option<Vec2> = cursor.and_then(|c| {
-        if c.x >= play_left && c.x <= play_left + play_screen
-            && c.y >= play_top && c.y <= play_top + play_screen {
-            let nx = (c.x - play_left) / play_screen;
-            let ny = (c.y - play_top) / play_screen;
-            Some(Vec2::new(
-                (nx - 0.5) * PLAY_WORLD,
-                (0.5 - ny) * PLAY_WORLD,
-            ))
-        } else { None }
-    });
+    // Wave mode is fully auto-battle — ignore the cursor entirely so the
+    // enemy-seeking branch below takes over regardless of mouse position.
+    let target_world: Option<Vec2> = if matches!(*game_mode, GameMode::Wave) {
+        None
+    } else {
+        cursor.and_then(|c| {
+            if c.x >= play_left && c.x <= play_left + play_screen
+                && c.y >= play_top && c.y <= play_top + play_screen {
+                let nx = (c.x - play_left) / play_screen;
+                let ny = (c.y - play_top) / play_screen;
+                Some(Vec2::new(
+                    (nx - 0.5) * PLAY_WORLD,
+                    (0.5 - ny) * PLAY_WORLD,
+                ))
+            } else { None }
+        })
+    };
 
     for (mut tf, mut vel, mut heading) in &mut q {
         let pos = tf.translation.truncate();
@@ -1557,56 +765,16 @@ fn friendly_movement(
     }
 }
 
-fn approach_angle(cur: f32, tgt: f32, max: f32) -> f32 {
+/// Steer `cur` toward `tgt` by at most `max` radians, taking the shorter way
+/// around the circle. Used by friendly + enemy heading systems.
+pub fn approach_angle(cur: f32, tgt: f32, max: f32) -> f32 {
     let mut d = (tgt - cur + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
     if d > max { d = max; }
     if d < -max { d = -max; }
     cur + d
 }
 
-fn enemy_ai(
-    time: Res<Time>,
-    friendly: Query<&Transform, (With<Friendly>, Without<Enemy>)>,
-    mut q: Query<(&mut Transform, &mut Velocity, &mut Heading, &mut Enemy)>,
-) {
-    let dt = time.delta_secs();
-    let Ok(ftf) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
-    let mut rng = rand::thread_rng();
-
-    for (mut tf, mut vel, mut heading, mut enemy) in &mut q {
-        let pos = tf.translation.truncate();
-        enemy.state_timer -= dt;
-        enemy.fire_cd -= dt;
-        let dist = pos.distance(fpos);
-
-        if enemy.state_timer <= 0.0 {
-            enemy.state = if dist > 75.0 {
-                EnemyState::Approach
-            } else if dist > 35.0 {
-                if rng.gen_bool(0.6) { EnemyState::Attack } else { EnemyState::Reposition }
-            } else {
-                EnemyState::Reposition
-            };
-            enemy.state_timer = rng.gen_range(1.5..3.5);
-            let off = Vec2::new(rng.gen_range(-30.0..30.0), rng.gen_range(-30.0..30.0));
-            enemy.waypoint = fpos + off;
-        }
-
-        let target = match enemy.state {
-            EnemyState::Wander | EnemyState::Reposition => enemy.waypoint,
-            EnemyState::Approach | EnemyState::Attack => fpos,
-        };
-        let to = target - pos;
-        if to.length_squared() > 1.0 {
-            let desired = (-to.x).atan2(to.y);
-            heading.0 = approach_angle(heading.0, desired, ENEMY_TURN_RATE * dt);
-        }
-        let dir = Vec2::new(-heading.0.sin(), heading.0.cos());
-        vel.0 = dir * ENEMY_SPEED;
-        tf.rotation = Quat::from_rotation_z(heading.0);
-    }
-}
+// `enemy_ai` is in `enemy.rs`.
 
 fn apply_velocity(time: Res<Time>, mut q: Query<(&mut Transform, &Velocity)>) {
     let dt = time.delta_secs();
@@ -1616,727 +784,16 @@ fn apply_velocity(time: Res<Time>, mut q: Query<(&mut Transform, &Velocity)>) {
     }
 }
 
-fn spawn_hit_particles(
-    commands: &mut Commands,
-    em: &EffectMeshes,
-    mat: &Handle<ColorMaterial>,
-    pos: Vec2,
-    count: u32,
-    speed: f32,
-    rng: &mut rand::rngs::ThreadRng,
-) {
-    use std::f32::consts::TAU;
-    for _ in 0..count {
-        let a = rng.gen_range(0.0..TAU);
-        let s = rng.gen_range(speed * 0.4..speed);
-        let v = Vec2::new(a.cos(), a.sin()) * s;
-        let life = rng.gen_range(0.3..0.6);
-        // Particle is a streak capsule oriented along its velocity. Our
-        // particle mesh has its long axis on +Y, so convert (cos,sin) → angle
-        // in our 0=+Y / +PI/2=-X frame: rot = (-vx).atan2(vy).
-        let rot = (-v.x).atan2(v.y);
-        // Random initial scale so the burst looks chunky rather than uniform.
-        let scale = rng.gen_range(0.8..1.4);
-        commands.spawn((
-            Mesh2d(em.particle.clone()),
-            MeshMaterial2d(mat.clone()),
-            Transform {
-                translation: Vec3::new(pos.x, pos.y, 5.5),
-                rotation: Quat::from_rotation_z(rot),
-                scale: Vec3::new(scale, scale, 1.0),
-            },
-            HitParticle { life, max_life: life, base_scale: scale },
-            Velocity(v),
-            RenderLayers::layer(PLAY_LAYER),
-        ));
-    }
-}
+// `bomber_detonate`, `spawn_enemies`, `spawn_enemy` live in `enemy.rs`.
+// `update_beams`, `beam_apply_damage` live in `beam.rs`.
+// FX systems live in `effects.rs`. Trail systems live in `trails.rs`.
+// turret block stripped at line 2065
 
-fn update_muzzle_flashes(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut q: Query<(Entity, &mut Transform, &mut MuzzleFlash)>,
-) {
-    let dt = time.delta_secs();
-    for (e, mut tf, mut f) in &mut q {
-        f.life -= dt;
-        if f.life <= 0.0 {
-            commands.entity(e).despawn();
-            continue;
-        }
-        let t = (f.life / f.max_life).clamp(0.0, 1.0);
-        // Pop in then ease out: scale peaks at spawn, shrinks to 0.4 by end.
-        let s = 0.4 + 0.7 * t;
-        tf.scale.x = s;
-        tf.scale.y = s;
-        tf.scale.z = 1.0;
-    }
-}
+// → turret.rs (sync_turret_config + turret_aim_fire + spawn_friendly_bullet)
 
-fn tick_hit_fx(time: Res<Time>, mut q: Query<(&mut HitFx, &mut Transform)>) {
-    let dt = time.delta_secs();
-    for (mut fx, mut tf) in &mut q {
-        // Damped-spring snap-back to rest position 1.0.
-        let a = -HIT_K * (fx.spring_x - 1.0) - HIT_D * fx.spring_v;
-        fx.spring_v += a * dt;
-        fx.spring_x += fx.spring_v * dt;
-        if fx.flash_remaining > 0.0 {
-            fx.flash_remaining = (fx.flash_remaining - dt).max(0.0);
-        }
-        // Apply scale uniformly. Other systems write rotation/translation only.
-        let s = fx.spring_x.max(0.0);
-        tf.scale.x = s;
-        tf.scale.y = s;
-        tf.scale.z = 1.0;
-    }
-}
 
-fn apply_hit_fx_visuals(
-    pm: Option<Res<PaletteMaterials>>,
-    mut q: Query<(&HitFx, &mut MeshMaterial2d<ColorMaterial>)>,
-) {
-    let Some(pm) = pm else { return; };
-    for (fx, mut mat) in &mut q {
-        let want = if fx.flash_remaining > 0.0 { &pm.flash } else { &fx.base_material };
-        if mat.0 != *want {
-            mat.0 = want.clone();
-        }
-    }
-}
+// `enemy_fire` is in `enemy.rs`.
+// `bullet_update`, `bullet_collisions` are in `bullet.rs`.
 
-fn update_hit_particles(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut q: Query<(Entity, &mut Transform, &mut HitParticle, &mut Velocity)>,
-) {
-    let dt = time.delta_secs();
-    let drag = 0.88_f32.powf(60.0 * dt); // ~12% velocity loss per frame at 60Hz
-    for (e, mut tf, mut p, mut v) in &mut q {
-        p.life -= dt;
-        if p.life <= 0.0 {
-            commands.entity(e).despawn();
-            continue;
-        }
-        v.0 *= drag;
-        let t = (p.life / p.max_life).clamp(0.0, 1.0);
-        // Shrink toward 30% of the per-particle base scale; preserve rotation.
-        let s = p.base_scale * (0.3 + 0.7 * t);
-        tf.scale.x = s;
-        tf.scale.y = s;
-        tf.scale.z = 1.0;
-    }
-}
+// update_score_text + ui_button_system + update_slot_labels + update_damage_bars  →  ui.rs
 
-fn empty_dynamic_mesh() -> Mesh {
-    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
-    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, Vec::<[f32; 3]>::new());
-    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, Vec::<[f32; 2]>::new());
-    m.insert_indices(Indices::U32(Vec::new()));
-    m
-}
-
-/// Sample the friendly ship's position into ShipPath, then rebuild the trail
-/// ribbon mesh. The ribbon is widest at the ship and tapers to a point at the
-/// oldest sample, so it visually traces the path the ship just took.
-fn update_trail(
-    time: Res<Time>,
-    mut path: ResMut<ShipPath>,
-    ship_q: Query<&Transform, (With<Friendly>, Without<Trail>)>,
-    trail_q: Query<&Mesh2d, With<Trail>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-) {
-    let Ok(ship_tf) = ship_q.single() else { return; };
-    // Anchor 4 px inside the stern so the ribbon attaches to the hull
-    // rather than floating a gap behind it.
-    let stern_offset = ship_tf.rotation * Vec3::new(0.0, -(HULL_HALF_LEN - 4.0), 0.0);
-    let head = (ship_tf.translation + stern_offset).truncate();
-
-    // Sample at a fixed rate, regardless of frame rate.
-    path.sample_timer -= time.delta_secs();
-    if path.sample_timer <= 0.0 {
-        path.sample_timer = 1.0 / TRAIL_SAMPLE_HZ;
-        path.points.push_front(head);
-        while path.points.len() > TRAIL_MAX_POINTS {
-            path.points.pop_back();
-        }
-    } else if let Some(front) = path.points.front_mut() {
-        // Keep the front sample glued to the stern between sample ticks so the
-        // ribbon's head doesn't lag visibly behind the moving ship.
-        *front = head;
-    }
-
-    let Ok(Mesh2d(handle)) = trail_q.single() else { return; };
-    let Some(mesh) = meshes.get_mut(handle) else { return; };
-    rebuild_ribbon_mesh(mesh, &path.points, TRAIL_HEAD_WIDTH);
-}
-
-/// Rewrite `mesh` in place as a tapering ribbon through `points`. Index 0 is
-/// the head (full width), the last index is the tail (zero width).
-fn rebuild_ribbon_mesh(mesh: &mut Mesh, points: &VecDeque<Vec2>, head_width: f32) {
-    let n = points.len();
-    if n < 2 {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, Vec::<[f32; 3]>::new());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, Vec::<[f32; 2]>::new());
-        mesh.insert_indices(Indices::U32(Vec::new()));
-        return;
-    }
-
-    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(n * 2);
-    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(n * 2);
-    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(n * 2);
-    let mut indices: Vec<u32> = Vec::with_capacity((n - 1) * 6);
-
-    for i in 0..n {
-        let t = 1.0 - (i as f32 / (n - 1) as f32);
-        let half_w = head_width * 0.5 * t;
-        let prev = if i + 1 < n { points[i + 1] } else { points[i] };
-        let next = if i > 0      { points[i - 1] } else { points[i] };
-        let mut tangent = next - prev;
-        if tangent.length_squared() < 1e-6 { tangent = Vec2::Y; }
-        let tangent = tangent.normalize();
-        let normal = Vec2::new(-tangent.y, tangent.x);
-        let p = points[i];
-        let left  = p + normal * half_w;
-        let right = p - normal * half_w;
-        positions.push([left.x,  left.y,  0.0]);
-        positions.push([right.x, right.y, 0.0]);
-        normals.push([0.0, 0.0, 1.0]);
-        normals.push([0.0, 0.0, 1.0]);
-        uvs.push([0.0, t]);
-        uvs.push([1.0, t]);
-    }
-    for i in 0..n - 1 {
-        let a = (i * 2) as u32;
-        indices.extend_from_slice(&[a, a + 1, a + 2, a + 1, a + 3, a + 2]);
-    }
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-    mesh.insert_indices(Indices::U32(indices));
-}
-
-/// Per-enemy version of `update_trail` — samples each enemy's stern position
-/// into its own short ribbon. Despawns trail entities whose enemy is gone.
-fn update_enemy_trails(
-    time: Res<Time>,
-    mut commands: Commands,
-    enemy_q: Query<&Transform, (With<Enemy>, Without<EnemyTrail>)>,
-    mut trail_q: Query<(Entity, &mut EnemyTrail, &Mesh2d)>,
-    mut meshes: ResMut<Assets<Mesh>>,
-) {
-    let dt = time.delta_secs();
-    for (trail_e, mut trail, mesh2d) in &mut trail_q {
-        let Ok(enemy_tf) = enemy_q.get(trail.enemy) else {
-            commands.entity(trail_e).despawn();
-            continue;
-        };
-        // Anchor at the enemy's stern (~5 units back from center).
-        let stern = enemy_tf.rotation * Vec3::new(0.0, -(ENEMY_LEN / 2.0 - 1.0), 0.0);
-        let head = (enemy_tf.translation + stern).truncate();
-
-        trail.sample_timer -= dt;
-        if trail.sample_timer <= 0.0 {
-            trail.sample_timer = 1.0 / ENEMY_TRAIL_SAMPLE_HZ;
-            trail.points.push_front(head);
-            while trail.points.len() > ENEMY_TRAIL_MAX_POINTS {
-                trail.points.pop_back();
-            }
-        } else if let Some(front) = trail.points.front_mut() {
-            *front = head;
-        }
-
-        if let Some(mesh) = meshes.get_mut(&mesh2d.0) {
-            rebuild_ribbon_mesh(mesh, &trail.points, ENEMY_TRAIL_HEAD_WIDTH);
-        }
-    }
-}
-
-fn spawn_enemies(
-    time: Res<Time>,
-    mut timer: ResMut<SpawnTimer>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    pm: Option<Res<PaletteMaterials>>,
-    enemies: Query<Entity, With<Enemy>>,
-) {
-    let Some(pm) = pm else { return; };
-    timer.elapsed += time.delta_secs();
-    timer.t -= time.delta_secs();
-    if timer.t > 0.0 { return; }
-
-    let interval = (3.0 - timer.elapsed * 0.025).max(0.5);
-    timer.t = interval;
-
-    if enemies.iter().count() >= 30 { return; }
-
-    let mut rng = rand::thread_rng();
-    let half = PLAY_WORLD / 2.0;
-    let edge = rng.gen_range(0..4);
-    let pos = match edge {
-        0 => Vec2::new(rng.gen_range(-half..half), half + 20.0),
-        1 => Vec2::new(rng.gen_range(-half..half), -half - 20.0),
-        2 => Vec2::new(half + 20.0, rng.gen_range(-half..half)),
-        _ => Vec2::new(-half - 20.0, rng.gen_range(-half..half)),
-    };
-
-    // Red enemy hull (rounded capsule) + small dark turret (circle base + barrel).
-    let body = meshes.add(Capsule2d::new(ENEMY_WIDTH / 2.0, ENEMY_LEN - ENEMY_WIDTH));
-    let turret_base_mesh = meshes.add(Circle::new(1.0));     // smaller than friendly's 1.5
-    let turret_barrel_mesh = meshes.add(Rectangle::new(0.9, 3.5));
-
-    let inward = (-pos).normalize();
-    let heading = (-inward.x).atan2(inward.y);
-
-    let id = commands.spawn((
-        Mesh2d(body),
-        MeshMaterial2d(pm.enemy.clone()),
-        Transform::from_xyz(pos.x, pos.y, 1.0).with_rotation(Quat::from_rotation_z(heading)),
-        Enemy {
-            state: EnemyState::Approach,
-            state_timer: 1.0,
-            waypoint: Vec2::ZERO,
-            fire_cd: 0.5,
-        },
-        Health(ENEMY_HP),
-        Velocity(inward * ENEMY_SPEED),
-        Heading(heading),
-        Faction(FactionKind::Enemy),
-        HitFx::new(pm.enemy.clone()),
-        RenderLayers::layer(PLAY_LAYER),
-    )).id();
-
-    let base = commands.spawn((
-        Mesh2d(turret_base_mesh),
-        MeshMaterial2d(pm.enemy_accent.clone()),
-        Transform::from_xyz(0.0, 0.0, 0.1),
-        RenderLayers::layer(PLAY_LAYER),
-    )).id();
-    commands.entity(base).insert(ChildOf(id));
-
-    let barrel = commands.spawn((
-        Mesh2d(turret_barrel_mesh),
-        MeshMaterial2d(pm.enemy_accent.clone()),
-        Transform::from_xyz(0.0, 1.8, 0.15),
-        RenderLayers::layer(PLAY_LAYER),
-    )).id();
-    commands.entity(barrel).insert(ChildOf(id));
-
-    // Short white wake trail behind the enemy.
-    let trail_mesh = meshes.add(empty_dynamic_mesh());
-    commands.spawn((
-        Mesh2d(trail_mesh),
-        MeshMaterial2d(pm.trail.clone()),
-        Transform::from_xyz(0.0, 0.0, 0.4),
-        EnemyTrail { enemy: id, points: VecDeque::new(), sample_timer: 0.0 },
-        RenderLayers::layer(PLAY_LAYER),
-    ));
-}
-
-fn sync_turret_config(
-    cfg: Res<TurretConfig>,
-    pm: Option<Res<PaletteMaterials>>,
-    mut q: Query<(&mut TurretSlot, &mut Visibility, &mut MeshMaterial2d<ColorMaterial>, &Children)>,
-    mut barrels: Query<
-        (&BarrelIndex, &mut Visibility, &mut Transform, &mut MeshMaterial2d<ColorMaterial>),
-        (With<TurretBarrel>, Without<TurretSlot>),
-    >,
-) {
-    if !cfg.is_changed() { return; }
-    let Some(pm) = pm else { return; };
-    for (mut slot, mut vis, mut mat, children) in &mut q {
-        let s = cfg.slots[slot.index];
-        slot.damage = s.damage;
-        slot.fire_rate = s.fire_rate;
-        slot.weapon = s.weapon;
-        let new_barrels = s.barrels.max(1);
-        if new_barrels != slot.barrels { slot.next_barrel = 0; }
-        slot.barrels = new_barrels;
-        *vis = if s.equipped { Visibility::Inherited } else { Visibility::Hidden };
-        let turret_mat = pm.turret_for(s.weapon).clone();
-        if mat.0 != turret_mat { mat.0 = turret_mat.clone(); }
-        for c in children.iter() {
-            if let Ok((idx, mut bv, mut btf, mut bmat)) = barrels.get_mut(c) {
-                let visible = s.equipped && (idx.0 == 0 || s.barrels >= 2);
-                *bv = if visible { Visibility::Inherited } else { Visibility::Hidden };
-                let lateral = if s.barrels >= 2 {
-                    if idx.0 == 0 { -BARREL_LATERAL } else { BARREL_LATERAL }
-                } else { 0.0 };
-                btf.translation.x = lateral;
-                btf.translation.y = 3.0;
-                if bmat.0 != turret_mat { bmat.0 = turret_mat.clone(); }
-            }
-        }
-    }
-}
-
-fn turret_aim_fire(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    pm: Option<Res<PaletteMaterials>>,
-    em: Option<Res<EffectMeshes>>,
-    cfg: Res<TurretConfig>,
-    ship_q: Query<(&Transform, &Heading), With<Friendly>>,
-    enemies: Query<(&Transform, &Faction), With<Enemy>>,
-    mut turrets: Query<(Entity, &mut TurretSlot, &mut Transform, &Children, &Visibility), (Without<Friendly>, Without<Enemy>, Without<TurretBarrel>)>,
-    mut barrels: Query<&mut Transform, (With<TurretBarrel>, Without<TurretSlot>, Without<Friendly>, Without<Enemy>)>,
-) {
-    let Some(pm) = pm else { return; };
-    let Some(em) = em else { return; };
-    let dt = time.delta_secs();
-    let Ok((ship_tf, ship_heading)) = ship_q.single() else { return; };
-    let ship_pos = ship_tf.translation.truncate();
-    let ship_h = ship_heading.0;
-
-    for (turret_entity, mut slot, mut tf, children, vis) in &mut turrets {
-        if matches!(*vis, Visibility::Hidden) { continue; }
-        if !cfg.slots[slot.index].equipped { continue; }
-        slot.fire_cd -= dt;
-
-        // World position of turret
-        let local = tf.translation.truncate();
-        let cos_h = ship_h.cos();
-        let sin_h = ship_h.sin();
-        let world_off = Vec2::new(local.x * cos_h - local.y * sin_h, local.x * sin_h + local.y * cos_h);
-        let turret_world = ship_pos + world_off;
-
-        // Forward direction relative to hull (default barrel up = +y in hull frame).
-        let hull_forward_world = ship_h; // angle of hull forward (heading uses 0=+Y)
-        // We use angles where 0 = +Y (up).
-
-        // Find best target in this turret's arc (centered on its mount angle).
-        let mut best: Option<(f32, Vec2)> = None;
-        for (etf, fac) in &enemies {
-            if fac.0 != FactionKind::Enemy { continue; }
-            let ep = etf.translation.truncate();
-            let to = ep - turret_world;
-            let d = to.length();
-            if d > TURRET_RANGE { continue; }
-            let world_angle = (-to.x).atan2(to.y);
-            let mut local_angle = world_angle - hull_forward_world;
-            local_angle = (local_angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-            // Offset relative to mount centerline.
-            let mut off = local_angle - slot.mount_angle;
-            off = (off + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-            if off.abs() > TURRET_ARC_HALVES[slot.index] { continue; }
-            if best.map_or(true, |(bd, _)| d < bd) {
-                best = Some((d, ep));
-            }
-        }
-
-        let desired_local = if let Some((_, ep)) = best {
-            let to = ep - turret_world;
-            let world_angle = (-to.x).atan2(to.y);
-            let mut la = world_angle - hull_forward_world;
-            la = (la + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-            la
-        } else {
-            // Rest at mount angle when no target.
-            slot.mount_angle
-        };
-
-        slot.barrel_angle = approach_angle(slot.barrel_angle, desired_local, TURRET_PIVOT * dt);
-
-        // Apply rotation to base (so its child barrel rotates with it)
-        tf.rotation = Quat::from_rotation_z(slot.barrel_angle);
-
-        // Fire if aimed and target exists
-        if let Some((_d, ep)) = best {
-            let aim_err = (slot.barrel_angle - desired_local).abs();
-            if aim_err < 0.1 && slot.fire_cd <= 0.0 {
-                let barrels = slot.barrels.max(1) as f32;
-                // Twin barrels = twice the effective rate (alternating barrels).
-                slot.fire_cd = 1.0 / (slot.fire_rate.max(0.1) * barrels);
-                // Spawn bullet from turret world pos toward ep
-                // Use the actual barrel orientation (not the slightly-off
-                // bullet trajectory) so muzzle position lines up visually.
-                let total_angle = ship_h + slot.barrel_angle;
-                let barrel_forward = Vec2::new(-total_angle.sin(), total_angle.cos());
-                let barrel_right = Vec2::new(barrel_forward.y, -barrel_forward.x);
-                // Accuracy variance: rotate fire direction by a random angle
-                // within the weapon's spread cone. Muzzle position uses the
-                // un-spread `barrel_forward` so the flash still sits at the
-                // barrel tip — only the bullet trajectory deviates.
-                let spread = slot.weapon.spread();
-                let dir = if spread > 0.0 {
-                    let mut rng = rand::thread_rng();
-                    let a = rng.gen_range(-spread..spread);
-                    let fa = total_angle + a;
-                    Vec2::new(-fa.sin(), fa.cos())
-                } else {
-                    barrel_forward
-                };
-                {
-                    // Lateral offset to the active barrel: 0 in single mode,
-                    // ±BARREL_LATERAL in twin mode, alternating per shot.
-                    let lateral = if slot.barrels >= 2 {
-                        if slot.next_barrel == 0 { -BARREL_LATERAL } else { BARREL_LATERAL }
-                    } else { 0.0 };
-                    // Push spawn forward by the bullet's half-length so the
-                    // BACK of the bullet sits at the barrel tip — bullet
-                    // appears to emerge from the muzzle, not the turret base.
-                    let muzzle_pos = turret_world
-                        + barrel_forward * (FRIENDLY_BARREL_TIP + FRIENDLY_BULLET_HALF_LEN)
-                        + barrel_right * lateral;
-                    slot.next_barrel = (slot.next_barrel + 1) % slot.barrels.max(1);
-                    let outer_mat = pm.bullet_outer_for(slot.weapon).clone();
-                    let inner_mat = pm.bullet_inner_for(slot.weapon).clone();
-                    let bullet = commands.spawn((
-                        Mesh2d(meshes.add(Capsule2d::new(2.0, 1.5))),
-                        MeshMaterial2d(outer_mat),
-                        Transform::from_xyz(muzzle_pos.x, muzzle_pos.y, 4.0)
-                            .with_rotation(Quat::from_rotation_z((-dir.x).atan2(dir.y))),
-                        Bullet {
-                            faction: FactionKind::Friendly,
-                            damage: slot.damage,
-                            remaining: TURRET_RANGE,
-                            weapon: slot.weapon,
-                        },
-                        Velocity(dir * BULLET_SPEED),
-                        RenderLayers::layer(PLAY_LAYER),
-                    )).id();
-                    let inner = commands.spawn((
-                        Mesh2d(meshes.add(Capsule2d::new(1.3, 1.5))),
-                        MeshMaterial2d(inner_mat.clone()),
-                        Transform::from_xyz(0.0, 0.0, 0.05),
-                        RenderLayers::layer(PLAY_LAYER),
-                    )).id();
-                    commands.entity(inner).insert(ChildOf(bullet));
-
-                    // Muzzle flash is parented to the turret (which is a
-                    // child of the ship) so it stays glued to the barrel as
-                    // the ship moves and the turret rotates. Local position
-                    // = (lateral, BARREL_TIP) in turret frame.
-                    let flash = commands.spawn((
-                        Mesh2d(em.muzzle_flash.clone()),
-                        MeshMaterial2d(inner_mat),
-                        Transform::from_xyz(lateral, FRIENDLY_BARREL_TIP, 2.0),
-                        MuzzleFlash { life: 0.18, max_life: 0.18 },
-                        RenderLayers::layer(PLAY_LAYER),
-                    )).id();
-                    commands.entity(flash).insert(ChildOf(turret_entity));
-                }
-            }
-        }
-
-        // Suppress unused warning
-        let _ = children;
-        let _ = &mut barrels;
-    }
-}
-
-fn enemy_fire(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    pm: Option<Res<PaletteMaterials>>,
-    em: Option<Res<EffectMeshes>>,
-    friendly: Query<&Transform, (With<Friendly>, Without<Enemy>)>,
-    mut enemies: Query<(Entity, &Transform, &Heading, &mut Enemy)>,
-) {
-    let Some(pm) = pm else { return; };
-    let Some(em) = em else { return; };
-    let dt = time.delta_secs();
-    let Ok(ftf) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
-
-    for (enemy_entity, tf, heading, mut enemy) in &mut enemies {
-        enemy.fire_cd -= dt;
-        let pos = tf.translation.truncate();
-        let to = fpos - pos;
-        if to.length() > ENEMY_RANGE { continue; }
-        // Forward dir (heading 0 = +Y)
-        let forward = Vec2::new(-heading.0.sin(), heading.0.cos());
-        let aim = forward.angle_to(to.normalize_or_zero()).abs();
-        if aim > 0.2 { continue; }
-        if enemy.fire_cd > 0.0 { continue; }
-        enemy.fire_cd = 1.0 / ENEMY_FIRE_RATE;
-        let dir = forward;
-        // Bullet spawn — push forward by half its length so its BACK sits at
-        // the barrel tip and the bullet appears to emerge from the muzzle.
-        let bullet_pos = pos + forward * (ENEMY_BARREL_TIP + ENEMY_BULLET_HALF_LEN);
-        let bullet = commands.spawn((
-            Mesh2d(meshes.add(Capsule2d::new(1.5, 1.5))),
-            MeshMaterial2d(pm.bullet_enemy_outer.clone()),
-            Transform::from_xyz(bullet_pos.x, bullet_pos.y, 4.0)
-                .with_rotation(Quat::from_rotation_z(heading.0)),
-            Bullet {
-                faction: FactionKind::Enemy,
-                damage: 1,
-                remaining: ENEMY_RANGE,
-                weapon: WeaponType::Standard,
-            },
-            Velocity(dir * BULLET_SPEED),
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-        let inner = commands.spawn((
-            Mesh2d(meshes.add(Capsule2d::new(0.8, 1.5))),
-            MeshMaterial2d(pm.bullet_enemy.clone()),
-            Transform::from_xyz(0.0, 0.0, 0.05),
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-        commands.entity(inner).insert(ChildOf(bullet));
-
-        // Parent to the enemy so the flash follows the ship; local +Y axis
-        // matches the enemy's forward direction (turrets fire straight ahead).
-        let flash = commands.spawn((
-            Mesh2d(em.muzzle_flash.clone()),
-            MeshMaterial2d(pm.bullet_enemy.clone()),
-            Transform::from_xyz(0.0, ENEMY_BARREL_TIP, 4.0),
-            MuzzleFlash { life: 0.18, max_life: 0.18 },
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-        commands.entity(flash).insert(ChildOf(enemy_entity));
-    }
-}
-
-fn bullet_update(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut q: Query<(Entity, &mut Bullet, &Velocity)>,
-) {
-    let dt = time.delta_secs();
-    for (e, mut b, v) in &mut q {
-        b.remaining -= v.0.length() * dt;
-        if b.remaining <= 0.0 {
-            commands.entity(e).despawn();
-        }
-    }
-}
-
-fn bullet_collisions(
-    mut commands: Commands,
-    mut score: ResMut<Score>,
-    pm: Option<Res<PaletteMaterials>>,
-    em: Option<Res<EffectMeshes>>,
-    bullets: Query<(Entity, &Transform, &Bullet)>,
-    mut enemies: Query<(Entity, &Transform, &mut Health, &mut HitFx), (With<Enemy>, Without<Friendly>)>,
-    mut friendly: Query<(Entity, &Transform, &mut HitFx), (With<Friendly>, Without<Enemy>)>,
-) {
-    let Some(pm) = pm else { return; };
-    let Some(em) = em else { return; };
-    let mut rng = rand::thread_rng();
-    for (be, btf, b) in &bullets {
-        let bp = btf.translation.truncate();
-        match b.faction {
-            FactionKind::Friendly => {
-                for (ee, etf, mut h, mut fx) in &mut enemies {
-                    if etf.translation.truncate().distance(bp) < 3.5 {
-                        h.0 -= b.damage;
-                        commands.entity(be).despawn();
-                        let hit_pos = etf.translation.truncate();
-                        let spark_mat = pm.bullet_inner_for(b.weapon);
-                        if h.0 <= 0 {
-                            commands.entity(ee).despawn();
-                            score.0 += 10;
-                            // Larger destruction burst — mix enemy + bullet colors.
-                            spawn_hit_particles(&mut commands, &em, &pm.enemy, hit_pos, 10, 60.0, &mut rng);
-                            spawn_hit_particles(&mut commands, &em, spark_mat, hit_pos, 6, 75.0, &mut rng);
-                        } else {
-                            // Pulse the survivor and spawn small impact sparks.
-                            fx.pulse();
-                            spawn_hit_particles(&mut commands, &em, spark_mat, hit_pos, 4, 45.0, &mut rng);
-                        }
-                        break;
-                    }
-                }
-            }
-            FactionKind::Enemy => {
-                for (_fe, ftf, mut fx) in &mut friendly {
-                    if ftf.translation.truncate().distance(bp) < 5.0 {
-                        // Friendly is invincible — bullet is consumed but the
-                        // ship still pulses + flashes for visual feedback.
-                        commands.entity(be).despawn();
-                        fx.pulse();
-                        let hit_pos = ftf.translation.truncate();
-                        spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn update_score_text(score: Res<Score>, mut q: Query<&mut Text, With<ScoreText>>) {
-    if !score.is_changed() { return; }
-    for mut t in &mut q {
-        **t = format!("SCORE {}", score.0);
-    }
-}
-
-fn ui_button_system(
-    mut interactions: Query<(&Interaction, &SlotButton), Changed<Interaction>>,
-    mut cfg: ResMut<TurretConfig>,
-    mut window_mode: ResMut<WindowMode>,
-    mut night: ResMut<NightMode>,
-) {
-    for (interaction, btn) in &mut interactions {
-        if !matches!(*interaction, Interaction::Pressed) { continue; }
-        match btn.kind {
-            ButtonKind::ToggleDesktopMode => {
-                window_mode.desktop = !window_mode.desktop;
-                continue;
-            }
-            ButtonKind::ToggleNightMode => {
-                night.active = !night.active;
-                continue;
-            }
-            _ => {}
-        }
-        let s = &mut cfg.slots[btn.slot];
-        match btn.kind {
-            ButtonKind::ToggleDesktopMode | ButtonKind::ToggleNightMode => unreachable!(),
-            ButtonKind::Equip       => {
-                // Cycle: unequipped → Standard → Sniper → MachineGun → unequipped.
-                // On each step, snap stats to the new weapon's defaults so the
-                // type's identity (e.g. sniper = 10 dmg / 0.25 rate) is felt
-                // immediately. Player can still tweak with ±.
-                if !s.equipped {
-                    s.equipped = true;
-                    s.weapon = WeaponType::Standard;
-                    let (d, r) = s.weapon.defaults();
-                    s.damage = d; s.fire_rate = r; s.barrels = 1;
-                } else {
-                    match s.weapon.next() {
-                        Some(next) => {
-                            s.weapon = next;
-                            let (d, r) = next.defaults();
-                            s.damage = d; s.fire_rate = r; s.barrels = 1;
-                        }
-                        None => {
-                            s.equipped = false;
-                            s.weapon = WeaponType::Standard;
-                            let (d, r) = s.weapon.defaults();
-                            s.damage = d; s.fire_rate = r; s.barrels = 1;
-                        }
-                    }
-                }
-            }
-            ButtonKind::DamageUp    => { if s.equipped { s.damage += 1; } }
-            ButtonKind::DamageDown  => { if s.equipped && s.damage > 1 { s.damage -= 1; } }
-            ButtonKind::RateUp      => { if s.equipped { s.fire_rate += 0.1; } }
-            ButtonKind::RateDown    => { if s.equipped && s.fire_rate > 0.2 { s.fire_rate -= 0.1; } }
-            ButtonKind::BarrelsUp   => { if s.equipped && s.barrels < 2 { s.barrels += 1; } }
-            ButtonKind::BarrelsDown => { if s.equipped && s.barrels > 1 { s.barrels -= 1; } }
-        }
-    }
-}
-
-fn update_slot_labels(
-    cfg: Res<TurretConfig>,
-    mut q: Query<(&SlotLabel, &mut Text)>,
-) {
-    if !cfg.is_changed() { return; }
-    for (lbl, mut t) in &mut q {
-        let s = cfg.slots[lbl.slot];
-        match lbl.kind {
-            LabelKind::Damage   => **t = format!("{}", s.damage),
-            LabelKind::Rate     => **t = format!("{:.1}", s.fire_rate),
-            LabelKind::Barrels  => **t = format!("{}", s.barrels),
-            LabelKind::Status   => **t = if s.equipped { s.weapon.label().into() } else { "EQUIP GUN".into() },
-        }
-    }
-}
