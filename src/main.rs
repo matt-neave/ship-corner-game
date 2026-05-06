@@ -182,7 +182,52 @@ struct PaletteMaterials {
     trail: Handle<ColorMaterial>,
     /// Always-white material used for hit-flashes; not driven by the palette.
     flash: Handle<ColorMaterial>,
+    /// Sniper weapon — fixed color, not palette-driven.
+    turret_sniper: Handle<ColorMaterial>,
+    bullet_sniper: Handle<ColorMaterial>,
+    bullet_sniper_outer: Handle<ColorMaterial>,
+    /// Machine gun weapon — fixed color, not palette-driven.
+    turret_mg: Handle<ColorMaterial>,
+    bullet_mg: Handle<ColorMaterial>,
+    bullet_mg_outer: Handle<ColorMaterial>,
 }
+
+impl PaletteMaterials {
+    /// Turret base + barrel material for the given weapon type.
+    fn turret_for(&self, w: WeaponType) -> &Handle<ColorMaterial> {
+        match w {
+            WeaponType::Standard   => &self.turret,
+            WeaponType::Sniper     => &self.turret_sniper,
+            WeaponType::MachineGun => &self.turret_mg,
+        }
+    }
+    /// Outer (darker) bullet material for the weapon.
+    fn bullet_outer_for(&self, w: WeaponType) -> &Handle<ColorMaterial> {
+        match w {
+            WeaponType::Standard   => &self.bullet_friendly_outer,
+            WeaponType::Sniper     => &self.bullet_sniper_outer,
+            WeaponType::MachineGun => &self.bullet_mg_outer,
+        }
+    }
+    /// Inner (brighter) bullet material — also used for muzzle flash + sparks.
+    fn bullet_inner_for(&self, w: WeaponType) -> &Handle<ColorMaterial> {
+        match w {
+            WeaponType::Standard   => &self.bullet_friendly,
+            WeaponType::Sniper     => &self.bullet_sniper,
+            WeaponType::MachineGun => &self.bullet_mg,
+        }
+    }
+}
+
+/// Weapon-specific colors. Not part of the recolorable Palette — these define
+/// the weapon's identity, so they stay fixed when the palette changes.
+/// `*_BRIGHT_HEX` is the bullet *inner* core + muzzle flash color: a vivid
+/// variant of the weapon hue. Hand-picked because mechanically lightening the
+/// dark base hexes produces muddy desaturated tones that vanish on the water.
+const SNIPER_HEX:        &str = "#5d275d";
+const SNIPER_BRIGHT_HEX: &str = "#ff70d4";
+const MG_HEX:            &str = "#29366f";
+const MG_BRIGHT_HEX:     &str = "#6bd5ff";
 
 /// Inner core is lighter than the base by this factor (0 = unchanged, 1 = white).
 const BULLET_INNER_LIGHTEN: f32 = 0.55;
@@ -239,6 +284,49 @@ struct Faction(FactionKind);
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FactionKind { Friendly, Enemy }
 
+/// Weapon family for an equipped turret. Drives turret + bullet color and
+/// firing behaviour (rate/damage defaults, MG accuracy spread).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum WeaponType {
+    #[default]
+    Standard,
+    Sniper,
+    MachineGun,
+}
+
+impl WeaponType {
+    /// Forward-cycle through equipped weapon types. None = unequip.
+    fn next(self) -> Option<Self> {
+        match self {
+            WeaponType::Standard => Some(WeaponType::Sniper),
+            WeaponType::Sniper => Some(WeaponType::MachineGun),
+            WeaponType::MachineGun => None,
+        }
+    }
+    /// (damage, fire_rate) defaults applied when this type is selected.
+    fn defaults(self) -> (i32, f32) {
+        match self {
+            WeaponType::Standard   => (1, 4.0),
+            WeaponType::Sniper     => (10, 0.25),
+            WeaponType::MachineGun => (1, 8.0),
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            WeaponType::Standard   => "STANDARD",
+            WeaponType::Sniper     => "SNIPER",
+            WeaponType::MachineGun => "MG",
+        }
+    }
+    /// Half-angle (rad) of random firing cone. 0 = perfectly accurate.
+    fn spread(self) -> f32 {
+        match self {
+            WeaponType::MachineGun => 0.18, // ~±10°
+            _ => 0.0,
+        }
+    }
+}
+
 #[derive(Component)]
 struct TurretSlot {
     index: usize,
@@ -247,6 +335,7 @@ struct TurretSlot {
     fire_cd: f32,
     damage: i32,
     fire_rate: f32,
+    weapon: WeaponType,
     /// 1 = single barrel, 2 = twin (fires twice as fast, alternating barrels).
     barrels: u8,
     /// Which barrel fires next (0 or 1) when `barrels == 2`. Alternates so
@@ -278,6 +367,12 @@ struct Bullet {
     faction: FactionKind,
     damage: i32,
     remaining: f32,
+    /// Weapon that fired this bullet — drives spark/impact colors on hit.
+    /// For enemy bullets this is unused (always Standard).
+    weapon: WeaponType,
+    /// Originating turret slot index (0-7) for friendly bullets. None for
+    /// enemy bullets — they don't contribute to the slot damage tally.
+    slot: Option<u8>,
 }
 
 #[derive(Component)]
@@ -389,10 +484,31 @@ struct TurretConfig {
     slots: [SlotCfg; 8],
 }
 #[derive(Default, Clone, Copy)]
-struct SlotCfg { equipped: bool, damage: i32, fire_rate: f32, barrels: u8 }
+struct SlotCfg {
+    equipped: bool,
+    weapon: WeaponType,
+    damage: i32,
+    fire_rate: f32,
+    barrels: u8,
+}
 
 #[derive(Resource, Default)]
 struct ConfigDirty(bool);
+
+/// Per-slot tally of damage actually dealt to enemies (overkill is clamped to
+/// the enemy's remaining HP so a sniper one-shotting a 1-HP enemy doesn't
+/// inflate its share). The LHS UI bars read this resource each frame.
+#[derive(Resource, Default)]
+struct DamageStats {
+    per_slot: [u64; 8],
+    total: u64,
+}
+
+#[derive(Component)]
+struct SlotDamageBar { slot: usize }
+
+#[derive(Component)]
+struct SlotShareText { slot: usize }
 
 #[derive(Component)]
 struct SlotButton { slot: usize, kind: ButtonKind }
@@ -444,8 +560,10 @@ struct DesktopHint;
 // ---------- App ----------
 fn main() {
     let mut cfg = TurretConfig::default();
-    cfg.slots[0] = SlotCfg { equipped: true, damage: 1, fire_rate: 4.0, barrels: 1 };
-    for i in 1..8 { cfg.slots[i] = SlotCfg { equipped: false, damage: 1, fire_rate: 4.0, barrels: 1 }; }
+    cfg.slots[0] = SlotCfg { equipped: true, weapon: WeaponType::Standard, damage: 1, fire_rate: 4.0, barrels: 1 };
+    for i in 1..8 {
+        cfg.slots[i] = SlotCfg { equipped: false, weapon: WeaponType::Standard, damage: 1, fire_rate: 4.0, barrels: 1 };
+    }
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -461,6 +579,7 @@ fn main() {
         .insert_resource(SpawnTimer { t: 0.0, elapsed: 0.0 })
         .insert_resource(cfg)
         .insert_resource(ConfigDirty(false))
+        .insert_resource(DamageStats::default())
         .insert_resource(TrailTimer(0.0))
         .insert_resource(Palette::aap64_naval())
         .insert_resource(ShipPath::default())
@@ -865,6 +984,8 @@ fn setup_world(
     // references one of these — runtime palette swaps update them all.
     // Bullets are two-tone: base color = outer ring, lighter version = bright
     // inner core. Muzzle flashes / hit sparks reuse the bright inner color.
+    let sniper = hex(SNIPER_HEX);
+    let mg     = hex(MG_HEX);
     let pm = PaletteMaterials {
         border:                materials.add(palette.border),
         hull:                  materials.add(palette.hull),
@@ -878,6 +999,12 @@ fn setup_world(
         bullet_enemy_outer:    materials.add(palette.bullet_enemy),
         trail:                 materials.add(palette.trail),
         flash:                 materials.add(Color::WHITE),
+        turret_sniper:         materials.add(sniper),
+        bullet_sniper:         materials.add(hex(SNIPER_BRIGHT_HEX)),
+        bullet_sniper_outer:   materials.add(sniper),
+        turret_mg:             materials.add(mg),
+        bullet_mg:             materials.add(hex(MG_BRIGHT_HEX)),
+        bullet_mg_outer:       materials.add(mg),
     };
 
     // --- 1px play-area border, drawn inside the play world ---
@@ -938,9 +1065,10 @@ fn setup_world(
         let slot = cfg.slots[i];
         let visible = slot.equipped;
         let mount = TURRET_MOUNTS[i];
+        let turret_mat = pm.turret_for(slot.weapon).clone();
         let mut ec = commands.spawn((
             Mesh2d(base_mesh.clone()),
-            MeshMaterial2d(pm.turret.clone()),
+            MeshMaterial2d(turret_mat.clone()),
             Transform::from_xyz(*lx, *ly, 2.0).with_rotation(Quat::from_rotation_z(mount)),
             if visible { Visibility::Inherited } else { Visibility::Hidden },
             TurretSlot {
@@ -950,6 +1078,7 @@ fn setup_world(
                 fire_cd: 0.0,
                 damage: slot.damage,
                 fire_rate: slot.fire_rate,
+                weapon: slot.weapon,
                 barrels: slot.barrels.max(1),
                 next_barrel: 0,
             },
@@ -968,7 +1097,7 @@ fn setup_world(
             } else { 0.0 };
             let barrel = commands.spawn((
                 Mesh2d(barrel_mesh.clone()),
-                MeshMaterial2d(pm.turret.clone()),
+                MeshMaterial2d(turret_mat.clone()),
                 Transform::from_xyz(lateral, 3.0, 0.1),
                 if initial_visible { Visibility::Inherited } else { Visibility::Hidden },
                 TurretBarrel,
@@ -1807,23 +1936,28 @@ fn spawn_enemies(
 
 fn sync_turret_config(
     cfg: Res<TurretConfig>,
-    mut q: Query<(&mut TurretSlot, &mut Visibility, &Children)>,
+    pm: Option<Res<PaletteMaterials>>,
+    mut q: Query<(&mut TurretSlot, &mut Visibility, &mut MeshMaterial2d<ColorMaterial>, &Children)>,
     mut barrels: Query<
-        (&BarrelIndex, &mut Visibility, &mut Transform),
+        (&BarrelIndex, &mut Visibility, &mut Transform, &mut MeshMaterial2d<ColorMaterial>),
         (With<TurretBarrel>, Without<TurretSlot>),
     >,
 ) {
     if !cfg.is_changed() { return; }
-    for (mut slot, mut vis, children) in &mut q {
+    let Some(pm) = pm else { return; };
+    for (mut slot, mut vis, mut mat, children) in &mut q {
         let s = cfg.slots[slot.index];
         slot.damage = s.damage;
         slot.fire_rate = s.fire_rate;
+        slot.weapon = s.weapon;
         let new_barrels = s.barrels.max(1);
         if new_barrels != slot.barrels { slot.next_barrel = 0; }
         slot.barrels = new_barrels;
         *vis = if s.equipped { Visibility::Inherited } else { Visibility::Hidden };
+        let turret_mat = pm.turret_for(s.weapon).clone();
+        if mat.0 != turret_mat { mat.0 = turret_mat.clone(); }
         for c in children.iter() {
-            if let Ok((idx, mut bv, mut btf)) = barrels.get_mut(c) {
+            if let Ok((idx, mut bv, mut btf, mut bmat)) = barrels.get_mut(c) {
                 let visible = s.equipped && (idx.0 == 0 || s.barrels >= 2);
                 *bv = if visible { Visibility::Inherited } else { Visibility::Hidden };
                 let lateral = if s.barrels >= 2 {
@@ -1831,6 +1965,7 @@ fn sync_turret_config(
                 } else { 0.0 };
                 btf.translation.x = lateral;
                 btf.translation.y = 3.0;
+                if bmat.0 != turret_mat { bmat.0 = turret_mat.clone(); }
             }
         }
     }
@@ -1920,7 +2055,19 @@ fn turret_aim_fire(
                 let total_angle = ship_h + slot.barrel_angle;
                 let barrel_forward = Vec2::new(-total_angle.sin(), total_angle.cos());
                 let barrel_right = Vec2::new(barrel_forward.y, -barrel_forward.x);
-                let dir = barrel_forward;
+                // Accuracy variance: rotate fire direction by a random angle
+                // within the weapon's spread cone. Muzzle position uses the
+                // un-spread `barrel_forward` so the flash still sits at the
+                // barrel tip — only the bullet trajectory deviates.
+                let spread = slot.weapon.spread();
+                let dir = if spread > 0.0 {
+                    let mut rng = rand::thread_rng();
+                    let a = rng.gen_range(-spread..spread);
+                    let fa = total_angle + a;
+                    Vec2::new(-fa.sin(), fa.cos())
+                } else {
+                    barrel_forward
+                };
                 {
                     // Lateral offset to the active barrel: 0 in single mode,
                     // ±BARREL_LATERAL in twin mode, alternating per shot.
@@ -1934,18 +2081,25 @@ fn turret_aim_fire(
                         + barrel_forward * (FRIENDLY_BARREL_TIP + FRIENDLY_BULLET_HALF_LEN)
                         + barrel_right * lateral;
                     slot.next_barrel = (slot.next_barrel + 1) % slot.barrels.max(1);
+                    let outer_mat = pm.bullet_outer_for(slot.weapon).clone();
+                    let inner_mat = pm.bullet_inner_for(slot.weapon).clone();
                     let bullet = commands.spawn((
                         Mesh2d(meshes.add(Capsule2d::new(2.0, 1.5))),
-                        MeshMaterial2d(pm.bullet_friendly_outer.clone()),
+                        MeshMaterial2d(outer_mat),
                         Transform::from_xyz(muzzle_pos.x, muzzle_pos.y, 4.0)
                             .with_rotation(Quat::from_rotation_z((-dir.x).atan2(dir.y))),
-                        Bullet { faction: FactionKind::Friendly, damage: slot.damage, remaining: TURRET_RANGE },
+                        Bullet {
+                            faction: FactionKind::Friendly,
+                            damage: slot.damage,
+                            remaining: TURRET_RANGE,
+                            weapon: slot.weapon,
+                        },
                         Velocity(dir * BULLET_SPEED),
                         RenderLayers::layer(PLAY_LAYER),
                     )).id();
                     let inner = commands.spawn((
                         Mesh2d(meshes.add(Capsule2d::new(1.3, 1.5))),
-                        MeshMaterial2d(pm.bullet_friendly.clone()),
+                        MeshMaterial2d(inner_mat.clone()),
                         Transform::from_xyz(0.0, 0.0, 0.05),
                         RenderLayers::layer(PLAY_LAYER),
                     )).id();
@@ -1957,7 +2111,7 @@ fn turret_aim_fire(
                     // = (lateral, BARREL_TIP) in turret frame.
                     let flash = commands.spawn((
                         Mesh2d(em.muzzle_flash.clone()),
-                        MeshMaterial2d(pm.bullet_friendly.clone()),
+                        MeshMaterial2d(inner_mat),
                         Transform::from_xyz(lateral, FRIENDLY_BARREL_TIP, 2.0),
                         MuzzleFlash { life: 0.18, max_life: 0.18 },
                         RenderLayers::layer(PLAY_LAYER),
@@ -2008,7 +2162,12 @@ fn enemy_fire(
             MeshMaterial2d(pm.bullet_enemy_outer.clone()),
             Transform::from_xyz(bullet_pos.x, bullet_pos.y, 4.0)
                 .with_rotation(Quat::from_rotation_z(heading.0)),
-            Bullet { faction: FactionKind::Enemy, damage: 1, remaining: ENEMY_RANGE },
+            Bullet {
+                faction: FactionKind::Enemy,
+                damage: 1,
+                remaining: ENEMY_RANGE,
+                weapon: WeaponType::Standard,
+            },
             Velocity(dir * BULLET_SPEED),
             RenderLayers::layer(PLAY_LAYER),
         )).id();
@@ -2068,16 +2227,17 @@ fn bullet_collisions(
                         h.0 -= b.damage;
                         commands.entity(be).despawn();
                         let hit_pos = etf.translation.truncate();
+                        let spark_mat = pm.bullet_inner_for(b.weapon);
                         if h.0 <= 0 {
                             commands.entity(ee).despawn();
                             score.0 += 10;
                             // Larger destruction burst — mix enemy + bullet colors.
                             spawn_hit_particles(&mut commands, &em, &pm.enemy, hit_pos, 10, 60.0, &mut rng);
-                            spawn_hit_particles(&mut commands, &em, &pm.bullet_friendly, hit_pos, 6, 75.0, &mut rng);
+                            spawn_hit_particles(&mut commands, &em, spark_mat, hit_pos, 6, 75.0, &mut rng);
                         } else {
                             // Pulse the survivor and spawn small impact sparks.
                             fx.pulse();
-                            spawn_hit_particles(&mut commands, &em, &pm.bullet_friendly, hit_pos, 4, 45.0, &mut rng);
+                            spawn_hit_particles(&mut commands, &em, spark_mat, hit_pos, 4, 45.0, &mut rng);
                         }
                         break;
                     }
@@ -2129,7 +2289,32 @@ fn ui_button_system(
         let s = &mut cfg.slots[btn.slot];
         match btn.kind {
             ButtonKind::ToggleDesktopMode | ButtonKind::ToggleNightMode => unreachable!(),
-            ButtonKind::Equip       => { if !s.equipped { s.equipped = true; } }
+            ButtonKind::Equip       => {
+                // Cycle: unequipped → Standard → Sniper → MachineGun → unequipped.
+                // On each step, snap stats to the new weapon's defaults so the
+                // type's identity (e.g. sniper = 10 dmg / 0.25 rate) is felt
+                // immediately. Player can still tweak with ±.
+                if !s.equipped {
+                    s.equipped = true;
+                    s.weapon = WeaponType::Standard;
+                    let (d, r) = s.weapon.defaults();
+                    s.damage = d; s.fire_rate = r; s.barrels = 1;
+                } else {
+                    match s.weapon.next() {
+                        Some(next) => {
+                            s.weapon = next;
+                            let (d, r) = next.defaults();
+                            s.damage = d; s.fire_rate = r; s.barrels = 1;
+                        }
+                        None => {
+                            s.equipped = false;
+                            s.weapon = WeaponType::Standard;
+                            let (d, r) = s.weapon.defaults();
+                            s.damage = d; s.fire_rate = r; s.barrels = 1;
+                        }
+                    }
+                }
+            }
             ButtonKind::DamageUp    => { if s.equipped { s.damage += 1; } }
             ButtonKind::DamageDown  => { if s.equipped && s.damage > 1 { s.damage -= 1; } }
             ButtonKind::RateUp      => { if s.equipped { s.fire_rate += 0.1; } }
@@ -2151,7 +2336,7 @@ fn update_slot_labels(
             LabelKind::Damage   => **t = format!("{}", s.damage),
             LabelKind::Rate     => **t = format!("{:.1}", s.fire_rate),
             LabelKind::Barrels  => **t = format!("{}", s.barrels),
-            LabelKind::Status   => **t = if s.equipped { "ACTIVE".into() } else { "EQUIP GUN".into() },
+            LabelKind::Status   => **t = if s.equipped { s.weapon.label().into() } else { "EQUIP GUN".into() },
         }
     }
 }
