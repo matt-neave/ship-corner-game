@@ -21,8 +21,10 @@
 //! - `rendering`   — pixel-perfect render pipeline (cameras + upscale + scanline)
 //! - `ui`          — score banner, HP bar, LHS turret panel, draft cards
 
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 
+mod ally;
 mod balance;
 mod beam;
 mod bullet;
@@ -41,6 +43,7 @@ mod ui;
 mod wave;
 mod weapon;
 
+use ally::{ally_ai, ally_death_check, ally_turret_aim_fire};
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
 use bullet::{bullet_collisions, bullet_update};
@@ -49,9 +52,9 @@ use effects::{
 };
 use enemy::{bomber_detonate, enemy_ai, enemy_fire, spawn_enemies};
 use modes::{
-    apply_crt_mode, apply_night_mode, apply_window_mode,
+    apply_crt_mode, apply_night_mode, apply_vsync_mode, apply_window_mode,
     handle_desktop_drag_resize, handle_desktop_escape,
-    CrtMode, GameMode, NightMode, WindowMode,
+    CrtMode, GameMode, NightMode, VsyncMode, WindowMode,
 };
 use palette::{apply_palette, Palette};
 use pier::{draft_input, sync_pier_visuals, update_draft_ui, Pier, WaveDraft};
@@ -60,8 +63,8 @@ use ship::{apply_velocity, friendly_movement, setup_world};
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{sync_turret_config, turret_aim_fire, SlotCfg, TurretConfig};
 use ui::{
-    setup_ui, ui_button_system, update_damage_bars, update_score_text, update_slot_labels,
-    update_wave_ui, DamageStats,
+    setup_ui, ui_button_system, update_damage_bars, update_fps_text, update_score_text,
+    update_slot_labels, update_vsync_label, update_wave_ui, DamageStats,
 };
 use wave::{wave_orchestrator, WaveState};
 use weapon::WeaponType;
@@ -107,6 +110,7 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
         .insert_resource(Score(0))
         .insert_resource(SpawnTimer { t: 0.0, elapsed: 0.0 })
@@ -117,6 +121,7 @@ fn main() {
         .insert_resource(WindowMode::default())
         .insert_resource(NightMode::default())
         .insert_resource(CrtMode::default())
+        .insert_resource(VsyncMode::default())
         .insert_resource(GameMode::default())
         .insert_resource(WaveState::default())
         .insert_resource(Pier::default())
@@ -151,6 +156,8 @@ fn main() {
             update_beams,
             update_hit_particles,
             update_score_text,
+            update_fps_text,
+            update_vsync_label,
             ui_button_system,
             update_slot_labels,
             update_damage_bars,
@@ -159,15 +166,19 @@ fn main() {
             handle_desktop_drag_resize,
             apply_window_mode,
             apply_crt_mode,
+            apply_vsync_mode,
         ))
         .add_systems(Update, (
-            // Wave-mode systems live in their own bundle so we don't blow
-            // past the 20-system tuple limit on the visuals/UI block.
+            // Wave-mode + ally systems live in their own bundle so we don't
+            // blow past the 20-system tuple limit on the visuals/UI block.
             wave_orchestrator,
             update_wave_ui,
             sync_pier_visuals,
             draft_input,
             update_draft_ui,
+            ally_ai,
+            ally_turret_aim_fire,
+            ally_death_check,
         ))
         .run();
 }

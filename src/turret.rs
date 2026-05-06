@@ -10,9 +10,9 @@ use bevy::render::view::RenderLayers;
 use rand::Rng;
 
 use crate::balance::{
-    BARREL_LATERAL, BEAM_LENGTH, BEAM_LIFETIME, BULLET_SPEED, FRIENDLY_BARREL_TIP,
-    FRIENDLY_BULLET_HALF_LEN, PLAY_LAYER, SHOTGUN_PELLETS, SHOTGUN_SPREAD, TURRET_ARC_HALVES,
-    TURRET_PIVOT, TURRET_RANGE,
+    BARREL_LATERAL, BARREL_MIDDLE_EXTEND, BEAM_LENGTH, BEAM_LIFETIME, BULLET_SPEED,
+    FRIENDLY_BARREL_TIP, FRIENDLY_BULLET_HALF_LEN, PLAY_LAYER, SHOTGUN_PELLETS, SHOTGUN_SPREAD,
+    TURRET_ARC_HALVES, TURRET_PIVOT, TURRET_RANGE,
 };
 use crate::beam::{Beam, BeamHit, BeamPending};
 use crate::bullet::Bullet;
@@ -93,23 +93,44 @@ pub fn sync_turret_config(
         slot.fire_rate = s.fire_rate;
         slot.weapon = s.weapon;
         slot.range_mult = pier_range_mult(&pier, slot.index);
-        let new_barrels = s.barrels.max(1);
+        let new_barrels = s.barrels.clamp(1, 3);
         if new_barrels != slot.barrels { slot.next_barrel = 0; }
         slot.barrels = new_barrels;
         *vis = if s.equipped { Visibility::Inherited } else { Visibility::Hidden };
         let turret_mat = pm.turret_for(s.weapon).clone();
         if mat.0 != turret_mat { mat.0 = turret_mat.clone(); }
         for c in children.iter() {
-            if let Ok((idx, mut bv, mut btf, mut bmat)) = barrels.get_mut(c) {
-                let visible = s.equipped && (idx.0 == 0 || s.barrels >= 2);
-                *bv = if visible { Visibility::Inherited } else { Visibility::Hidden };
-                let lateral = if s.barrels >= 2 {
-                    if idx.0 == 0 { -BARREL_LATERAL } else { BARREL_LATERAL }
-                } else { 0.0 };
-                btf.translation.x = lateral;
-                btf.translation.y = 3.0;
-                if bmat.0 != turret_mat { bmat.0 = turret_mat.clone(); }
-            }
+            let Ok((idx, mut bv, mut btf, mut bmat)) = barrels.get_mut(c) else { continue; };
+            // Visibility: single → middle only; twin → port+stbd; triple → all.
+            let cell_visible = match (s.barrels, idx.0) {
+                (1, 1)         => true,
+                (2, 0) | (2, 2) => true,
+                (3, _)         => true,
+                _              => false,
+            };
+            *bv = if s.equipped && cell_visible { Visibility::Inherited } else { Visibility::Hidden };
+            // Lateral offset by index — middle stays centered, port/stbd splay.
+            let lateral = match idx.0 {
+                0 => -BARREL_LATERAL,
+                2 =>  BARREL_LATERAL,
+                _ =>  0.0,
+            };
+            btf.translation.x = lateral;
+            // Middle barrel of a triple sits a touch forward AND scales 1px
+            // longer (stretching only the front; back stays aligned with the
+            // other barrels' rears).
+            let middle_in_triple = s.barrels == 3 && idx.0 == 1;
+            btf.translation.y = if middle_in_triple {
+                3.0 + BARREL_MIDDLE_EXTEND / 2.0
+            } else {
+                3.0
+            };
+            btf.scale.y = if middle_in_triple {
+                (4.0 + BARREL_MIDDLE_EXTEND) / 4.0
+            } else {
+                1.0
+            };
+            if bmat.0 != turret_mat { bmat.0 = turret_mat.clone(); }
         }
     }
 }
@@ -208,9 +229,25 @@ pub fn turret_aim_fire(
                 let barrel_forward = Vec2::new(-total_angle.sin(), total_angle.cos());
                 let barrel_right = Vec2::new(barrel_forward.y, -barrel_forward.x);
 
-                let lateral = if slot.barrels >= 2 {
-                    if slot.next_barrel == 0 { -BARREL_LATERAL } else { BARREL_LATERAL }
-                } else { 0.0 };
+                // Map (barrels, next_barrel) → lateral offset for the
+                // firing barrel, mirroring `sync_turret_config`'s visibility:
+                //   single  → centre;
+                //   twin    → next_barrel 0 = port, 1 = stbd;
+                //   triple  → next_barrel 0 = port, 1 = middle, 2 = stbd.
+                let lateral = match (slot.barrels, slot.next_barrel) {
+                    (1, _)         => 0.0,
+                    (2, 0)         => -BARREL_LATERAL,
+                    (2, _)         =>  BARREL_LATERAL,
+                    (3, 0)         => -BARREL_LATERAL,
+                    (3, 1)         =>  0.0,
+                    (3, _)         =>  BARREL_LATERAL,
+                    _              =>  0.0,
+                };
+                // Middle barrel of a triple is `BARREL_MIDDLE_EXTEND` longer,
+                // so its muzzle / bullet spawn is pushed forward to match.
+                let firing_middle = slot.barrels == 3 && slot.next_barrel == 1;
+                let effective_tip = FRIENDLY_BARREL_TIP
+                    + if firing_middle { BARREL_MIDDLE_EXTEND } else { 0.0 };
                 slot.next_barrel = (slot.next_barrel + 1) % slot.barrels.max(1);
 
                 let outer_mat = pm.bullet_outer_for(slot.weapon).clone();
@@ -221,7 +258,7 @@ pub fn turret_aim_fire(
                 let flash = commands.spawn((
                     Mesh2d(em.muzzle_flash.clone()),
                     MeshMaterial2d(inner_mat.clone()),
-                    Transform::from_xyz(lateral, FRIENDLY_BARREL_TIP, 2.0),
+                    Transform::from_xyz(lateral, effective_tip, 2.0),
                     MuzzleFlash { life: 0.18, max_life: 0.18 },
                     RenderLayers::layer(PLAY_LAYER),
                 )).id();
@@ -232,7 +269,7 @@ pub fn turret_aim_fire(
                         // Beam emanates from the barrel tip; mesh is centered
                         // on its midpoint so position the entity at the line
                         // midpoint and rotate to align local +Y with `barrel_forward`.
-                        let beam_origin = turret_world + barrel_forward * FRIENDLY_BARREL_TIP;
+                        let beam_origin = turret_world + barrel_forward * effective_tip;
                         let mid_pos = beam_origin + barrel_forward * (BEAM_LENGTH / 2.0);
                         let beam_angle = (-barrel_forward.x).atan2(barrel_forward.y);
                         commands.spawn((
@@ -259,7 +296,7 @@ pub fn turret_aim_fire(
                         // the shotgun's spread cone. Single muzzle flash.
                         let mut rng = rand::thread_rng();
                         let muzzle_pos = turret_world
-                            + barrel_forward * (FRIENDLY_BARREL_TIP + FRIENDLY_BULLET_HALF_LEN)
+                            + barrel_forward * (effective_tip + FRIENDLY_BULLET_HALF_LEN)
                             + barrel_right * lateral;
                         for _ in 0..SHOTGUN_PELLETS {
                             let off = rng.gen_range(-SHOTGUN_SPREAD..SHOTGUN_SPREAD);
@@ -267,7 +304,7 @@ pub fn turret_aim_fire(
                             let pd = Vec2::new(-pa.sin(), pa.cos());
                             spawn_friendly_bullet(
                                 &mut commands, &em, &outer_mat, &inner_mat,
-                                muzzle_pos, pd, slot.weapon, slot.damage, slot.index as u8,
+                                muzzle_pos, pd, slot.weapon, slot.damage, Some(slot.index as u8),
                                 effective_range,
                             );
                         }
@@ -285,11 +322,11 @@ pub fn turret_aim_fire(
                             barrel_forward
                         };
                         let muzzle_pos = turret_world
-                            + barrel_forward * (FRIENDLY_BARREL_TIP + FRIENDLY_BULLET_HALF_LEN)
+                            + barrel_forward * (effective_tip + FRIENDLY_BULLET_HALF_LEN)
                             + barrel_right * lateral;
                         spawn_friendly_bullet(
                             &mut commands, &em, &outer_mat, &inner_mat,
-                            muzzle_pos, dir, slot.weapon, slot.damage, slot.index as u8,
+                            muzzle_pos, dir, slot.weapon, slot.damage, Some(slot.index as u8),
                             effective_range,
                         );
                     }
@@ -306,8 +343,10 @@ pub fn turret_aim_fire(
 
 /// Spawn a friendly bullet (outer + inner two-tone) traveling in `dir`.
 /// `range` is the bullet's max travel distance — pass the firing turret's
-/// effective range so Watchtower buffs flow through.
-fn spawn_friendly_bullet(
+/// effective range so Watchtower buffs flow through. `slot` identifies the
+/// originating turret slot (0-7) for damage-stat crediting; pass `None` for
+/// non-player friendlies (allies) so they don't pollute per-slot stats.
+pub fn spawn_friendly_bullet(
     commands: &mut Commands,
     em: &EffectMeshes,
     outer_mat: &Handle<ColorMaterial>,
@@ -316,7 +355,7 @@ fn spawn_friendly_bullet(
     dir: Vec2,
     weapon: WeaponType,
     damage: i32,
-    slot_idx: u8,
+    slot: Option<u8>,
     range: f32,
 ) {
     let bullet = commands.spawn((
@@ -329,7 +368,7 @@ fn spawn_friendly_bullet(
             damage,
             remaining: range,
             weapon,
-            slot: Some(slot_idx),
+            slot,
         },
         Velocity(dir * BULLET_SPEED),
         RenderLayers::layer(PLAY_LAYER),

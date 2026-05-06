@@ -59,10 +59,10 @@ pub enum EnemyVariant {
 impl EnemyVariant {
     pub fn hp(self) -> i32 {
         match self {
-            EnemyVariant::Standard => 10,
-            EnemyVariant::Heavy    => 30,
-            EnemyVariant::Scout    => 3,
-            EnemyVariant::Bomber   => 8,
+            EnemyVariant::Standard => 5,
+            EnemyVariant::Heavy    => 15,
+            EnemyVariant::Scout    => 2,
+            EnemyVariant::Bomber   => 4,
         }
     }
     pub fn speed(self) -> f32 {

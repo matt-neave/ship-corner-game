@@ -9,7 +9,7 @@
 //! flip-detect and only do work when the resource actually changes.
 
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
+use bevy::window::{PresentMode, PrimaryWindow};
 use bevy::winit::WinitWindows;
 use winit::window::ResizeDirection;
 
@@ -54,6 +54,25 @@ pub struct NightMode {
 pub struct CrtMode {
     pub active: bool,
     pub last_applied: Option<bool>,
+}
+
+/// Toggled by the VSYNC button (top-right corner). When active, the primary
+/// window uses `AutoVsync`; when off, `AutoNoVsync` so the FPS counter can
+/// show the engine's true headroom rather than the monitor's refresh cap.
+#[derive(Resource)]
+pub struct VsyncMode {
+    pub enabled: bool,
+    pub last_applied: Option<bool>,
+}
+
+impl Default for VsyncMode {
+    fn default() -> Self {
+        // VSync off by default — input lag and missed-vsync stutters in this
+        // game's variable-frame-time loop are noticeable enough that the
+        // trade for tear-free presentation isn't worth it. `apply_vsync_mode`
+        // flips the window's present_mode on the first frame.
+        Self { enabled: false, last_applied: None }
+    }
 }
 
 // ---------- Marker components ----------
@@ -150,6 +169,23 @@ pub fn apply_crt_mode(
     for mut v in &mut q {
         *v = if crt.active { Visibility::Inherited } else { Visibility::Hidden };
     }
+}
+
+/// Push `VsyncMode.enabled` into the primary window's `present_mode`. Only
+/// runs work on flips. `AutoVsync` caps to the monitor's refresh; `AutoNoVsync`
+/// lets the renderer go uncapped so the FPS counter reveals real perf headroom.
+pub fn apply_vsync_mode(
+    mut vsync: ResMut<VsyncMode>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    if vsync.last_applied == Some(vsync.enabled) { return; }
+    vsync.last_applied = Some(vsync.enabled);
+    let Ok(mut window) = windows.single_mut() else { return; };
+    window.present_mode = if vsync.enabled {
+        PresentMode::AutoVsync
+    } else {
+        PresentMode::AutoNoVsync
+    };
 }
 
 /// On toggle, write the night-mode override into the live `Palette` so that

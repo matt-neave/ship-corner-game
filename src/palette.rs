@@ -63,6 +63,14 @@ pub const BUILDING_MUNITIONS_HEX:  &str = "#ff8a3c";
 pub const BUILDING_WATCHTOWER_HEX: &str = "#ffe066";
 pub const BUILDING_DRYDOCK_HEX:    &str = "#5cb8ff";
 
+// ---------- Ally hull tints ----------
+//
+// Each `AllyVariant` gets its own identity color, looked up via
+// `PaletteMaterials::ally_hull_for` (in `ally.rs`). Fixed hexes — not
+// palette-driven — so an ally type's identity stays consistent when the
+// game palette swaps.
+pub const PIRATE_HEX: &str = "#7a4a2c"; // aged wood brown
+
 // ---------- UI theme (LHS panel + draft cards) ----------
 pub const UI_BG:        Color = Color::srgb(0.07, 0.08, 0.11);
 pub const UI_ROW_BG:    Color = Color::srgb(0.12, 0.13, 0.17);
@@ -73,8 +81,6 @@ pub const UI_VALUE:     Color = Color::srgb(1.00, 0.85, 0.30);
 pub const UI_BTN_BG:    Color = Color::srgb(0.22, 0.24, 0.30);
 pub const UI_EQUIP_BG:  Color = Color::srgb(0.18, 0.40, 0.26);
 pub const UI_ACTIVE_BG: Color = Color::srgb(0.20, 0.28, 0.40);
-pub const UI_HULL:      Color = Color::srgb(0.30, 0.34, 0.42);
-pub const UI_DOT_OFF:   Color = Color::srgb(0.32, 0.35, 0.42);
 pub const UI_DOT_ON:    Color = Color::srgb(1.00, 0.85, 0.30);
 
 // ---------- Palette resource ----------
@@ -156,6 +162,9 @@ pub struct PaletteMaterials {
     pub turret_railgun: Handle<ColorMaterial>,
     pub bullet_railgun: Handle<ColorMaterial>,
     pub bullet_railgun_outer: Handle<ColorMaterial>,
+    /// Ally hull tints — one per `AllyVariant`. Looked up via
+    /// `ally::PaletteMaterials::ally_hull_for`.
+    pub pirate_hull: Handle<ColorMaterial>,
 }
 
 impl PaletteMaterials {
@@ -192,6 +201,7 @@ impl PaletteMaterials {
             turret_railgun:        materials.add(railgun),
             bullet_railgun:        materials.add(hex(RAILGUN_BRIGHT_HEX)),
             bullet_railgun_outer:  materials.add(railgun),
+            pirate_hull:           materials.add(hex(PIRATE_HEX)),
         }
     }
 }

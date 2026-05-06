@@ -4,11 +4,12 @@
 
 use bevy::prelude::*;
 
+use crate::ally::{ally_hit_radius, Ally};
 use crate::components::{FactionKind, Friendly, Health, Velocity};
 use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
 use crate::enemy::Enemy;
-use crate::palette::PaletteMaterials;
 use crate::modes::GameMode;
+use crate::palette::PaletteMaterials;
 use crate::ui::DamageStats;
 use crate::weapon::WeaponType;
 use crate::Score;
@@ -48,8 +49,9 @@ pub fn bullet_collisions(
     em: Option<Res<EffectMeshes>>,
     game_mode: Res<GameMode>,
     bullets: Query<(Entity, &Transform, &Bullet)>,
-    mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<Friendly>)>,
-    mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx), (With<Friendly>, Without<Enemy>)>,
+    mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
+    mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
+    mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
@@ -87,16 +89,34 @@ pub fn bullet_collisions(
                 }
             }
             FactionKind::Enemy => {
+                // Try the player ship first, then any ally. We break out of
+                // each loop on the first hit so one bullet only damages one
+                // target.
+                let mut consumed = false;
                 for (_fe, ftf, mut h, mut fx) in &mut friendly {
                     if ftf.translation.truncate().distance(bp) < 5.0 {
-                        // In Sandbox the ship is invincible — visual only.
-                        // In Wave mode bullets actually subtract HP.
+                        // Player is invincible in Sandbox; takes HP only in Wave.
                         commands.entity(be).despawn();
                         fx.pulse();
                         if matches!(*game_mode, GameMode::Wave) {
                             h.0 = (h.0 - b.damage).max(0);
                         }
                         let hit_pos = ftf.translation.truncate();
+                        spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
+                        consumed = true;
+                        break;
+                    }
+                }
+                if consumed { continue; }
+                for (_ae, atf, ally, mut h, mut fx) in &mut allies {
+                    let hit_d = ally_hit_radius(ally);
+                    if atf.translation.truncate().distance(bp) < hit_d {
+                        commands.entity(be).despawn();
+                        fx.pulse();
+                        // Allies always take damage (no Sandbox invincibility) —
+                        // `ally_death_check` despawns them when HP hits zero.
+                        h.0 = (h.0 - b.damage).max(0);
+                        let hit_pos = atf.translation.truncate();
                         spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
                         break;
                     }

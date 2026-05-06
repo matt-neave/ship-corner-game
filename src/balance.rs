@@ -29,7 +29,7 @@ pub const HULL_HALF_LEN:      f32 = HULL_LEN / 2.0;
 
 // ---------- Turret geometry ----------
 pub const TURRET_RANGE: f32 = 60.0;
-pub const TURRET_PIVOT: f32 = FRAC_PI_2; // 90°/s
+pub const TURRET_PIVOT: f32 = 145.0 * PI / 180.0; // 145°/s
 
 pub const PI_2: f32 = FRAC_PI_2;
 pub const PI_3: f32 = FRAC_PI_3;
@@ -83,6 +83,11 @@ pub const TURRET_NAME_KEYS: [&str; 8] = [
 // ---------- Barrels & bullets ----------
 pub const BARREL_LATERAL:           f32 = 1.15;
 pub const FRIENDLY_BARREL_TIP:      f32 = 5.0;
+/// Triple-barrel upgrade: the middle barrel sits this many world units
+/// (= internal pixels) longer than the port + starboard pair, giving a visual
+/// marker of the upgrade and pushing the middle muzzle flash + bullet spawn
+/// forward.
+pub const BARREL_MIDDLE_EXTEND:     f32 = 1.0;
 pub const ENEMY_BARREL_TIP:         f32 = 3.55;
 pub const FRIENDLY_BULLET_HALF_LEN: f32 = 2.75;
 pub const ENEMY_BULLET_HALF_LEN:    f32 = 2.25;

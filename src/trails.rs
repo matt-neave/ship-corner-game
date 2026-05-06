@@ -97,7 +97,11 @@ pub fn rebuild_ribbon_mesh(mesh: &mut Mesh, points: &VecDeque<Vec2>, head_width:
 
 // ---------- Systems ----------
 
-/// Sample the friendly ship's stern into ShipPath, then rebuild its ribbon.
+/// Sample the friendly ship's stern into ShipPath. The ribbon mesh is
+/// rebuilt **only on sample-tick frames** — between samples the trail head
+/// trails the ship by at most one sample period (≈33 ms at 30 Hz, ~1 px at
+/// friendly speed), which is imperceptible and saves a mesh rewrite + GPU
+/// upload + four Vec allocations per non-sample frame.
 pub fn update_trail(
     time: Res<Time>,
     mut path: ResMut<ShipPath>,
@@ -112,16 +116,11 @@ pub fn update_trail(
     let head = (ship_tf.translation + stern_offset).truncate();
 
     path.sample_timer -= time.delta_secs();
-    if path.sample_timer <= 0.0 {
-        path.sample_timer = 1.0 / TRAIL_SAMPLE_HZ;
-        path.points.push_front(head);
-        while path.points.len() > TRAIL_MAX_POINTS {
-            path.points.pop_back();
-        }
-    } else if let Some(front) = path.points.front_mut() {
-        // Keep the front sample glued to the stern between sample ticks so
-        // the ribbon's head doesn't visibly lag the moving ship.
-        *front = head;
+    if path.sample_timer > 0.0 { return; }
+    path.sample_timer = 1.0 / TRAIL_SAMPLE_HZ;
+    path.points.push_front(head);
+    while path.points.len() > TRAIL_MAX_POINTS {
+        path.points.pop_back();
     }
 
     let Ok(Mesh2d(handle)) = trail_q.single() else { return; };
@@ -129,8 +128,10 @@ pub fn update_trail(
     rebuild_ribbon_mesh(mesh, &path.points, TRAIL_HEAD_WIDTH);
 }
 
-/// Per-enemy version of `update_trail` — samples each enemy's stern position
-/// into its own short ribbon. Despawns trail entities whose enemy is gone.
+/// Per-enemy ribbon trail. Same sample-tick gating as `update_trail` — at
+/// 25 Hz vs. 60 FPS that's a ~2.4× reduction in mesh rewrites + GPU
+/// uploads + Vec allocations across the whole enemy fleet, the biggest
+/// per-frame allocator pressure source in the previous version.
 pub fn update_enemy_trails(
     time: Res<Time>,
     mut commands: Commands,
@@ -144,18 +145,15 @@ pub fn update_enemy_trails(
             commands.entity(trail_e).despawn();
             continue;
         };
+        trail.sample_timer -= dt;
+        if trail.sample_timer > 0.0 { continue; }
+        trail.sample_timer = 1.0 / ENEMY_TRAIL_SAMPLE_HZ;
+
         let stern = enemy_tf.rotation * Vec3::new(0.0, -(ENEMY_LEN / 2.0 - 1.0), 0.0);
         let head = (enemy_tf.translation + stern).truncate();
-
-        trail.sample_timer -= dt;
-        if trail.sample_timer <= 0.0 {
-            trail.sample_timer = 1.0 / ENEMY_TRAIL_SAMPLE_HZ;
-            trail.points.push_front(head);
-            while trail.points.len() > ENEMY_TRAIL_MAX_POINTS {
-                trail.points.pop_back();
-            }
-        } else if let Some(front) = trail.points.front_mut() {
-            *front = head;
+        trail.points.push_front(head);
+        while trail.points.len() > ENEMY_TRAIL_MAX_POINTS {
+            trail.points.pop_back();
         }
 
         if let Some(mesh) = meshes.get_mut(&mesh2d.0) {

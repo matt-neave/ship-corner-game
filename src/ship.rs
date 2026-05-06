@@ -8,7 +8,7 @@ use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
 
 use crate::balance::{
-    BARREL_LATERAL, BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH, FRIENDLY_SPEED, FRIENDLY_TURN_RATE,
+    BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH, FRIENDLY_SPEED, FRIENDLY_TURN_RATE,
     HULL_HALF_LEN, HULL_LEN, HULL_WIDTH, PIER_CELL_W, PIER_CELL_X, PIER_Y_START, PIER_Y_STEP,
     PLAY_LAYER, PLAY_WORLD, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
 };
@@ -150,19 +150,17 @@ pub fn setup_world(
         ec.insert(ChildOf(ship));
         let turret_id = ec.id();
 
-        // Spawn TWO barrel children. In single-barrel mode only barrel 0 is
-        // shown, centered. In twin mode both are shown, splayed port/stbd.
-        // sync_turret_config keeps positions + visibility in sync with cfg.
-        for barrel_i in 0..2u8 {
-            let initial_visible = visible && (barrel_i == 0 || slot.barrels >= 2);
-            let lateral = if slot.barrels >= 2 {
-                if barrel_i == 0 { -BARREL_LATERAL } else { BARREL_LATERAL }
-            } else { 0.0 };
+        // Spawn THREE barrel children, indexed port / middle / starboard.
+        // Single-barrel mode shows just the middle; twin shows port + stbd
+        // (skipping the middle); triple shows all three. `sync_turret_config`
+        // owns visibility, lateral offset, and the middle-barrel scale-up
+        // that gives the triple upgrade its distinguishing look.
+        for barrel_i in 0..3u8 {
             let barrel = commands.spawn((
                 Mesh2d(barrel_mesh.clone()),
                 MeshMaterial2d(turret_mat.clone()),
-                Transform::from_xyz(lateral, 3.0, 0.1),
-                if initial_visible { Visibility::Inherited } else { Visibility::Hidden },
+                Transform::from_xyz(0.0, 3.0, 0.1),
+                Visibility::Hidden,
                 TurretBarrel,
                 BarrelIndex(barrel_i),
                 RenderLayers::layer(PLAY_LAYER),
@@ -171,15 +169,12 @@ pub fn setup_world(
         }
     }
 
-    // Publish the palette material handles so other systems (spawn_enemies,
-    // turret_aim_fire, enemy_fire) can reference them.
-    commands.insert_resource(pm);
-
     // Cache effect meshes once so muzzle flashes / hit particles don't
     // allocate. Bullet + enemy primitives are also cached here so every bullet
     // / enemy can share the same mesh handle and benefit from Bevy's
-    // draw-call batching.
-    commands.insert_resource(EffectMeshes {
+    // draw-call batching. Built locally so we can pass `&em` to the ally
+    // spawn below before handing the resource off to the ECS.
+    let em = EffectMeshes {
         muzzle_flash:          meshes.add(Capsule2d::new(1.6, 4.0)),
         particle:              meshes.add(Capsule2d::new(0.7, 1.6)),
         bullet_friendly_outer: meshes.add(Capsule2d::new(2.0, 1.5)),
@@ -190,8 +185,26 @@ pub fn setup_world(
         enemy_turret_base:     meshes.add(Circle::new(1.0)),
         enemy_turret_barrel:   meshes.add(Rectangle::new(0.9, 3.5)),
         bomber_warhead:        meshes.add(Circle::new(1.4)),
+        ally_turret_base:      meshes.add(Circle::new(1.4)),
+        ally_turret_barrel:    meshes.add(Rectangle::new(1.1, 3.0)),
         beam:                  meshes.add(Rectangle::new(1.0, BEAM_LENGTH)),
-    });
+    };
+
+    // Spawn the first allied unit — a small autonomous Pirate Ship. Future
+    // ally variants are added via `AllyVariant`; this is just the seed.
+    crate::ally::spawn_ally(
+        &mut commands,
+        &pm,
+        &em,
+        &mut meshes,
+        Vec2::new(-30.0, 30.0),
+        std::f32::consts::FRAC_PI_2,
+        crate::ally::AllyVariant::PirateShip,
+    );
+
+    // Hand both off to the ECS so other systems can pick them up.
+    commands.insert_resource(pm);
+    commands.insert_resource(em);
 }
 
 // ---------- Movement ----------

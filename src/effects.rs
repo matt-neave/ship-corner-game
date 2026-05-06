@@ -29,6 +29,10 @@ pub struct EffectMeshes {
     pub enemy_turret_barrel: Handle<Mesh>,
     /// Bright dot on the bow of a Bomber — visual signal of the threat.
     pub bomber_warhead: Handle<Mesh>,
+    /// Cached turret base + barrel for ally ships. Sized between player and
+    /// enemy turrets; shared across every `AllyVariant`.
+    pub ally_turret_base: Handle<Mesh>,
+    pub ally_turret_barrel: Handle<Mesh>,
     /// Long thin rectangle reused by every railgun beam. Width 1, length
     /// `BEAM_LENGTH` along local +Y. Width is animated via Transform.scale.x.
     pub beam: Handle<Mesh>,
