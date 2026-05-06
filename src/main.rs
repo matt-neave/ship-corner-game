@@ -32,10 +32,12 @@ mod components;
 mod effects;
 mod enemy;
 mod i18n;
+mod map;
 mod modes;
 mod palette;
 mod pier;
 mod rendering;
+mod rune;
 mod ship;
 mod trails;
 mod turret;
@@ -50,7 +52,11 @@ use bullet::{bullet_collisions, bullet_update};
 use effects::{
     apply_hit_fx_visuals, tick_hit_fx, update_hit_particles, update_muzzle_flashes,
 };
-use enemy::{bomber_detonate, enemy_ai, enemy_fire, spawn_enemies};
+use enemy::{bomber_detonate, enemy_ai, enemy_death_check, enemy_fire, spawn_enemies};
+use map::{
+    apply_view_mode, map_boat_movement, map_click_input, setup_map, update_map_visuals,
+    MapState, ViewMode,
+};
 use modes::{
     apply_crt_mode, apply_night_mode, apply_vsync_mode, apply_window_mode,
     handle_desktop_drag_resize, handle_desktop_escape,
@@ -59,12 +65,13 @@ use modes::{
 use palette::{apply_palette, Palette};
 use pier::{draft_input, sync_pier_visuals, update_draft_ui, Pier, WaveDraft};
 use rendering::{resize_upscale_sprite, setup_render, update_hash_image};
+use rune::{tick_on_fire, tick_on_frost};
 use ship::{apply_velocity, friendly_movement, setup_world};
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{sync_turret_config, turret_aim_fire, SlotCfg, TurretConfig};
 use ui::{
-    setup_ui, ui_button_system, update_damage_bars, update_fps_text, update_score_text,
-    update_slot_labels, update_vsync_label, update_wave_ui, DamageStats,
+    setup_ui, ui_button_system, update_damage_bars, update_fps_text, update_map_button,
+    update_score_text, update_slot_labels, update_vsync_label, update_wave_ui, DamageStats,
 };
 use wave::{wave_orchestrator, WaveState};
 use weapon::WeaponType;
@@ -90,6 +97,7 @@ fn main() {
         damage: 1,
         fire_rate: 4.0,
         barrels: 1,
+        rune: None,
     };
     for i in 1..8 {
         cfg.slots[i] = SlotCfg {
@@ -98,6 +106,7 @@ fn main() {
             damage: 1,
             fire_rate: 4.0,
             barrels: 1,
+            rune: None,
         };
     }
 
@@ -126,7 +135,9 @@ fn main() {
         .insert_resource(WaveState::default())
         .insert_resource(Pier::default())
         .insert_resource(WaveDraft::default())
-        .add_systems(Startup, (setup_render, setup_world, setup_ui).chain())
+        .insert_resource(ViewMode::default())
+        .insert_resource(MapState::new())
+        .add_systems(Startup, (setup_render, setup_world, setup_ui, setup_map).chain())
         .add_systems(Update, (
             // Sim / movement. apply_night_mode → apply_palette must be ordered
             // so a night-mode toggle propagates to the camera in the same frame.
@@ -143,7 +154,10 @@ fn main() {
             (turret_aim_fire, beam_apply_damage).chain(),
             enemy_fire,
             bullet_update,
-            bullet_collisions,
+            // Damage application chain: every source writes Health, then
+            // `enemy_death_check` despawns anything that hit zero. Chained so
+            // sources see consistent HP and only one despawn fires per kill.
+            (bullet_collisions, tick_on_fire, tick_on_frost, enemy_death_check).chain(),
         ))
         .add_systems(Update, (
             // Visuals / FX / UI. Split from the sim block so we don't blow
@@ -179,6 +193,14 @@ fn main() {
             ally_ai,
             ally_turret_aim_fire,
             ally_death_check,
+        ))
+        .add_systems(Update, (
+            // Map view — camera-layer swap, click input, boat steering, tints.
+            apply_view_mode,
+            map_click_input,
+            map_boat_movement,
+            update_map_visuals,
+            update_map_button,
         ))
         .run();
 }

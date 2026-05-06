@@ -24,6 +24,7 @@ use crate::components::{Faction, FactionKind, Health, Heading, Velocity};
 use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
+use crate::rune::FireExtent;
 use crate::ship::approach_angle;
 use crate::turret::spawn_friendly_bullet;
 use crate::weapon::WeaponType;
@@ -154,6 +155,7 @@ pub fn spawn_ally(
         Velocity(dir * variant.speed()),
         Heading(heading),
         HitFx::new(body_mat),
+        FireExtent(Vec2::new(hull_w * 0.5, hull_h * 0.5)),
         RenderLayers::layer(PLAY_LAYER),
     )).id();
 
@@ -344,6 +346,7 @@ pub fn ally_turret_aim_fire(
                     turret.variant.fire_damage(),
                     None, // not a player slot — skip damage-stat crediting
                     TURRET_RANGE,
+                    None, // ally turrets don't currently carry runes
                 );
             }
         }

@@ -8,7 +8,7 @@ use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
 
 use crate::balance::{
-    BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH, FRIENDLY_SPEED, FRIENDLY_TURN_RATE,
+    BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH, FRIENDLY_SPEED, FRIENDLY_TURN_RATE, FROST_SPEED_MULT,
     HULL_HALF_LEN, HULL_LEN, HULL_WIDTH, PIER_CELL_W, PIER_CELL_X, PIER_Y_START, PIER_Y_STEP,
     PLAY_LAYER, PLAY_WORLD, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
 };
@@ -18,6 +18,7 @@ use crate::enemy::Enemy;
 use crate::modes::{effective_ui_width, play_area_screen_rect, GameMode, WindowMode};
 use crate::palette::{Palette, PaletteMaterials};
 use crate::pier::PierVisual;
+use crate::rune::{FireExtent, OnFrost};
 use crate::trails::{empty_dynamic_mesh, Trail};
 use crate::turret::{BarrelIndex, TurretBarrel, TurretConfig, TurretSlot};
 
@@ -82,6 +83,7 @@ pub fn setup_world(
         Velocity(Vec2::new(0.0, FRIENDLY_SPEED)),
         Heading(0.0),
         HitFx::new(pm.hull.clone()),
+        FireExtent(Vec2::new(HULL_WIDTH * 0.5, HULL_LEN * 0.5)),
         RenderLayers::layer(PLAY_LAYER),
     )).id();
 
@@ -144,6 +146,7 @@ pub fn setup_world(
                 range_mult: 1.0,
                 barrels: slot.barrels.max(1),
                 next_barrel: 0,
+                rune: slot.rune,
             },
             RenderLayers::layer(PLAY_LAYER),
         ));
@@ -317,11 +320,17 @@ pub fn approach_angle(cur: f32, tgt: f32, max: f32) -> f32 {
 }
 
 /// Tiny shared integrator: `position += velocity * dt` for everything that
-/// has both components. Runs once per frame.
-pub fn apply_velocity(time: Res<Time>, mut q: Query<(&mut Transform, &Velocity)>) {
+/// has both components. Runs once per frame. Entities with the `OnFrost`
+/// status are slowed by `FROST_SPEED_MULT` — the integrator is the right
+/// place since it's the single point where Velocity becomes movement.
+pub fn apply_velocity(
+    time: Res<Time>,
+    mut q: Query<(&mut Transform, &Velocity, Option<&OnFrost>)>,
+) {
     let dt = time.delta_secs();
-    for (mut tf, v) in &mut q {
-        tf.translation.x += v.0.x * dt;
-        tf.translation.y += v.0.y * dt;
+    for (mut tf, v, frost) in &mut q {
+        let mult = if frost.is_some() { FROST_SPEED_MULT } else { 1.0 };
+        tf.translation.x += v.0.x * mult * dt;
+        tf.translation.y += v.0.y * mult * dt;
     }
 }

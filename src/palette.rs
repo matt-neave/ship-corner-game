@@ -71,6 +71,11 @@ pub const BUILDING_DRYDOCK_HEX:    &str = "#5cb8ff";
 // game palette swaps.
 pub const PIRATE_HEX: &str = "#7a4a2c"; // aged wood brown
 
+// ---------- Status-effect tints ----------
+pub const FIRE_HEX:  &str = "#ff8030"; // bright fire orange
+pub const FROST_HEX: &str = "#80d8ff"; // cool sky blue (cyan-ish, distinct from fire)
+pub const SHOCK_HEX: &str = "#ffe680"; // electric yellow (lightning arc)
+
 // ---------- UI theme (LHS panel + draft cards) ----------
 pub const UI_BG:        Color = Color::srgb(0.07, 0.08, 0.11);
 pub const UI_ROW_BG:    Color = Color::srgb(0.12, 0.13, 0.17);
@@ -165,6 +170,18 @@ pub struct PaletteMaterials {
     /// Ally hull tints — one per `AllyVariant`. Looked up via
     /// `ally::PaletteMaterials::ally_hull_for`.
     pub pirate_hull: Handle<ColorMaterial>,
+    /// Fire-rune particle color (also reused for other future fire FX).
+    pub fire:  Handle<ColorMaterial>,
+    /// Frost-rune particle color (cyan mist).
+    pub frost: Handle<ColorMaterial>,
+    /// Shock-rune lightning + particle color (electric yellow).
+    pub shock: Handle<ColorMaterial>,
+    /// Translucent green tint for owned territory on the map view.
+    pub map_owned:   Handle<ColorMaterial>,
+    /// Translucent red tint for unowned ("enemy") territory on the map view.
+    pub map_enemy:   Handle<ColorMaterial>,
+    /// Subtle dark divider lines between map sections.
+    pub map_divider: Handle<ColorMaterial>,
 }
 
 impl PaletteMaterials {
@@ -202,6 +219,24 @@ impl PaletteMaterials {
             bullet_railgun:        materials.add(hex(RAILGUN_BRIGHT_HEX)),
             bullet_railgun_outer:  materials.add(railgun),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),
+            fire:                  materials.add(hex(FIRE_HEX)),
+            frost:                 materials.add(hex(FROST_HEX)),
+            shock:                 materials.add(hex(SHOCK_HEX)),
+            map_owned:             materials.add(ColorMaterial {
+                color: Color::srgba(0.30, 0.78, 0.38, 0.40),
+                alpha_mode: bevy::sprite::AlphaMode2d::Blend,
+                ..default()
+            }),
+            map_enemy:             materials.add(ColorMaterial {
+                color: Color::srgba(0.88, 0.30, 0.30, 0.40),
+                alpha_mode: bevy::sprite::AlphaMode2d::Blend,
+                ..default()
+            }),
+            map_divider:           materials.add(ColorMaterial {
+                color: Color::srgba(0.18, 0.22, 0.30, 0.55),
+                alpha_mode: bevy::sprite::AlphaMode2d::Blend,
+                ..default()
+            }),
         }
     }
 }

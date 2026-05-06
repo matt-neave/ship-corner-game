@@ -21,6 +21,7 @@ use crate::effects::{EffectMeshes, MuzzleFlash};
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
 use crate::pier::{pier_damage_bonus, pier_range_mult, Pier};
+use crate::rune::Rune;
 use crate::ship::approach_angle;
 use crate::weapon::WeaponType;
 
@@ -44,6 +45,9 @@ pub struct TurretSlot {
     pub barrels: u8,
     /// Which barrel fires next (0 or 1) when `barrels == 2`.
     pub next_barrel: u8,
+    /// Rune (ammo overlay) attached to this slot. Bullets fired from this
+    /// turret inherit the rune and apply its status effect on hit.
+    pub rune: Option<Rune>,
 }
 
 /// Marks a barrel mesh child of a turret base. Index 0 is port-side / single,
@@ -68,6 +72,7 @@ pub struct SlotCfg {
     pub damage: i32,
     pub fire_rate: f32,
     pub barrels: u8,
+    pub rune: Option<Rune>,
 }
 
 // ---------- Systems ----------
@@ -96,6 +101,7 @@ pub fn sync_turret_config(
         let new_barrels = s.barrels.clamp(1, 3);
         if new_barrels != slot.barrels { slot.next_barrel = 0; }
         slot.barrels = new_barrels;
+        slot.rune = s.rune;
         *vis = if s.equipped { Visibility::Inherited } else { Visibility::Hidden };
         let turret_mat = pm.turret_for(s.weapon).clone();
         if mat.0 != turret_mat { mat.0 = turret_mat.clone(); }
@@ -305,7 +311,7 @@ pub fn turret_aim_fire(
                             spawn_friendly_bullet(
                                 &mut commands, &em, &outer_mat, &inner_mat,
                                 muzzle_pos, pd, slot.weapon, slot.damage, Some(slot.index as u8),
-                                effective_range,
+                                effective_range, slot.rune,
                             );
                         }
                     }
@@ -327,7 +333,7 @@ pub fn turret_aim_fire(
                         spawn_friendly_bullet(
                             &mut commands, &em, &outer_mat, &inner_mat,
                             muzzle_pos, dir, slot.weapon, slot.damage, Some(slot.index as u8),
-                            effective_range,
+                            effective_range, slot.rune,
                         );
                     }
                 }
@@ -346,6 +352,7 @@ pub fn turret_aim_fire(
 /// effective range so Watchtower buffs flow through. `slot` identifies the
 /// originating turret slot (0-7) for damage-stat crediting; pass `None` for
 /// non-player friendlies (allies) so they don't pollute per-slot stats.
+/// `rune` is inherited from the firing slot and applied on hit.
 pub fn spawn_friendly_bullet(
     commands: &mut Commands,
     em: &EffectMeshes,
@@ -357,6 +364,7 @@ pub fn spawn_friendly_bullet(
     damage: i32,
     slot: Option<u8>,
     range: f32,
+    rune: Option<Rune>,
 ) {
     let bullet = commands.spawn((
         Mesh2d(em.bullet_friendly_outer.clone()),
@@ -369,6 +377,7 @@ pub fn spawn_friendly_bullet(
             remaining: range,
             weapon,
             slot,
+            rune,
         },
         Velocity(dir * BULLET_SPEED),
         RenderLayers::layer(PLAY_LAYER),

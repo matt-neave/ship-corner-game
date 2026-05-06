@@ -20,7 +20,9 @@ use crate::palette::{
     UI_ACTIVE_BG, UI_BG, UI_BTN_BG, UI_DOT_ON, UI_EQUIP_BG,
     UI_ROW_BG, UI_ROW_DIV, UI_TEXT, UI_TEXT_DIM, UI_VALUE,
 };
+use crate::map::ViewMode;
 use crate::pier::{spawn_draft_card, DraftPanel, PierVisual};
+use crate::rune::{cycle_next, cycle_prev, rune_display};
 use crate::turret::TurretConfig;
 use crate::wave::WaveState;
 use crate::weapon::WeaponType;
@@ -55,11 +57,14 @@ pub enum ButtonKind {
     DamageUp, DamageDown,
     RateUp, RateDown,
     BarrelsUp, BarrelsDown,
+    RuneUp, RuneDown,
     ToggleDesktopMode,
     ToggleNightMode,
     ToggleCrtMode,
     ToggleWaveMode,
     ToggleVsync,
+    /// Click → switch to `ViewMode::Map`. Visible only in Combat view.
+    ReturnToMap,
 }
 
 /// Tag on a text node whose contents are driven by `update_slot_labels`.
@@ -67,7 +72,7 @@ pub enum ButtonKind {
 pub struct SlotLabel { pub slot: usize, pub kind: LabelKind }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum LabelKind { Damage, Rate, Status, Barrels }
+pub enum LabelKind { Damage, Rate, Status, Barrels, Rune }
 
 /// Top-right FPS counter, driven by `FrameTimeDiagnosticsPlugin`.
 #[derive(Component)]
@@ -77,6 +82,11 @@ pub struct FpsText;
 /// whenever `VsyncMode.enabled` flips.
 #[derive(Component)]
 pub struct VsyncLabel;
+
+/// Marker for the "MAP" button — visibility toggled by `update_map_button`
+/// so it only appears while in Combat view.
+#[derive(Component)]
+pub struct ReturnToMapButton;
 
 /// Top-left HP-bar container; visible only in Wave mode.
 #[derive(Component)]
@@ -158,6 +168,35 @@ pub fn setup_ui(mut commands: Commands) {
             TextFont { font_size: 8.0, ..default() },
             TextColor(UI_TEXT),
             VsyncLabel,
+        ));
+    });
+
+    // MAP button — sits below the VSYNC toggle. Visibility is gated by
+    // `update_map_button` so it only shows in Combat view (the map view
+    // exits via clicking sections, not via this button).
+    commands.spawn((
+        Button,
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(36.0),
+            right: Val::Px(6.0),
+            padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        BorderColor(UI_VALUE),
+        Visibility::Hidden,
+        SlotButton { slot: 0, kind: ButtonKind::ReturnToMap },
+        ReturnToMapButton,
+    ))
+    .with_children(|b| {
+        b.spawn((
+            Text::new("MAP"),
+            TextFont { font_size: 9.0, ..default() },
+            TextColor(UI_VALUE),
         ));
     });
 
@@ -514,6 +553,8 @@ fn spawn_slot_controls(parent: &mut ChildSpawnerCommands, slot: usize) {
                        ButtonKind::RateDown,   ButtonKind::RateUp);
         spawn_stat_row(c, slot, tr("stat_brrl"), "1",   LabelKind::Barrels,
                        ButtonKind::BarrelsDown, ButtonKind::BarrelsUp);
+        spawn_stat_row(c, slot, tr("stat_rune"), tr("rune_none"), LabelKind::Rune,
+                       ButtonKind::RuneDown,    ButtonKind::RuneUp);
         spawn_share_row(c, slot);
     });
 }
@@ -674,6 +715,7 @@ pub fn ui_button_system(
     mut crt: ResMut<CrtMode>,
     mut game_mode: ResMut<GameMode>,
     mut vsync: ResMut<VsyncMode>,
+    mut view: ResMut<ViewMode>,
 ) {
     for (interaction, btn) in &mut interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
@@ -701,13 +743,19 @@ pub fn ui_button_system(
                 vsync.enabled = !vsync.enabled;
                 continue;
             }
+            ButtonKind::ReturnToMap => {
+                *view = ViewMode::Map;
+                continue;
+            }
             _ => {}
         }
         let s = &mut cfg.slots[btn.slot];
         match btn.kind {
             ButtonKind::ToggleDesktopMode | ButtonKind::ToggleNightMode
             | ButtonKind::ToggleCrtMode  | ButtonKind::ToggleWaveMode
-            | ButtonKind::ToggleVsync => unreachable!(),
+            | ButtonKind::ToggleVsync    | ButtonKind::ReturnToMap => unreachable!(),
+            ButtonKind::RuneUp   => { if s.equipped { s.rune = cycle_next(s.rune); } }
+            ButtonKind::RuneDown => { if s.equipped { s.rune = cycle_prev(s.rune); } }
             ButtonKind::Equip => {
                 // Cycle: unequipped → Standard → Sniper → MG → Shotgun →
                 // Railgun → unequipped. On each step, snap stats to the new
@@ -730,6 +778,7 @@ pub fn ui_button_system(
                             s.weapon = WeaponType::Standard;
                             let (d, r) = s.weapon.defaults();
                             s.damage = d; s.fire_rate = r; s.barrels = 1;
+                            s.rune = None;
                         }
                     }
                 }
@@ -762,6 +811,7 @@ pub fn update_slot_labels(
                     tr("btn_equip_gun").into()
                 };
             }
+            LabelKind::Rune    => **t = rune_display(s.rune).into(),
         }
     }
 }
@@ -834,6 +884,22 @@ pub fn update_vsync_label(
     if !vsync.is_changed() { return; }
     for mut t in &mut q {
         **t = if vsync.enabled { "VSYNC ON".into() } else { "VSYNC OFF".into() };
+    }
+}
+
+/// Show the MAP button only in Combat view — Map view exits via clicking
+/// sections, not via this button.
+pub fn update_map_button(
+    view: Res<ViewMode>,
+    mut q: Query<&mut Visibility, With<ReturnToMapButton>>,
+) {
+    if !view.is_changed() { return; }
+    let target = match *view {
+        ViewMode::Combat => Visibility::Inherited,
+        ViewMode::Map    => Visibility::Hidden,
+    };
+    for mut v in &mut q {
+        if *v != target { *v = target; }
     }
 }
 

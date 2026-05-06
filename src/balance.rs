@@ -122,6 +122,23 @@ pub const BEAM_MAX_WIDTH:     f32 = 3.5;
 pub const BEAM_HIT_RADIUS:    f32 = 3.0;
 pub const BULLET_INNER_LIGHTEN: f32 = 0.55;
 
+// ---------- Runes (status effects) ----------
+pub const FIRE_DURATION:               f32 = 4.0;   // total burn time
+pub const FIRE_DAMAGE_TICK_INTERVAL:   f32 = 0.5;   // damage applied every tick
+pub const FIRE_DAMAGE_PER_TICK:        i32 = 1;     // 1 dmg every 0.5 s → 8 dmg total
+pub const FIRE_PARTICLE_TICK_INTERVAL: f32 = 0.15;  // visual particle spawn rate
+pub const FIRE_PARTICLES_PER_TICK:     u32 = 3;     // particles per visual tick
+
+pub const FROST_DURATION:               f32 = 3.0;   // total slow duration
+pub const FROST_SPEED_MULT:             f32 = 0.4;   // 60% slow
+pub const FROST_PARTICLE_TICK_INTERVAL: f32 = 0.20;  // slower than fire — frost is calm
+pub const FROST_PARTICLES_PER_TICK:     u32 = 2;     // sparser than fire
+
+/// Max distance a shock arc can reach for its chain target. World units.
+pub const SHOCK_CHAIN_RANGE:  f32 = 32.0;
+/// How long the lightning bolt visual lingers on screen.
+pub const SHOCK_VISUAL_LIFE:  f32 = 0.18;
+
 // ---------- Wave mode ----------
 pub const FRIENDLY_HP_WAVE:      i32 = 50;
 pub const WAVE_TRANSITION_DELAY: f32 = 1.4;

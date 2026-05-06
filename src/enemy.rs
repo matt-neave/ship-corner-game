@@ -18,16 +18,17 @@ use std::collections::VecDeque;
 
 use crate::balance::{
     BOMBER_DETONATE_DIST, BULLET_SPEED, ENEMY_BARREL_TIP, ENEMY_BULLET_HALF_LEN, ENEMY_LEN,
-    ENEMY_RANGE, PLAY_LAYER, PLAY_WORLD,
+    ENEMY_RANGE, ENEMY_WIDTH, PLAY_LAYER, PLAY_WORLD,
 };
 use crate::bullet::Bullet;
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
 use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx, MuzzleFlash};
 use crate::palette::PaletteMaterials;
+use crate::rune::FireExtent;
 use crate::ship::approach_angle;
 use crate::trails::{empty_dynamic_mesh, EnemyTrail};
 use crate::weapon::WeaponType;
-use crate::{GameMode, SpawnTimer};
+use crate::{GameMode, Score, SpawnTimer};
 
 // ---------- Components / enums ----------
 
@@ -150,6 +151,7 @@ pub fn spawn_enemy(
         Heading(heading),
         Faction(FactionKind::Enemy),
         HitFx::new(body_mat).with_rest_scale(scale),
+        FireExtent(Vec2::new(ENEMY_WIDTH * 0.5 * scale, ENEMY_LEN * 0.5 * scale)),
         RenderLayers::layer(PLAY_LAYER),
     )).id();
 
@@ -353,6 +355,7 @@ pub fn enemy_fire(
                 remaining: ENEMY_RANGE,
                 weapon: WeaponType::Standard,
                 slot: None,
+                rune: None,
             },
             Velocity(dir * BULLET_SPEED),
             RenderLayers::layer(PLAY_LAYER),
@@ -408,5 +411,28 @@ pub fn bomber_detonate(
             spawn_hit_particles(&mut commands, &em, &pm.enemy,        bp, 14, 80.0,  &mut rng);
             spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, bp, 8,  100.0, &mut rng);
         }
+    }
+}
+
+/// Despawn enemies whose HP has dropped to 0, regardless of damage source
+/// (bullet, beam, fire, future debuffs). Awards score and emits the generic
+/// enemy-color destruction burst — source-specific flair (weapon-color
+/// sparks for bullets) is spawned at the call site before HP hits zero.
+pub fn enemy_death_check(
+    mut commands: Commands,
+    mut score: ResMut<Score>,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<EffectMeshes>>,
+    enemies: Query<(Entity, &Transform, &Health), With<Enemy>>,
+) {
+    let Some(pm) = pm else { return; };
+    let Some(em) = em else { return; };
+    let mut rng = rand::thread_rng();
+    for (e, tf, h) in &enemies {
+        if h.0 > 0 { continue; }
+        commands.entity(e).despawn();
+        score.0 += 10;
+        let pos = tf.translation.truncate();
+        spawn_hit_particles(&mut commands, &em, &pm.enemy, pos, 10, 60.0, &mut rng);
     }
 }

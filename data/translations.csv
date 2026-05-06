@@ -33,4 +33,9 @@ draft_instruction,CHOOSE AN UPGRADE · CLICK A PIER CELL TO PLACE
 stat_dmg,DMG
 stat_rate,RATE
 stat_brrl,BRRL
+stat_rune,RUNE
 stat_share,SHARE
+rune_none,NONE
+rune_fire,FIRE
+rune_frost,FROST
+rune_shock,SHOCK
