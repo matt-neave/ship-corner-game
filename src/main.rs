@@ -42,6 +42,7 @@ mod ship;
 mod trails;
 mod turret;
 mod ui;
+mod ui_kit;
 mod wave;
 mod weapon;
 
@@ -54,8 +55,15 @@ use effects::{
 };
 use enemy::{bomber_detonate, enemy_ai, enemy_death_check, enemy_fire, spawn_enemies};
 use map::{
-    apply_view_mode, in_combat_view, map_boat_movement, map_click_input, setup_map,
-    MapState, ViewMode,
+    advance_map_anim_timeline, apply_view_mode, close_popup_on_view_change,
+    handle_building_choice_clicks, handle_debug_buttons,
+    in_combat_view, map_begin_phase, map_boat_movement, map_click_input,
+    refresh_map_fill, setup_debug_ui, setup_map, sync_owned_slot_visuals,
+    update_anim_beams, update_anim_pulses,
+    update_building_button_tints, update_building_description,
+    update_claim_label, update_debug_button_tints,
+    update_map_slot_labels,
+    DebugClaimMode, MapAnimTimeline, MapState, TriggerMapPhase, ViewMode,
 };
 use modes::{
     apply_crt_mode, apply_night_mode, apply_vsync_mode, apply_window_mode,
@@ -137,7 +145,10 @@ fn main() {
         .insert_resource(WaveDraft::default())
         .insert_resource(ViewMode::default())
         .insert_resource(MapState::new())
-        .add_systems(Startup, (setup_render, setup_world, setup_ui, setup_map).chain())
+        .insert_resource(MapAnimTimeline::default())
+        .insert_resource(DebugClaimMode::default())
+        .add_event::<TriggerMapPhase>()
+        .add_systems(Startup, (setup_render, setup_world, setup_ui, setup_map, setup_debug_ui).chain())
         .add_systems(Update, (
             // Always-on visual setup. apply_night_mode → apply_palette must
             // be ordered so a night-mode toggle propagates to the camera in
@@ -200,11 +211,28 @@ fn main() {
             ally_death_check,
         ).run_if(in_combat_view))
         .add_systems(Update, (
-            // Map view — camera toggle, click target, boat steering.
+            // Map view — camera toggle, click target, boat steering, and
+            // re-rasterize fills when the palette changes (so night-mode
+            // toggle keeps the green/red tints recognizable instead of
+            // hue-shifted by the new ocean color). Slot/popup systems
+            // live in the same set since they share `MapState`.
             apply_view_mode,
+            // Cleanup must run before begin_phase: on a Map-bound view
+            // change, cleanup clears the timeline + stale anims, then
+            // begin_phase repopulates with the new sequence — same frame.
+            (close_popup_on_view_change, map_begin_phase, advance_map_anim_timeline).chain(),
+            update_anim_pulses,
+            update_anim_beams,
             map_click_input,
             map_boat_movement,
+            refresh_map_fill,
+            sync_owned_slot_visuals,
             update_map_button,
+            update_map_slot_labels,
+            update_building_button_tints,
+            update_building_description,
+            handle_building_choice_clicks,
+            (handle_debug_buttons, update_debug_button_tints, update_claim_label),
         ))
         .run();
 }

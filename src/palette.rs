@@ -187,6 +187,13 @@ pub struct PaletteMaterials {
     pub map_enemy:   Handle<ColorMaterial>,
     /// Subtle dark divider lines between map sections.
     pub map_divider: Handle<ColorMaterial>,
+    /// Neutral grey square for an upgrade slot at a section's center.
+    /// Reads as a placeholder/build-here affordance regardless of the
+    /// underlying section tint.
+    pub map_slot: Handle<ColorMaterial>,
+    /// Small filled mark used for the per-section star rating, drawn in a
+    /// row above each slot. Yellow so it pops on both day and night ocean.
+    pub map_slot_star: Handle<ColorMaterial>,
 }
 
 impl PaletteMaterials {
@@ -256,6 +263,20 @@ impl PaletteMaterials {
             // there's no perceived "block" feel even without translucence.
             map_divider:           materials.add(ColorMaterial {
                 color: Color::srgb(0.18, 0.42, 0.60),
+                alpha_mode: bevy::sprite::AlphaMode2d::Opaque,
+                ..default()
+            }),
+            // Slot box: neutral mid-grey so it reads as a "placeholder"
+            // affordance over either the green-owned or red-enemy tint.
+            map_slot:              materials.add(ColorMaterial {
+                color: Color::srgb(0.30, 0.32, 0.36),
+                alpha_mode: bevy::sprite::AlphaMode2d::Opaque,
+                ..default()
+            }),
+            // Star marks above the slot: gold/yellow to match `UI_VALUE`
+            // and pop on both ocean tones.
+            map_slot_star:         materials.add(ColorMaterial {
+                color: Color::srgb(1.00, 0.85, 0.30),
                 alpha_mode: bevy::sprite::AlphaMode2d::Opaque,
                 ..default()
             }),

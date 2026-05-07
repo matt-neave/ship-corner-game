@@ -39,3 +39,8 @@ rune_none,NONE
 rune_fire,FIRE
 rune_frost,FROST
 rune_shock,SHOCK
+map_popup_build,BUILD
+map_building_weaponry,WEAPONRY
+map_building_weaponry_desc,Customize turret loadout in this section.
+map_building_dockyard,DOCKYARD
+map_building_dockyard_desc,Logs adjacent buildings each map phase.
