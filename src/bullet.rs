@@ -37,7 +37,6 @@ use crate::beam::Beam;
 use crate::components::{FactionKind, Friendly, Health, Velocity};
 use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
 use crate::enemy::Enemy;
-use crate::modes::GameMode;
 use crate::palette::PaletteMaterials;
 use crate::rune::{apply_rune, Rune};
 use crate::ui::DamageStats;
@@ -115,7 +114,6 @@ pub fn bullet_collisions(
     mut stats: ResMut<DamageStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
-    game_mode: Res<GameMode>,
     bullets: Query<(Entity, &Transform, &Bullet)>,
     mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
     mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
@@ -163,12 +161,12 @@ pub fn bullet_collisions(
                 for (_fe, ftf, mut h, mut fx) in &mut friendly {
                     if ftf.translation.truncate().distance(bp) < 5.0 {
                         commands.entity(be).despawn();
-                        if matches!(*game_mode, GameMode::Wave) {
-                            apply_damage(&mut h, &mut fx, b.damage);
-                        } else {
-                            // Player invincible in Sandbox — flash only.
-                            fx.pulse();
-                        }
+                        // Friendly ship now takes damage in both modes.
+                        // Sandbox invincibility was useful while the
+                        // map / capture loop was being designed; with
+                        // ally HP also live, parity makes the sandbox
+                        // feel coherent.
+                        apply_damage(&mut h, &mut fx, b.damage);
                         let hit_pos = ftf.translation.truncate();
                         spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
                         consumed = true;

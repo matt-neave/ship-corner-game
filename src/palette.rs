@@ -187,6 +187,10 @@ pub struct PaletteMaterials {
     pub map_enemy:   Handle<ColorMaterial>,
     /// Subtle dark divider lines between map sections.
     pub map_divider: Handle<ColorMaterial>,
+    /// Pure white — used for the ally ship's signal flag (drawn between
+    /// its turrets, fluttering via `wave_ally_flags`). Shared so every
+    /// ally pulls from the same handle and benefits from batching.
+    pub ally_flag: Handle<ColorMaterial>,
     /// Neutral grey square for an upgrade slot at a section's center.
     /// Reads as a placeholder/build-here affordance regardless of the
     /// underlying section tint.
@@ -231,6 +235,7 @@ impl PaletteMaterials {
             bullet_railgun:        materials.add(hex(RAILGUN_BRIGHT_HEX)),
             bullet_railgun_outer:  materials.add(railgun),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),
+            ally_flag:             materials.add(Color::WHITE),
             fire:                  materials.add(hex(FIRE_HEX)),
             frost:                 materials.add(hex(FROST_HEX)),
             shock:                 materials.add(hex(SHOCK_HEX)),

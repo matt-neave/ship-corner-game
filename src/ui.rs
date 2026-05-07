@@ -9,17 +9,24 @@
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
 use crate::balance::{
-    FRIENDLY_HP_WAVE, HULL_LEN, HULL_WIDTH, TURRET_NAME_KEYS, TURRET_POSITIONS, UI_WIDTH,
+    FRIENDLY_HP_WAVE, HULL_LEN, HULL_WIDTH, PLAY_INTERNAL, TURRET_NAME_KEYS,
+    TURRET_POSITIONS, UI_WIDTH,
 };
+use crate::ally::Ally;
 use crate::components::{Friendly, Health};
 use crate::i18n::tr;
-use crate::modes::{CrtMode, DesktopHint, GameMode, NightMode, VsyncMode, WindowMode};
+use crate::modes::{
+    effective_ui_width, play_area_screen_rect,
+    CrtMode, DesktopHint, GameMode, NightMode, VsyncMode, WindowMode,
+};
 use crate::palette::{
     UI_ACTIVE_BG, UI_BG, UI_BTN_BG, UI_DOT_ON, UI_EQUIP_BG,
     UI_ROW_BG, UI_ROW_DIV, UI_TEXT, UI_TEXT_DIM, UI_VALUE,
 };
+use crate::ui_kit::theme;
 use crate::map::ViewMode;
 use crate::pier::{spawn_draft_card, DraftPanel, PierVisual};
 use crate::rune::{cycle_next, cycle_prev, rune_display};
@@ -88,13 +95,47 @@ pub struct VsyncLabel;
 #[derive(Component)]
 pub struct ReturnToMapButton;
 
-/// Top-left HP-bar container; visible only in Wave mode.
+/// Top-left HP bar container — outer Node holding the "HP" label +
+/// track. Naming kept (vs. `ArcadeHpUi` etc.) to avoid an import-ripple
+/// rename now that the bar is always-visible rather than wave-only.
 #[derive(Component)]
 pub struct WaveHpUi;
+/// The bar track itself (dark frame). Marked separately so the
+/// subdivider system can find it and add tick lines as children.
+#[derive(Component)]
+pub struct WaveHpTrack;
+/// Red fill inside the track — width animated by `update_wave_ui`.
 #[derive(Component)]
 pub struct WaveHpFill;
+/// Numeric readout overlaid centered inside the track.
 #[derive(Component)]
 pub struct WaveHpText;
+/// Vertical tick line inside the track, one per 50-HP mark. Despawned
+/// + respawned by `update_hp_subdividers` whenever max HP changes
+/// (mode flip resets `Health` to a different cap).
+#[derive(Component)]
+pub struct HpBarSubdivider;
+
+/// Container below the main HP bar that holds one bar per live ally.
+/// `sync_ally_hp_bars` reconciles its children with the current set of
+/// `Ally` entities each frame.
+#[derive(Component)]
+pub struct AllyHpRow;
+
+/// One ally's HP bar. Carries the ally `Entity` so the update / sync
+/// systems can look up that ally's `Health` without walking the parent
+/// hierarchy. When the ally despawns, the bar is despawned too.
+#[derive(Component)]
+pub struct AllyHpBar {
+    pub ally: Entity,
+}
+
+/// Red fill child of an `AllyHpBar`, animated by `update_ally_hp_values`.
+/// Tagged with the same ally `Entity` for direct lookup.
+#[derive(Component)]
+pub struct AllyHpFill {
+    pub ally: Entity,
+}
 
 // ---------- Resources ----------
 
@@ -233,56 +274,88 @@ pub fn setup_ui(mut commands: Commands) {
         });
     });
 
-    // Wave-mode HP bar — top-left of the play area, hidden in sandbox.
-    // No rounding anywhere; thin pixel-grid feel.
+    // Player HP bar + ally bars — arcade style, anchored inside the
+    // play square's top-left. Root is a flex column:
+    //   - row 0: main bar (track with fill, ticks, right-aligned readout)
+    //   - row 1: ally bars stacked vertically, populated dynamically
+    //            by `sync_ally_hp_bars`.
+    // Spawned `Visibility::Hidden`; `update_wave_ui` flips on combat
+    // view and back.
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(10.0),
-            left: Val::Px(UI_WIDTH + 10.0),
-            width: Val::Px(140.0),
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            column_gap: Val::Px(5.0),
+            top: Val::Px(0.0),
+            left: Val::Px(0.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::FlexStart,
+            row_gap: Val::Px(3.0),
             ..default()
         },
         Visibility::Hidden,
         WaveHpUi,
     ))
     .with_children(|p| {
-        p.spawn((
-            Text::new(tr("hp_label")),
-            TextFont { font_size: 10.0, ..default() },
-            TextColor(UI_TEXT_DIM),
-        ));
-        // Track + fill — sharp pixel rectangle, no border-radius.
+        // Main bar — 180×22 track, see top comment for child stack.
         p.spawn((
             Node {
-                flex_grow: 1.0,
-                height: Val::Px(5.0),
+                width: Val::Px(180.0),
+                height: Val::Px(22.0),
+                border: UiRect::all(Val::Px(1.0)),
+                position_type: PositionType::Relative,
                 ..default()
             },
-            BackgroundColor(UI_ROW_DIV),
+            BackgroundColor(theme::BORDER_SUBTLE),
+            BorderColor(theme::BORDER_DARK),
+            WaveHpTrack,
         ))
         .with_children(|track| {
+            // (1) Red fill, width animated by `update_wave_ui`.
             track.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    left: Val::Px(0.0),
                     top: Val::Px(0.0),
+                    left: Val::Px(0.0),
                     width: Val::Percent(100.0),
                     height: Val::Percent(100.0),
                     ..default()
                 },
-                BackgroundColor(Color::WHITE),
+                BackgroundColor(Color::srgb(0.25, 0.85, 0.30)),
                 WaveHpFill,
             ));
+            // (2) Subdividers added at runtime by `update_hp_subdividers`.
+            // (3) Numeric overlay — right-aligned inside the track,
+            // small inset so the digit doesn't kiss the border.
+            track.spawn(Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                justify_content: JustifyContent::FlexEnd,
+                align_items: AlignItems::Center,
+                padding: UiRect::right(Val::Px(6.0)),
+                ..default()
+            })
+            .with_children(|over| {
+                over.spawn((
+                    Text::new(format!("{}", FRIENDLY_HP_WAVE)),
+                    TextFont { font_size: 13.0, ..default() },
+                    TextColor(theme::ON_SURFACE),
+                    WaveHpText,
+                ));
+            });
         });
+
+        // Ally HP bar container — flex column, populated by
+        // `sync_ally_hp_bars`. Empty at startup; bars appear as ally
+        // ships are spawned.
         p.spawn((
-            Text::new(format!("{}/{}", FRIENDLY_HP_WAVE, FRIENDLY_HP_WAVE)),
-            TextFont { font_size: 9.0, ..default() },
-            TextColor(UI_TEXT),
-            WaveHpText,
+            Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(2.0),
+                ..default()
+            },
+            AllyHpRow,
         ));
     });
 
@@ -903,29 +976,283 @@ pub fn update_map_button(
     }
 }
 
-/// Show / hide the pier grid + HP bar based on game mode, and update the HP
-/// fill width + numeric readout each frame in Wave mode.
+/// Toggle pier + HP-bar visibility and drive the bar's fill width +
+/// numeric readout from the player's current `Health`.
+///
+/// - **Pier visibility:** wave-mode-only chrome, gated by `GameMode`.
+/// - **HP bar visibility:** combat-only chrome, gated by `ViewMode`.
+///   Hidden on the map so the bar doesn't compete with the slot
+///   tiles + star ratings.
+/// - **Fill width / numeric:** mode-aware max HP (Sandbox = 100,
+///   Wave = `FRIENDLY_HP_WAVE`) because `wave.rs` resets `Health.0`
+///   on mode flip. Subdividers recompute on the same mode change in
+///   `update_hp_subdividers`.
 pub fn update_wave_ui(
     mode: Res<GameMode>,
+    view: Res<ViewMode>,
     friendly: Query<&Health, With<Friendly>>,
-    mut pier_q: Query<&mut Visibility, (With<PierVisual>, Without<WaveHpUi>)>,
-    mut hp_ui_q: Query<&mut Visibility, (With<WaveHpUi>, Without<PierVisual>)>,
+    mut pier_q: Query<
+        &mut Visibility,
+        (With<PierVisual>, Without<WaveHpUi>),
+    >,
+    mut hp_root_q: Query<
+        &mut Visibility,
+        (With<WaveHpUi>, Without<PierVisual>),
+    >,
     mut hp_fill_q: Query<&mut Node, With<WaveHpFill>>,
     mut hp_text_q: Query<&mut Text, With<WaveHpText>>,
 ) {
-    let want = matches!(*mode, GameMode::Wave);
     if mode.is_changed() {
-        let target = if want { Visibility::Inherited } else { Visibility::Hidden };
-        for mut v in &mut pier_q  { if *v != target { *v = target; } }
-        for mut v in &mut hp_ui_q { if *v != target { *v = target; } }
+        let want_pier = matches!(*mode, GameMode::Wave);
+        let target = if want_pier { Visibility::Inherited } else { Visibility::Hidden };
+        for mut v in &mut pier_q { if *v != target { *v = target; } }
     }
-    if !want { return; }
+
+    if view.is_changed() {
+        let want = if matches!(*view, ViewMode::Combat) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        for mut v in &mut hp_root_q {
+            if *v != want { *v = want; }
+        }
+    }
+
     let Ok(h) = friendly.single() else { return; };
-    let pct = (h.0 as f32 / FRIENDLY_HP_WAVE as f32 * 100.0).clamp(0.0, 100.0);
-    for mut n in &mut hp_fill_q {
-        n.width = Val::Percent(pct);
+    let max_hp = current_max_hp(&mode);
+    let pct = (h.0 as f32 / max_hp as f32).clamp(0.0, 1.0);
+
+    for mut node in &mut hp_fill_q {
+        node.width = Val::Percent(pct * 100.0);
     }
     for mut t in &mut hp_text_q {
-        **t = format!("{}/{}", h.0.max(0), FRIENDLY_HP_WAVE);
+        // Just the current value — the bar's fill ratio already
+        // visualizes the cap, no need to repeat it as text.
+        **t = format!("{}", h.0.max(0));
+    }
+}
+
+/// Despawn + respawn the bar's vertical tick lines whenever max HP
+/// changes (currently mode flips: Sandbox 100 ↔ Wave 50). Ticks are
+/// children of the track and use the same dark color as the border so
+/// they read as part of the chrome — visible against the red fill on
+/// the left side and the slightly-lighter empty bg on the right.
+pub fn update_hp_subdividers(
+    mode: Res<GameMode>,
+    mut commands: Commands,
+    track_q: Query<Entity, With<WaveHpTrack>>,
+    subdivider_q: Query<Entity, With<HpBarSubdivider>>,
+) {
+    // `mode.is_changed()` is also true on the very first frame the
+    // resource is inserted, so initial dividers are spawned on game
+    // start (none exist before this fires).
+    if !mode.is_changed() { return; }
+    for e in &subdivider_q { commands.entity(e).despawn(); }
+    let Ok(track) = track_q.single() else { return; };
+
+    let max_hp = current_max_hp(&mode);
+    commands.entity(track).with_children(|t| {
+        // Tick at every multiple of 50 HP, *exclusive* of 0 and max
+        // (those are already implied by the track edges). At Sandbox
+        // 100 HP that's one mid-bar tick; at Wave 50 HP, none —
+        // halves with a single divider isn't an accident, it's the
+        // natural read for a bar this size.
+        let step = 50;
+        let mut hp = step;
+        while hp < max_hp {
+            let pct = hp as f32 / max_hp as f32 * 100.0;
+            t.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(pct),
+                    top: Val::Px(0.0),
+                    width: Val::Px(1.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(theme::BORDER_DARK),
+                HpBarSubdivider,
+            ));
+            hp += step;
+        }
+    });
+}
+
+/// Single source of truth for "what is the player's max HP right now".
+/// Used by both the bar's fill % math and the subdivider spacing.
+/// Mirrors the actual HP cap reset behavior in `wave.rs`.
+fn current_max_hp(mode: &GameMode) -> i32 {
+    if matches!(mode, GameMode::Wave) { FRIENDLY_HP_WAVE } else { 100 }
+}
+
+/// Spawn one small bar for an ally as a child of `AllyHpRow`. Smaller
+/// than the main bar (120×14) so it reads as secondary chrome — same
+/// arcade language: dark border, dark track bg, green fill.
+fn spawn_ally_hp_bar(parent: &mut ChildSpawnerCommands, ally: Entity) {
+    parent
+        .spawn((
+            Node {
+                width: Val::Px(120.0),
+                height: Val::Px(14.0),
+                border: UiRect::all(Val::Px(1.0)),
+                position_type: PositionType::Relative,
+                ..default()
+            },
+            BackgroundColor(theme::BORDER_SUBTLE),
+            BorderColor(theme::BORDER_DARK),
+            AllyHpBar { ally },
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(0.0),
+                    left: Val::Px(0.0),
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.25, 0.85, 0.30)),
+                AllyHpFill { ally },
+            ));
+        });
+}
+
+/// Reconcile the ally HP-bar set with the live `Ally` entities each
+/// frame: spawn a bar for every ally that doesn't have one yet, and
+/// despawn any bar whose ally is gone. The work is bounded by the ally
+/// count (typically ≤ a handful) so a per-frame full reconciliation is
+/// cheaper than wiring lifecycle hooks on ally spawn/despawn.
+pub fn sync_ally_hp_bars(
+    mut commands: Commands,
+    container_q: Query<Entity, With<AllyHpRow>>,
+    allies: Query<Entity, With<Ally>>,
+    bars: Query<(Entity, &AllyHpBar)>,
+) {
+    use std::collections::HashSet;
+    let live: HashSet<Entity> = allies.iter().collect();
+    let bar_targets: HashSet<Entity> = bars.iter().map(|(_, b)| b.ally).collect();
+
+    // Despawn orphans — ally despawned, but its bar lingered.
+    for (bar_e, bar) in &bars {
+        if !live.contains(&bar.ally) {
+            commands.entity(bar_e).despawn();
+        }
+    }
+
+    // Spawn missing bars for new allies.
+    let Ok(container) = container_q.single() else { return; };
+    let new_allies: Vec<Entity> = allies
+        .iter()
+        .filter(|e| !bar_targets.contains(e))
+        .collect();
+    if new_allies.is_empty() { return; }
+    commands.entity(container).with_children(|c| {
+        for ally in new_allies {
+            spawn_ally_hp_bar(c, ally);
+        }
+    });
+}
+
+/// Drive each ally bar's fill width from its ally's current HP. Max HP
+/// pulled from the ally's variant so future variants with different
+/// caps work without changing this system.
+pub fn update_ally_hp_values(
+    allies: Query<(&Ally, &Health)>,
+    mut fills: Query<(&AllyHpFill, &mut Node)>,
+) {
+    for (marker, mut node) in &mut fills {
+        let Ok((ally, h)) = allies.get(marker.ally) else { continue; };
+        let max = ally.variant.hp().max(1);
+        let pct = (h.0 as f32 / max as f32).clamp(0.0, 1.0);
+        let want = Val::Percent(pct * 100.0);
+        if node.width != want { node.width = want; }
+    }
+}
+
+/// Anchor the HP bar inside the play square's top-left and match its
+/// chrome (track outline + tick widths) to one game pixel.
+///
+/// - **Pixel matching:** UI nodes draw at native resolution while the
+///   play area is nearest-neighbor upscaled, so a UI `Val::Px(1)` is
+///   one *screen* pixel — thinner than one *game* pixel. Computing
+///   `upscale = play_size / PLAY_INTERNAL` and setting border/divider
+///   widths to that value keeps the bar's lines on the same grid as
+///   the rest of the art.
+/// - **Anchoring:** computing `play_left` / `play_top` each frame
+///   keeps the bar pinned to the play square through window resizes,
+///   UI panel toggles, etc. Margin is in *game pixels* (×upscale) so
+///   the offset feels consistent at any scale.
+pub fn update_hp_bar_pixel_scale(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    window_mode: Res<WindowMode>,
+    mut root_q: Query<
+        &mut Node,
+        (
+            With<WaveHpUi>,
+            Without<WaveHpTrack>,
+            Without<HpBarSubdivider>,
+            Without<AllyHpBar>,
+        ),
+    >,
+    mut track_q: Query<
+        &mut Node,
+        (
+            With<WaveHpTrack>,
+            Without<WaveHpUi>,
+            Without<HpBarSubdivider>,
+            Without<AllyHpBar>,
+        ),
+    >,
+    mut subdivider_q: Query<
+        &mut Node,
+        (
+            With<HpBarSubdivider>,
+            Without<WaveHpUi>,
+            Without<WaveHpTrack>,
+            Without<AllyHpBar>,
+        ),
+    >,
+    mut ally_bar_q: Query<
+        &mut Node,
+        (
+            With<AllyHpBar>,
+            Without<WaveHpUi>,
+            Without<WaveHpTrack>,
+            Without<HpBarSubdivider>,
+        ),
+    >,
+) {
+    let Ok(win) = windows.single() else { return; };
+    let (play_left, play_top, size) = play_area_screen_rect(
+        win.width(), win.height(), effective_ui_width(&window_mode),
+    );
+    let upscale = (size / PLAY_INTERNAL as f32).max(1.0);
+    let px = Val::Px(upscale);
+    let border = UiRect::all(px);
+
+    // Anchor the bar 4 game-pixels in from the play area's top-left
+    // corner. Margin scales with `upscale` so it visually sits the
+    // same distance from the edge regardless of window size.
+    let margin = upscale * 4.0;
+    let want_left = Val::Px(play_left + margin);
+    let want_top  = Val::Px(play_top  + margin);
+    for mut node in &mut root_q {
+        if node.left != want_left { node.left = want_left; }
+        if node.top  != want_top  { node.top  = want_top;  }
+    }
+
+    for mut node in &mut track_q {
+        if node.border != border { node.border = border; }
+    }
+    for mut node in &mut subdivider_q {
+        if node.width != px { node.width = px; }
+    }
+    // Ally bars use the same 1-game-pixel border so chrome stays
+    // consistent across the main + ally stack — only their height /
+    // length differ.
+    for mut node in &mut ally_bar_q {
+        if node.border != border { node.border = border; }
     }
 }

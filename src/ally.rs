@@ -49,7 +49,7 @@ pub enum AllyVariant {
 impl AllyVariant {
     pub fn hp(self) -> i32 {
         match self {
-            AllyVariant::PirateShip => 20,
+            AllyVariant::PirateShip => 40,
         }
     }
     pub fn speed(self) -> f32 {
@@ -114,6 +114,15 @@ pub struct AllyTurret {
     pub mount_angle: f32,
     pub fire_cd: f32,
     pub variant: AllyVariant,
+}
+
+/// White signal flag drawn across the deck, parented to an ally ship.
+/// `phase` desyncs the flutter animation between allies so a fleet
+/// doesn't pulse in lockstep — initialized at spawn from a random
+/// offset.
+#[derive(Component)]
+pub struct AllyFlag {
+    pub phase: f32,
 }
 
 /// Per-variant hull material lookup. Lives here (not in `palette.rs`) so
@@ -183,6 +192,48 @@ pub fn spawn_ally(
             RenderLayers::layer(PLAY_LAYER),
         )).id();
         commands.entity(barrel).insert(ChildOf(turret));
+    }
+
+    // Signal flag — a thin white banner across the deck, slightly
+    // wider than the hull so it overhangs both gunwales. Parented to
+    // the ship so it inherits the ship's heading + position.
+    // `wave_ally_flags` animates `scale.x` to flutter; the random
+    // phase below keeps a fleet from pulsing in lockstep.
+    let flag_w = hull_w + 2.0;          // overhang ~1 unit per side
+    let flag_h = 1.4;
+    let flag_mesh = meshes.add(Rectangle::new(flag_w, flag_h));
+    let flag = commands.spawn((
+        Mesh2d(flag_mesh),
+        MeshMaterial2d(pm.ally_flag.clone()),
+        // Local space: ship +Y is forward. Flag sits amidships
+        // (between the forward and aft turret pairs at y=±3) on the
+        // centerline, at z=0.3 so it renders above the hull but
+        // below the turret bases (turrets at z=0.1 inside parent;
+        // their effective z is greater than the flag because the
+        // parent transform already placed both at the ship's level).
+        Transform::from_xyz(0.0, 0.0, 0.3),
+        AllyFlag {
+            phase: rand::thread_rng().gen_range(0.0..std::f32::consts::TAU),
+        },
+        RenderLayers::layer(PLAY_LAYER),
+    )).id();
+    commands.entity(flag).insert(ChildOf(ship));
+}
+
+/// Flutter every ally flag's horizontal scale on a sine curve. Per-flag
+/// `phase` desyncs them so a fleet doesn't pulse in unison. Amplitude
+/// kept small (≤15%) — anything stronger reads as squashing rather
+/// than waving.
+pub fn wave_ally_flags(
+    time: Res<Time>,
+    mut q: Query<(&AllyFlag, &mut Transform)>,
+) {
+    let t = time.elapsed_secs();
+    for (flag, mut tf) in &mut q {
+        let s = 1.0 + (t * 6.0 + flag.phase).sin() * 0.15;
+        if (tf.scale.x - s).abs() > 0.001 {
+            tf.scale.x = s;
+        }
     }
 }
 

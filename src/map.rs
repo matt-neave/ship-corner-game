@@ -66,11 +66,15 @@ const MAP_BOAT_SCALE: f32 = 0.5;
 const SLOT_SIZE: f32      = 10.0;
 const SLOT_HALF: f32      = SLOT_SIZE / 2.0;
 /// Star-mark geometry — small filled squares stacked horizontally above
-/// the slot, leaving room for up to 5.
-const STAR_SIZE: f32      = 1.8;
-const STAR_GAP:  f32      = 0.8;
+/// the slot, leaving room for up to 5. Sizes are integer world units
+/// so they rasterize to exact internal pixels (no AA, no MSAA in this
+/// pipeline) at any section.center.x. With `STAR_SIZE = 2` and
+/// `STAR_GAP = 2`, stars render as 2-px filled squares with 2-px
+/// gaps — clearly distinguishable as separate pips, not a merged bar.
+const STAR_SIZE: f32      = 2.0;
+const STAR_GAP:  f32      = 2.0;
 /// Distance from slot center up to the row of stars.
-const STAR_Y_OFFSET: f32  = 8.5;
+const STAR_Y_OFFSET: f32  = 9.0;
 
 // ---------- Resources ----------
 
@@ -81,6 +85,30 @@ pub enum ViewMode {
 }
 impl Default for ViewMode {
     fn default() -> Self { ViewMode::Map }
+}
+
+/// Snapshot of the section that triggered the *current* combat. Written
+/// by `map_boat_movement` when the boat crosses into an unowned zone;
+/// `spawn_enemies` reads it to scale enemy density by star rating
+/// (1★ → light skirmish, 5★ → swarm). Default `stars = 1` covers any
+/// combat reached without going through map flow (e.g., a fresh game
+/// where the player jumps straight into Wave mode).
+#[derive(Resource)]
+pub struct CombatContext {
+    pub stars: u8,
+}
+
+impl Default for CombatContext {
+    fn default() -> Self { Self { stars: 1 } }
+}
+
+impl CombatContext {
+    /// On-screen enemy cap for sandbox-style drip spawning. Linear in
+    /// stars at 6 per tier so 5★ = 30 (the previous fixed cap, now the
+    /// upper-bound) and 1★ = 6 (a noticeably calmer skirmish).
+    pub fn enemy_cap(&self) -> usize {
+        (6 * self.stars.max(1) as usize).min(30)
+    }
 }
 
 /// Buildings that can be placed in a section's upgrade slot. Each is gated
@@ -1788,6 +1816,7 @@ pub fn map_boat_movement(
     time: Res<Time>,
     mut state: ResMut<MapState>,
     mut view: ResMut<ViewMode>,
+    mut combat_ctx: ResMut<CombatContext>,
     mut q: Query<(&mut Transform, &mut Heading), With<MapBoat>>,
 ) {
     if *view != ViewMode::Map { return; }
@@ -1827,6 +1856,10 @@ pub fn map_boat_movement(
             state.current = id;
             if !state.owned[id as usize] {
                 state.boat_target = None;
+                // Capture the section's star rating into combat
+                // context *before* the view flip — `spawn_enemies` may
+                // fire later in the same frame and pick up the new cap.
+                combat_ctx.stars = state.sections[id as usize].stars;
                 *view = ViewMode::Combat;
             }
         }

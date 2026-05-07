@@ -16,6 +16,7 @@ use bevy::render::view::RenderLayers;
 use rand::Rng;
 use std::collections::VecDeque;
 
+use crate::ally::Ally;
 use crate::balance::{
     BOMBER_DETONATE_DIST, BULLET_SPEED, ENEMY_BARREL_TIP, ENEMY_BULLET_HALF_LEN, ENEMY_LEN,
     ENEMY_RANGE, ENEMY_WIDTH, PLAY_LAYER, PLAY_WORLD,
@@ -100,8 +101,11 @@ impl EnemyVariant {
         }
     }
     pub fn fire_damage(self) -> i32 {
+        // Every enemy cannon does 1 damage. Variants differ in HP, speed,
+        // and behaviour — not in shot weight. Re-introduce per-variant
+        // damage when we want a clear "this enemy's bullet is scary"
+        // archetype again.
         match self {
-            EnemyVariant::Heavy => 2,
             _ => 1,
         }
     }
@@ -209,6 +213,7 @@ pub fn spawn_enemies(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mode: Res<GameMode>,
+    combat_ctx: Res<crate::map::CombatContext>,
     enemies: Query<Entity, With<Enemy>>,
 ) {
     if *mode != GameMode::Sandbox { return; }
@@ -221,7 +226,9 @@ pub fn spawn_enemies(
     let interval = (3.0 - timer.elapsed * 0.025).max(0.5);
     timer.t = interval;
 
-    if enemies.iter().count() >= 30 { return; }
+    // Cap scales with the section's stars (set when the player
+    // entered this combat from the map).
+    if enemies.iter().count() >= combat_ctx.enemy_cap() { return; }
 
     let mut rng = rand::thread_rng();
     let half = PLAY_WORLD / 2.0;
@@ -249,12 +256,17 @@ pub fn spawn_enemies(
 
 pub fn enemy_ai(
     time: Res<Time>,
-    friendly: Query<&Transform, (With<Friendly>, Without<Enemy>)>,
+    friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
+    allies: Query<&Transform, (With<Ally>, Without<Enemy>, Without<Friendly>)>,
     mut q: Query<(&mut Transform, &mut Velocity, &mut Heading, &mut Enemy)>,
 ) {
     let dt = time.delta_secs();
     let Ok(ftf) = friendly.single() else { return; };
     let fpos = ftf.translation.truncate();
+    // Snapshot ally positions once per frame — all enemies pick the
+    // nearest target from the same list.
+    let ally_positions: Vec<Vec2> =
+        allies.iter().map(|t| t.translation.truncate()).collect();
     let mut rng = rand::thread_rng();
 
     for (mut tf, mut vel, mut heading, mut enemy) in &mut q {
@@ -264,10 +276,16 @@ pub fn enemy_ai(
         let speed = enemy.variant.speed();
         let turn  = enemy.variant.turn_rate();
 
-        // Bombers skip the state machine — head straight at the friendly,
-        // no waypoints, no firing. Detonation is handled by `bomber_detonate`.
+        // Per-enemy nearest-target pick — chooses among
+        // {friendly, allies}. Re-evaluated every frame so a closer
+        // ally that drifts into range pulls aggro naturally.
+        let target_pos = nearest_target(pos, fpos, &ally_positions);
+
+        // Bombers skip the state machine — head straight at their
+        // target, no waypoints, no firing. Detonation is handled by
+        // `bomber_detonate`.
         if enemy.variant == EnemyVariant::Bomber {
-            let to = fpos - pos;
+            let to = target_pos - pos;
             if to.length_squared() > 1.0 {
                 let desired = (-to.x).atan2(to.y);
                 heading.0 = approach_angle(heading.0, desired, turn * dt);
@@ -278,7 +296,7 @@ pub fn enemy_ai(
             continue;
         }
 
-        let dist = pos.distance(fpos);
+        let dist = pos.distance(target_pos);
 
         if enemy.state_timer <= 0.0 {
             enemy.state = if dist > 75.0 {
@@ -296,14 +314,14 @@ pub fn enemy_ai(
             };
             enemy.state_timer = rng.gen_range(timer_range);
             let off = Vec2::new(rng.gen_range(-30.0..30.0), rng.gen_range(-30.0..30.0));
-            enemy.waypoint = fpos + off;
+            enemy.waypoint = target_pos + off;
         }
 
-        let target = match enemy.state {
+        let active_target = match enemy.state {
             EnemyState::Wander | EnemyState::Reposition => enemy.waypoint,
-            EnemyState::Approach | EnemyState::Attack   => fpos,
+            EnemyState::Approach | EnemyState::Attack   => target_pos,
         };
-        let to = target - pos;
+        let to = active_target - pos;
         if to.length_squared() > 1.0 {
             let desired = (-to.x).atan2(to.y);
             heading.0 = approach_angle(heading.0, desired, turn * dt);
@@ -314,12 +332,31 @@ pub fn enemy_ai(
     }
 }
 
+/// Pick the closest of `friendly_pos` and any `ally_positions` to
+/// `enemy_pos`. Friendly is the default — guarantees a target even
+/// when no allies are alive — and an ally only displaces it if it's
+/// strictly closer. Used by `enemy_ai` and `enemy_fire` so steering
+/// and aiming agree on a single target each frame.
+fn nearest_target(enemy_pos: Vec2, friendly_pos: Vec2, ally_positions: &[Vec2]) -> Vec2 {
+    let mut best = friendly_pos;
+    let mut best_d2 = enemy_pos.distance_squared(friendly_pos);
+    for &ap in ally_positions {
+        let d2 = enemy_pos.distance_squared(ap);
+        if d2 < best_d2 {
+            best = ap;
+            best_d2 = d2;
+        }
+    }
+    best
+}
+
 pub fn enemy_fire(
     time: Res<Time>,
     mut commands: Commands,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
-    friendly: Query<&Transform, (With<Friendly>, Without<Enemy>)>,
+    friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
+    allies: Query<&Transform, (With<Ally>, Without<Enemy>, Without<Friendly>)>,
     mut enemies: Query<(Entity, &Transform, &Heading, &mut Enemy)>,
 ) {
     let Some(pm) = pm else { return; };
@@ -327,12 +364,16 @@ pub fn enemy_fire(
     let dt = time.delta_secs();
     let Ok(ftf) = friendly.single() else { return; };
     let fpos = ftf.translation.truncate();
+    let ally_positions: Vec<Vec2> =
+        allies.iter().map(|t| t.translation.truncate()).collect();
 
     for (enemy_entity, tf, heading, mut enemy) in &mut enemies {
         if !enemy.variant.has_gun() { continue; }
         enemy.fire_cd -= dt;
         let pos = tf.translation.truncate();
-        let to = fpos - pos;
+        // Aim at whichever of {friendly, allies} is closest right now.
+        let target_pos = nearest_target(pos, fpos, &ally_positions);
+        let to = target_pos - pos;
         if to.length() > ENEMY_RANGE { continue; }
         let forward = Vec2::new(-heading.0.sin(), heading.0.cos());
         let aim = forward.angle_to(to.normalize_or_zero()).abs();
@@ -381,32 +422,68 @@ pub fn enemy_fire(
     }
 }
 
-/// Bombers don't shoot — they self-destruct on contact with the friendly
-/// ship. Pulses the hull (visual only in Sandbox; chunks 5 HP off in Wave)
+/// Bombers don't shoot — they self-destruct on contact with whichever
+/// of the friendly ship or an ally is closest. Pulses the hit hull
 /// and spawns a bigger-than-usual particle burst so the impact reads.
+/// Damage is now applied in both modes (Sandbox + Wave) for parity
+/// with the cannon damage path.
 pub fn bomber_detonate(
     mut commands: Commands,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
-    game_mode: Res<GameMode>,
     bombers: Query<(Entity, &Transform, &Enemy)>,
-    mut friendly: Query<(&Transform, &mut Health, &mut HitFx), With<Friendly>>,
+    mut friendly: Query<
+        (&Transform, &mut Health, &mut HitFx),
+        (With<Friendly>, Without<Ally>),
+    >,
+    mut allies: Query<
+        (Entity, &Transform, &mut Health, &mut HitFx),
+        (With<Ally>, Without<Friendly>),
+    >,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
-    let Ok((ftf, mut h, mut fx)) = friendly.single_mut() else { return; };
-    let fpos = ftf.translation.truncate();
     let mut rng = rand::thread_rng();
 
-    for (e, btf, enemy) in &bombers {
+    for (be, btf, enemy) in &bombers {
         if enemy.variant != EnemyVariant::Bomber { continue; }
         let bp = btf.translation.truncate();
-        if bp.distance(fpos) < BOMBER_DETONATE_DIST {
-            commands.entity(e).despawn();
-            fx.pulse();
-            if matches!(*game_mode, GameMode::Wave) {
+
+        // Friendly first — preferred target if in range. Skipped only
+        // if the ship has somehow despawned.
+        let mut detonated = false;
+        if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
+            if btf.translation.truncate().distance(ftf.translation.truncate())
+                < BOMBER_DETONATE_DIST
+            {
+                fx.pulse();
                 h.0 = (h.0 - 5).max(0);
+                detonated = true;
             }
+        }
+        // Otherwise check allies — closest one in range eats it.
+        if !detonated {
+            let mut best: Option<(Entity, f32)> = None;
+            for (ae, atf, _, _) in &allies {
+                let d = btf.translation.truncate()
+                    .distance(atf.translation.truncate());
+                if d < BOMBER_DETONATE_DIST
+                    && best.map_or(true, |(_, bd)| d < bd)
+                {
+                    best = Some((ae, d));
+                }
+            }
+            if let Some((ae, _)) = best {
+                if let Ok((_, _, mut h, mut fx)) = allies.get_mut(ae) {
+                    fx.pulse();
+                    h.0 = (h.0 - 5).max(0);
+                    detonated = true;
+                }
+            }
+        }
+
+        if detonated {
+            commands.entity(be).despawn();
             // Two-tone burst: enemy color + bright bomber-warhead color.
             spawn_hit_particles(&mut commands, &em, &pm.enemy,        bp, 14, 80.0,  &mut rng);
             spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, bp, 8,  100.0, &mut rng);

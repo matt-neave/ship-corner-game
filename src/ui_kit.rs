@@ -61,6 +61,10 @@ pub mod theme {
 
     // ---------- Borders (when explicit outlines are wanted) ----------
     pub const BORDER_SUBTLE: Color = Color::srgb(0.22, 0.25, 0.32);
+    /// Near-black outline. Use for chrome that needs to read as a
+    /// strong frame against a saturated fill (e.g., the HP bar's fill
+    /// is bright red — a soft border would dissolve into it).
+    pub const BORDER_DARK:   Color = Color::srgb(0.02, 0.02, 0.04);
 
     // ---------- Sizing ----------
     pub const FONT_XS: f32 = 7.0;

@@ -46,7 +46,7 @@ mod ui_kit;
 mod wave;
 mod weapon;
 
-use ally::{ally_ai, ally_death_check, ally_turret_aim_fire};
+use ally::{ally_ai, ally_death_check, ally_turret_aim_fire, wave_ally_flags};
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
 use bullet::{bullet_collisions, bullet_update};
@@ -63,7 +63,7 @@ use map::{
     update_building_button_tints, update_building_description,
     update_claim_label, update_debug_button_tints,
     update_map_slot_labels,
-    DebugClaimMode, MapAnimTimeline, MapState, TriggerMapPhase, ViewMode,
+    CombatContext, DebugClaimMode, MapAnimTimeline, MapState, TriggerMapPhase, ViewMode,
 };
 use modes::{
     apply_crt_mode, apply_night_mode, apply_vsync_mode, apply_window_mode,
@@ -79,7 +79,10 @@ use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{sync_turret_config, turret_aim_fire, SlotCfg, TurretConfig};
 use ui::{
     setup_ui, ui_button_system, update_damage_bars, update_fps_text, update_map_button,
-    update_score_text, update_slot_labels, update_vsync_label, update_wave_ui, DamageStats,
+    sync_ally_hp_bars, update_ally_hp_values,
+    update_hp_bar_pixel_scale, update_hp_subdividers,
+    update_score_text, update_slot_labels, update_vsync_label,
+    update_wave_ui, DamageStats,
 };
 use wave::{wave_orchestrator, WaveState};
 use weapon::WeaponType;
@@ -146,6 +149,7 @@ fn main() {
         .insert_resource(ViewMode::default())
         .insert_resource(MapState::new())
         .insert_resource(MapAnimTimeline::default())
+        .insert_resource(CombatContext::default())
         .insert_resource(DebugClaimMode::default())
         .add_event::<TriggerMapPhase>()
         .add_systems(Startup, (setup_render, setup_world, setup_ui, setup_map, setup_debug_ui).chain())
@@ -198,11 +202,25 @@ fn main() {
             apply_vsync_mode,
         ))
         .add_systems(Update, (
+            // HP bar runs in both map and combat view since the bar is
+            // always visible. (Pier-visibility toggling inside
+            // `update_wave_ui` is gated by `mode.is_changed()` so it
+            // still only fires meaningfully on a Wave⇄Sandbox flip.)
+            // Own block to stay under Bevy's 20-system tuple limit.
+            update_wave_ui,
+            update_hp_subdividers,
+            update_hp_bar_pixel_scale,
+            sync_ally_hp_bars,
+            update_ally_hp_values,
+            // Flag flutter is purely cosmetic — runs in both views
+            // even though allies only really matter in combat.
+            wave_ally_flags,
+        ))
+        .add_systems(Update, (
             // Wave-mode + ally systems live in their own bundle so we don't
             // blow past the 20-system tuple limit on the visuals/UI block.
             // All combat-side; paused with the rest while on the map.
             wave_orchestrator,
-            update_wave_ui,
             sync_pier_visuals,
             draft_input,
             update_draft_ui,
