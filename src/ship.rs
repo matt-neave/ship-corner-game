@@ -190,11 +190,14 @@ pub fn setup_world(
         bomber_warhead:        meshes.add(Circle::new(1.4)),
         ally_turret_base:      meshes.add(Circle::new(1.4)),
         ally_turret_barrel:    meshes.add(Rectangle::new(1.1, 3.0)),
+        bullet_plane_outer:    meshes.add(Capsule2d::new(0.7, 0.8)),
+        bullet_plane_inner:    meshes.add(Capsule2d::new(0.4, 0.8)),
         beam:                  meshes.add(Rectangle::new(1.0, BEAM_LENGTH)),
     };
 
-    // Spawn the first allied unit — a small autonomous Pirate Ship. Future
-    // ally variants are added via `AllyVariant`; this is just the seed.
+    // Seed allied fleet — one Pirate Ship + one Carrier. Carrier
+    // launches its own air wing on startup; planes are spawned inside
+    // `spawn_ally` when variant is Carrier.
     crate::ally::spawn_ally(
         &mut commands,
         &pm,
@@ -203,6 +206,15 @@ pub fn setup_world(
         Vec2::new(-30.0, 30.0),
         std::f32::consts::FRAC_PI_2,
         crate::ally::AllyVariant::PirateShip,
+    );
+    crate::ally::spawn_ally(
+        &mut commands,
+        &pm,
+        &em,
+        &mut meshes,
+        Vec2::new(30.0, -30.0),
+        std::f32::consts::FRAC_PI_2,
+        crate::ally::AllyVariant::Carrier,
     );
 
     // Hand both off to the ECS so other systems can pick them up.

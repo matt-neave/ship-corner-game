@@ -33,6 +33,11 @@ pub struct EffectMeshes {
     /// enemy turrets; shared across every `AllyVariant`.
     pub ally_turret_base: Handle<Mesh>,
     pub ally_turret_barrel: Handle<Mesh>,
+    /// Small twin-bullet meshes used by carrier-launched planes. Sized
+    /// noticeably smaller than the player's bullets so plane MG fire
+    /// reads as light-arms vs the ship's main batteries.
+    pub bullet_plane_outer: Handle<Mesh>,
+    pub bullet_plane_inner: Handle<Mesh>,
     /// Long thin rectangle reused by every railgun beam. Width 1, length
     /// `BEAM_LENGTH` along local +Y. Width is animated via Transform.scale.x.
     pub beam: Handle<Mesh>,

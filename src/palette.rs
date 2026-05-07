@@ -70,6 +70,8 @@ pub const BUILDING_DRYDOCK_HEX:    &str = "#5cb8ff";
 // palette-driven — so an ally type's identity stays consistent when the
 // game palette swaps.
 pub const PIRATE_HEX: &str = "#7a4a2c"; // aged wood brown
+pub const CARRIER_HEX: &str = "#4d5663"; // naval grey, slightly cool
+pub const PLANE_HEX: &str = "#3a7a3c"; // olive/forest green — reads as a fighter against the deck
 
 // ---------- Status-effect tints ----------
 pub const FIRE_HEX:  &str = "#ff8030"; // bright fire orange
@@ -170,6 +172,10 @@ pub struct PaletteMaterials {
     /// Ally hull tints — one per `AllyVariant`. Looked up via
     /// `ally::PaletteMaterials::ally_hull_for`.
     pub pirate_hull: Handle<ColorMaterial>,
+    pub carrier_hull: Handle<ColorMaterial>,
+    /// Plane fuselage / wings. Shared across every plane regardless of
+    /// which carrier launched it (planes don't have variants today).
+    pub plane_hull: Handle<ColorMaterial>,
     /// Fire-rune particle color (also reused for other future fire FX).
     pub fire:  Handle<ColorMaterial>,
     /// Frost-rune particle color (cyan mist).
@@ -235,6 +241,8 @@ impl PaletteMaterials {
             bullet_railgun:        materials.add(hex(RAILGUN_BRIGHT_HEX)),
             bullet_railgun_outer:  materials.add(railgun),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),
+            carrier_hull:          materials.add(hex(CARRIER_HEX)),
+            plane_hull:            materials.add(hex(PLANE_HEX)),
             ally_flag:             materials.add(Color::WHITE),
             fire:                  materials.add(hex(FIRE_HEX)),
             frost:                 materials.add(hex(FROST_HEX)),

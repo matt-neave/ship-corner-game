@@ -46,7 +46,7 @@ mod ui_kit;
 mod wave;
 mod weapon;
 
-use ally::{ally_ai, ally_death_check, ally_turret_aim_fire, wave_ally_flags};
+use ally::{ally_ai, ally_death_check, ally_turret_aim_fire, plane_ai};
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
 use bullet::{bullet_collisions, bullet_update};
@@ -212,9 +212,6 @@ fn main() {
             update_hp_bar_pixel_scale,
             sync_ally_hp_bars,
             update_ally_hp_values,
-            // Flag flutter is purely cosmetic — runs in both views
-            // even though allies only really matter in combat.
-            wave_ally_flags,
         ))
         .add_systems(Update, (
             // Wave-mode + ally systems live in their own bundle so we don't
@@ -227,6 +224,7 @@ fn main() {
             ally_ai,
             ally_turret_aim_fire,
             ally_death_check,
+            plane_ai,
         ).run_if(in_combat_view))
         .add_systems(Update, (
             // Map view — camera toggle, click target, boat steering, and
