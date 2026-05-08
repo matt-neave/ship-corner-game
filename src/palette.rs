@@ -63,15 +63,50 @@ pub const BUILDING_MUNITIONS_HEX:  &str = "#ff8a3c";
 pub const BUILDING_WATCHTOWER_HEX: &str = "#ffe066";
 pub const BUILDING_DRYDOCK_HEX:    &str = "#5cb8ff";
 
-// ---------- Ally hull tints ----------
+// ---------- Ship-class hull tints ----------
 //
-// Each `AllyVariant` gets its own identity color, looked up via
-// `PaletteMaterials::ally_hull_for` (in `ally.rs`). Fixed hexes — not
-// palette-driven — so an ally type's identity stays consistent when the
-// game palette swaps.
-pub const PIRATE_HEX: &str = "#7a4a2c"; // aged wood brown
-pub const CARRIER_HEX: &str = "#4d5663"; // naval grey, slightly cool
-pub const PLANE_HEX: &str = "#3a7a3c"; // olive/forest green — reads as a fighter against the deck
+// Each `ShipClass` gets its own identity color, looked up via
+// `PaletteMaterials::hull_for_class` (in `ally.rs`). Fixed hexes — not
+// palette-driven — so a class's identity stays consistent when the
+// game palette swaps. Shared between allies today and future boss
+// enemies (which will reuse the same chassis at a different faction).
+pub const PIRATE_HEX:    &str = "#7a4a2c"; // aged wood brown
+pub const CARRIER_HEX:   &str = "#4d5663"; // naval grey, slightly cool
+pub const PLANE_HEX:     &str = "#3a7a3c"; // olive/forest green — reads as a fighter against the deck
+// Submarine: dark teal-blue with enough lightness/saturation to read as
+// "submerged" against the bright day ocean while still being clearly
+// distinct from the near-black night ocean (#1a1c2c).
+pub const SUBMARINE_HEX: &str = "#3a5c70";
+// Minelayer: dark steel grey with a faint warm cast — reads as a small
+// utility boat next to the warmer Pirate brown and cooler Carrier grey.
+pub const MINELAYER_HEX: &str = "#4a4438";
+// Tender: hospital-ship cream — distinctly bright vs the dark warship
+// hulls so the support role is readable at a glance.
+pub const TENDER_HEX: &str = "#d4d0c8";
+
+// ---------- Heal-beam color ----------
+//
+// Vivid green for the tender's healing beam. Picked to pop against both
+// the bright day ocean and the dark night ocean while staying obviously
+// distinct from the railgun/shock cyan-yellow family.
+pub const HEAL_HEX: &str = "#5cf26b";
+
+// ---------- Missile colors ----------
+//
+// Submarine homing missile: dark rust body + bright orange flame core.
+// Distinct from the player's yellow cannonballs so missiles read as a
+// different weapon class instantly.
+pub const MISSILE_HEX:        &str = "#cc4422";
+pub const MISSILE_BRIGHT_HEX: &str = "#ffaa55";
+
+// ---------- Mine colors ----------
+//
+// Sea mines dropped by the Minelayer. Near-black outer "shell" with a
+// red warning dot in the center — the shell stays low-key (it's a
+// hazard sitting on the water) but the red center keeps the player
+// aware of where the deathzones are.
+pub const MINE_OUTER_HEX: &str = "#1a1a22";
+pub const MINE_INNER_HEX: &str = "#ff4d4d";
 
 // ---------- Status-effect tints ----------
 pub const FIRE_HEX:  &str = "#ff8030"; // bright fire orange
@@ -169,13 +204,27 @@ pub struct PaletteMaterials {
     pub turret_railgun: Handle<ColorMaterial>,
     pub bullet_railgun: Handle<ColorMaterial>,
     pub bullet_railgun_outer: Handle<ColorMaterial>,
-    /// Ally hull tints — one per `AllyVariant`. Looked up via
-    /// `ally::PaletteMaterials::ally_hull_for`.
+    /// Ship-class hull tints — one per `ShipClass`. Looked up via
+    /// `ally::PaletteMaterials::hull_for_class`.
     pub pirate_hull: Handle<ColorMaterial>,
     pub carrier_hull: Handle<ColorMaterial>,
+    pub submarine_hull: Handle<ColorMaterial>,
+    pub minelayer_hull: Handle<ColorMaterial>,
+    pub tender_hull: Handle<ColorMaterial>,
+    /// Sea-mine materials. Two-tone: dark shell + red warning dot.
+    pub mine_outer: Handle<ColorMaterial>,
+    pub mine_inner: Handle<ColorMaterial>,
+    /// Tender healing-beam color (vivid green).
+    pub heal: Handle<ColorMaterial>,
     /// Plane fuselage / wings. Shared across every plane regardless of
     /// which carrier launched it (planes don't have variants today).
     pub plane_hull: Handle<ColorMaterial>,
+    /// Submarine homing-missile materials. Outer = rust body, inner = the
+    /// brighter flame/tip color. Stored on the shared `PaletteMaterials`
+    /// because the missile is a regular Friendly bullet — collision and
+    /// damage flow through `bullet_collisions` like any other bullet.
+    pub bullet_missile_outer: Handle<ColorMaterial>,
+    pub bullet_missile_inner: Handle<ColorMaterial>,
     /// Fire-rune particle color (also reused for other future fire FX).
     pub fire:  Handle<ColorMaterial>,
     /// Frost-rune particle color (cyan mist).
@@ -242,7 +291,15 @@ impl PaletteMaterials {
             bullet_railgun_outer:  materials.add(railgun),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),
             carrier_hull:          materials.add(hex(CARRIER_HEX)),
+            submarine_hull:        materials.add(hex(SUBMARINE_HEX)),
+            minelayer_hull:        materials.add(hex(MINELAYER_HEX)),
+            tender_hull:           materials.add(hex(TENDER_HEX)),
             plane_hull:            materials.add(hex(PLANE_HEX)),
+            bullet_missile_outer:  materials.add(hex(MISSILE_HEX)),
+            bullet_missile_inner:  materials.add(hex(MISSILE_BRIGHT_HEX)),
+            mine_outer:            materials.add(hex(MINE_OUTER_HEX)),
+            mine_inner:            materials.add(hex(MINE_INNER_HEX)),
+            heal:                  materials.add(hex(HEAL_HEX)),
             ally_flag:             materials.add(Color::WHITE),
             fire:                  materials.add(hex(FIRE_HEX)),
             frost:                 materials.add(hex(FROST_HEX)),

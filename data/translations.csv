@@ -39,8 +39,19 @@ rune_none,NONE
 rune_fire,FIRE
 rune_frost,FROST
 rune_shock,SHOCK
+rune_detonate,DETONATE
+rune_echo,ECHO
+rune_cascade,CASCADE
+rune_conduit,CONDUIT
+rune_resonate,RESONATE
 map_popup_build,BUILD
 map_building_weaponry,WEAPONRY
 map_building_weaponry_desc,Customize turret loadout in this section.
 map_building_dockyard,DOCKYARD
 map_building_dockyard_desc,Logs adjacent buildings each map phase.
+map_building_foundry,FOUNDRY
+map_building_foundry_desc,Smelts 1 scrap into 1 steel every 60 s.
+map_building_crane,CRANE
+map_building_crane_desc,+30% production for adjacent buildings. Consumes 1 steel every 120 s.
+map_building_refinery,REFINERY
+map_building_refinery_desc,Refines 10 steel into 1 refined steel every 300 s.

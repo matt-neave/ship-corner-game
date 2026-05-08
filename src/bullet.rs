@@ -31,14 +31,20 @@ use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
 use rand::Rng;
 
-use crate::ally::{ally_hit_radius, Ally};
-use crate::balance::{BEAM_LENGTH, PLAY_LAYER, SHOCK_CHAIN_RANGE, SHOCK_VISUAL_LIFE};
+use crate::ally::{ally_hit_radius, ally_is_submerged, Ally};
+use crate::balance::{
+    BEAM_LENGTH, CASCADE_RANGE, CONDUIT_PROC_MULT, PLAY_LAYER, RESONATE_MAX_STACKS,
+    SHOCK_CHAIN_RANGE, SHOCK_VISUAL_LIFE,
+};
 use crate::beam::Beam;
 use crate::components::{FactionKind, Friendly, Health, Velocity};
 use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
-use crate::rune::{apply_rune, Rune};
+use crate::rune::{
+    apply_rune, detonate_consume, resonate_multiplier, EchoPending, OnConduit, OnFire,
+    OnFrost, OnResonate, Rune, ECHO_DELAY,
+};
 use crate::ui::DamageStats;
 use crate::weapon::WeaponType;
 
@@ -118,6 +124,10 @@ pub fn bullet_collisions(
     mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
     mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
+    on_fire: Query<&OnFire>,
+    on_frost: Query<&OnFrost>,
+    on_conduit: Query<&OnConduit>,
+    on_resonate: Query<&OnResonate>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
@@ -175,6 +185,11 @@ pub fn bullet_collisions(
                 }
                 if consumed { continue; }
                 for (_ae, atf, ally, mut h, mut fx) in &mut allies {
+                    // Submerged allies (subs) are invisible to normal
+                    // enemy bullets — they pass right through. Stealth is
+                    // the sub's identity, so this is enforced at the
+                    // collision check, not just at target-selection.
+                    if ally_is_submerged(ally) { continue; }
                     let hit_d = ally_hit_radius(ally);
                     if atf.translation.truncate().distance(bp) < hit_d {
                         commands.entity(be).despawn();
@@ -194,7 +209,8 @@ pub fn bullet_collisions(
         process_damage_event(
             ev, &mut chain,
             &mut commands, &mut stats, &pm, &em,
-            &enemy_snap, &mut enemies, &mut rng,
+            &enemy_snap, &mut enemies, &on_fire, &on_frost,
+            &on_conduit, &on_resonate, &mut rng,
         );
     }
 }
@@ -208,12 +224,24 @@ fn process_damage_event(
     em: &EffectMeshes,
     enemy_snap: &[(Entity, Vec2, f32)],
     enemies: &mut Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
+    on_fire: &Query<&OnFire>,
+    on_frost: &Query<&OnFrost>,
+    on_conduit: &Query<&OnConduit>,
+    on_resonate: &Query<&OnResonate>,
     rng: &mut rand::rngs::ThreadRng,
 ) {
     let Ok((_, _, _, mut h, mut fx)) = enemies.get_mut(ev.target) else { return; };
     if h.0 <= 0 { return; } // already dead from an earlier hit this frame
 
-    let dealt = apply_damage(&mut h, &mut fx, ev.amount);
+    // Resonate damage amplifier — cross-slot debuff that boosts every
+    // damage source on this target. Read once per event so all damage
+    // applied below (initial + Detonate burst) uses the same multiplier.
+    let resonate_mult = resonate_multiplier(on_resonate.get(ev.target).ok());
+    let amplify = |dmg: i32| -> i32 {
+        (dmg as f32 * resonate_mult).round() as i32
+    };
+
+    let dealt = apply_damage(&mut h, &mut fx, amplify(ev.amount));
     if let Some(s) = ev.source_slot {
         stats.per_slot[s as usize] += dealt as u64;
         stats.total            += dealt as u64;
@@ -226,10 +254,58 @@ fn process_damage_event(
     let speed = if h.0 <= 0 { 75.0 } else { 45.0 };
     spawn_hit_particles(commands, em, spark_mat, ev.hit_pos, count, speed, rng);
 
-    // Lethal hits don't fan out further — saves a frame of extra FX on a
-    // target that's already despawning.
-    if h.0 <= 0 { return; }
+    // Lethal-only branch: Cascade is the one rune that fires *because*
+    // the target died. Other runes don't fan out from a kill (saves a
+    // frame of FX on something already despawning).
+    if h.0 <= 0 {
+        if ev.proc_strength <= 0.0 { return; }
+        for &rune in &ev.runes {
+            if rune != Rune::Cascade { continue; }
+            // Cascade is intentionally NOT added to `procced` —
+            // proc_strength decay (× 0.7 per hop) is what eventually
+            // caps the snowball, not a one-hop limit.
+            if rng.gen::<f32>() >= ev.proc_strength { continue; }
+
+            let r2 = CASCADE_RANGE * CASCADE_RANGE;
+            let next = enemy_snap
+                .iter()
+                .filter(|(e, _, _)| *e != ev.target)
+                .map(|&(e, p, _)| (e, p, p.distance_squared(ev.hit_pos)))
+                .filter(|(_, _, d2)| *d2 <= r2)
+                .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+            if let Some((target, target_pos, _)) = next {
+                // Visual trail in the friendly-bullet color so a
+                // cascade reads as "your kill snowballing forward",
+                // distinct from Shock's cyan arc.
+                spawn_lightning_arc(commands, em, &pm.bullet_friendly_outer, ev.hit_pos, target_pos);
+                chain.push(DamageEvent {
+                    target,
+                    amount: ev.amount,
+                    hit_pos: target_pos,
+                    weapon: ev.weapon,
+                    source_slot: None, // chained damage doesn't credit the slot
+                    runes: ev.runes.clone(),
+                    procced: ev.procced.clone(),
+                    proc_strength: ev.proc_strength * Rune::Cascade.proc_coefficient(),
+                });
+            }
+        }
+        return;
+    }
+
     if ev.proc_strength <= 0.0 { return; }
+
+    // Conduit proc-strength buff — if the target carries OnConduit,
+    // every rune attached to this hit gets a more reliable proc roll.
+    // Capped at 1.0 in the eventual `>=` comparison so the visible
+    // effect is "chain hops at full strength" rather than "absurd
+    // super-procs on initial hits (already 100%)."
+    let effective_strength = if on_conduit.get(ev.target).is_ok() {
+        (ev.proc_strength * CONDUIT_PROC_MULT).min(1.0)
+    } else {
+        ev.proc_strength
+    };
 
     // Roll each rune attached to the source bullet. `proc_strength` gates
     // the chance: initial hits at 1.0 always pass, chain hits at 0.5 are
@@ -237,7 +313,7 @@ fn process_damage_event(
     // per chain.
     for &rune in &ev.runes {
         if ev.procced.contains(&rune) { continue; }
-        if rng.gen::<f32>() >= ev.proc_strength { continue; }
+        if rng.gen::<f32>() >= effective_strength { continue; }
 
         match rune {
             Rune::Fire | Rune::Frost => {
@@ -271,6 +347,58 @@ fn process_damage_event(
                         proc_strength: ev.proc_strength * Rune::Shock.proc_coefficient(),
                     });
                 }
+            }
+            Rune::Detonate => {
+                // Pop any primer status (Fire/Frost) on the target. The
+                // burst is itself routed through `apply_damage` so it
+                // pulses HitFx and counts toward the firing slot's
+                // share — Detonate is *your* damage, not a chain hop.
+                let fire_ref = on_fire.get(ev.target).ok();
+                let frost_ref = on_frost.get(ev.target).ok();
+                let burst = detonate_consume(commands, ev.target, fire_ref, frost_ref);
+                if burst > 0 {
+                    let dealt = apply_damage(&mut h, &mut fx, amplify(burst));
+                    if let Some(s) = ev.source_slot {
+                        stats.per_slot[s as usize] += dealt as u64;
+                        stats.total            += dealt as u64;
+                    }
+                    // Two-tone flair: weapon spark + a flame puff so
+                    // the consumed status reads as "popped".
+                    spawn_hit_particles(commands, em, spark_mat, ev.hit_pos, 8, 90.0, rng);
+                    spawn_hit_particles(commands, em, &pm.fire,  ev.hit_pos, 6, 70.0, rng);
+                }
+            }
+            Rune::Echo => {
+                // Schedule a delayed re-damage event on the same target.
+                // Spawned as a free-standing entity so its lifetime is
+                // independent of the bullet (which has already despawned).
+                commands.spawn(EchoPending {
+                    timer: ECHO_DELAY,
+                    target: ev.target,
+                    damage: ev.amount,
+                    source_slot: ev.source_slot,
+                    weapon: ev.weapon,
+                });
+            }
+            Rune::Cascade => {
+                // Handled in the lethal branch above — skip here.
+            }
+            Rune::Conduit => {
+                apply_rune(commands, ev.target, Rune::Conduit);
+                spawn_hit_particles(commands, em, &pm.shock, ev.hit_pos, 4, 35.0, rng);
+            }
+            Rune::Resonate => {
+                // Stack-aware insert: read current stacks, increment,
+                // refresh decay timer. Cap at `RESONATE_MAX_STACKS` so
+                // a single target can't be wound up to ridiculous
+                // damage by a sustained-fire weapon.
+                let current = on_resonate.get(ev.target).map(|r| r.stacks).unwrap_or(0);
+                let new_stacks = (current + 1).min(RESONATE_MAX_STACKS);
+                commands.entity(ev.target).insert(OnResonate::new(new_stacks));
+                // Sniper-pink flair so a Resonate stack reads as a
+                // distinct on-hit beat without conflicting with the
+                // weapon-color spark.
+                spawn_hit_particles(commands, em, &pm.bullet_sniper, ev.hit_pos, 3, 30.0, rng);
             }
         }
     }

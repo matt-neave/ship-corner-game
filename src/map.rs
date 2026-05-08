@@ -27,7 +27,8 @@ use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
 
 use crate::balance::{
-    FRIENDLY_SPEED, FRIENDLY_TURN_RATE, HULL_LEN, HULL_WIDTH, PLAY_INTERNAL, PLAY_WORLD,
+    CRANE_INTERVAL, CRANE_SPEED_MULT, FOUNDRY_INTERVAL, FRIENDLY_SPEED, FRIENDLY_TURN_RATE,
+    HULL_LEN, HULL_WIDTH, PLAY_INTERNAL, PLAY_WORLD, REFINERY_INPUT, REFINERY_INTERVAL,
     TURRET_MOUNTS, TURRET_POSITIONS,
 };
 use crate::components::Heading;
@@ -36,6 +37,8 @@ use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
 use crate::palette::{MapCamera, Palette, PaletteMaterials, PlayCamera};
 use crate::ship::approach_angle;
 use crate::ui_kit::{self, theme};
+use crate::{RefinedSteel, Scrap, Steel};
+use std::collections::HashMap;
 
 /// Render layer for everything visible only in map view. `apply_view_mode`
 /// flips the play camera between `PLAY_LAYER` and this.
@@ -129,6 +132,19 @@ pub enum MapBuilding {
     /// `MapState::neighbor_buildings` instead of reaching into the section
     /// vec directly.
     Dockyard,
+    /// Tier-1 producer. Every `FOUNDRY_INTERVAL` seconds it consumes 1
+    /// scrap and produces 1 steel. Goes idle on no-scrap and resumes the
+    /// next time scrap is available.
+    Foundry,
+    /// Tier-2 modifier. While fueled, gives every adjacent producer a
+    /// `CRANE_SPEED_MULT` rate boost. Consumes 1 steel every
+    /// `CRANE_INTERVAL` seconds; when steel runs out, the boost stops
+    /// until the next successful steel payment.
+    Crane,
+    /// Tier-3 producer. Every `REFINERY_INTERVAL` seconds it consumes
+    /// `REFINERY_INPUT` steel and produces 1 refined steel. Receives
+    /// the Crane speed boost like any other producer.
+    Refinery,
 }
 
 impl MapBuilding {
@@ -138,6 +154,9 @@ impl MapBuilding {
         match self {
             MapBuilding::Weaponry => tr("map_building_weaponry"),
             MapBuilding::Dockyard => tr("map_building_dockyard"),
+            MapBuilding::Foundry  => tr("map_building_foundry"),
+            MapBuilding::Crane    => tr("map_building_crane"),
+            MapBuilding::Refinery => tr("map_building_refinery"),
         }
     }
 
@@ -148,6 +167,9 @@ impl MapBuilding {
         match self {
             MapBuilding::Weaponry => tr("map_building_weaponry_desc"),
             MapBuilding::Dockyard => tr("map_building_dockyard_desc"),
+            MapBuilding::Foundry  => tr("map_building_foundry_desc"),
+            MapBuilding::Crane    => tr("map_building_crane_desc"),
+            MapBuilding::Refinery => tr("map_building_refinery_desc"),
         }
     }
 
@@ -158,7 +180,26 @@ impl MapBuilding {
         let mut opts = Vec::new();
         if stars >= 1 { opts.push(MapBuilding::Weaponry); }
         if stars >= 1 { opts.push(MapBuilding::Dockyard); }
+        if stars >= 1 { opts.push(MapBuilding::Foundry);  }
+        if stars >= 2 { opts.push(MapBuilding::Crane);    }
+        if stars >= 3 { opts.push(MapBuilding::Refinery); }
         opts
+    }
+
+    /// Scrap cost to place this building. Deducted from the `Scrap`
+    /// resource by `handle_building_choice_clicks`; if the player can't
+    /// afford it, the click is rejected and the popup stays open.
+    pub fn cost_scrap(self) -> u32 {
+        match self {
+            MapBuilding::Weaponry => 10,
+            MapBuilding::Dockyard => 10,
+            MapBuilding::Foundry  => 10,
+            // Tier-2 building — costs more up front because it's an
+            // active multiplier, not a producer.
+            MapBuilding::Crane    => 20,
+            // Tier-3 — most expensive; produces the highest-tier currency.
+            MapBuilding::Refinery => 30,
+        }
     }
 }
 
@@ -188,6 +229,29 @@ pub struct MapSection {
     /// count is always 1 today; the `Vec` is here so we can scale it with
     /// stars (or any other rule) without restructuring callers.
     pub slots: Vec<Option<MapBuilding>>,
+}
+
+/// Per-slot runtime state for ticking buildings (Foundry / Crane).
+/// Stored separately from `MapState.sections` so the slot enum stays a
+/// plain `Copy` and click-handler code keeps writing it as one assignment.
+/// Lazy-initialized on first tick — there's no explicit "register" call
+/// when a building is placed.
+#[derive(Default)]
+pub struct BuildingTickState {
+    /// Counts down to 0; on 0, the building's per-cycle action fires
+    /// (consume + produce / consume + idle). Foundries multiply the
+    /// decrement by `CRANE_SPEED_MULT` while an adjacent Crane is fueled.
+    pub cooldown: f32,
+    /// Whether the most-recent cycle paid its cost. False = idle: a
+    /// Foundry that ran out of scrap doesn't produce; a Crane that ran
+    /// out of steel doesn't grant its boost. Re-checked every frame so
+    /// the building snaps back to active the moment its input arrives.
+    pub fueled: bool,
+}
+
+#[derive(Resource, Default)]
+pub struct BuildingTimers {
+    pub state: HashMap<(u32, usize), BuildingTickState>,
 }
 
 #[derive(Resource)]
@@ -346,6 +410,35 @@ pub struct BuildingChoiceButton {
 /// hovers an option; cleared when the cursor leaves all options.
 #[derive(Component)]
 pub struct BuildingPopupDescription;
+
+/// Marker on the cost-display label inside a popup option button. The
+/// `cost` field is kept on the marker so a future affordability tint
+/// system can dim the label without re-querying `MapBuilding::cost_*`.
+#[derive(Component)]
+#[allow(dead_code)]
+pub struct BuildingCostLabel {
+    pub cost: u32,
+}
+
+// ---------- Currency UI (top-left of map view) ----------
+
+/// Root container of the map-view currency HUD (anchored top-left).
+/// Visibility is toggled by `update_currency_ui_visibility` so the
+/// HUD only shows on the map view.
+#[derive(Component)]
+pub struct CurrencyUi;
+
+/// Text node showing the player's current scrap count.
+#[derive(Component)]
+pub struct ScrapText;
+
+/// Text node showing the player's current steel count.
+#[derive(Component)]
+pub struct SteelText;
+
+/// Text node showing the player's current refined-steel count.
+#[derive(Component)]
+pub struct RefinedSteelText;
 
 // ---------- Debug overlay (claim land + trigger phase) ----------
 
@@ -995,6 +1088,158 @@ fn spawn_slot_box_and_label(
 /// Spawn the bottom-right debug panel: a small column of dev buttons
 /// (CLAIM toggle + PHASE re-trigger). Built from `ui_kit` primitives so
 /// it inherits theme + pixel-perfect text without local style choices.
+/// Spawn the top-left currency HUD. One vertical column with one row
+/// per currency (scrap, steel) — each row = a small swatch icon + the
+/// live count. Visibility is toggled by `update_currency_ui_visibility`
+/// based on `ViewMode`.
+pub fn setup_currency_ui(mut commands: Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(8.0),
+                left: Val::Px(8.0),
+                padding: UiRect::all(Val::Px(theme::PAD_MD)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::FlexStart,
+                row_gap: Val::Px(theme::GAP_SM),
+                ..default()
+            },
+            BackgroundColor(theme::SURFACE_RAISED),
+            ZIndex(50),
+            CurrencyUi,
+        ))
+        .with_children(|p| {
+            // Scrap row — silver "two-piece pile" icon.
+            spawn_currency_row(
+                p,
+                Color::srgb(0.62, 0.66, 0.72),
+                Some(Color::srgb(0.42, 0.46, 0.54)),
+                ScrapText,
+            );
+            // Steel row — solid darker blue-grey, single-layer (looks
+            // refined vs scrap's two-layer pile).
+            spawn_currency_row(
+                p,
+                Color::srgb(0.55, 0.62, 0.78),
+                None,
+                SteelText,
+            );
+            // Refined steel — bright accent gold so the top-tier
+            // currency reads as visibly more valuable than its
+            // grey precursors.
+            spawn_currency_row(
+                p,
+                Color::srgb(0.92, 0.78, 0.40),
+                None,
+                RefinedSteelText,
+            );
+        });
+}
+
+/// Build one row of the currency HUD: small icon swatch + a live text
+/// node tagged with the supplied marker. `inner` adds a darker dot on
+/// top of the icon (gives "scrap" its two-piece silhouette); pass
+/// `None` for a single-layer flat icon (steel / future currencies).
+fn spawn_currency_row<M: Component>(
+    parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands,
+    icon_color: Color,
+    inner: Option<Color>,
+    marker: M,
+) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(theme::GAP_SM),
+            ..default()
+        })
+        .with_children(|row| {
+            let icon = row.spawn((
+                Node {
+                    width: Val::Px(10.0),
+                    height: Val::Px(10.0),
+                    ..default()
+                },
+                BackgroundColor(icon_color),
+            )).id();
+            if let Some(inner_color) = inner {
+                row.commands()
+                    .spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            top: Val::Px(3.0),
+                            left: Val::Px(3.0),
+                            width: Val::Px(5.0),
+                            height: Val::Px(5.0),
+                            ..default()
+                        },
+                        BackgroundColor(inner_color),
+                        ChildOf(icon),
+                    ));
+            }
+            row.spawn((
+                ui_kit::label("0", theme::FONT_MD, theme::ON_SURFACE),
+                marker,
+            ));
+        });
+}
+
+/// Mirror the live `Scrap` resource into its HUD text node. Cheap
+/// guard: only writes when the resource actually changed.
+pub fn update_scrap_text(
+    scrap: Res<Scrap>,
+    mut q: Query<&mut Text, With<ScrapText>>,
+) {
+    if !scrap.is_changed() { return; }
+    let s = scrap.0.to_string();
+    for mut text in &mut q {
+        if text.0 != s { text.0 = s.clone(); }
+    }
+}
+
+/// Mirror the live `Steel` resource into its HUD text node.
+pub fn update_steel_text(
+    steel: Res<Steel>,
+    mut q: Query<&mut Text, With<SteelText>>,
+) {
+    if !steel.is_changed() { return; }
+    let s = steel.0.to_string();
+    for mut text in &mut q {
+        if text.0 != s { text.0 = s.clone(); }
+    }
+}
+
+/// Mirror the live `RefinedSteel` resource into its HUD text node.
+pub fn update_refined_steel_text(
+    refined: Res<RefinedSteel>,
+    mut q: Query<&mut Text, With<RefinedSteelText>>,
+) {
+    if !refined.is_changed() { return; }
+    let s = refined.0.to_string();
+    for mut text in &mut q {
+        if text.0 != s { text.0 = s.clone(); }
+    }
+}
+
+/// Show the currency HUD on map view, hide it during combat. Driven by
+/// `ViewMode` change-detection so the visibility component is only
+/// written when the view actually flips.
+pub fn update_currency_ui_visibility(
+    view: Res<ViewMode>,
+    mut q: Query<&mut Visibility, With<CurrencyUi>>,
+) {
+    if !view.is_changed() { return; }
+    let want = if matches!(*view, ViewMode::Map) {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut q {
+        if *v != want { *v = want; }
+    }
+}
+
 pub fn setup_debug_ui(mut commands: Commands) {
     commands.spawn((
         Node {
@@ -1087,6 +1332,125 @@ pub fn update_claim_label(
 /// player is on the map — keeps the world frozen until they re-enter.
 pub fn in_combat_view(view: Res<ViewMode>) -> bool {
     *view == ViewMode::Combat
+}
+
+/// Tick every Foundry / Crane each frame: decrement its cooldown,
+/// resolve resource transactions on cycle end, and propagate the
+/// adjacent-Crane boost to Foundries. Runs in *both* views so the
+/// economy keeps working while the player is in combat — wires aren't
+/// pulled when the camera flips.
+///
+/// Two-pass:
+///   1. Snapshot which sections contain a fueled Crane (the boost
+///      source). Done first so a Foundry's tick this frame sees the
+///      Crane's *current* fueled state, not last-frame's.
+///   2. Tick every Foundry (apply boost) and Crane (drain steel).
+pub fn tick_buildings(
+    time: Res<Time>,
+    state: Res<MapState>,
+    mut timers: ResMut<BuildingTimers>,
+    mut scrap: ResMut<Scrap>,
+    mut steel: ResMut<Steel>,
+    mut refined: ResMut<RefinedSteel>,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 { return; }
+
+    // Pass 1: which sections currently have a fueled Crane?
+    let mut fueled_crane_sections: std::collections::HashSet<u32> =
+        std::collections::HashSet::new();
+    for section in &state.sections {
+        for (idx, slot) in section.slots.iter().enumerate() {
+            if !matches!(slot, Some(MapBuilding::Crane)) { continue; }
+            let key = (section.id, idx);
+            // Newly placed Crane: free first cycle while fueled = true.
+            // Steel will be consumed when the cooldown elapses.
+            let s = timers.state.entry(key).or_insert(BuildingTickState {
+                cooldown: CRANE_INTERVAL,
+                fueled: true,
+            });
+            if s.fueled {
+                fueled_crane_sections.insert(section.id);
+            }
+        }
+    }
+
+    // Pass 2: tick every Foundry / Crane.
+    for section in &state.sections {
+        for (idx, slot) in section.slots.iter().enumerate() {
+            let Some(building) = *slot else { continue; };
+            let key = (section.id, idx);
+
+            match building {
+                MapBuilding::Foundry => {
+                    // Adjacent fueled Crane → speed boost on this cycle.
+                    let boosted = section.adjacencies.iter()
+                        .any(|nbr| fueled_crane_sections.contains(nbr));
+                    let speed_mult = if boosted { CRANE_SPEED_MULT } else { 1.0 };
+
+                    let s = timers.state.entry(key).or_insert(BuildingTickState {
+                        cooldown: FOUNDRY_INTERVAL,
+                        fueled: false,
+                    });
+                    s.cooldown -= dt * speed_mult;
+                    if s.cooldown > 0.0 { continue; }
+                    if scrap.0 >= 1 {
+                        scrap.0 -= 1;
+                        steel.0 = steel.0.saturating_add(1);
+                        s.fueled = true;
+                        s.cooldown = FOUNDRY_INTERVAL;
+                    } else {
+                        // No scrap — clamp at 0 so we keep re-trying
+                        // each frame and resume the moment scrap arrives.
+                        s.fueled = false;
+                        s.cooldown = 0.0;
+                    }
+                }
+                MapBuilding::Crane => {
+                    let s = timers.state.entry(key).or_insert(BuildingTickState {
+                        cooldown: CRANE_INTERVAL,
+                        fueled: true,
+                    });
+                    s.cooldown -= dt;
+                    if s.cooldown > 0.0 { continue; }
+                    if steel.0 >= 1 {
+                        steel.0 -= 1;
+                        s.fueled = true;
+                        s.cooldown = CRANE_INTERVAL;
+                    } else {
+                        s.fueled = false;
+                        s.cooldown = 0.0;
+                    }
+                }
+                MapBuilding::Refinery => {
+                    // Same pattern as Foundry — consumer-producer with
+                    // the Crane speed multiplier baked into the
+                    // cooldown drain. Different ratio: 10 steel in,
+                    // 1 refined out, on a much longer cycle.
+                    let boosted = section.adjacencies.iter()
+                        .any(|nbr| fueled_crane_sections.contains(nbr));
+                    let speed_mult = if boosted { CRANE_SPEED_MULT } else { 1.0 };
+
+                    let s = timers.state.entry(key).or_insert(BuildingTickState {
+                        cooldown: REFINERY_INTERVAL,
+                        fueled: false,
+                    });
+                    s.cooldown -= dt * speed_mult;
+                    if s.cooldown > 0.0 { continue; }
+                    if steel.0 >= REFINERY_INPUT {
+                        steel.0 -= REFINERY_INPUT;
+                        refined.0 = refined.0.saturating_add(1);
+                        s.fueled = true;
+                        s.cooldown = REFINERY_INTERVAL;
+                    } else {
+                        s.fueled = false;
+                        s.cooldown = 0.0;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Toggle which of the two play-target cameras is active. PlayCamera owns
@@ -1349,7 +1713,10 @@ pub fn map_click_input(
                 if section.slots[slot_index].is_some() { return; }
                 let options = MapBuilding::options_for_stars(section.stars);
                 if options.is_empty() { return; }
-                spawn_building_popup(&mut commands, c, section.id, slot_index, &options);
+                spawn_building_popup(
+                    &mut commands, c, win.width(),
+                    section.id, slot_index, &options,
+                );
                 return;
             }
         }
@@ -1369,88 +1736,170 @@ pub fn map_click_input(
 /// Colors + sizing all flow through `ui_kit::theme`. Only the popup root
 /// is hand-built (absolute positioning + `ZIndex` + click-absorbing
 /// `Button`); children compose from kit primitives.
+///
+/// The popup is split into two side-by-side panels:
+///   - **Main panel** holds the BUILD header + the list of option
+///     buttons.
+///   - **Description panel** holds the hover-driven description text,
+///     so reading it doesn't crowd the option list.
+///
+/// Side selection: if the cursor is on the left half of the window,
+/// the description panel sits to the right of the main panel (and the
+/// root anchors at `left`); on the right half, the description sits
+/// to the *left* and the root anchors at `right`. Either way the
+/// description never falls off-screen and the cursor stays adjacent
+/// to the option list it just opened.
 fn spawn_building_popup(
     commands: &mut Commands,
     cursor_screen: Vec2,
+    window_w: f32,
     section_id: u32,
     slot_index: usize,
     options: &[MapBuilding],
 ) {
-    let popup = commands.spawn((
-        Node {
-            // Anchor to the cursor; tiny offset so the pointer doesn't
-            // immediately overlap the first option.
-            position_type: PositionType::Absolute,
-            left: Val::Px(cursor_screen.x + 6.0),
-            top:  Val::Px(cursor_screen.y + 6.0),
-            padding: UiRect::all(Val::Px(theme::PAD_MD)),
-            border: UiRect::all(Val::Px(theme::BORDER_W)),
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Stretch,
-            // Soft minimum so a single short option doesn't produce a
-            // tiny popup, and a soft cap so a long localized label
-            // doesn't grow the popup off-screen — within the cap, text
-            // wraps. Auto-grow within these bounds = localization-safe.
-            min_width: Val::Px(140.0),
-            max_width: Val::Px(260.0),
-            row_gap: Val::Px(theme::GAP_SM),
-            ..default()
-        },
-        BackgroundColor(theme::SURFACE_RAISED),
-        BorderColor(theme::BORDER_SUBTLE),
-        ZIndex(100),
-        // Mark the root with `Button` so a click on the popup's chrome
-        // (not on an option) still registers `Interaction::Pressed`.
-        // `map_click_input` then bails on rule (1), keeping the popup
-        // open instead of accidentally sailing the boat.
-        Button,
-        BuildingPopup,
-    )).id();
+    let on_right_half = cursor_screen.x > window_w * 0.5;
 
-    commands.entity(popup).with_children(|p| {
-        // Header
-        p.spawn(ui_kit::label(
-            tr("map_popup_build"), theme::FONT_SM, theme::ON_SURFACE_DIM,
-        ));
-
-        // Options list — each button stretches to popup width so they
-        // line up as list rows. Built inline (rather than via
-        // `ui_kit::button`) because the kit's button bakes its own
-        // Node, and Bevy bundles can't have two `Node` components in
-        // the same spawn — list-row layout is custom enough that
-        // re-using the kit's default Node and overriding it would
-        // collide. Visuals (Button + BackgroundColor + the kit's
-        // `label` child) still flow through the theme.
-        for &opt in options {
-            p.spawn((
-                Button,
-                Node {
-                    padding: UiRect::axes(
-                        Val::Px(theme::PAD_MD), Val::Px(theme::PAD_SM),
-                    ),
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::FlexStart,
-                    width: Val::Percent(100.0),
-                    ..default()
+    // Root: an invisible flex-row container whose only job is layout +
+    // anchoring. The two visible panels live as children. Anchoring
+    // depends on which half of the window the cursor is on so the
+    // description never spills off the screen edge.
+    let root = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: if on_right_half {
+                    Val::Auto
+                } else {
+                    Val::Px(cursor_screen.x + 6.0)
                 },
-                BackgroundColor(theme::SURFACE),
-                BuildingChoiceButton { section_id, slot_index, building: opt },
-            ))
-            .with_children(|b| {
-                b.spawn(ui_kit::label(
-                    opt.label(), theme::FONT_MD, theme::ON_SURFACE,
-                ));
-            });
-        }
+                right: if on_right_half {
+                    Val::Px(window_w - cursor_screen.x + 6.0)
+                } else {
+                    Val::Auto
+                },
+                top: Val::Px(cursor_screen.y + 6.0),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::FlexStart,
+                column_gap: Val::Px(theme::GAP_MD),
+                ..default()
+            },
+            ZIndex(100),
+            BuildingPopup,
+        ))
+        .id();
 
-        // Description footer — empty until hovered. Sits flush at the
-        // bottom of the popup; lighter color so it reads as supporting
-        // text, not another option.
-        p.spawn((
-            ui_kit::label("", theme::FONT_SM, theme::ON_SURFACE_DIM),
-            BuildingPopupDescription,
-        ));
+    commands.entity(root).with_children(|p| {
+        // Cursor-side first → description on the far side. On the
+        // right half this flips so the description hugs the inner
+        // edge.
+        if on_right_half {
+            spawn_popup_description_panel(p);
+            spawn_popup_main_panel(p, section_id, slot_index, options);
+        } else {
+            spawn_popup_main_panel(p, section_id, slot_index, options);
+            spawn_popup_description_panel(p);
+        }
     });
+}
+
+/// Main panel — BUILD header + option buttons. Carries `Button` so
+/// clicks on its chrome (gaps between options, header area) get
+/// absorbed and don't fall through to `map_click_input`'s
+/// "outside popup" branch.
+fn spawn_popup_main_panel(
+    parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands,
+    section_id: u32,
+    slot_index: usize,
+    options: &[MapBuilding],
+) {
+    parent
+        .spawn((
+            Node {
+                padding: UiRect::all(Val::Px(theme::PAD_MD)),
+                border: UiRect::all(Val::Px(theme::BORDER_W)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+                // Soft minimum so a single short option doesn't
+                // produce a tiny popup, soft cap so a long
+                // localized label doesn't grow off-screen.
+                min_width: Val::Px(140.0),
+                max_width: Val::Px(260.0),
+                row_gap: Val::Px(theme::GAP_SM),
+                ..default()
+            },
+            BackgroundColor(theme::SURFACE_RAISED),
+            BorderColor(theme::BORDER_SUBTLE),
+            Button,
+        ))
+        .with_children(|p| {
+            p.spawn(ui_kit::label(
+                tr("map_popup_build"), theme::FONT_SM, theme::ON_SURFACE_DIM,
+            ));
+            for &opt in options {
+                p.spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::axes(
+                            Val::Px(theme::PAD_MD), Val::Px(theme::PAD_SM),
+                        ),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::SpaceBetween,
+                        column_gap: Val::Px(theme::GAP_MD),
+                        width: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(theme::SURFACE),
+                    BuildingChoiceButton { section_id, slot_index, building: opt },
+                ))
+                .with_children(|b| {
+                    b.spawn(ui_kit::label(
+                        opt.label(), theme::FONT_MD, theme::ON_SURFACE,
+                    ));
+                    let cost = opt.cost_scrap();
+                    if cost > 0 {
+                        b.spawn((
+                            ui_kit::label(
+                                &format!("{} ⛯", cost),
+                                theme::FONT_SM,
+                                theme::ACCENT,
+                            ),
+                            BuildingCostLabel { cost },
+                        ));
+                    }
+                });
+            }
+        });
+}
+
+/// Description panel — sibling of the main panel. Empty placeholder
+/// until the player hovers an option, at which point
+/// `update_building_description` writes the option's localized
+/// description into the tagged text node. Fixed width so the panel
+/// holds shape across hover changes; `Button` for click-absorption.
+fn spawn_popup_description_panel(
+    parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands,
+) {
+    parent
+        .spawn((
+            Node {
+                padding: UiRect::all(Val::Px(theme::PAD_MD)),
+                border: UiRect::all(Val::Px(theme::BORDER_W)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+                width: Val::Px(180.0),
+                min_height: Val::Px(64.0),
+                ..default()
+            },
+            BackgroundColor(theme::SURFACE_RAISED),
+            BorderColor(theme::BORDER_SUBTLE),
+            Button,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                ui_kit::label("", theme::FONT_SM, theme::ON_SURFACE_DIM),
+                BuildingPopupDescription,
+            ));
+        });
 }
 
 /// Reactive bg tint for popup option buttons: idle → `SURFACE`, hovered
@@ -1640,17 +2089,24 @@ pub fn update_anim_beams(
     }
 }
 
-/// Resolve a click on one of the popup's option buttons: write the chosen
-/// building into `MapState`, then despawn the popup. `Changed<Interaction>`
-/// gives us a one-shot trigger on press without latching while held.
+/// Resolve a click on one of the popup's option buttons: deduct the
+/// building's `cost_scrap` from `Scrap`, write the chosen building into
+/// `MapState`, then despawn the popup. `Changed<Interaction>` gives us a
+/// one-shot trigger on press without latching while held. If the player
+/// can't afford the cost, the click is rejected silently and the popup
+/// stays open so they can pick a different (cheaper) option.
 pub fn handle_building_choice_clicks(
     mut commands: Commands,
     interactions: Query<(&Interaction, &BuildingChoiceButton), Changed<Interaction>>,
     popups: Query<Entity, With<BuildingPopup>>,
     mut state: ResMut<MapState>,
+    mut scrap: ResMut<Scrap>,
 ) {
     for (interaction, choice) in &interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
+        let cost = choice.building.cost_scrap();
+        if scrap.0 < cost { continue; } // can't afford — leave popup open
+        scrap.0 -= cost;
         if let Some(section) = state.sections.get_mut(choice.section_id as usize) {
             if let Some(slot) = section.slots.get_mut(choice.slot_index) {
                 *slot = Some(choice.building);
@@ -1705,9 +2161,13 @@ pub fn map_begin_phase(
         for slot in &section.slots {
             let Some(building) = *slot else { continue; };
             match building {
-                MapBuilding::Weaponry => {
-                    // No begin-phase effect today; weapon-customization
-                    // is triggered in the slot click flow, not here.
+                MapBuilding::Weaponry
+                | MapBuilding::Foundry
+                | MapBuilding::Crane
+                | MapBuilding::Refinery => {
+                    // No begin-phase effect — these run on their own
+                    // per-frame ticker (`tick_buildings`) or via the
+                    // slot-click flow, not via the map-phase timeline.
                 }
                 MapBuilding::Dockyard => {
                     let pos = section.center;

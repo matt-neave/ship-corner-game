@@ -139,6 +139,27 @@ pub const SHOCK_CHAIN_RANGE:  f32 = 32.0;
 /// How long the lightning bolt visual lingers on screen.
 pub const SHOCK_VISUAL_LIFE:  f32 = 0.18;
 
+/// Max distance a Cascade chain can reach for its on-kill hop. Wider
+/// than a Shock chain because Cascade only fires on lethal hits, so
+/// we want it to sometimes find a target across a small gap.
+pub const CASCADE_RANGE:        f32 = 40.0;
+/// How long a `OnConduit` status persists on a target after a Conduit
+/// proc — long enough that a follow-up shot from another slot can
+/// benefit, short enough that it doesn't linger forever.
+pub const CONDUIT_DURATION:     f32 = 3.0;
+/// Multiplier applied to incoming proc rolls' strength while a target
+/// is conducted. Caps at 1.0 in the rolled comparison, so the visible
+/// effect is "chain hops at full strength" rather than "initial hits
+/// have super-procs".
+pub const CONDUIT_PROC_MULT:    f32 = 1.5;
+/// How long `OnResonate` stacks linger after the most recent hit.
+/// Short enough that you have to keep hitting the same target to
+/// stack up; long enough that bursty weapons (Shotgun) still benefit.
+pub const RESONATE_DECAY:           f32 = 2.0;
+/// Damage bonus per Resonate stack, multiplicative.
+pub const RESONATE_DAMAGE_PER_STACK: f32 = 0.20;
+pub const RESONATE_MAX_STACKS:      u8  = 5;
+
 // ---------- Wave mode ----------
 pub const FRIENDLY_HP_WAVE:      i32 = 50;
 pub const WAVE_TRANSITION_DELAY: f32 = 1.4;
@@ -154,3 +175,21 @@ pub const PIER_CELL_W:  f32 = 9.0;
 pub const PIER_CELL_H:  f32 = 21.0;
 pub const PIER_Y_STEP:  f32 = 22.0;
 pub const PIER_Y_START: f32 = -PIER_Y_STEP * 3.5;
+
+// ---------- Map-view economy ----------
+//
+// Production-tick intervals + boost factor for the Foundry / Crane
+// economy. These are wall-clock seconds, ticked by `tick_buildings`
+// in `map.rs`; an active adjacent Crane shrinks a Foundry's effective
+// interval by `CRANE_SPEED_MULT` (1.30 → ~46 s/cycle instead of 60).
+
+/// Foundry: every cycle, consumes 1 scrap and produces 1 steel.
+pub const FOUNDRY_INTERVAL:   f32 = 60.0;
+/// Crane: every cycle, consumes 1 steel; while fueled it boosts each
+/// adjacent production building's speed by `CRANE_SPEED_MULT`.
+pub const CRANE_INTERVAL:     f32 = 120.0;
+pub const CRANE_SPEED_MULT:   f32 = 1.30;
+/// Refinery (tier 3): every cycle, consumes 10 steel and produces 1
+/// refined steel.
+pub const REFINERY_INTERVAL:  f32 = 300.0;
+pub const REFINERY_INPUT:     u32 = 10;

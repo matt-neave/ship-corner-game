@@ -32,3 +32,15 @@ pub enum FactionKind {
     Friendly,
     Enemy,
 }
+
+impl FactionKind {
+    /// The other side. Used by faction-parameterized weapons / units to
+    /// derive "what should my projectiles' faction be?" from "what
+    /// faction do I target?", or vice versa.
+    pub fn opposite(self) -> FactionKind {
+        match self {
+            FactionKind::Friendly => FactionKind::Enemy,
+            FactionKind::Enemy    => FactionKind::Friendly,
+        }
+    }
+}

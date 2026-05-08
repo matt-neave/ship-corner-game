@@ -1164,7 +1164,7 @@ pub fn update_ally_hp_values(
 ) {
     for (marker, mut node) in &mut fills {
         let Ok((ally, h)) = allies.get(marker.ally) else { continue; };
-        let max = ally.variant.hp().max(1);
+        let max = ally.class.hp().max(1);
         let pct = (h.0 as f32 / max as f32).clamp(0.0, 1.0);
         let want = Val::Percent(pct * 100.0);
         if node.width != want { node.width = want; }

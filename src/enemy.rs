@@ -16,7 +16,7 @@ use bevy::render::view::RenderLayers;
 use rand::Rng;
 use std::collections::VecDeque;
 
-use crate::ally::Ally;
+use crate::ally::{ally_is_submerged, Ally};
 use crate::balance::{
     BOMBER_DETONATE_DIST, BULLET_SPEED, ENEMY_BARREL_TIP, ENEMY_BULLET_HALF_LEN, ENEMY_LEN,
     ENEMY_RANGE, ENEMY_WIDTH, PLAY_LAYER, PLAY_WORLD,
@@ -29,7 +29,7 @@ use crate::rune::FireExtent;
 use crate::ship::approach_angle;
 use crate::trails::{empty_dynamic_mesh, EnemyTrail};
 use crate::weapon::WeaponType;
-use crate::{GameMode, Score, SpawnTimer};
+use crate::{GameMode, Score, Scrap, SpawnTimer};
 
 // ---------- Components / enums ----------
 
@@ -257,16 +257,20 @@ pub fn spawn_enemies(
 pub fn enemy_ai(
     time: Res<Time>,
     friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
-    allies: Query<&Transform, (With<Ally>, Without<Enemy>, Without<Friendly>)>,
+    allies: Query<(&Transform, &Ally), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
     mut q: Query<(&mut Transform, &mut Velocity, &mut Heading, &mut Enemy)>,
 ) {
     let dt = time.delta_secs();
     let Ok(ftf) = friendly.single() else { return; };
     let fpos = ftf.translation.truncate();
     // Snapshot ally positions once per frame — all enemies pick the
-    // nearest target from the same list.
-    let ally_positions: Vec<Vec2> =
-        allies.iter().map(|t| t.translation.truncate()).collect();
+    // nearest target from the same list. Submerged allies are filtered
+    // out here so normal enemies don't try to chase a sub they can't hit.
+    let ally_positions: Vec<Vec2> = allies
+        .iter()
+        .filter(|(_, a)| !ally_is_submerged(a))
+        .map(|(t, _)| t.translation.truncate())
+        .collect();
     let mut rng = rand::thread_rng();
 
     for (mut tf, mut vel, mut heading, mut enemy) in &mut q {
@@ -356,7 +360,7 @@ pub fn enemy_fire(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
-    allies: Query<&Transform, (With<Ally>, Without<Enemy>, Without<Friendly>)>,
+    allies: Query<(&Transform, &Ally), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
     mut enemies: Query<(Entity, &Transform, &Heading, &mut Enemy)>,
 ) {
     let Some(pm) = pm else { return; };
@@ -364,8 +368,14 @@ pub fn enemy_fire(
     let dt = time.delta_secs();
     let Ok(ftf) = friendly.single() else { return; };
     let fpos = ftf.translation.truncate();
-    let ally_positions: Vec<Vec2> =
-        allies.iter().map(|t| t.translation.truncate()).collect();
+    // Skip submerged allies — `enemy_ai` already excludes them from
+    // steering, and aiming at them here would waste shots that would
+    // pass through anyway.
+    let ally_positions: Vec<Vec2> = allies
+        .iter()
+        .filter(|(_, a)| !ally_is_submerged(a))
+        .map(|(t, _)| t.translation.truncate())
+        .collect();
 
     for (enemy_entity, tf, heading, mut enemy) in &mut enemies {
         if !enemy.variant.has_gun() { continue; }
@@ -437,7 +447,7 @@ pub fn bomber_detonate(
         (With<Friendly>, Without<Ally>),
     >,
     mut allies: Query<
-        (Entity, &Transform, &mut Health, &mut HitFx),
+        (Entity, &Transform, &Ally, &mut Health, &mut HitFx),
         (With<Ally>, Without<Friendly>),
     >,
 ) {
@@ -461,10 +471,12 @@ pub fn bomber_detonate(
                 detonated = true;
             }
         }
-        // Otherwise check allies — closest one in range eats it.
+        // Otherwise check allies — closest non-submerged one in range
+        // eats it. Submarines are stealth, so bombers can't sense them.
         if !detonated {
             let mut best: Option<(Entity, f32)> = None;
-            for (ae, atf, _, _) in &allies {
+            for (ae, atf, ally, _, _) in &allies {
+                if ally_is_submerged(ally) { continue; }
                 let d = btf.translation.truncate()
                     .distance(atf.translation.truncate());
                 if d < BOMBER_DETONATE_DIST
@@ -474,7 +486,7 @@ pub fn bomber_detonate(
                 }
             }
             if let Some((ae, _)) = best {
-                if let Ok((_, _, mut h, mut fx)) = allies.get_mut(ae) {
+                if let Ok((_, _, _, mut h, mut fx)) = allies.get_mut(ae) {
                     fx.pulse();
                     h.0 = (h.0 - 5).max(0);
                     detonated = true;
@@ -498,6 +510,7 @@ pub fn bomber_detonate(
 pub fn enemy_death_check(
     mut commands: Commands,
     mut score: ResMut<Score>,
+    mut scrap: ResMut<Scrap>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     enemies: Query<(Entity, &Transform, &Health), With<Enemy>>,
@@ -509,6 +522,8 @@ pub fn enemy_death_check(
         if h.0 > 0 { continue; }
         commands.entity(e).despawn();
         score.0 += 10;
+        // +1 scrap per kill — spent on map-view building placement.
+        scrap.0 = scrap.0.saturating_add(1);
         let pos = tf.translation.truncate();
         spawn_hit_particles(&mut commands, &em, &pm.enemy, pos, 10, 60.0, &mut rng);
     }

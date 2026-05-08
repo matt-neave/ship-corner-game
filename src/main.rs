@@ -46,7 +46,10 @@ mod ui_kit;
 mod wave;
 mod weapon;
 
-use ally::{ally_ai, ally_death_check, ally_turret_aim_fire, plane_ai};
+use ally::{
+    ally_ai, ally_death_check, ally_turret_aim_fire, homing_missile_track,
+    mine_layer_drop, mine_tick, missile_launcher_fire, plane_ai, tender_heal_beam,
+};
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
 use bullet::{bullet_collisions, bullet_update};
@@ -58,12 +61,15 @@ use map::{
     advance_map_anim_timeline, apply_view_mode, close_popup_on_view_change,
     handle_building_choice_clicks, handle_debug_buttons,
     in_combat_view, map_begin_phase, map_boat_movement, map_click_input,
-    refresh_map_fill, setup_debug_ui, setup_map, sync_owned_slot_visuals,
+    refresh_map_fill, setup_currency_ui, setup_debug_ui, setup_map,
+    sync_owned_slot_visuals, tick_buildings,
     update_anim_beams, update_anim_pulses,
     update_building_button_tints, update_building_description,
-    update_claim_label, update_debug_button_tints,
-    update_map_slot_labels,
-    CombatContext, DebugClaimMode, MapAnimTimeline, MapState, TriggerMapPhase, ViewMode,
+    update_claim_label, update_currency_ui_visibility, update_debug_button_tints,
+    update_map_slot_labels, update_refined_steel_text, update_scrap_text,
+    update_steel_text,
+    BuildingTimers, CombatContext, DebugClaimMode, MapAnimTimeline, MapState,
+    TriggerMapPhase, ViewMode,
 };
 use modes::{
     apply_crt_mode, apply_night_mode, apply_vsync_mode, apply_window_mode,
@@ -73,7 +79,7 @@ use modes::{
 use palette::{apply_palette, Palette};
 use pier::{draft_input, sync_pier_visuals, update_draft_ui, Pier, WaveDraft};
 use rendering::{resize_upscale_sprite, setup_render, update_hash_image};
-use rune::{tick_on_fire, tick_on_frost};
+use rune::{tick_echoes, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_resonate};
 use ship::{apply_velocity, friendly_movement, setup_world};
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{sync_turret_config, turret_aim_fire, SlotCfg, TurretConfig};
@@ -96,6 +102,22 @@ use weapon::WeaponType;
 
 #[derive(Resource)]
 pub struct Score(pub u32);
+
+/// Currency dropped by killed enemies (+1 per kill). Spent on map-view
+/// building placement and as the input resource for the Foundry. Default 0.
+#[derive(Resource, Default)]
+pub struct Scrap(pub u32);
+
+/// Refined currency produced by Foundries (1 steel per cycle, see
+/// `FOUNDRY_INTERVAL`). Consumed by Cranes to maintain their adjacency
+/// speed boost. Default 0.
+#[derive(Resource, Default)]
+pub struct Steel(pub u32);
+
+/// Top-tier refined output. Produced by Refineries (1 refined steel per
+/// cycle in exchange for `REFINERY_INPUT` steel, see `REFINERY_INTERVAL`).
+#[derive(Resource, Default)]
+pub struct RefinedSteel(pub u32);
 
 #[derive(Resource)]
 pub struct SpawnTimer { pub t: f32, pub elapsed: f32 }
@@ -133,6 +155,9 @@ fn main() {
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
         .insert_resource(Score(0))
+        .insert_resource(Scrap::default())
+        .insert_resource(Steel::default())
+        .insert_resource(RefinedSteel::default())
         .insert_resource(SpawnTimer { t: 0.0, elapsed: 0.0 })
         .insert_resource(cfg)
         .insert_resource(DamageStats::default())
@@ -148,11 +173,12 @@ fn main() {
         .insert_resource(WaveDraft::default())
         .insert_resource(ViewMode::default())
         .insert_resource(MapState::new())
+        .insert_resource(BuildingTimers::default())
         .insert_resource(MapAnimTimeline::default())
         .insert_resource(CombatContext::default())
         .insert_resource(DebugClaimMode::default())
         .add_event::<TriggerMapPhase>()
-        .add_systems(Startup, (setup_render, setup_world, setup_ui, setup_map, setup_debug_ui).chain())
+        .add_systems(Startup, (setup_render, setup_world, setup_ui, setup_map, setup_debug_ui, setup_currency_ui).chain())
         .add_systems(Update, (
             // Always-on visual setup. apply_night_mode → apply_palette must
             // be ordered so a night-mode toggle propagates to the camera in
@@ -176,7 +202,17 @@ fn main() {
             // Damage application chain: every source writes Health, then
             // `enemy_death_check` despawns anything that hit zero. Chained so
             // sources see consistent HP and only one despawn fires per kill.
-            (bullet_collisions, tick_on_fire, tick_on_frost, enemy_death_check).chain(),
+            // `tick_echoes` slots in here because echo events are also a
+            // damage source — its hits need to be visible to the death check.
+            // `tick_on_conduit` / `tick_on_resonate` only decay their status
+            // components — no damage — but live in the chain to keep all
+            // status-related work in one ordered block.
+            (
+                bullet_collisions, tick_echoes,
+                tick_on_fire, tick_on_frost,
+                tick_on_conduit, tick_on_resonate,
+                enemy_death_check,
+            ).chain(),
         ).run_if(in_combat_view))
         .add_systems(Update, (
             // Visuals / FX / UI. Split from the sim block so we don't blow
@@ -225,6 +261,17 @@ fn main() {
             ally_turret_aim_fire,
             ally_death_check,
             plane_ai,
+            // Missile launcher fires forward; missile track re-aims in
+            // flight. Tracking runs *before* `apply_velocity` so the
+            // updated direction drives this frame's integration.
+            missile_launcher_fire,
+            homing_missile_track,
+            // Mines: drop at intervals from minelayers, then tick arm /
+            // lifetime / proximity-detonation each frame.
+            mine_layer_drop,
+            mine_tick,
+            // Tender: pick heal target + apply HP regen + spawn beam visual.
+            tender_heal_beam,
         ).run_if(in_combat_view))
         .add_systems(Update, (
             // Map view — camera toggle, click target, boat steering, and
@@ -249,6 +296,14 @@ fn main() {
             update_building_description,
             handle_building_choice_clicks,
             (handle_debug_buttons, update_debug_button_tints, update_claim_label),
+            (
+                update_currency_ui_visibility,
+                update_scrap_text, update_steel_text, update_refined_steel_text,
+            ),
+            // Production economy ticks in both views — the Foundry /
+            // Crane cycle keeps running while the player is in combat
+            // so wave timers and cycle timers don't desync.
+            tick_buildings,
         ))
         .run();
 }

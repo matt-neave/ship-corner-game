@@ -30,7 +30,7 @@ pub struct EffectMeshes {
     /// Bright dot on the bow of a Bomber — visual signal of the threat.
     pub bomber_warhead: Handle<Mesh>,
     /// Cached turret base + barrel for ally ships. Sized between player and
-    /// enemy turrets; shared across every `AllyVariant`.
+    /// enemy turrets; shared across every `ShipClass`.
     pub ally_turret_base: Handle<Mesh>,
     pub ally_turret_barrel: Handle<Mesh>,
     /// Small twin-bullet meshes used by carrier-launched planes. Sized
@@ -38,6 +38,13 @@ pub struct EffectMeshes {
     /// reads as light-arms vs the ship's main batteries.
     pub bullet_plane_outer: Handle<Mesh>,
     pub bullet_plane_inner: Handle<Mesh>,
+    /// Submarine homing-missile body. Longer + skinnier than a regular
+    /// bullet so the silhouette reads as a missile in flight.
+    pub bullet_missile_outer: Handle<Mesh>,
+    pub bullet_missile_inner: Handle<Mesh>,
+    /// Sea-mine meshes — dark outer shell + small red warning dot.
+    pub mine_outer: Handle<Mesh>,
+    pub mine_inner: Handle<Mesh>,
     /// Long thin rectangle reused by every railgun beam. Width 1, length
     /// `BEAM_LENGTH` along local +Y. Width is animated via Transform.scale.x.
     pub beam: Handle<Mesh>,

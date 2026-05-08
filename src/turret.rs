@@ -308,10 +308,10 @@ pub fn turret_aim_fire(
                             let off = rng.gen_range(-SHOTGUN_SPREAD..SHOTGUN_SPREAD);
                             let pa = total_angle + off;
                             let pd = Vec2::new(-pa.sin(), pa.cos());
-                            spawn_friendly_bullet(
+                            spawn_combat_bullet(
                                 &mut commands, &em, &outer_mat, &inner_mat,
                                 muzzle_pos, pd, slot.weapon, slot.damage, Some(slot.index as u8),
-                                effective_range, slot.rune,
+                                effective_range, slot.rune, FactionKind::Friendly,
                             );
                         }
                     }
@@ -330,10 +330,10 @@ pub fn turret_aim_fire(
                         let muzzle_pos = turret_world
                             + barrel_forward * (effective_tip + FRIENDLY_BULLET_HALF_LEN)
                             + barrel_right * lateral;
-                        spawn_friendly_bullet(
+                        spawn_combat_bullet(
                             &mut commands, &em, &outer_mat, &inner_mat,
                             muzzle_pos, dir, slot.weapon, slot.damage, Some(slot.index as u8),
-                            effective_range, slot.rune,
+                            effective_range, slot.rune, FactionKind::Friendly,
                         );
                     }
                 }
@@ -347,13 +347,15 @@ pub fn turret_aim_fire(
     }
 }
 
-/// Spawn a friendly bullet (outer + inner two-tone) traveling in `dir`.
-/// `range` is the bullet's max travel distance — pass the firing turret's
-/// effective range so Watchtower buffs flow through. `slot` identifies the
-/// originating turret slot (0-7) for damage-stat crediting; pass `None` for
-/// non-player friendlies (allies) so they don't pollute per-slot stats.
-/// `rune` is inherited from the firing slot and applied on hit.
-pub fn spawn_friendly_bullet(
+/// Spawn a turret bullet (outer + inner two-tone) traveling in `dir`.
+/// `faction` is the side that *owns* the bullet — friendly turrets pass
+/// `Friendly`, future boss turrets would pass `Enemy`. `range` is the
+/// bullet's max travel distance — pass the firing turret's effective
+/// range so Watchtower buffs flow through. `slot` identifies the
+/// originating turret slot (0-7) for damage-stat crediting; pass `None`
+/// for non-player turrets (allies/bosses) so they don't pollute per-slot
+/// stats. `rune` is inherited from the firing slot and applied on hit.
+pub fn spawn_combat_bullet(
     commands: &mut Commands,
     em: &EffectMeshes,
     outer_mat: &Handle<ColorMaterial>,
@@ -365,6 +367,7 @@ pub fn spawn_friendly_bullet(
     slot: Option<u8>,
     range: f32,
     rune: Option<Rune>,
+    faction: FactionKind,
 ) {
     let bullet = commands.spawn((
         Mesh2d(em.bullet_friendly_outer.clone()),
@@ -372,7 +375,7 @@ pub fn spawn_friendly_bullet(
         Transform::from_xyz(pos.x, pos.y, 4.0)
             .with_rotation(Quat::from_rotation_z((-dir.x).atan2(dir.y))),
         Bullet {
-            faction: FactionKind::Friendly,
+            faction,
             damage,
             remaining: range,
             weapon,

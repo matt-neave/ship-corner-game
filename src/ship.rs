@@ -192,12 +192,19 @@ pub fn setup_world(
         ally_turret_barrel:    meshes.add(Rectangle::new(1.1, 3.0)),
         bullet_plane_outer:    meshes.add(Capsule2d::new(0.7, 0.8)),
         bullet_plane_inner:    meshes.add(Capsule2d::new(0.4, 0.8)),
+        // Missile: longer + thinner than a friendly cannonball so the
+        // silhouette reads as a guided projectile in flight.
+        bullet_missile_outer:  meshes.add(Capsule2d::new(1.0, 4.0)),
+        bullet_missile_inner:  meshes.add(Capsule2d::new(0.6, 4.0)),
+        // Mine: dark sphere ~3 wide; red dot at the center is half that.
+        mine_outer:            meshes.add(Circle::new(1.5)),
+        mine_inner:            meshes.add(Circle::new(0.6)),
         beam:                  meshes.add(Rectangle::new(1.0, BEAM_LENGTH)),
     };
 
-    // Seed allied fleet — one Pirate Ship + one Carrier. Carrier
-    // launches its own air wing on startup; planes are spawned inside
-    // `spawn_ally` when variant is Carrier.
+    // Seed allied fleet — one Pirate Ship + one Carrier + one Submarine.
+    // Carrier launches its own air wing on startup; planes are spawned
+    // inside `spawn_ally` when class is Carrier.
     crate::ally::spawn_ally(
         &mut commands,
         &pm,
@@ -205,7 +212,7 @@ pub fn setup_world(
         &mut meshes,
         Vec2::new(-30.0, 30.0),
         std::f32::consts::FRAC_PI_2,
-        crate::ally::AllyVariant::PirateShip,
+        crate::ally::ShipClass::PirateShip,
     );
     crate::ally::spawn_ally(
         &mut commands,
@@ -214,7 +221,34 @@ pub fn setup_world(
         &mut meshes,
         Vec2::new(30.0, -30.0),
         std::f32::consts::FRAC_PI_2,
-        crate::ally::AllyVariant::Carrier,
+        crate::ally::ShipClass::Carrier,
+    );
+    crate::ally::spawn_ally(
+        &mut commands,
+        &pm,
+        &em,
+        &mut meshes,
+        Vec2::new(0.0, -50.0),
+        std::f32::consts::FRAC_PI_2,
+        crate::ally::ShipClass::Submarine,
+    );
+    crate::ally::spawn_ally(
+        &mut commands,
+        &pm,
+        &em,
+        &mut meshes,
+        Vec2::new(50.0, 30.0),
+        std::f32::consts::FRAC_PI_2,
+        crate::ally::ShipClass::Minelayer,
+    );
+    crate::ally::spawn_ally(
+        &mut commands,
+        &pm,
+        &em,
+        &mut meshes,
+        Vec2::new(-15.0, 0.0),
+        std::f32::consts::FRAC_PI_2,
+        crate::ally::ShipClass::Tender,
     );
 
     // Hand both off to the ECS so other systems can pick them up.
