@@ -32,6 +32,7 @@ use crate::balance::{
     TURRET_MOUNTS, TURRET_POSITIONS,
 };
 use crate::components::Heading;
+use crate::enemy::Enemy;
 use crate::i18n::tr;
 use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
 use crate::palette::{MapCamera, Palette, PaletteMaterials, PlayCamera};
@@ -87,7 +88,10 @@ pub enum ViewMode {
     Combat,
 }
 impl Default for ViewMode {
-    fn default() -> Self { ViewMode::Map }
+    /// Game starts in combat — the player drops straight into level 1
+    /// (1★, 10-enemy budget per `CombatContext::default`). Clearing
+    /// it flips back to the map via `level_complete_check`.
+    fn default() -> Self { ViewMode::Combat }
 }
 
 /// Snapshot of the section that triggered the *current* combat. Written
@@ -95,14 +99,31 @@ impl Default for ViewMode {
 /// `spawn_enemies` reads it to scale enemy density by star rating
 /// (1★ → light skirmish, 5★ → swarm). Default `stars = 1` covers any
 /// combat reached without going through map flow (e.g., a fresh game
-/// where the player jumps straight into Wave mode).
+/// where the player jumps straight into level 1).
 #[derive(Resource)]
 pub struct CombatContext {
     pub stars: u8,
+    /// Total enemies still to spawn this combat. Set on combat entry
+    /// from `level_enemy_budget(stars)`, decremented by `spawn_enemies`
+    /// each time it spawns one. When this hits 0 *and* the arena is
+    /// clear, `level_complete_check` claims the section and flips back
+    /// to map view.
+    pub enemy_budget: u32,
+    /// Snapshot of `enemy_budget` taken at level start. Stays fixed
+    /// for the duration of the level — the depletion progress bar
+    /// uses it as the denominator so it can show "left vs. total".
+    pub enemy_total: u32,
 }
 
 impl Default for CombatContext {
-    fn default() -> Self { Self { stars: 1 } }
+    fn default() -> Self {
+        let starter = crate::balance::level_enemy_budget(1, 0);
+        Self {
+            stars: 1,
+            enemy_budget: starter,
+            enemy_total:  starter,
+        }
+    }
 }
 
 impl CombatContext {
@@ -420,6 +441,15 @@ pub struct BuildingCostLabel {
     pub cost: u32,
 }
 
+/// Hover-driven tooltip that appears next to the cursor when it's
+/// over a placed building's slot. Carries the kind of building it's
+/// describing so the hover system can short-circuit a re-spawn while
+/// the same slot stays hovered.
+#[derive(Component)]
+pub struct BuildingTooltip {
+    pub building: MapBuilding,
+}
+
 // ---------- Currency UI (top-left of map view) ----------
 
 /// Root container of the map-view currency HUD (anchored top-left).
@@ -439,6 +469,68 @@ pub struct SteelText;
 /// Text node showing the player's current refined-steel count.
 #[derive(Component)]
 pub struct RefinedSteelText;
+
+// ---------- Level status banner (top-center, combat only) ----------
+
+/// Root container of the combat-view level banner. Visibility is
+/// driven by `update_level_status_ui` — visible only while in combat
+/// view AND in Sandbox mode (Wave mode has its own header).
+#[derive(Component)]
+pub struct LevelStatusUi;
+
+/// Text node inside `LevelStatusUi` whose contents are rewritten each
+/// frame to show "LEVEL {stars} - {N} ENEMIES LEFT".
+#[derive(Component)]
+pub struct LevelStatusText;
+
+/// Red fill child of the enemy-progress bar inside the level banner.
+/// Width % is rewritten each frame to `(enemies_left / enemy_total)
+/// × 100`, so the bar depletes from full → empty as the player
+/// clears the section.
+#[derive(Component)]
+pub struct LevelEnemyBar;
+
+// ---------- Per-converter progress bar (above the slot tile) ----------
+
+/// Static background entity for a converter's progress bar — full
+/// width, dark, never scaled. One per Foundry / Refinery slot.
+#[derive(Component)]
+pub struct BuildingProgressBg {
+    #[allow(dead_code)]
+    pub section_id: u32,
+    #[allow(dead_code)]
+    pub slot_index: usize,
+}
+
+/// Foreground (fill) entity for a converter's progress bar. Anchored
+/// at `left_x` and `y` in world space; scales `Transform.scale.x` with
+/// cycle progress so the bar fills left-to-right. Carries the cycle's
+/// interval so the updater doesn't have to re-derive it from the
+/// building's class each frame.
+#[derive(Component)]
+pub struct BuildingProgressBar {
+    pub section_id: u32,
+    pub slot_index: usize,
+    pub interval: f32,
+    pub left_x: f32,
+    pub y: f32,
+    pub max_w: f32,
+    pub z: f32,
+}
+
+/// Cached meshes + materials for converter progress bars. Built once
+/// in `setup_progress_assets` so spawning a bar at building-placement
+/// time is just a transform + component insert, no asset alloc.
+#[derive(Resource)]
+pub struct ProgressBarAssets {
+    pub bg_mesh: Handle<Mesh>,
+    pub fill_mesh: Handle<Mesh>,
+    pub bg_material: Handle<ColorMaterial>,
+    /// Shared white fill — used by every converter regardless of
+    /// output material. Building label disambiguates what's being
+    /// produced; the bar just communicates "cycle progress".
+    pub fill_material: Handle<ColorMaterial>,
+}
 
 // ---------- Debug overlay (claim land + trigger phase) ----------
 
@@ -467,6 +559,17 @@ pub struct DebugPanel;
 pub enum DebugButton {
     ClaimMode,
     Phase,
+    /// Spawn one of each `ShipClass` near the player ship — one
+    /// button per class so testers can build whatever fleet they
+    /// like at runtime.
+    SpawnAlly(crate::ally::ShipClass),
+    /// Spawn an *enemy-side* ship of the given class, with 10× the
+    /// ally HP. Lets testers play out boss encounters without having
+    /// to build the proper boss-spawning flow.
+    SpawnBoss(crate::ally::ShipClass),
+    /// Open the full-screen customize overlay. The overlay closes
+    /// itself via its own CLOSE button.
+    OpenCustomize,
 }
 
 /// Tag on the CLAIM button's text label so `update_claim_label` can
@@ -1155,29 +1258,29 @@ fn spawn_currency_row<M: Component>(
             ..default()
         })
         .with_children(|row| {
-            let icon = row.spawn((
+            row.spawn((
                 Node {
-                    width: Val::Px(10.0),
-                    height: Val::Px(10.0),
+                    width: Val::Px(12.0),
+                    height: Val::Px(12.0),
                     ..default()
                 },
                 BackgroundColor(icon_color),
-            )).id();
-            if let Some(inner_color) = inner {
-                row.commands()
-                    .spawn((
+            ))
+            .with_children(|icon| {
+                if let Some(inner_color) = inner {
+                    icon.spawn((
                         Node {
                             position_type: PositionType::Absolute,
-                            top: Val::Px(3.0),
-                            left: Val::Px(3.0),
-                            width: Val::Px(5.0),
-                            height: Val::Px(5.0),
+                            top: Val::Px(4.0),
+                            left: Val::Px(4.0),
+                            width: Val::Px(6.0),
+                            height: Val::Px(6.0),
                             ..default()
                         },
                         BackgroundColor(inner_color),
-                        ChildOf(icon),
                     ));
-            }
+                }
+            });
             row.spawn((
                 ui_kit::label("0", theme::FONT_MD, theme::ON_SURFACE),
                 marker,
@@ -1222,21 +1325,392 @@ pub fn update_refined_steel_text(
     }
 }
 
-/// Show the currency HUD on map view, hide it during combat. Driven by
-/// `ViewMode` change-detection so the visibility component is only
-/// written when the view actually flips.
-pub fn update_currency_ui_visibility(
-    view: Res<ViewMode>,
-    mut q: Query<&mut Visibility, With<CurrencyUi>>,
+// ---------- Converter progress bars ----------
+
+/// Bar geometry — kept here as constants so the spawn helper and the
+/// per-frame updater agree without passing the values through. World-
+/// space units; the slot tile is `SLOT_SIZE` (10) wide.
+const PROGRESS_BAR_W: f32 = 8.0;
+const PROGRESS_BAR_H: f32 = 1.4;
+/// Vertical offset from the slot center to the bar center. Sits in
+/// the gap between the slot tile (top edge at +SLOT_HALF = +5) and
+/// the star row (`STAR_Y_OFFSET = 9`).
+const PROGRESS_BAR_Y_OFFSET: f32 = 6.5;
+
+/// Build the cached meshes + materials used by every converter's
+/// progress bar. Runs once in Startup; the resulting handles are
+/// shared across all bars for one-draw-call batching.
+pub fn setup_progress_assets(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    if !view.is_changed() { return; }
-    let want = if matches!(*view, ViewMode::Map) {
+    let bg_mesh   = meshes.add(Rectangle::new(PROGRESS_BAR_W, PROGRESS_BAR_H));
+    let fill_mesh = meshes.add(Rectangle::new(PROGRESS_BAR_W, PROGRESS_BAR_H));
+    // Bar palette: dark BG + a single white fill shared across every
+    // converter. Output type is read off the building label, not the
+    // bar color — keeps the map cleaner.
+    let bg_material   = materials.add(Color::srgb(0.10, 0.12, 0.18));
+    let fill_material = materials.add(Color::WHITE);
+    commands.insert_resource(ProgressBarAssets {
+        bg_mesh,
+        fill_mesh,
+        bg_material,
+        fill_material,
+    });
+}
+
+/// Spawn a progress bar over a slot. No-op for non-converter buildings
+/// (Weaponry / Dockyard / Crane) — only Foundry and Refinery actively
+/// run a conversion cycle the player benefits from seeing tick down.
+fn spawn_building_progress_bar(
+    commands: &mut Commands,
+    assets: &ProgressBarAssets,
+    section: &MapSection,
+    slot_index: usize,
+    building: MapBuilding,
+) {
+    let interval = match building {
+        MapBuilding::Foundry  => FOUNDRY_INTERVAL,
+        MapBuilding::Refinery => REFINERY_INTERVAL,
+        _ => return,
+    };
+    let fill_mat = assets.fill_material.clone();
+
+    let center_x = section.center.x;
+    let bar_y = section.center.y + PROGRESS_BAR_Y_OFFSET;
+    let bg_z = Z_OUTLINE + 0.05;
+    let fill_z = bg_z + 0.01;
+    let bar_left = center_x - PROGRESS_BAR_W / 2.0;
+
+    // BG — full-width, never scaled.
+    commands.spawn((
+        Mesh2d(assets.bg_mesh.clone()),
+        MeshMaterial2d(assets.bg_material.clone()),
+        Transform::from_xyz(center_x, bar_y, bg_z),
+        RenderLayers::layer(MAP_LAYER),
+        BuildingProgressBg { section_id: section.id, slot_index },
+    ));
+
+    // Fill — centered Rectangle at scale 1 spans the full bar; scaling
+    // `scale.x` shrinks it symmetrically around its center, and the
+    // updater translates it so its left edge stays anchored at
+    // `bar_left`. Spawn at scale 0 (cycle just started, no fill yet).
+    commands.spawn((
+        Mesh2d(assets.fill_mesh.clone()),
+        MeshMaterial2d(fill_mat),
+        Transform::from_xyz(bar_left, bar_y, fill_z)
+            .with_scale(Vec3::new(0.0, 1.0, 1.0)),
+        RenderLayers::layer(MAP_LAYER),
+        BuildingProgressBar {
+            section_id: section.id,
+            slot_index,
+            interval,
+            left_x: bar_left,
+            y: bar_y,
+            max_w: PROGRESS_BAR_W,
+            z: fill_z,
+        },
+    ));
+}
+
+/// Hover tooltip for placed buildings. Each frame, work out which (if
+/// any) owned-slot's building the cursor is over; spawn / move / despawn
+/// a small description panel anchored next to the cursor accordingly.
+///
+/// Despawn-spawn is gated on building identity: while the cursor stays
+/// over the same slot, only the position is rewritten, no entities are
+/// reborn. The tooltip yields the floor to the build-picker popup —
+/// when a popup is open, the tooltip hides so the two don't overlap.
+pub fn update_building_hover_tooltip(
+    mut commands: Commands,
+    view: Res<ViewMode>,
+    state: Res<MapState>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    window_mode: Res<WindowMode>,
+    popups: Query<&BuildingPopup>,
+    existing: Query<(Entity, &BuildingTooltip, &mut Node)>,
+) {
+    // Step 1: figure out the desired tooltip state.
+    let desired: Option<(MapBuilding, f32, f32)> = (|| {
+        if !matches!(*view, ViewMode::Map) { return None; }
+        if !popups.is_empty() { return None; }
+        let win = windows.single().ok()?;
+        let c = win.cursor_position()?;
+        let (left, top, size) = play_area_screen_rect(
+            win.width(), win.height(), effective_ui_width(&window_mode),
+        );
+        if c.x < left || c.x > left + size || c.y < top || c.y > top + size {
+            return None;
+        }
+        let nx = (c.x - left) / size;
+        let ny = (c.y - top) / size;
+        let world = Vec2::new((nx - 0.5) * PLAY_WORLD, (0.5 - ny) * PLAY_WORLD);
+
+        for section in &state.sections {
+            if !state.owned[section.id as usize] { continue; }
+            for slot in &section.slots {
+                let slot_pos = section.center;
+                if (world.x - slot_pos.x).abs() <= SLOT_HALF
+                    && (world.y - slot_pos.y).abs() <= SLOT_HALF
+                {
+                    if let Some(building) = *slot {
+                        return Some((building, c.x, c.y));
+                    }
+                    return None;
+                }
+            }
+        }
+        None
+    })();
+
+    // Step 2: reconcile against existing tooltip entity.
+    let mut existing = existing;
+    match (desired, existing.iter_mut().next()) {
+        (None, Some((e, _, _))) => {
+            // No longer hovered — clean up.
+            commands.entity(e).despawn();
+        }
+        (Some((building, cx, cy)), Some((e, tip, mut node))) => {
+            if tip.building == building {
+                // Same slot — just track the cursor.
+                node.left = Val::Px(cx + 12.0);
+                node.top  = Val::Px(cy + 12.0);
+            } else {
+                // Different slot — easier to respawn than rewrite the
+                // children. Rare event (cursor crossing slot borders).
+                commands.entity(e).despawn();
+                spawn_building_tooltip(&mut commands, building, cx, cy);
+            }
+        }
+        (Some((building, cx, cy)), None) => {
+            spawn_building_tooltip(&mut commands, building, cx, cy);
+        }
+        (None, None) => { /* nothing to do */ }
+    }
+}
+
+/// Spawn the hover tooltip itself: a small raised panel anchored next
+/// to the cursor showing the building's name + description.
+fn spawn_building_tooltip(
+    commands: &mut Commands,
+    building: MapBuilding,
+    cx: f32,
+    cy: f32,
+) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(cx + 12.0),
+                top:  Val::Px(cy + 12.0),
+                padding: UiRect::all(Val::Px(theme::PAD_MD)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+                max_width: Val::Px(200.0),
+                row_gap: Val::Px(theme::GAP_SM),
+                ..default()
+            },
+            BackgroundColor(theme::SURFACE_RAISED),
+            ZIndex(95), // below the build popup (100), above the rest.
+            BuildingTooltip { building },
+        ))
+        .with_children(|p| {
+            p.spawn(ui_kit::label(building.label(), theme::FONT_MD, theme::ON_SURFACE));
+            p.spawn(ui_kit::label(building.description(), theme::FONT_SM, theme::ON_SURFACE_DIM));
+        });
+}
+
+/// Per-frame: read the converter's cooldown from `BuildingTimers` and
+/// drive the fill mesh's transform. Progress = 1 - cooldown / interval,
+/// clamped to [0, 1]. `scale.x = progress` shrinks the centered mesh
+/// symmetrically; translating its center by `+ max_w/2 * progress`
+/// pins the left edge at `left_x` so the bar reads as a normal
+/// left-anchored fill.
+pub fn update_building_progress_bars(
+    timers: Res<BuildingTimers>,
+    state: Res<MapState>,
+    mut q: Query<(&BuildingProgressBar, &mut Transform)>,
+) {
+    for (bar, mut tf) in &mut q {
+        // Defensive: if the slot somehow no longer carries a converter
+        // (future remove-building feature), drive the fill to empty.
+        let still_converter = state.sections
+            .get(bar.section_id as usize)
+            .and_then(|s| s.slots.get(bar.slot_index))
+            .and_then(|s| *s)
+            .is_some_and(|b| matches!(b, MapBuilding::Foundry | MapBuilding::Refinery));
+
+        let progress = if !still_converter {
+            0.0
+        } else {
+            let key = (bar.section_id, bar.slot_index);
+            let cd = timers.state.get(&key).map(|s| s.cooldown).unwrap_or(bar.interval);
+            (1.0 - cd / bar.interval).clamp(0.0, 1.0)
+        };
+
+        tf.translation.x = bar.left_x + bar.max_w * 0.5 * progress;
+        tf.translation.y = bar.y;
+        tf.translation.z = bar.z;
+        tf.scale.x = progress;
+    }
+}
+
+/// Spawn the top-center level banner. Empty / hidden by default; the
+/// updater fills + reveals it each frame while in combat view.
+pub fn setup_level_status_ui(mut commands: Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Px(0.0), // sized each frame to play-area width
+                justify_content: JustifyContent::Center,
+                flex_direction: FlexDirection::Row,
+                ..default()
+            },
+            ZIndex(50),
+            Visibility::Hidden,
+            LevelStatusUi,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Node {
+                    padding: UiRect::axes(
+                        Val::Px(theme::PAD_MD),
+                        Val::Px(theme::PAD_SM),
+                    ),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Stretch,
+                    row_gap: Val::Px(theme::GAP_SM),
+                    min_width: Val::Px(180.0),
+                    ..default()
+                },
+                BackgroundColor(theme::SURFACE_RAISED),
+            ))
+            .with_children(|inner| {
+                inner.spawn((
+                    ui_kit::label("", theme::FONT_MD, theme::ON_SURFACE),
+                    LevelStatusText,
+                ));
+                // Enemies-left bar: dark BG track, red fill that
+                // depletes left-to-right as kills land.
+                inner.spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(5.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.10, 0.12, 0.18)),
+                ))
+                .with_children(|bar| {
+                    bar.spawn((
+                        Node {
+                            width:  Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.85, 0.20, 0.20)),
+                        LevelEnemyBar,
+                    ));
+                });
+            });
+        });
+}
+
+/// Drive the level banner each frame: toggle visibility on combat-view
+/// + Sandbox, anchor it to the play-area top-center, and rewrite the
+/// text with the current stars + remaining-enemy count
+/// (`enemy_budget` still to spawn + alive enemy count). Hidden in map
+/// view and in Wave mode.
+pub fn update_level_status_ui(
+    view: Res<ViewMode>,
+    mode: Res<crate::modes::GameMode>,
+    combat_ctx: Res<CombatContext>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    window_mode: Res<WindowMode>,
+    enemies: Query<&Enemy>,
+    mut root_q: Query<(&mut Visibility, &mut Node), (With<LevelStatusUi>, Without<LevelEnemyBar>)>,
+    mut text_q: Query<&mut Text, With<LevelStatusText>>,
+    mut bar_q:  Query<&mut Node, (With<LevelEnemyBar>, Without<LevelStatusUi>)>,
+) {
+    let visible = matches!(*view, ViewMode::Combat)
+        && matches!(*mode, crate::modes::GameMode::Sandbox);
+    let want_vis = if visible { Visibility::Inherited } else { Visibility::Hidden };
+
+    let Ok(win) = windows.single() else { return; };
+    let (play_left, play_top, size) = play_area_screen_rect(
+        win.width(), win.height(), effective_ui_width(&window_mode),
+    );
+    let upscale = (size / PLAY_INTERNAL as f32).max(1.0);
+    let margin = upscale * 4.0;
+    let want_top   = Val::Px(play_top + margin);
+    let want_left  = Val::Px(play_left);
+    let want_width = Val::Px(size);
+
+    for (mut vis, mut node) in &mut root_q {
+        if *vis != want_vis      { *vis = want_vis; }
+        if node.left  != want_left  { node.left  = want_left;  }
+        if node.top   != want_top   { node.top   = want_top;   }
+        if node.width != want_width { node.width = want_width; }
+    }
+
+    if !visible { return; }
+
+    // "Enemies left" = those still queued to spawn + those already on
+    // the field. That number is what the player has to grind through
+    // to clear the section, and it ticks down per kill.
+    let alive = enemies.iter().count() as u32;
+    let total_left = combat_ctx.enemy_budget + alive;
+    let s = format!(
+        "LEVEL {} - {} ENEMIES LEFT",
+        combat_ctx.stars, total_left,
+    );
+    for mut t in &mut text_q {
+        if t.0 != s { t.0 = s.clone(); }
+    }
+
+    // Bar fill — full at level start, depleting toward 0 as kills
+    // land. Guard against `enemy_total = 0` (happens momentarily
+    // during a fail flow) so we don't divide-by-zero.
+    let denom = combat_ctx.enemy_total.max(1) as f32;
+    let pct = (total_left as f32 / denom).clamp(0.0, 1.0) * 100.0;
+    let want_fill = Val::Percent(pct);
+    for mut node in &mut bar_q {
+        if node.width != want_fill { node.width = want_fill; }
+    }
+}
+
+/// Per-frame upkeep on the currency HUD: anchor its top-left corner to
+/// the *play area's* top-left (not the window's, which lives behind the
+/// LHS UI panel), and toggle visibility based on `ViewMode`. Cheap —
+/// just one entity — and only writes when values actually change.
+pub fn update_currency_ui(
+    view: Res<ViewMode>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    window_mode: Res<WindowMode>,
+    mut q: Query<(&mut Visibility, &mut Node), With<CurrencyUi>>,
+) {
+    let Ok(win) = windows.single() else { return; };
+    let (play_left, play_top, size) = play_area_screen_rect(
+        win.width(), win.height(), effective_ui_width(&window_mode),
+    );
+    let upscale = (size / PLAY_INTERNAL as f32).max(1.0);
+    // 4 game-pixels in from the play-area corner so the panel sits at
+    // the same proportional offset as the HP bar on the opposite axis.
+    let margin = upscale * 4.0;
+    let want_left = Val::Px(play_left + margin);
+    let want_top  = Val::Px(play_top  + margin);
+    let want_vis = if matches!(*view, ViewMode::Map) {
         Visibility::Inherited
     } else {
         Visibility::Hidden
     };
-    for mut v in &mut q {
-        if *v != want { *v = want; }
+    for (mut vis, mut node) in &mut q {
+        if node.left != want_left { node.left = want_left; }
+        if node.top  != want_top  { node.top  = want_top;  }
+        if *vis != want_vis { *vis = want_vis; }
     }
 }
 
@@ -1273,22 +1747,112 @@ pub fn setup_debug_ui(mut commands: Commands) {
             .with_children(|b| {
                 b.spawn(ui_kit::label("PHASE", theme::FONT_MD, theme::ON_SURFACE));
             });
+
+        p.spawn((ui_kit::button(theme::SURFACE), DebugButton::OpenCustomize))
+            .with_children(|b| {
+                b.spawn(ui_kit::label("CUSTOMIZE", theme::FONT_MD, theme::ON_SURFACE));
+            });
+
+        // Sub-section: spawn-ally buttons. Driven by `ShipClass::ALL`
+        // so adding a class shows up automatically.
+        p.spawn(ui_kit::label("SPAWN ALLY", theme::FONT_SM, theme::ON_SURFACE_DIM));
+        for &class in crate::ally::ShipClass::ALL {
+            p.spawn((
+                ui_kit::button(theme::SURFACE),
+                DebugButton::SpawnAlly(class),
+            ))
+            .with_children(|b| {
+                b.spawn(ui_kit::label(
+                    class.short_label(),
+                    theme::FONT_SM,
+                    theme::ON_SURFACE,
+                ));
+            });
+        }
+
+        // Sub-section: spawn-boss buttons. Same `ShipClass::ALL` set,
+        // mirrored to the enemy side at 10× HP via `spawn_boss`.
+        p.spawn(ui_kit::label("SPAWN BOSS", theme::FONT_SM, theme::ON_SURFACE_DIM));
+        for &class in crate::ally::ShipClass::ALL {
+            p.spawn((
+                ui_kit::button(theme::SURFACE),
+                DebugButton::SpawnBoss(class),
+            ))
+            .with_children(|b| {
+                b.spawn(ui_kit::label(
+                    class.short_label(),
+                    theme::FONT_SM,
+                    theme::ON_SURFACE,
+                ));
+            });
+        }
     });
 }
 
 /// Click router for the debug buttons. CLAIM toggles the mode flag;
-/// PHASE writes a `TriggerMapPhase` event so `map_begin_phase` reruns
-/// the same sequence it would on a view change.
+/// PHASE writes a `TriggerMapPhase` event; SPAWN ALLY spawns a fresh
+/// ally of the picked class near the player ship.
 pub fn handle_debug_buttons(
     interactions: Query<(&Interaction, &DebugButton), Changed<Interaction>>,
     mut claim_mode: ResMut<DebugClaimMode>,
     mut phase_evt: EventWriter<TriggerMapPhase>,
+    mut customize: ResMut<crate::customize::CustomizeOpen>,
+    mut commands: Commands,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<crate::effects::EffectMeshes>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    friendly: Query<&Transform, With<crate::components::Friendly>>,
 ) {
     for (interaction, button) in &interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
         match *button {
             DebugButton::ClaimMode => claim_mode.active = !claim_mode.active,
             DebugButton::Phase => { phase_evt.write(TriggerMapPhase); }
+            DebugButton::OpenCustomize => { customize.open = true; }
+            DebugButton::SpawnAlly(class) => {
+                let Some(pm_ref) = pm.as_deref() else { continue; };
+                let Some(em_ref) = em.as_deref() else { continue; };
+                // Spawn near the player so it joins the action
+                // immediately. Random offset so repeated clicks
+                // don't stack onto one tile.
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                let player_pos = friendly.single()
+                    .map(|t| t.translation.truncate())
+                    .unwrap_or(Vec2::ZERO);
+                let offset = Vec2::new(
+                    rng.gen_range(-15.0..15.0),
+                    rng.gen_range(-15.0..15.0),
+                );
+                crate::ally::spawn_ally(
+                    &mut commands, pm_ref, em_ref, &mut meshes,
+                    player_pos + offset,
+                    std::f32::consts::FRAC_PI_2,
+                    class,
+                );
+            }
+            DebugButton::SpawnBoss(class) => {
+                let Some(pm_ref) = pm.as_deref() else { continue; };
+                let Some(em_ref) = em.as_deref() else { continue; };
+                // Bosses spawn farther away than allies — they're
+                // hostile, so dropping them on top of the player
+                // would be cruel. Pick a random offset 35..55 units
+                // out so the player has time to react.
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                let player_pos = friendly.single()
+                    .map(|t| t.translation.truncate())
+                    .unwrap_or(Vec2::ZERO);
+                let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+                let dist  = rng.gen_range(35.0..55.0);
+                let offset = Vec2::new(angle.cos() * dist, angle.sin() * dist);
+                crate::ally::spawn_boss(
+                    &mut commands, pm_ref, em_ref, &mut meshes,
+                    player_pos + offset,
+                    std::f32::consts::FRAC_PI_2,
+                    class,
+                );
+            }
         }
     }
 }
@@ -1327,11 +1891,92 @@ pub fn update_claim_label(
 
 // ---------- Per-frame systems ----------
 
+/// End of a level: when the per-section enemy budget is fully drained
+/// AND no enemies are alive, claim the current section, bump the
+/// campaign-progress counter, and flip the view back to the map.
+///
+/// The auto-claim is the implicit "victory" reward; the
+/// battles-cleared bump means the next level the player picks (any
+/// star tier) gets a tougher enemy budget than the one they just
+/// finished. Sandbox-gated so Wave-mode lulls between waves don't
+/// trigger a stray "level complete".
+pub fn level_complete_check(
+    mut view: ResMut<ViewMode>,
+    mut state: ResMut<MapState>,
+    mut campaign: ResMut<crate::CampaignProgress>,
+    mode: Res<crate::modes::GameMode>,
+    combat_ctx: Res<CombatContext>,
+    enemies: Query<Entity, With<Enemy>>,
+) {
+    if !matches!(*view, ViewMode::Combat) { return; }
+    if !matches!(*mode, crate::modes::GameMode::Sandbox) { return; }
+    if combat_ctx.enemy_budget > 0 { return; }
+    if enemies.iter().count() > 0 { return; }
+
+    // Claim the section (no-op if already owned — e.g. the very
+    // first level fought from the initial-S0 spawn). Bump the
+    // campaign counter so the next encounter scales harder.
+    let id = state.current as usize;
+    if id < state.owned.len() && !state.owned[id] {
+        state.owned[id] = true;
+    }
+    campaign.battles_cleared = campaign.battles_cleared.saturating_add(1);
+    *view = ViewMode::Map;
+}
+
+/// Failure path: when the friendly hull is destroyed during a Sandbox
+/// level, wipe the arena, restore the player ship to full HP, send the
+/// map boat back to the starting section, and flip the view back to
+/// the map. The section is *not* claimed — the player has to come
+/// back and try again.
+///
+/// Sandbox-gated to keep clear of Wave mode, which has its own
+/// `WavePhase::Failed` flow.
+pub fn level_fail_check(
+    mut view: ResMut<ViewMode>,
+    mut state: ResMut<MapState>,
+    mut combat_ctx: ResMut<CombatContext>,
+    mode: Res<crate::modes::GameMode>,
+    mut commands: Commands,
+    mut friendly: Query<&mut crate::components::Health, With<crate::components::Friendly>>,
+    arena: Query<Entity, crate::wave::ArenaDisposeFilter>,
+    mut boat: Query<&mut Transform, With<MapBoat>>,
+) {
+    if !matches!(*view, ViewMode::Combat) { return; }
+    if !matches!(*mode, crate::modes::GameMode::Sandbox) { return; }
+
+    let Ok(mut h) = friendly.single_mut() else { return; };
+    if h.0 > 0 { return; }
+
+    // Wipe enemies / bullets / beams / muzzle flashes / hit
+    // particles (ArenaDisposeFilter) — same set the wave-mode
+    // failure path uses. Mines, boarders, and missiles will tick
+    // out / get cleaned up by their own owners' systems.
+    for e in &arena { commands.entity(e).despawn(); }
+
+    // Reset the run state.
+    h.0 = 100;
+    combat_ctx.enemy_budget = 0; // already cleared; complete-check no-ops
+    state.boat_target = None;
+    state.current = 0;
+    if let Ok(mut tf) = boat.single_mut() {
+        let s0 = state.sections.first().map(|s| s.center).unwrap_or(Vec2::ZERO);
+        tf.translation.x = s0.x;
+        tf.translation.y = s0.y;
+    }
+    *view = ViewMode::Map;
+}
+
 /// `run_if` predicate for systems that should only tick during combat.
 /// Pauses enemy spawning, AI, bullets, fire/frost ticks, etc. while the
-/// player is on the map — keeps the world frozen until they re-enter.
-pub fn in_combat_view(view: Res<ViewMode>) -> bool {
-    *view == ViewMode::Combat
+/// player is on the map *or* has the customize overlay open — keeps
+/// the world frozen until they re-enter combat with the overlay
+/// closed.
+pub fn in_combat_view(
+    view: Res<ViewMode>,
+    customize: Res<crate::customize::CustomizeOpen>,
+) -> bool {
+    *view == ViewMode::Combat && !customize.open
 }
 
 /// Tick every Foundry / Crane each frame: decrement its cooldown,
@@ -2101,6 +2746,7 @@ pub fn handle_building_choice_clicks(
     popups: Query<Entity, With<BuildingPopup>>,
     mut state: ResMut<MapState>,
     mut scrap: ResMut<Scrap>,
+    progress_assets: Option<Res<ProgressBarAssets>>,
 ) {
     for (interaction, choice) in &interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
@@ -2110,6 +2756,23 @@ pub fn handle_building_choice_clicks(
         if let Some(section) = state.sections.get_mut(choice.section_id as usize) {
             if let Some(slot) = section.slots.get_mut(choice.slot_index) {
                 *slot = Some(choice.building);
+            }
+        }
+        // Converter buildings (Foundry / Refinery) get a cycle-progress
+        // bar above their slot tile. Done after the slot write so the
+        // helper sees the final section state.
+        if matches!(
+            choice.building,
+            MapBuilding::Foundry | MapBuilding::Refinery
+        ) {
+            if let (Some(assets), Some(section)) = (
+                progress_assets.as_deref(),
+                state.sections.get(choice.section_id as usize),
+            ) {
+                spawn_building_progress_bar(
+                    &mut commands, assets, section,
+                    choice.slot_index, choice.building,
+                );
             }
         }
         for popup in &popups { commands.entity(popup).despawn(); }
@@ -2277,6 +2940,7 @@ pub fn map_boat_movement(
     mut state: ResMut<MapState>,
     mut view: ResMut<ViewMode>,
     mut combat_ctx: ResMut<CombatContext>,
+    campaign: Res<crate::CampaignProgress>,
     mut q: Query<(&mut Transform, &mut Heading), With<MapBoat>>,
 ) {
     if *view != ViewMode::Map { return; }
@@ -2316,10 +2980,18 @@ pub fn map_boat_movement(
             state.current = id;
             if !state.owned[id as usize] {
                 state.boat_target = None;
-                // Capture the section's star rating into combat
-                // context *before* the view flip — `spawn_enemies` may
-                // fire later in the same frame and pick up the new cap.
-                combat_ctx.stars = state.sections[id as usize].stars;
+                // Capture the section's star rating + per-level
+                // enemy budget into combat context *before* the
+                // view flip — `spawn_enemies` may fire later in
+                // the same frame and pick up the new values.
+                let stars = state.sections[id as usize].stars;
+                let budget = crate::balance::level_enemy_budget(
+                    stars,
+                    campaign.battles_cleared,
+                );
+                combat_ctx.stars        = stars;
+                combat_ctx.enemy_budget = budget;
+                combat_ctx.enemy_total  = budget;
                 *view = ViewMode::Combat;
             }
         }

@@ -80,9 +80,32 @@ pub const SUBMARINE_HEX: &str = "#3a5c70";
 // Minelayer: dark steel grey with a faint warm cast — reads as a small
 // utility boat next to the warmer Pirate brown and cooler Carrier grey.
 pub const MINELAYER_HEX: &str = "#4a4438";
-// Tender: hospital-ship cream — distinctly bright vs the dark warship
-// hulls so the support role is readable at a glance.
-pub const TENDER_HEX: &str = "#d4d0c8";
+// Tender: RNLI-lifeboat vermilion — bright red-orange hull pops
+// against every ocean tone and is unmistakable next to the muted
+// warship hulls. Pairs with a small white wheelhouse cabin (built in
+// `spawn_ally`) for the canonical orange-and-white silhouette.
+pub const TENDER_HEX: &str = "#e85021";
+// Blackbeard's flagship — dark charcoal hull (lifted a few notches
+// out of near-black so the body reads against night-mode ocean and
+// the sails sit cleanly on top). Boarding ship: no cannons, only
+// sends pirate boarders across.
+pub const BLACKBEARD_HEX: &str = "#2e2e3c";
+/// Black flag base for the skull-and-crossbones pennants. Pure dark
+/// so the white skull detail (re-uses `pm.ally_flag`) reads strongly.
+pub const SKULL_FLAG_HEX: &str = "#0a0a12";
+/// Boarder figures — bright cream-tan so the small dots read clearly
+/// as crew silhouettes against both the dark Blackbeard hull and the
+/// bright ocean. Saturated enough to pop without going neon.
+pub const BOARDER_HEX:      &str = "#e5c084";
+/// Saturated wood-brown for the boarding-rope strung between
+/// Blackbeard and its target. Bright enough to clearly span the gap
+/// against both the dark Blackbeard hull and the bright ocean; the
+/// boarders riding it are even brighter so they still pop on top.
+pub const BOARDING_ROPE_HEX: &str = "#a87038";
+/// Weathered grey for Blackbeard's sails. Mid-grey + slight cool
+/// cast: bright enough to pop off the dark hull, dull enough to not
+/// look ceremonial.
+pub const SAIL_HEX:       &str = "#a4a4ac";
 
 // ---------- Heal-beam color ----------
 //
@@ -211,6 +234,15 @@ pub struct PaletteMaterials {
     pub submarine_hull: Handle<ColorMaterial>,
     pub minelayer_hull: Handle<ColorMaterial>,
     pub tender_hull: Handle<ColorMaterial>,
+    pub blackbeard_hull: Handle<ColorMaterial>,
+    /// Black flag for Blackbeard's skull-and-crossbones pennants.
+    pub skull_flag: Handle<ColorMaterial>,
+    /// Boarder crew dot color (cream-tan).
+    pub boarder: Handle<ColorMaterial>,
+    /// Boarding rope color — dark wood brown.
+    pub boarding_rope: Handle<ColorMaterial>,
+    /// Grey sail color used by Blackbeard's deck sails.
+    pub sail: Handle<ColorMaterial>,
     /// Sea-mine materials. Two-tone: dark shell + red warning dot.
     pub mine_outer: Handle<ColorMaterial>,
     pub mine_inner: Handle<ColorMaterial>,
@@ -294,6 +326,11 @@ impl PaletteMaterials {
             submarine_hull:        materials.add(hex(SUBMARINE_HEX)),
             minelayer_hull:        materials.add(hex(MINELAYER_HEX)),
             tender_hull:           materials.add(hex(TENDER_HEX)),
+            blackbeard_hull:       materials.add(hex(BLACKBEARD_HEX)),
+            skull_flag:            materials.add(hex(SKULL_FLAG_HEX)),
+            boarder:               materials.add(hex(BOARDER_HEX)),
+            boarding_rope:         materials.add(hex(BOARDING_ROPE_HEX)),
+            sail:                  materials.add(hex(SAIL_HEX)),
             plane_hull:            materials.add(hex(PLANE_HEX)),
             bullet_missile_outer:  materials.add(hex(MISSILE_HEX)),
             bullet_missile_inner:  materials.add(hex(MISSILE_BRIGHT_HEX)),
@@ -366,6 +403,11 @@ pub struct UpscaleCamera;
 /// render simultaneously, so there's no z-conflict at the target.
 #[derive(Component)]
 pub struct MapCamera;
+/// Native-resolution HUD camera. Lives here (not in `rendering`) so
+/// systems in `modes` / `rune` can query it for camera-follow without
+/// pulling a circular dependency on the rendering module.
+#[derive(Component)]
+pub struct HudCamera;
 
 /// Push the current `Palette` into shared materials + camera clear color
 /// whenever the resource is changed (and once on first frame).

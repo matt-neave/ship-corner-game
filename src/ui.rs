@@ -72,6 +72,9 @@ pub enum ButtonKind {
     ToggleVsync,
     /// Click → switch to `ViewMode::Map`. Visible only in Combat view.
     ReturnToMap,
+    /// Toggles the play camera between fixed (default) and follow-the-
+    /// player. Sits below the MAP button.
+    ToggleCameraFollow,
 }
 
 /// Tag on a text node whose contents are driven by `update_slot_labels`.
@@ -94,6 +97,14 @@ pub struct VsyncLabel;
 /// so it only appears while in Combat view.
 #[derive(Component)]
 pub struct ReturnToMapButton;
+
+/// Marker on the FOLLOW button + its label so the click handler can
+/// flip the label between FOLLOW / FOLLOWING when toggled.
+#[derive(Component)]
+pub struct CameraFollowButton;
+
+#[derive(Component)]
+pub struct CameraFollowLabel;
 
 /// Top-left HP bar container — outer Node holding the "HP" label +
 /// track. Naming kept (vs. `ArcadeHpUi` etc.) to avoid an import-ripple
@@ -238,6 +249,36 @@ pub fn setup_ui(mut commands: Commands) {
             Text::new("MAP"),
             TextFont { font_size: 9.0, ..default() },
             TextColor(UI_VALUE),
+        ));
+    });
+
+    // FOLLOW button — sits just below the MAP button. Toggles the
+    // play camera between fixed and follow-the-player. Always
+    // visible: the camera-follow flag is read in both views, but
+    // only meaningful in combat.
+    commands.spawn((
+        Button,
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(60.0),
+            right: Val::Px(6.0),
+            padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        BorderColor(UI_VALUE),
+        SlotButton { slot: 0, kind: ButtonKind::ToggleCameraFollow },
+        CameraFollowButton,
+    ))
+    .with_children(|b| {
+        b.spawn((
+            Text::new("FOLLOW"),
+            TextFont { font_size: 9.0, ..default() },
+            TextColor(UI_VALUE),
+            CameraFollowLabel,
         ));
     });
 
@@ -789,6 +830,7 @@ pub fn ui_button_system(
     mut game_mode: ResMut<GameMode>,
     mut vsync: ResMut<VsyncMode>,
     mut view: ResMut<ViewMode>,
+    mut camera_follow: ResMut<crate::modes::CameraFollow>,
 ) {
     for (interaction, btn) in &mut interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
@@ -820,15 +862,23 @@ pub fn ui_button_system(
                 *view = ViewMode::Map;
                 continue;
             }
+            ButtonKind::ToggleCameraFollow => {
+                camera_follow.active = !camera_follow.active;
+                continue;
+            }
             _ => {}
         }
         let s = &mut cfg.slots[btn.slot];
         match btn.kind {
             ButtonKind::ToggleDesktopMode | ButtonKind::ToggleNightMode
             | ButtonKind::ToggleCrtMode  | ButtonKind::ToggleWaveMode
-            | ButtonKind::ToggleVsync    | ButtonKind::ReturnToMap => unreachable!(),
-            ButtonKind::RuneUp   => { if s.equipped { s.rune = cycle_next(s.rune); } }
-            ButtonKind::RuneDown => { if s.equipped { s.rune = cycle_prev(s.rune); } }
+            | ButtonKind::ToggleVsync    | ButtonKind::ReturnToMap
+            | ButtonKind::ToggleCameraFollow => unreachable!(),
+            // LHS-panel rune controls cycle the FIRST rune socket only.
+            // The full-screen customizer is the proper UI for the
+            // remaining two sockets; the LHS panel is a debug surface.
+            ButtonKind::RuneUp   => { if s.equipped { s.runes[0] = cycle_next(s.runes[0]); } }
+            ButtonKind::RuneDown => { if s.equipped { s.runes[0] = cycle_prev(s.runes[0]); } }
             ButtonKind::Equip => {
                 // Cycle: unequipped → Standard → Sniper → MG → Shotgun →
                 // Railgun → unequipped. On each step, snap stats to the new
@@ -851,7 +901,7 @@ pub fn ui_button_system(
                             s.weapon = WeaponType::Standard;
                             let (d, r) = s.weapon.defaults();
                             s.damage = d; s.fire_rate = r; s.barrels = 1;
-                            s.rune = None;
+                            s.runes = [None; 3];
                         }
                     }
                 }
@@ -884,7 +934,7 @@ pub fn update_slot_labels(
                     tr("btn_equip_gun").into()
                 };
             }
-            LabelKind::Rune    => **t = rune_display(s.rune).into(),
+            LabelKind::Rune    => **t = rune_display(s.runes[0]).into(),
         }
     }
 }

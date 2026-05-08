@@ -18,13 +18,15 @@ use bevy::sprite::SpriteImageMode;
 use bevy::window::PrimaryWindow;
 
 use crate::balance::{
-    PLAY_INTERNAL, PLAY_LAYER, PLAY_WORLD, UI_WIDTH, UPSCALE_LAYER, WINDOW_H, WINDOW_W,
+    HUD_LAYER, PLAY_INTERNAL, PLAY_LAYER, PLAY_WORLD, UI_WIDTH, UPSCALE_LAYER, WINDOW_H, WINDOW_W,
 };
 use crate::map::MAP_LAYER;
 use crate::modes::{
     effective_ui_width, play_area_screen_rect, NightMode, ScanlineSprite, WindowMode,
 };
-use crate::palette::{darken, hex, MapCamera, Palette, PlayCamera, UpscaleCamera};
+use crate::palette::{darken, hex, HudCamera, MapCamera, Palette, PlayCamera, UpscaleCamera};
+
+use bevy::render::camera::Viewport;
 
 // ---------- Components & resources for the upscale pipeline ----------
 
@@ -178,6 +180,11 @@ pub fn setup_render(
     // UI / upscale camera (default layer + upscale layer). Clear color = ocean
     // so any pixels outside the play sprite (between UI panel and play area,
     // or 1-px misalignments in desktop mode) match the water seamlessly.
+    //
+    // `IsDefaultUiCamera` pins Bevy UI rendering to *this* camera. Without
+    // it, Bevy UI defaults to the highest-order camera with the default
+    // render layer — and `HudCamera` (order=1) would steal that role,
+    // funneling the entire HUD through the play-area-clipped viewport.
     commands.spawn((
         Camera2d,
         Camera {
@@ -188,6 +195,27 @@ pub fn setup_render(
         RenderLayers::from_layers(&[0, UPSCALE_LAYER]),
         Msaa::Off,
         UpscaleCamera,
+        bevy::ui::IsDefaultUiCamera,
+    ));
+
+    // Native-resolution HUD camera. Same world projection as PlayCamera,
+    // viewport clipped to the play-area screen rect, transparent clear so
+    // it composites on top of the upscaled play sprite. `update_hud_camera_viewport`
+    // re-snaps the viewport every frame as the window resizes / desktop mode
+    // toggles. Entities placed on `HUD_LAYER` render here at native resolution.
+    commands.spawn((
+        Camera2d,
+        Camera {
+            // Order > UpscaleCamera so HUD draws on top of the upscaled view.
+            order: 1,
+            // Transparent — never clears the framebuffer, just composites.
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        proj(),
+        RenderLayers::layer(HUD_LAYER),
+        Msaa::Off,
+        HudCamera,
     ));
 
     // Diagonal-hash backdrop, tiled across the entire window. Sits BEHIND the
@@ -304,5 +332,47 @@ pub fn resize_upscale_sprite(
     let win_size = Vec2::new(logical_w, logical_h);
     for mut s in &mut hash_sprites {
         if s.custom_size != Some(win_size) { s.custom_size = Some(win_size); }
+    }
+}
+
+/// Snap the HUD camera's viewport to the play-area screen rect each
+/// frame. Viewport is in *physical* pixels (Bevy Camera API), so we
+/// scale by the window's DPI factor. Sister system to `resize_upscale_sprite`
+/// — they consume the same `play_area_screen_rect` and must stay aligned.
+pub fn update_hud_camera_viewport(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mode: Res<WindowMode>,
+    mut hud: Query<&mut Camera, With<HudCamera>>,
+) {
+    let Ok(window) = windows.single() else { return; };
+    let logical_w = window.width();
+    let logical_h = window.height();
+    let scale = window.scale_factor();
+    let (left, top, size) =
+        play_area_screen_rect(logical_w, logical_h, effective_ui_width(&mode));
+
+    let phys_pos = UVec2::new(
+        (left * scale).round() as u32,
+        (top  * scale).round() as u32,
+    );
+    let phys_size = UVec2::new(
+        (size * scale).round() as u32,
+        (size * scale).round() as u32,
+    );
+
+    // Viewport doesn't impl PartialEq, so compare its fields manually
+    // before writing to avoid spamming change detection every frame.
+    for mut cam in &mut hud {
+        let needs_update = match &cam.viewport {
+            Some(v) => v.physical_position != phys_pos || v.physical_size != phys_size,
+            None => true,
+        };
+        if needs_update {
+            cam.viewport = Some(Viewport {
+                physical_position: phys_pos,
+                physical_size: phys_size,
+                depth: 0.0..1.0,
+            });
+        }
     }
 }

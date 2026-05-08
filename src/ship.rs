@@ -146,7 +146,7 @@ pub fn setup_world(
                 range_mult: 1.0,
                 barrels: slot.barrels.max(1),
                 next_barrel: 0,
-                rune: slot.rune,
+                runes: slot.runes,
             },
             RenderLayers::layer(PLAY_LAYER),
         ));
@@ -196,60 +196,21 @@ pub fn setup_world(
         // silhouette reads as a guided projectile in flight.
         bullet_missile_outer:  meshes.add(Capsule2d::new(1.0, 4.0)),
         bullet_missile_inner:  meshes.add(Capsule2d::new(0.6, 4.0)),
-        // Mine: dark sphere ~3 wide; red dot at the center is half that.
+        // Mine: dark sphere ~3 wide; red dot at the centre is about
+        // a third of that. The dot pulses and the whole mine bobs
+        // each frame for the "floating in water" feel.
         mine_outer:            meshes.add(Circle::new(1.5)),
-        mine_inner:            meshes.add(Circle::new(0.6)),
+        mine_inner:            meshes.add(Circle::new(0.55)),
+        // Boarder: small disc that reads as a tiny crew silhouette
+        // when traveling and clustered around the target. Bumped to
+        // 0.8 so the boarders read clearly as "people on the rope"
+        // rather than being mistaken for bullet pellets.
+        boarder_dot:           meshes.add(Circle::new(0.8)),
         beam:                  meshes.add(Rectangle::new(1.0, BEAM_LENGTH)),
     };
 
-    // Seed allied fleet — one Pirate Ship + one Carrier + one Submarine.
-    // Carrier launches its own air wing on startup; planes are spawned
-    // inside `spawn_ally` when class is Carrier.
-    crate::ally::spawn_ally(
-        &mut commands,
-        &pm,
-        &em,
-        &mut meshes,
-        Vec2::new(-30.0, 30.0),
-        std::f32::consts::FRAC_PI_2,
-        crate::ally::ShipClass::PirateShip,
-    );
-    crate::ally::spawn_ally(
-        &mut commands,
-        &pm,
-        &em,
-        &mut meshes,
-        Vec2::new(30.0, -30.0),
-        std::f32::consts::FRAC_PI_2,
-        crate::ally::ShipClass::Carrier,
-    );
-    crate::ally::spawn_ally(
-        &mut commands,
-        &pm,
-        &em,
-        &mut meshes,
-        Vec2::new(0.0, -50.0),
-        std::f32::consts::FRAC_PI_2,
-        crate::ally::ShipClass::Submarine,
-    );
-    crate::ally::spawn_ally(
-        &mut commands,
-        &pm,
-        &em,
-        &mut meshes,
-        Vec2::new(50.0, 30.0),
-        std::f32::consts::FRAC_PI_2,
-        crate::ally::ShipClass::Minelayer,
-    );
-    crate::ally::spawn_ally(
-        &mut commands,
-        &pm,
-        &em,
-        &mut meshes,
-        Vec2::new(-15.0, 0.0),
-        std::f32::consts::FRAC_PI_2,
-        crate::ally::ShipClass::Tender,
-    );
+    // No allies seeded by default — the player spawns them on demand
+    // from the debug panel (`DebugButton::SpawnAlly`).
 
     // Hand both off to the ECS so other systems can pick them up.
     commands.insert_resource(pm);
@@ -267,6 +228,7 @@ pub fn friendly_movement(
     mode: Res<WindowMode>,
     game_mode: Res<GameMode>,
     enemies: Query<&Transform, (With<Enemy>, Without<Friendly>)>,
+    play_camera: Query<&Transform, (With<crate::palette::PlayCamera>, Without<Friendly>, Without<Enemy>)>,
     mut q: Query<(&mut Transform, &mut Velocity, &mut Heading), With<Friendly>>,
 ) {
     let dt = time.delta_secs();
@@ -275,6 +237,15 @@ pub fn friendly_movement(
 
     let (play_left, play_top, play_screen) =
         play_area_screen_rect(win.width(), win.height(), effective_ui_width(&mode));
+
+    // Camera offset — when follow-mode shifts the play camera off the
+    // origin, the cursor → world conversion needs to slide with it so
+    // a click at "the centre of the screen" maps to the centre of the
+    // *currently visible* world (the player's location), not to world
+    // origin. Zero in fixed-camera mode, so the math is a no-op there.
+    let cam_off = play_camera.single()
+        .map(|t| t.translation.truncate())
+        .unwrap_or(Vec2::ZERO);
 
     // Wave mode is fully auto-battle — ignore the cursor entirely so the
     // enemy-seeking branch below takes over regardless of mouse position.
@@ -287,7 +258,10 @@ pub fn friendly_movement(
             {
                 let nx = (c.x - play_left) / play_screen;
                 let ny = (c.y - play_top) / play_screen;
-                Some(Vec2::new((nx - 0.5) * PLAY_WORLD, (0.5 - ny) * PLAY_WORLD))
+                Some(Vec2::new(
+                    (nx - 0.5) * PLAY_WORLD + cam_off.x,
+                    (0.5 - ny) * PLAY_WORLD + cam_off.y,
+                ))
             } else {
                 None
             }

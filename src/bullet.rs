@@ -73,10 +73,11 @@ pub struct Bullet {
     /// Originating turret slot index (0-7) for friendly bullets. None for
     /// enemy bullets — they don't contribute to the slot damage tally.
     pub slot: Option<u8>,
-    /// Rune carried by the bullet (inherited from the firing slot's `rune`).
-    /// On hit, the rune is rolled through the proc system and may trigger
-    /// status applies / chain damage. Always `None` for enemy bullets.
-    pub rune: Option<Rune>,
+    /// Up to 3 runes carried by the bullet (inherited from the firing
+    /// slot's `runes` array). On hit, each non-`None` rune is rolled
+    /// through the proc system and may trigger status applies / chain
+    /// damage. Always all-`None` for enemy bullets.
+    pub runes: [Option<Rune>; 3],
 }
 
 pub fn bullet_update(
@@ -158,7 +159,7 @@ pub fn bullet_collisions(
                         hit_pos: ep,
                         weapon: b.weapon,
                         source_slot: b.slot,
-                        runes: b.rune.into_iter().collect(),
+                        runes: b.runes.iter().filter_map(|r| *r).collect(),
                         procced: Vec::new(),
                         proc_strength: 1.0,
                     });
@@ -404,9 +405,12 @@ fn process_damage_event(
     }
 }
 
-/// Spawn a short-lived lightning bolt visual between two world points.
-/// Reuses the railgun beam mesh + `Beam` lifetime/width animator — the only
-/// per-instance differences are color (`mat`) and length (scaled).
+/// Spawn a short-lived **zig-zag** lightning bolt visual between two
+/// world points. Built from `SEGMENTS` straight beam-mesh segments
+/// strung between sample points along the line `a → b`; interior
+/// points get a random perpendicular jitter so the bolt forks like
+/// real lightning instead of a flat ruler-line. Used by both Shock
+/// (cyan chain) and Cascade (gold on-kill snowball).
 fn spawn_lightning_arc(
     commands: &mut Commands,
     em: &EffectMeshes,
@@ -414,22 +418,54 @@ fn spawn_lightning_arc(
     a: Vec2,
     b: Vec2,
 ) {
-    let delta = b - a;
-    let len = delta.length();
-    if len < 0.5 { return; }
-    let mid = (a + b) * 0.5;
-    let angle = (-delta.x).atan2(delta.y); // 0 = +Y convention
-    commands.spawn((
-        Mesh2d(em.beam.clone()),
-        MeshMaterial2d(mat.clone()),
-        Transform {
-            translation: Vec3::new(mid.x, mid.y, 5.5),
-            rotation: Quat::from_rotation_z(angle),
-            // y scales the BEAM_LENGTH-long mesh down to actual arc length.
-            // x is animated by `update_beams` so spawn at 0 to start invisible.
-            scale: Vec3::new(0.0, len / BEAM_LENGTH, 1.0),
-        },
-        Beam { life: SHOCK_VISUAL_LIFE, max_life: SHOCK_VISUAL_LIFE },
-        RenderLayers::layer(PLAY_LAYER),
-    ));
+    let total = b - a;
+    let total_len = total.length();
+    if total_len < 0.5 { return; }
+    let dir  = total / total_len;
+    let perp = Vec2::new(-dir.y, dir.x);
+
+    // 5 segments → 4 interior break points. Enough to read as
+    // forky without becoming noisy at small scales.
+    const SEGMENTS: usize = 5;
+    // Perpendicular jitter scales with the total span — a long arc
+    // forks more dramatically than a short hop. Clamped so a tiny
+    // hop doesn't deflate to a straight line and a huge one doesn't
+    // wander off into loops.
+    let jitter_amp = (total_len * 0.12).clamp(0.7, 3.5);
+
+    let mut rng = rand::thread_rng();
+    let mut points: Vec<Vec2> = Vec::with_capacity(SEGMENTS + 1);
+    points.push(a);
+    for i in 1..SEGMENTS {
+        let t = i as f32 / SEGMENTS as f32;
+        let base = a + dir * (total_len * t);
+        let off  = rng.gen_range(-jitter_amp..jitter_amp);
+        points.push(base + perp * off);
+    }
+    points.push(b);
+
+    // One beam segment per consecutive pair of points. They share
+    // the same `life` so all segments fade together as one bolt.
+    for w in points.windows(2) {
+        let p0 = w[0];
+        let p1 = w[1];
+        let seg = p1 - p0;
+        let seg_len = seg.length();
+        if seg_len < 0.1 { continue; }
+        let seg_mid   = (p0 + p1) * 0.5;
+        let seg_angle = (-seg.x).atan2(seg.y);
+        commands.spawn((
+            Mesh2d(em.beam.clone()),
+            MeshMaterial2d(mat.clone()),
+            Transform {
+                translation: Vec3::new(seg_mid.x, seg_mid.y, 5.5),
+                rotation: Quat::from_rotation_z(seg_angle),
+                // y scales the BEAM_LENGTH-long mesh to the segment length.
+                // x is animated by `update_beams` so spawn at 0.
+                scale: Vec3::new(0.0, seg_len / BEAM_LENGTH, 1.0),
+            },
+            Beam { life: SHOCK_VISUAL_LIFE, max_life: SHOCK_VISUAL_LIFE },
+            RenderLayers::layer(PLAY_LAYER),
+        ));
+    }
 }

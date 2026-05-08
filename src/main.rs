@@ -29,6 +29,7 @@ mod balance;
 mod beam;
 mod bullet;
 mod components;
+mod customize;
 mod effects;
 mod enemy;
 mod i18n;
@@ -47,8 +48,14 @@ mod wave;
 mod weapon;
 
 use ally::{
-    ally_ai, ally_death_check, ally_turret_aim_fire, homing_missile_track,
-    mine_layer_drop, mine_tick, missile_launcher_fire, plane_ai, tender_heal_beam,
+    ally_ai, ally_death_check, ally_turret_aim_fire, boarder_tick,
+    boarding_launcher_fire, flash_mine_dots, homing_missile_track,
+    mine_layer_drop, mine_tick, missile_launcher_fire, plane_ai,
+    tender_heal_beam, update_boarding_ropes,
+};
+use customize::{
+    handle_customize_clicks, setup_customize_ui, update_customize_ui,
+    CustomizeOpen,
 };
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
@@ -56,29 +63,36 @@ use bullet::{bullet_collisions, bullet_update};
 use effects::{
     apply_hit_fx_visuals, tick_hit_fx, update_hit_particles, update_muzzle_flashes,
 };
-use enemy::{bomber_detonate, enemy_ai, enemy_death_check, enemy_fire, spawn_enemies};
+use enemy::{
+    bomber_detonate, enemy_ai, enemy_death_check, enemy_fire,
+    setup_enemy_hp_bar_assets, spawn_enemies, track_enemy_damage_for_hp_bars,
+    update_enemy_hp_bars,
+};
 use map::{
     advance_map_anim_timeline, apply_view_mode, close_popup_on_view_change,
     handle_building_choice_clicks, handle_debug_buttons,
-    in_combat_view, map_begin_phase, map_boat_movement, map_click_input,
-    refresh_map_fill, setup_currency_ui, setup_debug_ui, setup_map,
+    in_combat_view, level_complete_check, level_fail_check, map_begin_phase,
+    map_boat_movement, map_click_input, refresh_map_fill, setup_currency_ui,
+    setup_debug_ui, setup_level_status_ui, setup_map, setup_progress_assets,
     sync_owned_slot_visuals, tick_buildings,
-    update_anim_beams, update_anim_pulses,
-    update_building_button_tints, update_building_description,
-    update_claim_label, update_currency_ui_visibility, update_debug_button_tints,
-    update_map_slot_labels, update_refined_steel_text, update_scrap_text,
-    update_steel_text,
+    update_anim_beams, update_anim_pulses, update_building_button_tints,
+    update_building_description, update_building_hover_tooltip,
+    update_building_progress_bars, update_claim_label, update_currency_ui,
+    update_debug_button_tints, update_level_status_ui, update_map_slot_labels,
+    update_refined_steel_text, update_scrap_text, update_steel_text,
     BuildingTimers, CombatContext, DebugClaimMode, MapAnimTimeline, MapState,
     TriggerMapPhase, ViewMode,
 };
 use modes::{
-    apply_crt_mode, apply_night_mode, apply_vsync_mode, apply_window_mode,
-    handle_desktop_drag_resize, handle_desktop_escape,
-    CrtMode, GameMode, NightMode, VsyncMode, WindowMode,
+    apply_camera_follow, apply_crt_mode, apply_night_mode, apply_vsync_mode,
+    apply_window_mode, handle_desktop_drag_resize, handle_desktop_escape,
+    CameraFollow, CrtMode, GameMode, NightMode, VsyncMode, WindowMode,
 };
 use palette::{apply_palette, Palette};
 use pier::{draft_input, sync_pier_visuals, update_draft_ui, Pier, WaveDraft};
-use rendering::{resize_upscale_sprite, setup_render, update_hash_image};
+use rendering::{
+    resize_upscale_sprite, setup_render, update_hash_image, update_hud_camera_viewport,
+};
 use rune::{tick_echoes, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_resonate};
 use ship::{apply_velocity, friendly_movement, setup_world};
 use trails::{update_enemy_trails, update_trail, ShipPath};
@@ -102,6 +116,15 @@ use weapon::WeaponType;
 
 #[derive(Resource)]
 pub struct Score(pub u32);
+
+/// Cumulative campaign progress — number of map sections the player
+/// has cleared so far. Read by `level_enemy_budget` to scale every
+/// new level harder than the last, so a 2★ fought after 5 wins is
+/// noticeably tougher than a 2★ picked first.
+#[derive(Resource, Default)]
+pub struct CampaignProgress {
+    pub battles_cleared: u32,
+}
 
 /// Currency dropped by killed enemies (+1 per kill). Spent on map-view
 /// building placement and as the input resource for the Foundry. Default 0.
@@ -130,7 +153,7 @@ fn main() {
         damage: 1,
         fire_rate: 4.0,
         barrels: 1,
-        rune: None,
+        runes: [None; 3],
     };
     for i in 1..8 {
         cfg.slots[i] = SlotCfg {
@@ -139,7 +162,7 @@ fn main() {
             damage: 1,
             fire_rate: 4.0,
             barrels: 1,
-            rune: None,
+            runes: [None; 3],
         };
     }
 
@@ -155,7 +178,10 @@ fn main() {
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
         .insert_resource(Score(0))
-        .insert_resource(Scrap::default())
+        .insert_resource(CampaignProgress::default())
+        // Starter purse — enough to build one tier-1 (10) plus a small
+        // buffer so the first map decision isn't a forced no-op.
+        .insert_resource(Scrap(15))
         .insert_resource(Steel::default())
         .insert_resource(RefinedSteel::default())
         .insert_resource(SpawnTimer { t: 0.0, elapsed: 0.0 })
@@ -168,6 +194,7 @@ fn main() {
         .insert_resource(CrtMode::default())
         .insert_resource(VsyncMode::default())
         .insert_resource(GameMode::default())
+        .insert_resource(CameraFollow::default())
         .insert_resource(WaveState::default())
         .insert_resource(Pier::default())
         .insert_resource(WaveDraft::default())
@@ -178,7 +205,13 @@ fn main() {
         .insert_resource(CombatContext::default())
         .insert_resource(DebugClaimMode::default())
         .add_event::<TriggerMapPhase>()
-        .add_systems(Startup, (setup_render, setup_world, setup_ui, setup_map, setup_debug_ui, setup_currency_ui).chain())
+        .insert_resource(CustomizeOpen::default())
+        .add_systems(Startup, (
+            setup_render, setup_world, setup_ui, setup_map,
+            setup_debug_ui, setup_currency_ui, setup_progress_assets,
+            setup_level_status_ui, setup_enemy_hp_bar_assets,
+            setup_customize_ui,
+        ).chain())
         .add_systems(Update, (
             // Always-on visual setup. apply_night_mode → apply_palette must
             // be ordered so a night-mode toggle propagates to the camera in
@@ -213,6 +246,18 @@ fn main() {
                 tick_on_conduit, tick_on_resonate,
                 enemy_death_check,
             ).chain(),
+            // Once the section's enemy budget is drained AND every
+            // remaining enemy is dead, claim the section + flip back
+            // to map view. Order vs `enemy_death_check` is best-effort —
+            // worst case is a 1-frame delay before the transition.
+            level_complete_check,
+            // Mirror system for the failure side: friendly HP at 0 →
+            // wipe arena, restore HP, back to map (no claim).
+            level_fail_check,
+            // Track damage frame-to-frame to spawn / refresh enemy
+            // HP bars; visual updater positions + scales them.
+            track_enemy_damage_for_hp_bars,
+            update_enemy_hp_bars,
         ).run_if(in_combat_view))
         .add_systems(Update, (
             // Visuals / FX / UI. Split from the sim block so we don't blow
@@ -230,12 +275,21 @@ fn main() {
             ui_button_system,
             update_slot_labels,
             update_damage_bars,
-            resize_upscale_sprite,
-            handle_desktop_escape,
-            handle_desktop_drag_resize,
-            apply_window_mode,
-            apply_crt_mode,
-            apply_vsync_mode,
+            // Rendering pipeline housekeeping — sized as a sub-tuple
+            // so the outer tuple stays under Bevy's 20-system cap.
+            (
+                resize_upscale_sprite,
+                update_hud_camera_viewport,
+                handle_desktop_escape,
+                handle_desktop_drag_resize,
+                apply_window_mode,
+                apply_crt_mode,
+                apply_vsync_mode,
+                // Updates the play camera's translation each frame —
+                // either tracks the friendly ship or holds at origin
+                // depending on `CameraFollow.active`.
+                apply_camera_follow,
+            ),
         ))
         .add_systems(Update, (
             // HP bar runs in both map and combat view since the bar is
@@ -267,11 +321,20 @@ fn main() {
             missile_launcher_fire,
             homing_missile_track,
             // Mines: drop at intervals from minelayers, then tick arm /
-            // lifetime / proximity-detonation each frame.
+            // lifetime / proximity-detonation each frame. `flash_mine_dots`
+            // is a pure visual effect so it can run alongside the
+            // proximity check without ordering.
             mine_layer_drop,
             mine_tick,
+            flash_mine_dots,
             // Tender: pick heal target + apply HP regen + spawn beam visual.
             tender_heal_beam,
+            // Blackbeard: launch boarding parties; boarders travel
+            // and tick damage on their targets; rope visual tracks
+            // both ends each frame for the connection effect.
+            boarding_launcher_fire,
+            boarder_tick,
+            update_boarding_ropes,
         ).run_if(in_combat_view))
         .add_systems(Update, (
             // Map view — camera toggle, click target, boat steering, and
@@ -295,15 +358,31 @@ fn main() {
             update_building_button_tints,
             update_building_description,
             handle_building_choice_clicks,
+            update_building_hover_tooltip,
             (handle_debug_buttons, update_debug_button_tints, update_claim_label),
             (
-                update_currency_ui_visibility,
+                update_currency_ui,
                 update_scrap_text, update_steel_text, update_refined_steel_text,
             ),
+            // Combat-only level banner (top of play area). Self-gates
+            // on view + mode internally; cheap to run every frame.
+            update_level_status_ui,
             // Production economy ticks in both views — the Foundry /
             // Crane cycle keeps running while the player is in combat
             // so wave timers and cycle timers don't desync.
             tick_buildings,
+            // Visual update for the per-converter progress bars.
+            // Cheap (≤ 10 sections) and reads BuildingTimers, so it
+            // sits next to `tick_buildings` for cache locality.
+            update_building_progress_bars,
+        ))
+        .add_systems(Update, (
+            // Customize overlay — visible only when CustomizeOpen.
+            // Update + click handler always run (cheap; self-gate on
+            // visibility internally). In its own block to stay under
+            // Bevy's 20-system tuple cap on the map block.
+            update_customize_ui,
+            handle_customize_clicks,
         ))
         .run();
 }

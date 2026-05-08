@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use crate::ally::{ally_is_submerged, Ally};
 use crate::balance::{
     BOMBER_DETONATE_DIST, BULLET_SPEED, ENEMY_BARREL_TIP, ENEMY_BULLET_HALF_LEN, ENEMY_LEN,
-    ENEMY_RANGE, ENEMY_WIDTH, PLAY_LAYER, PLAY_WORLD,
+    ENEMY_RANGE, ENEMY_WIDTH, HUD_LAYER, PLAY_LAYER, PLAY_WORLD,
 };
 use crate::bullet::Bullet;
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
@@ -40,6 +40,27 @@ pub struct Enemy {
     pub state_timer: f32,
     pub waypoint: Vec2,
     pub fire_cd: f32,
+    /// Snapshot of HP at spawn (`variant.hp()` for regular enemies,
+    /// `class.boss_hp()` for bosses spawned via `spawn_boss`). Used
+    /// as the denominator for the on-hit HP bar so the bar's fill
+    /// stays accurate even for bosses with custom HP overrides.
+    pub max_hp: i32,
+}
+
+/// Per-enemy snapshot of last frame's HP. The HP-bar system reads this
+/// every frame: a strict decrease means the enemy was damaged this
+/// frame, which (re)spawns the bar and resets its 3-second fade timer.
+#[derive(Component)]
+pub struct PreviousHp(pub i32);
+
+/// Small red HP bar floating above an enemy. Spawned the first time an
+/// enemy takes damage; the timer is reset to `HP_BAR_SHOW_TIME` on
+/// each subsequent hit. When the timer runs out (or the target enemy
+/// despawns), the bar vanishes.
+#[derive(Component)]
+pub struct EnemyHpBar {
+    pub enemy: Entity,
+    pub remaining: f32,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -149,8 +170,10 @@ pub fn spawn_enemy(
             state_timer: 1.0,
             waypoint: Vec2::ZERO,
             fire_cd: 0.5,
+            max_hp: variant.hp(),
         },
         Health(variant.hp()),
+        PreviousHp(variant.hp()),
         Velocity(dir * variant.speed()),
         Heading(heading),
         Faction(FactionKind::Enemy),
@@ -213,12 +236,16 @@ pub fn spawn_enemies(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mode: Res<GameMode>,
-    combat_ctx: Res<crate::map::CombatContext>,
+    mut combat_ctx: ResMut<crate::map::CombatContext>,
     enemies: Query<Entity, With<Enemy>>,
 ) {
     if *mode != GameMode::Sandbox { return; }
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
+    // Per-level total budget — once exhausted, no more enemies spawn
+    // and `level_complete_check` will end the encounter when the
+    // arena clears.
+    if combat_ctx.enemy_budget == 0 { return; }
     timer.elapsed += time.delta_secs();
     timer.t -= time.delta_secs();
     if timer.t > 0.0 { return; }
@@ -226,8 +253,8 @@ pub fn spawn_enemies(
     let interval = (3.0 - timer.elapsed * 0.025).max(0.5);
     timer.t = interval;
 
-    // Cap scales with the section's stars (set when the player
-    // entered this combat from the map).
+    // Concurrent on-screen cap scales with the section's stars
+    // (set when the player entered this combat from the map).
     if enemies.iter().count() >= combat_ctx.enemy_cap() { return; }
 
     let mut rng = rand::thread_rng();
@@ -252,6 +279,7 @@ pub fn spawn_enemies(
     let inward = (-pos).normalize();
     let heading = (-inward.x).atan2(inward.y);
     spawn_enemy(&mut commands, &pm, &em, &mut meshes, pos, heading, variant);
+    combat_ctx.enemy_budget = combat_ctx.enemy_budget.saturating_sub(1);
 }
 
 pub fn enemy_ai(
@@ -406,7 +434,7 @@ pub fn enemy_fire(
                 remaining: ENEMY_RANGE,
                 weapon: WeaponType::Standard,
                 slot: None,
-                rune: None,
+                runes: [None; 3],
             },
             Velocity(dir * BULLET_SPEED),
             RenderLayers::layer(PLAY_LAYER),
@@ -500,6 +528,120 @@ pub fn bomber_detonate(
             spawn_hit_particles(&mut commands, &em, &pm.enemy,        bp, 14, 80.0,  &mut rng);
             spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, bp, 8,  100.0, &mut rng);
         }
+    }
+}
+
+// ---------- Enemy HP bars (on-damage, fade after 3 s) ----------
+
+/// How long the bar stays visible after the most recent damage tick.
+const HP_BAR_SHOW_TIME: f32 = 3.0;
+/// World-units offset above the enemy's center where the bar sits.
+/// Tuned to sit just above standard enemies (~half-length 5–6) — boss
+/// hulls (Carrier at ~12) will overlap the lower edge slightly, which
+/// is fine: a bar that "hugs" the ship reads more clearly than one
+/// floating in empty water above it.
+const HP_BAR_Y_OFFSET:  f32 = 7.0;
+/// Bar dimensions in world units (= internal pixels at this play
+/// area's nearest-neighbor scale).
+const HP_BAR_W: f32 = 8.0;
+const HP_BAR_H: f32 = 1.0;
+
+/// Cached mesh + material for the red HP bars. Built once at startup
+/// so spawning a bar is a transform-and-component insert, no asset
+/// alloc.
+#[derive(Resource)]
+pub struct EnemyHpBarAssets {
+    pub mesh: Handle<Mesh>,
+    pub fill: Handle<ColorMaterial>,
+}
+
+/// Build the cached HP-bar mesh + material once at startup.
+pub fn setup_enemy_hp_bar_assets(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let mesh = meshes.add(Rectangle::new(HP_BAR_W, HP_BAR_H));
+    let fill = materials.add(Color::srgb(0.92, 0.18, 0.22));
+    commands.insert_resource(EnemyHpBarAssets { mesh, fill });
+}
+
+/// Detect HP drops and spawn / refresh the floating bar. Reads
+/// `Health` against `PreviousHp`; on a strict decrease either
+/// resets an existing bar's timer or spawns a new one. Runs in the
+/// damage-application chain so it sees the new HP for the same
+/// frame the hit landed.
+pub fn track_enemy_damage_for_hp_bars(
+    mut commands: Commands,
+    assets: Option<Res<EnemyHpBarAssets>>,
+    mut enemies: Query<(Entity, &Health, &mut PreviousHp), With<Enemy>>,
+    mut bars: Query<&mut EnemyHpBar>,
+) {
+    let Some(assets) = assets else { return; };
+    for (e, h, mut prev) in &mut enemies {
+        if h.0 < prev.0 {
+            // Took damage this frame. Find an existing bar for this
+            // enemy and bump its timer; otherwise spawn one.
+            let mut found = false;
+            for mut bar in &mut bars {
+                if bar.enemy == e {
+                    bar.remaining = HP_BAR_SHOW_TIME;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                commands.spawn((
+                    Mesh2d(assets.mesh.clone()),
+                    MeshMaterial2d(assets.fill.clone()),
+                    // World-space placement sync'd each frame by
+                    // `update_enemy_hp_bars`. z = 5.5 sits above
+                    // hulls (1.0) and bullets (4.0) so the bar
+                    // doesn't get visually buried. Lives on
+                    // `HUD_LAYER` so the HudCamera renders it at
+                    // native resolution — the chunky-pixel filter
+                    // doesn't apply, keeping the bar crisp.
+                    Transform::from_xyz(0.0, 0.0, 5.5),
+                    EnemyHpBar { enemy: e, remaining: HP_BAR_SHOW_TIME },
+                    RenderLayers::layer(HUD_LAYER),
+                ));
+            }
+        }
+        prev.0 = h.0;
+    }
+}
+
+/// Per-frame visual update for HP bars: ticks the fade timer, snaps
+/// position to the enemy's current location, and writes the fill
+/// scale + offset so the bar shrinks left-anchored as HP drops. Bars
+/// despawn when their timer expires or their target enemy is gone.
+pub fn update_enemy_hp_bars(
+    time: Res<Time>,
+    mut commands: Commands,
+    enemies: Query<(&Transform, &Health, &Enemy), Without<EnemyHpBar>>,
+    mut bars: Query<(Entity, &mut EnemyHpBar, &mut Transform)>,
+) {
+    let dt = time.delta_secs();
+    for (bar_e, mut bar, mut tf) in &mut bars {
+        bar.remaining -= dt;
+        if bar.remaining <= 0.0 {
+            commands.entity(bar_e).despawn();
+            continue;
+        }
+        let Ok((e_tf, h, enemy)) = enemies.get(bar.enemy) else {
+            commands.entity(bar_e).despawn();
+            continue;
+        };
+        let max = enemy.max_hp.max(1) as f32;
+        let ratio = (h.0 as f32 / max).clamp(0.0, 1.0);
+        // Anchor the bar's left edge: the centered Rectangle scales
+        // around its midpoint, so we shift the center by half the
+        // empty width to keep the left edge fixed under the enemy.
+        let world = e_tf.translation.truncate();
+        tf.translation.x = world.x + HP_BAR_W * (ratio - 1.0) * 0.5;
+        tf.translation.y = world.y + HP_BAR_Y_OFFSET;
+        tf.scale.x = ratio;
+        tf.scale.y = 1.0;
     }
 }
 

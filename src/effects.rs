@@ -43,8 +43,13 @@ pub struct EffectMeshes {
     pub bullet_missile_outer: Handle<Mesh>,
     pub bullet_missile_inner: Handle<Mesh>,
     /// Sea-mine meshes — dark outer shell + small red warning dot.
+    /// The dot pulses (`flash_mine_dots`) and the whole mine bobs
+    /// vertically (`bob_mines`) to read as floating in water.
     pub mine_outer: Handle<Mesh>,
     pub mine_inner: Handle<Mesh>,
+    /// Small filled circle used for boarders — tiny crew dots
+    /// hopping across to enemy ships.
+    pub boarder_dot: Handle<Mesh>,
     /// Long thin rectangle reused by every railgun beam. Width 1, length
     /// `BEAM_LENGTH` along local +Y. Width is animated via Transform.scale.x.
     pub beam: Handle<Mesh>,

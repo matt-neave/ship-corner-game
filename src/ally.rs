@@ -34,12 +34,12 @@ use bevy::render::view::RenderLayers;
 use rand::Rng;
 
 use crate::balance::{
-    BEAM_LENGTH, FRIENDLY_HP_WAVE, PLAY_LAYER, PLAY_WORLD, TURRET_PIVOT, TURRET_RANGE,
+    FRIENDLY_HP_WAVE, PLAY_LAYER, PLAY_WORLD, TURRET_PIVOT, TURRET_RANGE,
 };
-use crate::beam::Beam;
 use crate::bullet::Bullet;
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
-use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
+use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx, HitParticle};
+use crate::enemy::{Enemy, EnemyState, EnemyVariant};
 use crate::modes::GameMode;
 use crate::palette::PaletteMaterials;
 use crate::rune::FireExtent;
@@ -83,6 +83,13 @@ pub enum ShipClass {
     /// effect targets *other allies / the player*, not itself or
     /// anything player-mounted.
     Tender,
+    /// Blackbeard's flagship. Matte-black pirate hull with no cannons
+    /// at all — its only attack is *boarding*: closes to short range
+    /// then launches a party of small boarder figures across to the
+    /// enemy who tick damage for a few seconds before vanishing. The
+    /// closer-than-usual orbit + ranged-attack-less profile carves out
+    /// clear mechanical space vs. the regular PirateShip.
+    Blackbeard,
 }
 
 impl ShipClass {
@@ -93,6 +100,10 @@ impl ShipClass {
             ShipClass::Submarine  => 20,
             ShipClass::Minelayer  => 25,
             ShipClass::Tender     => 35,
+            // Blackbeard is the flagship — most HP of the surface
+            // fleet so it can survive the close-range orbit boarding
+            // requires.
+            ShipClass::Blackbeard => 60,
         }
     }
     pub fn speed(self) -> f32 {
@@ -107,6 +118,10 @@ impl ShipClass {
             // Slightly faster than the player so the tender can keep up
             // when trailing behind.
             ShipClass::Tender     => 30.0,
+            // Same speed as the regular Pirate — Blackbeard relies
+            // on the long boarding range, not a chase, to stay
+            // reliable.
+            ShipClass::Blackbeard => 22.0,
         }
     }
     pub fn turn_rate(self) -> f32 {
@@ -116,6 +131,7 @@ impl ShipClass {
             ShipClass::Submarine  => 1.0,
             ShipClass::Minelayer  => 1.6,
             ShipClass::Tender     => 2.0,
+            ShipClass::Blackbeard => 1.0,
         }
     }
     /// Hull dimensions: `(width, length)`. Width drives the capsule radius;
@@ -130,9 +146,13 @@ impl ShipClass {
             // Smallest hull in the fleet — sells the "fragile utility
             // boat" identity without crowding the silhouette gallery.
             ShipClass::Minelayer  => (3.5, 9.0),
-            // Mid-size, slightly stocky proportions — reads as a
-            // utility/medical hull rather than a slim warship.
-            ShipClass::Tender     => (5.0, 12.0),
+            // RNLI-style lifeboat — small + stubby, the smallest
+            // surface ally. Stays clearly distinct from every
+            // combat hull at a glance.
+            ShipClass::Tender     => (4.0, 8.0),
+            // Bigger than PirateShip in both axes — it's the
+            // flagship and the silhouette should imply that.
+            ShipClass::Blackbeard => (6.0, 16.0),
         }
     }
     /// Per-turret `(local_x, local_y, mount_angle_radians)` in hull frame.
@@ -158,6 +178,8 @@ impl ShipClass {
             ShipClass::Minelayer => &[],
             // Tender — no cannons; the heal beam is its only output.
             ShipClass::Tender => &[],
+            // Blackbeard — pure boarding ship, no cannons.
+            ShipClass::Blackbeard => &[],
         }
     }
     pub fn fire_rate(self) -> f32 {
@@ -167,6 +189,7 @@ impl ShipClass {
             ShipClass::Submarine  => 0.0,
             ShipClass::Minelayer  => 0.0,
             ShipClass::Tender     => 0.0,
+            ShipClass::Blackbeard => 0.0,
         }
     }
     pub fn fire_damage(self) -> i32 {
@@ -176,6 +199,7 @@ impl ShipClass {
             ShipClass::Submarine  => 0,
             ShipClass::Minelayer  => 0,
             ShipClass::Tender     => 0,
+            ShipClass::Blackbeard => 0,
         }
     }
     /// Half-arc per turret (radians).
@@ -188,6 +212,7 @@ impl ShipClass {
             ShipClass::Submarine  => 0.0,
             ShipClass::Minelayer  => 0.0,
             ShipClass::Tender     => 0.0,
+            ShipClass::Blackbeard => 0.0,
         }
     }
     /// Diameter to use for the bullet/turret hit-radius approximation.
@@ -197,7 +222,21 @@ impl ShipClass {
             ShipClass::Carrier    => 6.0,
             ShipClass::Submarine  => 2.5,
             ShipClass::Minelayer  => 2.5,
-            ShipClass::Tender     => 3.0,
+            ShipClass::Tender     => 2.5,
+            ShipClass::Blackbeard => 4.0,
+        }
+    }
+    /// Desired engagement range for `ally_ai`'s combat orbit. Most
+    /// classes orbit at ~70% of `TURRET_RANGE` so their cannons can
+    /// bear; Blackbeard orbits much closer because its only attack
+    /// (boarding) needs short range.
+    pub fn orbit_range(self) -> f32 {
+        match self {
+            // Inside `BOARDING_RANGE` (25), so the ship sits in
+            // boarding range mid-orbit and the launcher cooldown has
+            // a steady chance to fire.
+            ShipClass::Blackbeard => 18.0,
+            _                     => TURRET_RANGE * 0.7,
         }
     }
     /// Whether this class is treated as underwater. Submerged ships are
@@ -206,6 +245,47 @@ impl ShipClass {
     pub fn is_submerged(self) -> bool {
         matches!(self, ShipClass::Submarine)
     }
+
+    /// HP a boss-side spawn of this class gets, hand-tuned per class
+    /// so each plays as a tough but killable mini-boss against a
+    /// default-loadout player. Started at 10× the ally HP per the
+    /// initial spec, lowered after testing — the carrier's 2000 HP
+    /// version felt invincible to a single-cannon ship.
+    pub fn boss_hp(self) -> i32 {
+        match self {
+            ShipClass::PirateShip => 100,
+            ShipClass::Carrier    => 400,
+            ShipClass::Submarine  => 60,
+            ShipClass::Minelayer  => 80,
+            ShipClass::Tender     => 100,
+            ShipClass::Blackbeard => 200,
+        }
+    }
+
+    /// Short label for compact UI surfaces (debug spawn buttons, etc.).
+    /// Hand-trimmed so every class fits a similar width — keeps the
+    /// debug panel column visually tidy.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            ShipClass::PirateShip => "PIRATE",
+            ShipClass::Carrier    => "CARRIER",
+            ShipClass::Submarine  => "SUB",
+            ShipClass::Minelayer  => "MINER",
+            ShipClass::Tender     => "TENDER",
+            ShipClass::Blackbeard => "BLKBEARD",
+        }
+    }
+
+    /// Convenience iterator over every class — handy for the debug
+    /// "spawn one of each" UI so adding a class auto-shows up there.
+    pub const ALL: &'static [ShipClass] = &[
+        ShipClass::PirateShip,
+        ShipClass::Carrier,
+        ShipClass::Submarine,
+        ShipClass::Minelayer,
+        ShipClass::Tender,
+        ShipClass::Blackbeard,
+    ];
 }
 
 #[derive(Component)]
@@ -272,6 +352,11 @@ pub struct Mine {
     pub target_faction: FactionKind,
 }
 
+/// Marker on the red centre dot inside a mine. Drives `flash_mine_dots`
+/// to pulse its scale so the dot reads as a blinking warning light.
+#[derive(Component)]
+pub struct MineDotFlash;
+
 /// A mine launcher mounted on a ship. Drops one mine every
 /// `drop_interval` seconds at the ship's current position.
 #[derive(Component)]
@@ -301,6 +386,84 @@ pub struct HealBeamEmitter {
     pub heal_faction: FactionKind,
 }
 
+/// Boarding-party launcher mounted on a Blackbeard ship. Each cycle,
+/// finds the closest target-faction enemy inside `range` and spawns
+/// `party_size` boarder dots at the launcher's position, all bound
+/// for that target.
+///
+/// State machine:
+///   - `ready = true`  → waiting for a target. Cooldown is paused;
+///                       the boarders are "loaded and ready to deploy"
+///                       as soon as something walks into range.
+///   - `ready = false` → cd ticks down each frame; when it hits 0 we
+///                       flip back to `ready = true` and wait again.
+/// Pausing the cooldown when no target exists is the key bit: a
+/// Blackbeard with no enemy nearby doesn't waste reload progress, so
+/// the very first enemy that appears triggers a launch instantly.
+#[derive(Component)]
+pub struct BoardingLauncher {
+    /// Launches per second when actively engaging. 0.25 ≈ once every 4 s.
+    pub fire_rate: f32,
+    /// Time left on the current cooldown (only ticks while
+    /// `ready == false`).
+    pub cd: f32,
+    /// `true` when the next launch is loaded; flipped to `false` on
+    /// fire and back to `true` once `cd` runs out.
+    pub ready: bool,
+    /// Maximum distance to consider a target boardable.
+    pub range: f32,
+    pub party_size: u8,
+    pub damage_per_tick: i32,
+    pub tick_interval: f32,
+    pub attach_duration: f32,
+    pub target_faction: FactionKind,
+}
+
+/// State of a single boarder dot — first traveling from the launching
+/// ship to the enemy, then attached and ticking damage.
+#[derive(Clone, Copy)]
+pub enum BoarderState {
+    /// Lerping from `source`'s current position to `target`'s. `t` is
+    /// 0..1 progress; on reaching 1 the boarder transitions to
+    /// `Attached`.
+    Traveling { t: f32 },
+    /// Stuck to `target`, position = target's transform + a small
+    /// random offset so multiple boarders don't all overlap. `remaining`
+    /// counts down each frame; on hitting 0 the boarder despawns.
+    Attached { remaining: f32 },
+}
+
+/// Visible rope strung between a Blackbeard and the enemy it's
+/// boarding. Lives for the full launch cycle (travel + attach
+/// duration) so the boarders read as crew traveling *along the
+/// rope* rather than projectiles flying across.
+#[derive(Component)]
+pub struct BoardingRope {
+    pub source: Entity,
+    pub target: Entity,
+    pub lifetime: f32,
+}
+
+/// One boarder dot. Marker entity that hops the gap between two ships
+/// and drips damage onto the target. Despawns when its attach timer
+/// runs out, or when the source / target despawns mid-flight.
+#[derive(Component)]
+pub struct Boarder {
+    pub source: Entity,
+    pub target: Entity,
+    pub state: BoarderState,
+    /// Random offset from target center used while attached, so
+    /// multiple boarders cluster around the enemy instead of stacking.
+    pub offset: Vec2,
+    pub damage_per_tick: i32,
+    pub tick_interval: f32,
+    pub tick_cd: f32,
+    /// Total time the boarder will stay attached once it lands —
+    /// passed in from the launcher so the duration is tunable per
+    /// ship without `boarder_tick` reaching back into the launcher.
+    pub attach_duration: f32,
+}
+
 /// White signal flag drawn across the deck, parented to an ally ship.
 /// Marker only — the flag's "wind-caught" look comes from a curved
 /// mesh built once at spawn (`build_curved_flag_mesh`), not a
@@ -319,17 +482,16 @@ impl PaletteMaterials {
             ShipClass::Submarine  => &self.submarine_hull,
             ShipClass::Minelayer  => &self.minelayer_hull,
             ShipClass::Tender     => &self.tender_hull,
+            ShipClass::Blackbeard => &self.blackbeard_hull,
         }
     }
 }
 
 // ---------- Spawn helper ----------
 
-/// Spawn one allied ship of `class` at `pos`. Wraps `spawn_ship_chassis`
-/// (which is faction-agnostic — see module docs) and adds the friendly-
-/// only bits: the `Ally` AI marker, broadside turrets with `AllyTurret`
-/// markers, decorative pirate flags, the carrier's plane wing, and the
-/// submarine's missile launcher.
+/// Spawn one allied ship of `class` at `pos`. Thin wrapper around
+/// `build_ship_for_faction` that also tags the result with the `Ally`
+/// AI marker. Use `spawn_boss` for the enemy-side equivalent.
 pub fn spawn_ally(
     commands: &mut Commands,
     pm: &PaletteMaterials,
@@ -339,20 +501,84 @@ pub fn spawn_ally(
     heading: f32,
     class: ShipClass,
 ) {
-    // Friendly side: combat-targeting components shoot the opposite
-    // faction; the tender heals the same faction. A future
-    // `spawn_boss_ship` would mirror this — calling `spawn_ship_chassis`
-    // with `FactionKind::Enemy` and flipping these accordingly.
-    let own_faction    = FactionKind::Friendly;
-    let target_faction = own_faction.opposite();
-    let heal_faction   = own_faction;
-
-    let ship = spawn_ship_chassis(commands, pm, meshes, pos, heading, class, own_faction);
+    let ship = build_ship_for_faction(
+        commands, pm, em, meshes, pos, heading, class,
+        FactionKind::Friendly,
+    );
     commands.entity(ship).insert(Ally {
         class,
         waypoint: Vec2::ZERO,
         waypoint_timer: 0.0,
     });
+}
+
+/// Spawn one *boss* ship of `class` at `pos`. Same chassis + visual
+/// decorations + class-aware launchers as an ally, but on the enemy
+/// side: target factions flipped (boarding launchers, missile
+/// launchers, ally turrets etc. all point at `Friendly`), HP bumped
+/// to 10× the ally value, and tagged with the standard `Enemy` marker
+/// so the existing enemy-side systems (bullet collisions, AI, fire,
+/// death check) handle it without bespoke wiring.
+pub fn spawn_boss(
+    commands: &mut Commands,
+    pm: &PaletteMaterials,
+    em: &EffectMeshes,
+    meshes: &mut Assets<Mesh>,
+    pos: Vec2,
+    heading: f32,
+    class: ShipClass,
+) {
+    let ship = build_ship_for_faction(
+        commands, pm, em, meshes, pos, heading, class,
+        FactionKind::Enemy,
+    );
+    // Per-class boss HP from `ShipClass::boss_hp` overrides the
+    // chassis default. `Enemy::Standard` is a placeholder variant —
+    // the boss's identity is its `ShipClass`, but we need *some*
+    // `EnemyVariant` so the existing enemy systems treat it
+    // consistently (bullet collisions, AI, fire, death check).
+    let boss_hp = class.boss_hp();
+    commands.entity(ship).insert((
+        crate::components::Health(boss_hp),
+        crate::enemy::PreviousHp(boss_hp),
+        Enemy {
+            variant: EnemyVariant::Standard,
+            state: EnemyState::Approach,
+            state_timer: 1.0,
+            waypoint: Vec2::ZERO,
+            fire_cd: 0.5,
+            max_hp: boss_hp,
+        },
+    ));
+}
+
+/// Build a ship chassis + class-specific decorations + class-specific
+/// gameplay components for either faction. Returns the ship `Entity`
+/// so the caller can layer side-specific markers (`Ally` /
+/// `Enemy` / future `BossEnemy`) on top.
+///
+/// `own_faction` drives every "what side am I on" derived value:
+///   - `target_faction` (= `own_faction.opposite()`) is what the
+///     ship's launchers, turrets, mines, etc. *attack*.
+///   - `heal_faction`   (= `own_faction`) is what its tender heals.
+///
+/// Friendly side gets `target = Enemy / heal = Friendly`; boss side
+/// gets `target = Friendly / heal = Enemy`. Same chassis, mirrored
+/// targeting — that's the whole point of carving the function out.
+fn build_ship_for_faction(
+    commands: &mut Commands,
+    pm: &PaletteMaterials,
+    em: &EffectMeshes,
+    meshes: &mut Assets<Mesh>,
+    pos: Vec2,
+    heading: f32,
+    class: ShipClass,
+    own_faction: FactionKind,
+) -> Entity {
+    let target_faction = own_faction.opposite();
+    let heal_faction   = own_faction;
+
+    let ship = spawn_ship_chassis(commands, pm, meshes, pos, heading, class, own_faction);
 
     for &(lx, ly, mount) in class.turret_layout() {
         // Negative local z places the turret *behind* the hull
@@ -388,6 +614,94 @@ pub fn spawn_ally(
     }
 
     let (hull_w, hull_h) = class.hull_dims();
+
+    // Blackbeard's flagship: skull-and-crossbones black flags, plus
+    // the boarding launcher. No cannons — placed before the
+    // PirateShip flag block so the early-return-style flag spawn
+    // pattern stays clean.
+    if class == ShipClass::Blackbeard {
+        commands.entity(ship).insert(BoardingLauncher {
+            // 0.25 ⇒ every 4 s. Tight enough that a missed boarding
+            // (target died mid-flight, or wandered out of range)
+            // doesn't leave the ship idle for ages.
+            fire_rate: 0.25,
+            cd: 0.0,
+            // Start loaded — the first enemy that drifts inside
+            // BOARDING_RANGE triggers an immediate launch.
+            ready: true,
+            range: BOARDING_RANGE,
+            party_size: 5,
+            damage_per_tick: 2,
+            tick_interval: 0.4,
+            attach_duration: 3.0,
+            target_faction,
+        });
+
+        // Two grey sails — fore and aft of midship, slightly wider
+        // than the hull so they overhang as a clean galleon
+        // silhouette. Reuses `build_curved_flag_mesh` for the
+        // wind-bowed shape so the sails read as taut canvas, not
+        // flat panels.
+        let sail_specs: [(f32, f32, f32, f32); 2] = [
+            // (base_y, width, height, curve_amp)
+            ( 3.0, hull_w + 1.5, 3.0, 0.6),
+            (-3.0, hull_w + 1.5, 3.0, 0.6),
+        ];
+        for (base_y, sw, sh, curve) in sail_specs {
+            let sail_mesh = meshes.add(build_curved_flag_mesh(sw, sh, curve));
+            let sail = commands.spawn((
+                Mesh2d(sail_mesh),
+                MeshMaterial2d(pm.sail.clone()),
+                Transform::from_xyz(0.0, base_y, 0.04),
+                RenderLayers::layer(PLAY_LAYER),
+            )).id();
+            commands.entity(sail).insert(ChildOf(ship));
+        }
+
+        // Two black skull-and-crossbones pennants — same overhanging
+        // layout as the regular pirate flags but bigger to match
+        // the bigger hull. Skull head + crossed bones reuse white
+        // `ally_flag` for the detail.
+        let bone_mesh  = meshes.add(Rectangle::new(0.16, 1.05));
+        let skull_mesh = meshes.add(Circle::new(0.38));
+        let flag_specs: [(f32, f32, f32, f32); 2] = [
+            // (base_y, width, height, curve_amp)
+            (-2.0, hull_w + 5.0, 1.4, 0.5),
+            ( 5.0,           5.0, 1.5, 0.3),
+        ];
+        for (base_y, fw, fh, curve) in flag_specs {
+            let flag_mesh = meshes.add(build_curved_flag_mesh(fw, fh, curve));
+            let flag = commands.spawn((
+                Mesh2d(flag_mesh),
+                MeshMaterial2d(pm.skull_flag.clone()),
+                Transform::from_xyz(0.0, base_y, 0.3),
+                AllyFlag,
+                RenderLayers::layer(PLAY_LAYER),
+            )).id();
+            commands.entity(flag).insert(ChildOf(ship));
+
+            // Crossed bones first (lower z); skull head on top.
+            for sign in [1.0_f32, -1.0] {
+                let bone = commands.spawn((
+                    Mesh2d(bone_mesh.clone()),
+                    MeshMaterial2d(pm.ally_flag.clone()),
+                    Transform::from_xyz(0.0, 0.0, 0.04)
+                        .with_rotation(Quat::from_rotation_z(
+                            sign * std::f32::consts::FRAC_PI_4,
+                        )),
+                    RenderLayers::layer(PLAY_LAYER),
+                )).id();
+                commands.entity(bone).insert(ChildOf(flag));
+            }
+            let skull = commands.spawn((
+                Mesh2d(skull_mesh.clone()),
+                MeshMaterial2d(pm.ally_flag.clone()),
+                Transform::from_xyz(0.0, 0.0, 0.05),
+                RenderLayers::layer(PLAY_LAYER),
+            )).id();
+            commands.entity(skull).insert(ChildOf(flag));
+        }
+    }
 
     // Flags are part of the pirate-ship silhouette; the carrier
     // doesn't get them. Two flags across the deck, both overhanging
@@ -433,7 +747,7 @@ pub fn spawn_ally(
         let fire_rate = 0.2; // 1 missile per 5 s
         commands.entity(ship).insert(MissileLauncher {
             fire_rate,
-            damage: 4,
+            damage: 8,
             cd: 1.0 / fire_rate,
             muzzle_offset: hull_h * 0.5,
             target_faction,
@@ -452,9 +766,10 @@ pub fn spawn_ally(
         commands.entity(tower).insert(ChildOf(ship));
     }
 
-    // Tender carries a healing-beam emitter and wears a red cross on
-    // the deck for instant role recognition. The emitter is the only
-    // output — no cannons, no mines, no missiles.
+    // Tender — RNLI-style lifeboat silhouette: bright orange hull
+    // (already set via `hull_for_class`) plus a small white
+    // wheelhouse cabin on the deck. Carries the heal-beam emitter as
+    // its only output.
     if class == ShipClass::Tender {
         commands.entity(ship).insert(HealBeamEmitter {
             range: 50.0,
@@ -463,21 +778,18 @@ pub fn spawn_ally(
             heal_faction,
         });
 
-        // Red cross deck mark: two perpendicular bars centered on the
-        // hull. Drawn slightly above the hull (z=0.05) so it sits on
-        // the deck rather than under it.
-        let bar_v = meshes.add(Rectangle::new(0.9, 4.0));
-        let bar_h = meshes.add(Rectangle::new(4.0, 0.9));
-        let cross_mat = pm.mine_inner.clone();
-        for mesh in [bar_v, bar_h] {
-            let bar = commands.spawn((
-                Mesh2d(mesh),
-                MeshMaterial2d(cross_mat.clone()),
-                Transform::from_xyz(0.0, 0.0, 0.05),
-                RenderLayers::layer(PLAY_LAYER),
-            )).id();
-            commands.entity(bar).insert(ChildOf(ship));
-        }
+        // White cabin atop the hull — a single rectangle slightly
+        // forward of midship for the classic lifeboat silhouette
+        // (cabin forward, open deck aft). Reuses the white `ally_flag`
+        // material so we don't allocate a fresh handle.
+        let cabin_mesh = meshes.add(Rectangle::new(hull_w * 0.55, hull_h * 0.30));
+        let cabin = commands.spawn((
+            Mesh2d(cabin_mesh),
+            MeshMaterial2d(pm.ally_flag.clone()),
+            Transform::from_xyz(0.0, hull_h * 0.10, 0.05),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(cabin).insert(ChildOf(ship));
     }
 
     // Minelayer drops a mine every 3 s at its stern position. Mines
@@ -504,6 +816,8 @@ pub fn spawn_ally(
         )).id();
         commands.entity(deck).insert(ChildOf(ship));
     }
+
+    ship
 }
 
 /// Build the ship hull entity — mesh, transform, faction, health, velocity,
@@ -664,11 +978,22 @@ pub fn ally_ai(
                 heading.0 = approach_angle(heading.0, desired, turn * dt);
             }
             let dir = Vec2::new(-heading.0.sin(), heading.0.cos());
-            // Slow when close so the tender doesn't ram the unit it's
-            // meant to support.
+            // Holding distance: park the tender ~14 units off the unit
+            // it's escorting so it doesn't crawl up onto the friendly
+            // hull. Heal range is 50, so this is comfortably inside
+            // beam range. Past the hold radius, ramp speed back in
+            // smoothly over a 6-unit "approach band" so it doesn't
+            // jolt to full speed the instant the target drifts away.
+            const TENDER_HOLD_DIST: f32 = 14.0;
+            const TENDER_APPROACH_BAND: f32 = 6.0;
             let dist = to.length();
-            let slow = (dist / 12.0).clamp(0.0, 1.0);
-            vel.0 = dir * speed * slow;
+            vel.0 = if dist <= TENDER_HOLD_DIST {
+                Vec2::ZERO
+            } else {
+                let factor = ((dist - TENDER_HOLD_DIST) / TENDER_APPROACH_BAND)
+                    .clamp(0.0, 1.0);
+                dir * speed * factor
+            };
             tf.rotation = Quat::from_rotation_z(heading.0);
             continue;
         }
@@ -686,10 +1011,13 @@ pub fn ally_ai(
         }
 
         let target = if let Some((d, ep)) = nearest {
-            // Engage: orbit at desired range so broadside turrets can bear.
+            // Engage: orbit at the class's preferred range. Broadside
+            // ships sit at ~70% of TURRET_RANGE so their cannons can
+            // bear; Blackbeard sits closer (its `orbit_range` of 18
+            // sits comfortably inside the new BOARDING_RANGE = 45).
             let to = ep - pos;
             let unit = to.normalize_or_zero();
-            let desired_range = TURRET_RANGE * 0.7;
+            let desired_range = ally.class.orbit_range();
             if d > desired_range + 8.0 {
                 ep
             } else if d < desired_range - 8.0 {
@@ -824,7 +1152,7 @@ pub fn ally_turret_aim_fire(
                     turret.class.fire_damage(),
                     None, // not a player slot — skip damage-stat crediting
                     TURRET_RANGE,
-                    None, // ally turrets don't currently carry runes
+                    [None; 3], // ally turrets don't currently carry runes
                     turret.target_faction.opposite(),
                 );
             }
@@ -911,7 +1239,7 @@ fn spawn_homing_missile(
             remaining: MISSILE_RANGE,
             weapon: WeaponType::Standard,
             slot: None,
-            rune: None,
+            runes: [None; 3],
         },
         Velocity(forward * MISSILE_SPEED),
         HomingMissile {
@@ -1049,6 +1377,232 @@ pub fn homing_missile_track(
     }
 }
 
+// ---------- Boarding ----------
+
+/// Maximum distance at which a `BoardingLauncher` will commit a
+/// party across the gap. Generous range (≈ same as the heal beam):
+/// the boarders themselves are entity-tracking, so as long as the
+/// target is inside this radius at *fire time* the party will catch
+/// up even if it moves. Lets Blackbeard reliably engage targets
+/// that drift through its zone without needing to physically chase.
+const BOARDING_RANGE: f32 = 45.0;
+/// How fast the travel-state lerp completes — `t` advances by
+/// `BOARDER_TRAVEL_RATE × dt` per frame. 1.4 ⇒ ~0.7 s end-to-end so
+/// the boarders read as people *crossing* the rope, not a tracer
+/// round flashing across the gap.
+const BOARDER_TRAVEL_RATE: f32 = 1.4;
+
+/// Tick every `BoardingLauncher`: reset the cooldown each frame, and
+/// when it expires AND a target-faction enemy is within range, spawn
+/// a `party_size` cluster of `Boarder` entities aimed at it.
+pub fn boarding_launcher_fire(
+    time: Res<Time>,
+    mut commands: Commands,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<EffectMeshes>>,
+    candidates: Query<(Entity, &Transform, &Faction)>,
+    mut launchers: Query<(Entity, &Transform, &mut BoardingLauncher)>,
+) {
+    let Some(pm) = pm else { return; };
+    let Some(em) = em else { return; };
+    let dt = time.delta_secs();
+    let mut rng = rand::thread_rng();
+
+    for (launcher_e, launcher_tf, mut launcher) in &mut launchers {
+        // Reload only while idle. Once `ready` flips back on, the
+        // cooldown stops draining — the boarding party sits cached,
+        // waiting for a target to walk into range.
+        if !launcher.ready {
+            launcher.cd = (launcher.cd - dt).max(0.0);
+            if launcher.cd <= 0.0 {
+                launcher.ready = true;
+            }
+        }
+
+        // Find nearest target-faction unit. No target → wait.
+        let pos = launcher_tf.translation.truncate();
+        let r2 = launcher.range * launcher.range;
+        let nearest = candidates.iter()
+            .filter(|(_, _, f)| f.0 == launcher.target_faction)
+            .map(|(e, t, _)| {
+                let p = t.translation.truncate();
+                (e, p, p.distance_squared(pos))
+            })
+            .filter(|(_, _, d2)| *d2 <= r2)
+            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+        let Some((target_e, _, _)) = nearest else { continue; };
+        if !launcher.ready { continue; }
+        launcher.ready = false;
+        launcher.cd = 1.0 / launcher.fire_rate.max(0.001);
+
+        // Visible rope across the gap. Lives until the last boarder
+        // would have despawned (travel ≈ 0.4 s + attach_duration +
+        // a small grace) so the rope reads as the connection that
+        // the crew is currently using, not just an opening flourish.
+        let rope_lifetime = 0.4 + launcher.attach_duration + 0.2;
+        commands.spawn((
+            Mesh2d(em.beam.clone()),
+            MeshMaterial2d(pm.boarding_rope.clone()),
+            // Z = 4.4 — above bullets/beams (4.0/5.5), below
+            // boarders (4.5) so the boarders ride visually on top.
+            Transform::from_xyz(pos.x, pos.y, 4.4),
+            BoardingRope {
+                source: launcher_e,
+                target: target_e,
+                lifetime: rope_lifetime,
+            },
+            RenderLayers::layer(PLAY_LAYER),
+        ));
+
+        // Spawn the party. Each boarder gets a small random offset
+        // so the cluster spreads around the target's hull instead of
+        // overlapping. Z = 4.5 puts boarders above bullets but below
+        // muzzle flashes — they should read as the dominant on-deck
+        // action while attached.
+        for _ in 0..launcher.party_size {
+            let offset = Vec2::new(
+                rng.gen_range(-2.5..2.5),
+                rng.gen_range(-2.5..2.5),
+            );
+            commands.spawn((
+                Mesh2d(em.boarder_dot.clone()),
+                MeshMaterial2d(pm.boarder.clone()),
+                Transform::from_xyz(pos.x, pos.y, 4.5),
+                Boarder {
+                    source: launcher_e,
+                    target: target_e,
+                    state: BoarderState::Traveling { t: 0.0 },
+                    offset,
+                    damage_per_tick: launcher.damage_per_tick,
+                    tick_interval: launcher.tick_interval,
+                    tick_cd: 0.0,
+                    attach_duration: launcher.attach_duration,
+                },
+                RenderLayers::layer(PLAY_LAYER),
+            ));
+        }
+    }
+}
+
+/// Drive every in-flight `Boarder`. Two phases:
+///   - `Traveling` — lerp position from source ship to target enemy.
+///   - `Attached`  — track the target each frame; tick damage on the
+///                  configured cadence; despawn when the attach
+///                  timer runs out.
+/// Despawns the boarder if either source or target despawn mid-flight
+/// so we never end up with orphan dots after a chaotic frame.
+pub fn boarder_tick(
+    time: Res<Time>,
+    mut commands: Commands,
+    sources: Query<&Transform, (Without<Boarder>, Without<Enemy>)>,
+    mut targets: Query<(&Transform, &mut Health, &mut HitFx), With<Enemy>>,
+    // `Without<Enemy>` makes this query provably disjoint from
+    // `targets` for Bevy's parameter-conflict checker. Boarders are
+    // friendly-side spawned by the launcher, so they never carry the
+    // Enemy marker — the filter just teaches the type system that.
+    mut boarders: Query<(Entity, &mut Transform, &mut Boarder), Without<Enemy>>,
+) {
+    let dt = time.delta_secs();
+
+    for (boarder_e, mut tf, mut boarder) in &mut boarders {
+        match boarder.state {
+            BoarderState::Traveling { t } => {
+                let Ok(src_tf) = sources.get(boarder.source) else {
+                    commands.entity(boarder_e).despawn();
+                    continue;
+                };
+                let Ok((target_tf, _, _)) = targets.get(boarder.target) else {
+                    commands.entity(boarder_e).despawn();
+                    continue;
+                };
+                let new_t = (t + dt * BOARDER_TRAVEL_RATE).min(1.0);
+                let pos = src_tf.translation.truncate()
+                    .lerp(target_tf.translation.truncate(), new_t);
+                tf.translation.x = pos.x;
+                tf.translation.y = pos.y;
+
+                if new_t >= 1.0 {
+                    boarder.state = BoarderState::Attached {
+                        remaining: boarder.attach_duration,
+                    };
+                    boarder.tick_cd = 0.0; // bite immediately on arrival
+                } else {
+                    boarder.state = BoarderState::Traveling { t: new_t };
+                }
+            }
+            BoarderState::Attached { remaining } => {
+                let Ok((target_tf, mut h, mut fx)) =
+                    targets.get_mut(boarder.target)
+                else {
+                    commands.entity(boarder_e).despawn();
+                    continue;
+                };
+                let pos = target_tf.translation.truncate() + boarder.offset;
+                tf.translation.x = pos.x;
+                tf.translation.y = pos.y;
+
+                let new_remaining = remaining - dt;
+                boarder.tick_cd -= dt;
+                if boarder.tick_cd <= 0.0 {
+                    boarder.tick_cd = boarder.tick_interval;
+                    crate::bullet::apply_damage(&mut h, &mut fx, boarder.damage_per_tick);
+                }
+
+                if new_remaining <= 0.0 {
+                    commands.entity(boarder_e).despawn();
+                } else {
+                    boarder.state = BoarderState::Attached { remaining: new_remaining };
+                }
+            }
+        }
+    }
+}
+
+/// Each frame, anchor every active `BoardingRope` between its source
+/// (the Blackbeard ship) and its target (the enemy it's boarding) and
+/// tick its lifetime. The rope is the existing beam mesh — long axis
+/// = +Y, scale.x for thickness, scale.y for length-fraction — repointed
+/// each frame so it tracks moving ships.
+pub fn update_boarding_ropes(
+    time: Res<Time>,
+    mut commands: Commands,
+    sources: Query<&Transform, (Without<BoardingRope>, Without<Enemy>, Without<Boarder>)>,
+    targets: Query<&Transform, (With<Enemy>, Without<BoardingRope>)>,
+    mut ropes: Query<(Entity, &mut Transform, &mut BoardingRope)>,
+) {
+    let dt = time.delta_secs();
+    for (rope_e, mut tf, mut rope) in &mut ropes {
+        rope.lifetime -= dt;
+        if rope.lifetime <= 0.0 {
+            commands.entity(rope_e).despawn();
+            continue;
+        }
+        let Ok(src_tf) = sources.get(rope.source) else {
+            commands.entity(rope_e).despawn();
+            continue;
+        };
+        let Ok(tgt_tf) = targets.get(rope.target) else {
+            commands.entity(rope_e).despawn();
+            continue;
+        };
+        let a = src_tf.translation.truncate();
+        let b = tgt_tf.translation.truncate();
+        let delta = b - a;
+        let len = delta.length();
+        if len < 0.5 { continue; }
+        let mid = (a + b) * 0.5;
+        let angle = (-delta.x).atan2(delta.y);
+        tf.translation.x = mid.x;
+        tf.translation.y = mid.y;
+        tf.rotation = Quat::from_rotation_z(angle);
+        // Beam mesh is BEAM_LENGTH long along +Y; scale y by the
+        // fraction we want, x = 1.5 so the rope reads as a clear
+        // strand at the play-area's nearest-neighbor pixel scale.
+        tf.scale = Vec3::new(1.5, len / crate::balance::BEAM_LENGTH, 1.0);
+    }
+}
+
 // ---------- Sea mines ----------
 
 /// Initial arm delay on a freshly-dropped mine. Long enough that the
@@ -1060,11 +1614,13 @@ const MINE_ARM_DELAY: f32 = 0.6;
 /// long combats from accumulating a dense minefield.
 const MINE_LIFETIME: f32 = 18.0;
 
-/// Spawn one mine at `pos`. Two-tone — dark shell with a small red
-/// warning dot. Lives at z=0.6 so it sits above the trail (z=0.4) but
-/// well below ship hulls (z=1.0+). `target_faction` is cached on the
-/// mine itself so the proximity check is faction-aware after the laying
-/// ship is gone.
+/// Spawn one mine at `pos`: a dark spherical body with a flashing red
+/// warning dot in the middle. The dot pulses its scale via
+/// `flash_mine_dots` so the mine reads as a live, armed hazard rather
+/// than a static sprite.
+///
+/// `target_faction` is cached on the mine itself so the proximity
+/// check is faction-aware after the laying ship is gone.
 fn spawn_mine(
     commands: &mut Commands,
     em: &EffectMeshes,
@@ -1087,10 +1643,13 @@ fn spawn_mine(
         },
         RenderLayers::layer(PLAY_LAYER),
     )).id();
+
+    // Centre warning dot — tagged for the flash system to pulse.
     let dot = commands.spawn((
         Mesh2d(em.mine_inner.clone()),
         MeshMaterial2d(pm.mine_inner.clone()),
         Transform::from_xyz(0.0, 0.0, 0.05),
+        MineDotFlash,
         RenderLayers::layer(PLAY_LAYER),
     )).id();
     commands.entity(dot).insert(ChildOf(mine));
@@ -1189,42 +1748,114 @@ pub fn mine_tick(
     }
 }
 
-// ---------- Heal beams ----------
+/// Blink the warning dot fully on / off. Scale-pulsing was unreliable
+/// at the play area's nearest-neighbor upscale: a sub-pixel mesh radius
+/// can drop below the integer grid and skip rendering on some frames,
+/// so the flash looked uneven across mines. A binary `Visibility`
+/// toggle leaves the dot at its natural size every "on" frame, so
+/// every red pixel flashes uniformly and in sync.
+///
+/// Pattern: 0.55 s on, 0.25 s off (cycle 0.8 s). Reads as a clear
+/// blinking warning beat without feeling stroboscopic.
+pub fn flash_mine_dots(
+    time: Res<Time>,
+    mut q: Query<&mut Visibility, With<MineDotFlash>>,
+) {
+    const PERIOD:       f32 = 0.8;
+    const ON_DURATION:  f32 = 0.55;
+    let cycle = time.elapsed_secs().rem_euclid(PERIOD);
+    let want = if cycle < ON_DURATION {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut vis in &mut q {
+        if *vis != want { *vis = want; }
+    }
+}
 
-/// How long each spawned heal-beam visual lasts. Short enough that
-/// per-frame respawns blend into one continuous beam, long enough that
-/// the beam reads as a steady tether even on a slow frame.
-const HEAL_BEAM_LIFE: f32 = 0.08;
+// ---------- Heal visuals ----------
 
-/// Spawn one short-lived heal-beam visual between two world points.
-/// Reuses the railgun beam mesh + `Beam` lifetime/width animator — no
-/// `BeamHit` / `BeamPending` so the visual carries no damage. Mirrors
-/// `spawn_lightning_arc` in `bullet.rs`.
-fn spawn_heal_beam(
+/// Spawn the per-frame heal "stream" between tender and target. Two
+/// effects layered together:
+///
+///   1. **Stream particles** — small motes scattered along the
+///      tender→target line, each drifting toward the target with a
+///      slight perpendicular wobble. Per-frame respawn paints a
+///      flowing-energy ribbon without a hard rectangle anywhere.
+///   2. **Target sparkles** — short-lived motes that bloom upward
+///      around the target (organic-looking; suggests "healing
+///      lifting from the unit").
+///
+/// All particles route through the existing `HitParticle` ticker
+/// (drag + life-fade), so they fit the rest of the FX language.
+fn spawn_heal_visual(
     commands: &mut Commands,
     em: &EffectMeshes,
     mat: &Handle<ColorMaterial>,
-    a: Vec2,
-    b: Vec2,
+    tender: Vec2,
+    target: Vec2,
+    rng: &mut rand::rngs::ThreadRng,
 ) {
-    let delta = b - a;
-    let len = delta.length();
+    let to = target - tender;
+    let len = to.length();
     if len < 0.5 { return; }
-    let mid = (a + b) * 0.5;
-    let angle = (-delta.x).atan2(delta.y);
-    commands.spawn((
-        Mesh2d(em.beam.clone()),
-        MeshMaterial2d(mat.clone()),
-        Transform {
-            translation: Vec3::new(mid.x, mid.y, 5.5),
-            rotation: Quat::from_rotation_z(angle),
-            // y scales the BEAM_LENGTH-long mesh down to the actual span.
-            // x is animated by `update_beams` so spawn at 0.
-            scale: Vec3::new(0.0, len / BEAM_LENGTH, 1.0),
-        },
-        Beam { life: HEAL_BEAM_LIFE, max_life: HEAL_BEAM_LIFE },
-        RenderLayers::layer(PLAY_LAYER),
-    ));
+    let dir = to / len;
+    let perp = Vec2::new(-dir.y, dir.x);
+
+    // Two stream particles per frame distributed along the line. Spawn
+    // location is randomly placed along the line + jittered
+    // perpendicularly; velocity points toward the target so each mote
+    // visibly travels onward before fading.
+    for _ in 0..2 {
+        let t = rng.gen_range(0.0..1.0);
+        let pos = tender + dir * (t * len) + perp * rng.gen_range(-0.7..0.7);
+        let v = dir * rng.gen_range(22.0..42.0)
+              + perp * rng.gen_range(-9.0..9.0);
+        let life = rng.gen_range(0.18..0.32);
+        let scale = rng.gen_range(0.6..1.0);
+        let rot = (-v.x).atan2(v.y);
+        commands.spawn((
+            Mesh2d(em.particle.clone()),
+            MeshMaterial2d(mat.clone()),
+            Transform {
+                translation: Vec3::new(pos.x, pos.y, 5.5),
+                rotation: Quat::from_rotation_z(rot),
+                scale: Vec3::new(scale, scale, 1.0),
+            },
+            HitParticle { life, max_life: life, base_scale: scale },
+            Velocity(v),
+            RenderLayers::layer(PLAY_LAYER),
+        ));
+    }
+
+    // Target sparkles — small upward-drifting motes around the unit
+    // being healed. ~50% chance per frame so the bloom feels organic
+    // / occasional rather than a steady stream.
+    if rng.gen_bool(0.5) {
+        let off = perp * rng.gen_range(-1.6..1.6)
+                + dir * rng.gen_range(-1.6..1.6);
+        let pos = target + off;
+        let v = Vec2::new(
+            rng.gen_range(-3.0..3.0),
+            rng.gen_range(11.0..22.0),
+        );
+        let life = rng.gen_range(0.30..0.55);
+        let scale = rng.gen_range(0.5..0.9);
+        let rot = (-v.x).atan2(v.y);
+        commands.spawn((
+            Mesh2d(em.particle.clone()),
+            MeshMaterial2d(mat.clone()),
+            Transform {
+                translation: Vec3::new(pos.x, pos.y, 5.5),
+                rotation: Quat::from_rotation_z(rot),
+                scale: Vec3::new(scale, scale, 1.0),
+            },
+            HitParticle { life, max_life: life, base_scale: scale },
+            Velocity(v),
+            RenderLayers::layer(PLAY_LAYER),
+        ));
+    }
 }
 
 /// Drive every `HealBeamEmitter`: pick a target of `heal_faction`,
@@ -1257,6 +1888,7 @@ pub fn tender_heal_beam(
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
     let dt = time.delta_secs();
+    let mut rng = rand::thread_rng();
 
     let player_max_hp = if matches!(*game_mode, GameMode::Wave) {
         FRIENDLY_HP_WAVE
@@ -1329,7 +1961,7 @@ pub fn tender_heal_beam(
             }
         }
 
-        spawn_heal_beam(&mut commands, &em, &pm.heal, tender_pos, target_pos);
+        spawn_heal_visual(&mut commands, &em, &pm.heal, tender_pos, target_pos, &mut rng);
     }
 }
 
@@ -1527,7 +2159,7 @@ fn spawn_plane_bullets(
                 remaining: PLANE_BULLET_RANGE,
                 weapon: WeaponType::Standard,
                 slot: None,
-                rune: None,
+                runes: [None; 3],
             },
             Velocity(forward * PLANE_BULLET_SPEED),
             RenderLayers::layer(PLAY_LAYER),

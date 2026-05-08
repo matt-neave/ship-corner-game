@@ -75,6 +75,16 @@ impl Default for VsyncMode {
     }
 }
 
+/// Toggled by the FOLLOW button (under the MAP button). When active,
+/// `apply_camera_follow` writes the friendly ship's world position
+/// into the play camera's `Transform.translation` each frame, giving
+/// a follow-cam view of combat. When off, the camera snaps back to
+/// the world origin (the default fixed view).
+#[derive(Resource, Default)]
+pub struct CameraFollow {
+    pub active: bool,
+}
+
 // ---------- Marker components ----------
 
 /// CRT scanline overlay sprite — sized to match the play sprite, hidden
@@ -267,5 +277,48 @@ pub fn apply_window_mode(
         window.position = bevy::window::WindowPosition::Centered(
             bevy::window::MonitorSelection::Current,
         );
+    }
+}
+
+/// Drive the play camera's translation each frame:
+///   - `CameraFollow.active = true`  → snap to the friendly ship's
+///     world position so the view tracks the player.
+///   - `CameraFollow.active = false` → reset to the world origin
+///     (the default fixed view, framing the whole `PLAY_WORLD`).
+///
+/// `Without<crate::components::Friendly>` on the camera query keeps
+/// it disjoint from the friendly query for Bevy's parameter-conflict
+/// checker.
+pub fn apply_camera_follow(
+    follow: Res<CameraFollow>,
+    friendly: Query<
+        &Transform,
+        (
+            With<crate::components::Friendly>,
+            Without<crate::palette::PlayCamera>,
+            Without<crate::palette::HudCamera>,
+        ),
+    >,
+    // HudCamera shares the play camera's world projection and must
+    // track the same translation so HUD-layer entities (HP bars) line
+    // up with their owners in follow mode.
+    mut cameras: Query<
+        &mut Transform,
+        (
+            Or<(With<crate::palette::PlayCamera>, With<crate::palette::HudCamera>)>,
+            Without<crate::components::Friendly>,
+        ),
+    >,
+) {
+    let target = if follow.active {
+        friendly.single().ok()
+            .map(|f_tf| f_tf.translation.truncate())
+            .unwrap_or(Vec2::ZERO)
+    } else {
+        Vec2::ZERO
+    };
+    for mut cam_tf in &mut cameras {
+        cam_tf.translation.x = target.x;
+        cam_tf.translation.y = target.y;
     }
 }
