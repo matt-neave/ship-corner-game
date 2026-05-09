@@ -64,6 +64,18 @@ impl WeaponType {
         }
     }
 
+    /// Long-form description for tooltips. Looked up in
+    /// `data/translations.csv` so adding a language is one column.
+    pub fn description(self) -> &'static str {
+        match self {
+            WeaponType::Standard   => tr("weapon_standard_desc"),
+            WeaponType::Sniper     => tr("weapon_sniper_desc"),
+            WeaponType::MachineGun => tr("weapon_mg_desc"),
+            WeaponType::Shotgun    => tr("weapon_shotgun_desc"),
+            WeaponType::Railgun    => tr("weapon_railgun_desc"),
+        }
+    }
+
     /// Half-angle (rad) of random firing cone. 0 means perfectly accurate.
     pub fn spread(self) -> f32 {
         match self {

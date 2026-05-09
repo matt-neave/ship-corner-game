@@ -9,6 +9,10 @@ rand = "0.8"
 # Bevy 0.16 uses winit 0.30 internally; we depend on the same version directly
 # to access ResizeDirection / drag_window for the borderless desktop-mode window.
 winit = "0.30"
+# Cross-platform config-directory lookup so saved settings land at
+# %APPDATA%\ship-game on Windows / ~/.config on Linux / ~/Library/Application
+# Support on macOS — no hand-rolled OS branching.
+dirs = "5"
 
 [profile.dev]
 opt-level = 1

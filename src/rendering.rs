@@ -54,10 +54,10 @@ pub struct PlayRenderImage(#[allow(dead_code)] pub Handle<Image>);
 pub fn make_scanline_image() -> Image {
     let w = PLAY_INTERNAL;
     let h = PLAY_INTERNAL;
-    // ~38% black on darkened rows — visible scanlines without smothering the
-    // colors underneath. Alpha-blended over the play sprite by Bevy's default
-    // sprite shader.
-    const DARK_ALPHA: u8 = 96;
+    // ~12% black on darkened rows. Half the rows × 12% alpha works out to
+    // ~6% average darkening — enough that scanlines read at a glance
+    // without dimming the whole scene the way a 38% overlay did.
+    const DARK_ALPHA: u8 = 32;
     let mut data = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         let dark = (y % 2) == 0;

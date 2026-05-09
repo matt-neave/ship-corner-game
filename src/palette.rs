@@ -13,7 +13,6 @@
 //! that uses that color.
 
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
 
 use crate::balance::BULLET_INNER_LIGHTEN;
 
@@ -440,10 +439,4 @@ pub fn apply_palette(
     for mut cam in &mut cameras {
         cam.clear_color = ClearColorConfig::Custom(palette.ocean);
     }
-    let _ = (); // (Window query used to be here; trimmed during refactor.)
 }
-
-// Suppress unused-import lint on PrimaryWindow (kept for future use by
-// palette-driven window features).
-#[allow(dead_code)]
-fn _keep_imports() { let _: Option<Window> = None; let _ = std::any::type_name::<PrimaryWindow>(); }

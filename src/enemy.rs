@@ -409,7 +409,7 @@ pub fn enemy_fire(
         if !enemy.variant.has_gun() { continue; }
         enemy.fire_cd -= dt;
         let pos = tf.translation.truncate();
-        // Aim at whichever of {friendly, allies} is closest right now.
+        // Aim at the closest of {friendly, allies}.
         let target_pos = nearest_target(pos, fpos, &ally_positions);
         let to = target_pos - pos;
         if to.length() > ENEMY_RANGE { continue; }

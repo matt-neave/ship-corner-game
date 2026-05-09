@@ -93,6 +93,20 @@ impl Rune {
         }
     }
 
+    /// Long-form description for tooltips, looked up via i18n.
+    pub fn description(self) -> &'static str {
+        match self {
+            Rune::Fire     => tr("rune_fire_desc"),
+            Rune::Frost    => tr("rune_frost_desc"),
+            Rune::Shock    => tr("rune_shock_desc"),
+            Rune::Detonate => tr("rune_detonate_desc"),
+            Rune::Echo     => tr("rune_echo_desc"),
+            Rune::Cascade  => tr("rune_cascade_desc"),
+            Rune::Conduit  => tr("rune_conduit_desc"),
+            Rune::Resonate => tr("rune_resonate_desc"),
+        }
+    }
+
     /// Risk-of-Rain-style proc coefficient: how strongly THIS rune's secondary
     /// damage events can trigger further runes. Multiplied into the rolling
     /// proc strength on each hop.

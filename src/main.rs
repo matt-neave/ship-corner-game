@@ -36,8 +36,10 @@ mod i18n;
 mod map;
 mod modes;
 mod palette;
+mod pause;
 mod pier;
 mod rendering;
+mod settings;
 mod rune;
 mod ship;
 mod trails;
@@ -54,8 +56,11 @@ use ally::{
     tender_heal_beam, update_boarding_ropes,
 };
 use customize::{
-    handle_customize_clicks, setup_customize_ui, update_customize_ui,
-    CustomizeOpen,
+    complete_drag, handle_close_click, handle_reroll_button, init_customize_shop,
+    resize_customize_display, setup_customize_render, setup_customize_ui, start_drag,
+    sync_customize_text, toggle_customize_render, track_customize_cursor,
+    update_customize_ship, update_customize_shop, update_customize_tooltip,
+    update_customize_ui, update_drag_ghost, CustomizeOpen, DragState,
 };
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
@@ -89,10 +94,15 @@ use modes::{
     CameraFollow, CrtMode, GameMode, NightMode, VsyncMode, WindowMode,
 };
 use palette::{apply_palette, Palette};
+use pause::{
+    handle_quit_click, handle_resume_click, setup_pause_menu, sync_pause_menu_visibility,
+    toggle_pause_on_esc, Paused,
+};
 use pier::{draft_input, sync_pier_visuals, update_draft_ui, Pier, WaveDraft};
 use rendering::{
     resize_upscale_sprite, setup_render, update_hash_image, update_hud_camera_viewport,
 };
+use settings::{apply_loaded_settings, persist_settings_on_change};
 use rune::{tick_echoes, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_resonate};
 use ship::{apply_velocity, friendly_movement, setup_world};
 use trails::{update_enemy_trails, update_trail, ShipPath};
@@ -206,11 +216,14 @@ fn main() {
         .insert_resource(DebugClaimMode::default())
         .add_event::<TriggerMapPhase>()
         .insert_resource(CustomizeOpen::default())
+        .insert_resource(DragState::default())
+        .insert_resource(Paused::default())
         .add_systems(Startup, (
             setup_render, setup_world, setup_ui, setup_map,
             setup_debug_ui, setup_currency_ui, setup_progress_assets,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
-            setup_customize_ui,
+            init_customize_shop, setup_customize_render, setup_customize_ui,
+            setup_pause_menu,
         ).chain())
         .add_systems(Update, (
             // Always-on visual setup. apply_night_mode → apply_palette must
@@ -377,12 +390,39 @@ fn main() {
             update_building_progress_bars,
         ))
         .add_systems(Update, (
-            // Customize overlay — visible only when CustomizeOpen.
-            // Update + click handler always run (cheap; self-gate on
-            // visibility internally). In its own block to stay under
-            // Bevy's 20-system tuple cap on the map block.
-            update_customize_ui,
-            handle_customize_clicks,
+            // Customize overlay — primitives on a low-res render target,
+            // upscaled with nearest-neighbor for chunky pixels. Bundled
+            // into sub-tuples so the outer add_systems tuple stays
+            // under Bevy's 20-cap. Every system self-gates on
+            // `CustomizeOpen` so it idles while the overlay is closed.
+            (
+                toggle_customize_render,
+                resize_customize_display,
+                track_customize_cursor,
+                sync_customize_text,
+            ),
+            (
+                update_customize_ui,
+                update_customize_ship,
+                update_customize_shop,
+                update_customize_tooltip,
+                handle_close_click,
+                handle_reroll_button,
+            ),
+            // Cursor tracking → drag start → ghost follow → drop resolve.
+            (start_drag, update_drag_ghost, complete_drag).chain(),
+        ))
+        .add_systems(Update, (
+            // Persistent settings: load once on first frame; persist on
+            // any change to NIGHT / CRT / VSYNC.
+            apply_loaded_settings,
+            persist_settings_on_change,
+            // ESC pause overlay. Resume / Quit gated by Changed<Interaction>
+            // so they only fire on the press frame.
+            toggle_pause_on_esc,
+            sync_pause_menu_visibility,
+            handle_resume_click,
+            handle_quit_click,
         ))
         .run();
 }

@@ -157,12 +157,8 @@ pub fn turret_aim_fire(
     ship_q: Query<(&Transform, &Heading), With<Friendly>>,
     enemies: Query<(&Transform, &Faction), With<Enemy>>,
     mut turrets: Query<
-        (Entity, &mut TurretSlot, &mut Transform, &Children, &Visibility),
+        (Entity, &mut TurretSlot, &mut Transform, &Visibility),
         (Without<Friendly>, Without<Enemy>, Without<TurretBarrel>),
-    >,
-    mut barrels: Query<
-        &mut Transform,
-        (With<TurretBarrel>, Without<TurretSlot>, Without<Friendly>, Without<Enemy>),
     >,
 ) {
     let Some(pm) = pm else { return; };
@@ -172,7 +168,7 @@ pub fn turret_aim_fire(
     let ship_pos = ship_tf.translation.truncate();
     let ship_h = ship_heading.0;
 
-    for (turret_entity, mut slot, mut tf, children, vis) in &mut turrets {
+    for (turret_entity, mut slot, mut tf, vis) in &mut turrets {
         if matches!(*vis, Visibility::Hidden) { continue; }
         if !cfg.slots[slot.index].equipped { continue; }
         slot.fire_cd -= dt;
@@ -343,10 +339,6 @@ pub fn turret_aim_fire(
             }
         }
 
-        // Suppress unused warnings — these are kept in the query so future
-        // turret tweaks can reach into the children/barrels without re-shuffling.
-        let _ = children;
-        let _ = &mut barrels;
     }
 }
 

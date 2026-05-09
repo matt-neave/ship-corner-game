@@ -26,6 +26,22 @@ pub const UPSCALE_LAYER: usize = 2;
 /// apply to anything on this layer.
 pub const HUD_LAYER:     usize = 4;
 
+/// Layer for the customize-overlay primitive entities (sprite hull,
+/// turret tiles, rune sockets, tooltips). A dedicated `CustomizeCamera`
+/// (in `customize::render`) renders only this layer to a low-res image,
+/// which is then upscaled nearest-neighbor onto a fullscreen sprite on
+/// `UPSCALE_LAYER`. That's where the chunky-pixel look comes from —
+/// every primitive is rasterized at the internal resolution before being
+/// scaled up.
+pub const CUSTOMIZE_LAYER: usize = 5;
+
+/// Internal resolution of the customize render target. Picked so 4×
+/// upscale equals the default 1280×800 window — keeps things pixel-
+/// perfect on the default size, and any other window size still gets an
+/// integer-multiple upscale (centred + letterboxed).
+pub const CUSTOMIZE_INTERNAL_W: u32 = 320;
+pub const CUSTOMIZE_INTERNAL_H: u32 = 200;
+
 // ---------- Friendly ship ----------
 pub const FRIENDLY_SPEED:     f32 = 28.0;
 pub const FRIENDLY_TURN_RATE: f32 = 3.6; // rad/s

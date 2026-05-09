@@ -119,9 +119,9 @@ pub fn setup_world(
         ));
     }
 
-    // Friendly turrets. Barrel kept ≥1.5 wide so it doesn't alias to zero
-    // pixels at off-axis rotations now that MSAA is off — sub-pixel rects
-    // were vanishing entirely between integer-grid angles.
+    // Friendly turrets. Barrel ≥1.5 wide so it doesn't alias to zero
+    // pixels at off-axis rotations — without MSAA, sub-pixel rects vanish
+    // entirely between integer-grid angles.
     let base_mesh = meshes.add(Circle::new(2.0));
     let barrel_mesh = meshes.add(Rectangle::new(1.5, 4.0));
 
