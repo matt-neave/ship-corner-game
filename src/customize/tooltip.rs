@@ -1,16 +1,10 @@
 //! Hover tooltip for the customize overlay.
 //!
-//! Composition:
-//! - **Background container** (chunky pixel, on `CUSTOMIZE_LAYER`) —
-//!   built via `setup::spawn_container` so the rounded square pixelates
-//!   the same way the rest of the UI does.
-//! - **Title + body text** (sharp, native res, on `UPSCALE_LAYER`) — the
-//!   user wants text immune to pixelation, so labels live next to the
-//!   in-game HUD.
-//!
-//! Each frame the title/body positions are derived from
-//! `viewport.display_scale × spec_pos`. The container's spec position
-//! tracks the cursor too.
+//! Composition: every part — background fill, white outline, title, body —
+//! lives on `UPSCALE_LAYER` (native res). That keeps the panel as a clean
+//! rectangle (no chunky-pixel rounding) AND lets us push the z above the
+//! customize UI's native-res text (z=100) so other labels can't clip
+//! through the tooltip body.
 
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
@@ -25,11 +19,14 @@ use super::drag::{
     CustomizeShop, DragSourceKind, DragState,
 };
 use super::render::CustomizeViewport;
-use super::setup::{spawn_container, DragSourceMarker, HitArea};
+use super::setup::{DragSourceMarker, HitArea};
 use super::CustomizeOpen;
 
 #[derive(Component, Clone, Copy)]
-pub struct CustomizeTooltipPart;
+pub struct CustomizeTooltipFill;
+
+#[derive(Component, Clone, Copy)]
+pub struct CustomizeTooltipOutline;
 
 #[derive(Component)]
 pub struct CustomizeTooltipTitle;
@@ -37,27 +34,57 @@ pub struct CustomizeTooltipTitle;
 #[derive(Component)]
 pub struct CustomizeTooltipBody;
 
-const TOOLTIP_W: f32 = 110.0;
-const TOOLTIP_H: f32 = 30.0;
+/// Minimum tooltip box dims in spec pixels — the box grows beyond this
+/// when the body/title text is wider. Multiplied by `display_scale` to
+/// get the native-pixel size each frame.
+const TOOLTIP_MIN_W: f32 = 48.0;
+const TOOLTIP_H: f32 = 22.0;
+/// Spec-pixel gap between the hovered source and the tooltip edge.
+const TOOLTIP_GAP: f32 = 2.0;
+/// Native-pixel padding between the text bounds and the fill edge.
+const TOOLTIP_TEXT_PAD: f32 = 10.0;
+/// Native-pixel thickness of the white outline ring around the fill.
+const TOOLTIP_BORDER_PX: f32 = 2.0;
 
-pub fn spawn_customize_tooltip(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<ColorMaterial>,
-) {
-    let pos = Vec2::new(0.0, 0.0);
-    spawn_container(
-        commands,
-        meshes,
-        materials,
-        pos,
-        Vec2::new(TOOLTIP_W, TOOLTIP_H),
-        4.0,
-        Color::srgb(0.13, 0.14, 0.17),
-        7.0,
-        CustomizeTooltipPart,
-    );
-    // Title — bright accent, native res.
+// Z layering. Other customize UI text sits at z=100 on UPSCALE_LAYER, so
+// the tooltip needs to be above that to avoid being clipped.
+const Z_TOOLTIP_OUTLINE: f32 = 110.0;
+const Z_TOOLTIP_FILL: f32 = 110.5;
+const Z_TOOLTIP_TEXT: f32 = 111.0;
+
+/// Match the customize camera's clear color so the tooltip fill reads as
+/// "the menu's background extended". The 1px white outline does the work
+/// of separating it from the canvas.
+fn tooltip_bg_color() -> Color {
+    Color::srgb(0.13, 0.14, 0.17)
+}
+
+pub fn spawn_customize_tooltip(commands: &mut Commands) {
+    // Initial sizes are placeholders — the update system rewrites both
+    // each frame from the title/body text width.
+    commands.spawn((
+        Sprite {
+            color: Color::WHITE,
+            custom_size: Some(Vec2::new(TOOLTIP_MIN_W, TOOLTIP_H)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_OUTLINE),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        CustomizeTooltipOutline,
+    ));
+    commands.spawn((
+        Sprite {
+            color: tooltip_bg_color(),
+            custom_size: Some(Vec2::new(TOOLTIP_MIN_W, TOOLTIP_H)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_FILL),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        CustomizeTooltipFill,
+    ));
+    // Title — bright accent.
     commands.spawn((
         Text2d::new(""),
         TextFont {
@@ -66,7 +93,7 @@ pub fn spawn_customize_tooltip(
             ..default()
         },
         TextColor(Color::srgb(1.0, 0.85, 0.30)),
-        Transform::from_xyz(0.0, 0.0, 100.0),
+        Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_TEXT),
         Visibility::Hidden,
         RenderLayers::layer(UPSCALE_LAYER),
         CustomizeTooltipTitle,
@@ -80,7 +107,7 @@ pub fn spawn_customize_tooltip(
             ..default()
         },
         TextColor(Color::srgb(0.85, 0.88, 0.94)),
-        Transform::from_xyz(0.0, 0.0, 100.0),
+        Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_TEXT),
         Visibility::Hidden,
         RenderLayers::layer(UPSCALE_LAYER),
         CustomizeTooltipBody,
@@ -94,10 +121,21 @@ pub fn update_customize_tooltip(
     shop: Option<Res<CustomizeShop>>,
     viewport: Res<CustomizeViewport>,
     sources: Query<(&Transform, &HitArea, &DragSourceMarker)>,
-    mut parts: Query<
-        (&mut Visibility, &mut Transform),
+    mut outline_q: Query<
+        (&mut Visibility, &mut Transform, &mut Sprite),
         (
-            With<CustomizeTooltipPart>,
+            With<CustomizeTooltipOutline>,
+            Without<CustomizeTooltipFill>,
+            Without<CustomizeTooltipTitle>,
+            Without<CustomizeTooltipBody>,
+            Without<DragSourceMarker>,
+        ),
+    >,
+    mut fill_q: Query<
+        (&mut Visibility, &mut Transform, &mut Sprite),
+        (
+            With<CustomizeTooltipFill>,
+            Without<CustomizeTooltipOutline>,
             Without<CustomizeTooltipTitle>,
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
@@ -107,7 +145,8 @@ pub fn update_customize_tooltip(
         (&mut Visibility, &mut Transform, &mut Text2d),
         (
             With<CustomizeTooltipTitle>,
-            Without<CustomizeTooltipPart>,
+            Without<CustomizeTooltipOutline>,
+            Without<CustomizeTooltipFill>,
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
         ),
@@ -116,7 +155,8 @@ pub fn update_customize_tooltip(
         (&mut Visibility, &mut Transform, &mut Text2d),
         (
             With<CustomizeTooltipBody>,
-            Without<CustomizeTooltipPart>,
+            Without<CustomizeTooltipOutline>,
+            Without<CustomizeTooltipFill>,
             Without<CustomizeTooltipTitle>,
             Without<DragSourceMarker>,
         ),
@@ -124,13 +164,13 @@ pub fn update_customize_tooltip(
 ) {
     let hide = !open.open || drag.picked.is_some() || drag.spec_cursor.is_none();
     if hide {
-        hide_all(&mut parts, &mut title_q, &mut body_q);
+        hide_all(&mut outline_q, &mut fill_q, &mut title_q, &mut body_q);
         return;
     }
     let cursor = drag.spec_cursor.unwrap();
     let shop_ref = shop.as_deref();
 
-    let mut info: Option<(String, String)> = None;
+    let mut info: Option<(String, String, Vec2, Vec2)> = None;
     let mut best_area = f32::INFINITY;
     for (tf, hit, marker) in &sources {
         let centre = tf.translation.truncate();
@@ -146,45 +186,69 @@ pub fn update_customize_tooltip(
         if area >= best_area {
             continue;
         }
-        if let Some(pair) = describe_source(marker.0, &cfg, shop_ref) {
-            info = Some(pair);
+        if let Some((title, body)) = describe_source(marker.0, &cfg, shop_ref) {
+            info = Some((title, body, centre, half));
             best_area = area;
         }
     }
 
-    let Some((title, body)) = info else {
-        hide_all(&mut parts, &mut title_q, &mut body_q);
+    let Some((title, body, source_centre, source_half)) = info else {
+        hide_all(&mut outline_q, &mut fill_q, &mut title_q, &mut body_q);
         return;
     };
 
-    // Position tooltip near the cursor in spec coords; clamp inside canvas.
+    // Size the box to fit the wider of (title, body). Dynamic so short
+    // descriptions get a tight box and long ones don't overspill.
+    let s = viewport.display_scale;
+    let title_w_native = estimate_text_native_width(&title, 14.0);
+    let body_w_native = estimate_text_native_width(&body, 11.0);
+    let text_w_native = title_w_native.max(body_w_native);
+    let fill_w_native = (text_w_native + 2.0 * TOOLTIP_TEXT_PAD).max(TOOLTIP_MIN_W * s);
+    let fill_h_native = TOOLTIP_H * s;
+    let tooltip_w_spec = fill_w_native / s;
+
+    // Anchor to the hovered source. Right of the source by default; flip
+    // left if that would clip the canvas edge.
     let canvas_half_w = CUSTOMIZE_INTERNAL_W as f32 * 0.5;
     let canvas_half_h = CUSTOMIZE_INTERNAL_H as f32 * 0.5;
-    let mut pos = cursor + Vec2::new(TOOLTIP_W * 0.5 + 6.0, TOOLTIP_H * 0.5 + 6.0);
-    if pos.x + TOOLTIP_W * 0.5 > canvas_half_w {
-        pos.x = cursor.x - TOOLTIP_W * 0.5 - 6.0;
+    let right_x = source_centre.x + source_half.x + TOOLTIP_GAP + tooltip_w_spec * 0.5;
+    let left_x = source_centre.x - source_half.x - TOOLTIP_GAP - tooltip_w_spec * 0.5;
+    let mut pos = Vec2::new(right_x, source_centre.y);
+    if pos.x + tooltip_w_spec * 0.5 > canvas_half_w {
+        pos.x = left_x;
     }
-    if pos.y + TOOLTIP_H * 0.5 > canvas_half_h {
-        pos.y = cursor.y - TOOLTIP_H * 0.5 - 6.0;
-    }
-    pos.x = pos.x.clamp(-canvas_half_w + TOOLTIP_W * 0.5, canvas_half_w - TOOLTIP_W * 0.5);
+    pos.x = pos.x.clamp(-canvas_half_w + tooltip_w_spec * 0.5, canvas_half_w - tooltip_w_spec * 0.5);
     pos.y = pos.y.clamp(-canvas_half_h + TOOLTIP_H * 0.5, canvas_half_h - TOOLTIP_H * 0.5);
 
-    // Container parts (on customize layer, in spec coords).
-    for (mut v, mut tf) in &mut parts {
+    let native_centre = Vec2::new(pos.x * s, pos.y * s);
+    let fill_size_native = Vec2::new(fill_w_native, fill_h_native);
+    let outline_size_native = fill_size_native + Vec2::splat(2.0 * TOOLTIP_BORDER_PX);
+
+    if let Ok((mut v, mut tf, mut sprite)) = outline_q.single_mut() {
         if *v != Visibility::Inherited {
             *v = Visibility::Inherited;
         }
-        tf.translation.x = pos.x;
-        tf.translation.y = pos.y;
+        tf.translation.x = native_centre.x;
+        tf.translation.y = native_centre.y;
+        if sprite.custom_size != Some(outline_size_native) {
+            sprite.custom_size = Some(outline_size_native);
+        }
     }
-
-    let s = viewport.display_scale;
+    if let Ok((mut v, mut tf, mut sprite)) = fill_q.single_mut() {
+        if *v != Visibility::Inherited {
+            *v = Visibility::Inherited;
+        }
+        tf.translation.x = native_centre.x;
+        tf.translation.y = native_centre.y;
+        if sprite.custom_size != Some(fill_size_native) {
+            sprite.custom_size = Some(fill_size_native);
+        }
+    }
     if let Ok((mut v, mut tf, mut text)) = title_q.single_mut() {
         if *v != Visibility::Inherited {
             *v = Visibility::Inherited;
         }
-        tf.translation.x = pos.x * s;
+        tf.translation.x = native_centre.x;
         tf.translation.y = (pos.y + TOOLTIP_H * 0.25) * s;
         if text.0 != title {
             text.0 = title;
@@ -194,7 +258,7 @@ pub fn update_customize_tooltip(
         if *v != Visibility::Inherited {
             *v = Visibility::Inherited;
         }
-        tf.translation.x = pos.x * s;
+        tf.translation.x = native_centre.x;
         tf.translation.y = (pos.y - TOOLTIP_H * 0.25) * s;
         if text.0 != body {
             text.0 = body;
@@ -203,10 +267,21 @@ pub fn update_customize_tooltip(
 }
 
 fn hide_all(
-    parts: &mut Query<
-        (&mut Visibility, &mut Transform),
+    outline_q: &mut Query<
+        (&mut Visibility, &mut Transform, &mut Sprite),
         (
-            With<CustomizeTooltipPart>,
+            With<CustomizeTooltipOutline>,
+            Without<CustomizeTooltipFill>,
+            Without<CustomizeTooltipTitle>,
+            Without<CustomizeTooltipBody>,
+            Without<DragSourceMarker>,
+        ),
+    >,
+    fill_q: &mut Query<
+        (&mut Visibility, &mut Transform, &mut Sprite),
+        (
+            With<CustomizeTooltipFill>,
+            Without<CustomizeTooltipOutline>,
             Without<CustomizeTooltipTitle>,
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
@@ -216,7 +291,8 @@ fn hide_all(
         (&mut Visibility, &mut Transform, &mut Text2d),
         (
             With<CustomizeTooltipTitle>,
-            Without<CustomizeTooltipPart>,
+            Without<CustomizeTooltipOutline>,
+            Without<CustomizeTooltipFill>,
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
         ),
@@ -225,13 +301,19 @@ fn hide_all(
         (&mut Visibility, &mut Transform, &mut Text2d),
         (
             With<CustomizeTooltipBody>,
-            Without<CustomizeTooltipPart>,
+            Without<CustomizeTooltipOutline>,
+            Without<CustomizeTooltipFill>,
             Without<CustomizeTooltipTitle>,
             Without<DragSourceMarker>,
         ),
     >,
 ) {
-    for (mut v, _) in parts {
+    if let Ok((mut v, _, _)) = outline_q.single_mut() {
+        if *v != Visibility::Hidden {
+            *v = Visibility::Hidden;
+        }
+    }
+    if let Ok((mut v, _, _)) = fill_q.single_mut() {
         if *v != Visibility::Hidden {
             *v = Visibility::Hidden;
         }
@@ -278,6 +360,13 @@ fn describe_source(
             .copied()
             .map(rune_tooltip),
     }
+}
+
+/// Generous estimate of rendered text width in native pixels. Bevy's
+/// default font (Fira) averages ~0.55× font_size per glyph; we round up
+/// so the box never under-sizes its content.
+fn estimate_text_native_width(text: &str, font_size: f32) -> f32 {
+    text.chars().count() as f32 * font_size * 0.6
 }
 
 fn turret_tooltip(weapon: WeaponType, barrels: u8) -> (String, String) {

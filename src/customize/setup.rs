@@ -242,7 +242,10 @@ pub fn setup_customize_ui(
     let canvas_half_w = CUSTOMIZE_INTERNAL_W as f32 * 0.5;
     let tile_gap = 4.0;
     let shop_x = -canvas_half_w + 4.0 + (SHOP_TILE + tile_gap) + SHOP_TILE * 0.5;
-    let shop_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 24.0;
+    // Drop the shop column further from the top edge so the SHOP header
+    // sits clearly below the SCRAP counter (both top-left). The previous
+    // y=76 placed SHOP at y=90 vs SCRAP at y=88 — they overlapped.
+    let shop_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 40.0;
     spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y + 14.0), "SHOP", Color::srgb(1.0, 0.85, 0.30), 18.0, ShopHeaderTag);
     spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y), "TURRETS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
     for idx in 0..3usize {
@@ -302,7 +305,7 @@ pub fn setup_customize_ui(
         spawn_rune_triplet_for_slot(&mut commands, &mut meshes, &mut materials, slot, pos);
     }
 
-    super::tooltip::spawn_customize_tooltip(&mut commands, &mut meshes, &mut materials);
+    super::tooltip::spawn_customize_tooltip(&mut commands);
 }
 
 // ---------- Ancillary tags for misc text ----------
