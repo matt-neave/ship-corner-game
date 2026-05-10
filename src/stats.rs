@@ -125,9 +125,11 @@ impl Default for PlayerStats {
     fn default() -> Self {
         Self {
             hp: Stat::new(100.0),
-            move_speed: Stat::new(28.0),
-            turn_speed: Stat::new(3.6),
-            turret_turn_speed: Stat::new(145.0_f32.to_radians()),
+            move_speed: Stat::new(30.0),
+            turn_speed: Stat::new(5.0),
+            // Default = the cap (360°/s = 2π rad/s). Bumping T.TURN
+            // beyond this clamps in `effective_turret_turn_speed`.
+            turret_turn_speed: Stat::new(std::f32::consts::TAU),
             turret_arc_bonus_deg: Stat::new(0.0),
             luck_pct: Stat::new(0.0),
             proc_strength_pct: Stat::new(0.0),

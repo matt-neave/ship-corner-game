@@ -357,3 +357,59 @@ pub fn apply_velocity(
         tf.translation.y += v.0.y * mult * dt;
     }
 }
+
+// ---------- Ram damage ----------
+
+/// Per-enemy cooldown after being rammed. Prevents the player ship
+/// dealing 5 dmg/frame for the duration of an overlap — adds a brief
+/// grace window that feels like a discrete impact.
+#[derive(Component)]
+pub struct RamGrace {
+    pub remaining: f32,
+}
+
+const RAM_DAMAGE: i32 = 5;
+const RAM_GRACE: f32 = 0.5;
+/// Camera trauma added per ram impact. `0.4²` = solid kick.
+const RAM_TRAUMA: f32 = 0.4;
+
+/// Detect overlaps between the friendly ship and any enemy and apply
+/// ram damage + a screen-shake kick to each newly contacted enemy.
+/// Per-enemy `RamGrace` keeps the damage discrete (one tick per
+/// physical collision) rather than per-frame while overlapping.
+pub fn friendly_ram_damage(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut shake: ResMut<crate::modes::ScreenShake>,
+    friendly: Query<&Transform, (With<Friendly>, Without<Enemy>)>,
+    mut enemies: Query<
+        (Entity, &Transform, &Enemy, &mut Health, &mut HitFx, Option<&mut RamGrace>),
+        Without<Friendly>,
+    >,
+) {
+    let Ok(f_tf) = friendly.single() else { return };
+    let f_pos = f_tf.translation.truncate();
+    let dt = time.delta_secs();
+
+    for (e, etf, en, mut h, mut fx, grace) in &mut enemies {
+        // Tick down any active grace and skip damage while it's hot.
+        if let Some(mut g) = grace {
+            g.remaining -= dt;
+            if g.remaining > 0.0 { continue; }
+            commands.entity(e).remove::<RamGrace>();
+        }
+        if h.0 <= 0 { continue; }
+
+        let ep = etf.translation.truncate();
+        let enemy_r = 3.5 * en.variant.scale();
+        // Generous-feeling contact: ship's hull half-length + enemy
+        // radius. Treats the ship as a circle (over-eager on
+        // perpendicular sides), but reads as "they touched" reliably.
+        let r = HULL_HALF_LEN + enemy_r;
+        if f_pos.distance_squared(ep) < r * r {
+            crate::bullet::apply_damage(&mut h, &mut fx, RAM_DAMAGE);
+            shake.add_trauma(RAM_TRAUMA);
+            commands.entity(e).insert(RamGrace { remaining: RAM_GRACE });
+        }
+    }
+}

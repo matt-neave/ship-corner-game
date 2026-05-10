@@ -433,7 +433,7 @@ pub fn enemy_fire(
                 damage: fire_damage,
                 remaining: ENEMY_RANGE,
                 weapon: WeaponType::Standard,
-                slot: None,
+                source: None,
                 runes: [None; 3],
             },
             Velocity(dir * BULLET_SPEED),

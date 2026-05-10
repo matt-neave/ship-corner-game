@@ -587,7 +587,10 @@ pub fn level_complete_check(
     combat_ctx.enemy_budget = budget;
     combat_ctx.enemy_total = budget;
 
-    next_state.set(crate::AppState::Customize);
+    // Briefly land on `StageComplete` first — the overlay sits for
+    // `stage_complete::DURATION` seconds, then auto-transitions to
+    // the shop. Combat sim freezes the moment we leave Playing.
+    next_state.set(crate::AppState::StageComplete);
 }
 
 /// Failure path: when the friendly hull is destroyed during a Sandbox

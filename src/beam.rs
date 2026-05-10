@@ -96,9 +96,12 @@ pub fn beam_apply_damage(
             let damage = hit.damage.saturating_mul(crit_mult);
             let pre_hp = h.0;
             h.0 -= damage;
-            let dealt = damage.min(pre_hp).max(0) as u64;
-            stats.per_slot[hit.slot as usize] += dealt;
-            stats.total += dealt;
+            let dealt = damage.min(pre_hp).max(0);
+            crate::bullet::credit_damage(
+                &mut stats,
+                Some(crate::bullet::DamageSource::PlayerSlot(hit.slot)),
+                dealt,
+            );
 
             // Source-specific weapon-color spark per hit. Lethal hits get
             // a denser/faster burst; despawn + score + scrap (with harvest)

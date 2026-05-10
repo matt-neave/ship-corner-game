@@ -328,7 +328,8 @@ pub fn turret_aim_fire(
                             let pd = Vec2::new(-pa.sin(), pa.cos());
                             spawn_combat_bullet(
                                 &mut commands, &em, &outer_mat, &inner_mat,
-                                muzzle_pos, pd, slot.weapon, slot.damage, Some(slot.index as u8),
+                                muzzle_pos, pd, slot.weapon, slot.damage,
+                                Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
                                 effective_range, slot.runes, FactionKind::Friendly,
                             );
                         }
@@ -350,7 +351,8 @@ pub fn turret_aim_fire(
                             + barrel_right * lateral;
                         spawn_combat_bullet(
                             &mut commands, &em, &outer_mat, &inner_mat,
-                            muzzle_pos, dir, slot.weapon, slot.damage, Some(slot.index as u8),
+                            muzzle_pos, dir, slot.weapon, slot.damage,
+                            Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
                             effective_range, slot.runes, FactionKind::Friendly,
                         );
                     }
@@ -378,7 +380,7 @@ pub fn spawn_combat_bullet(
     dir: Vec2,
     weapon: WeaponType,
     damage: i32,
-    slot: Option<u8>,
+    source: Option<crate::bullet::DamageSource>,
     range: f32,
     runes: [Option<Rune>; 3],
     faction: FactionKind,
@@ -393,7 +395,7 @@ pub fn spawn_combat_bullet(
             damage,
             remaining: range,
             weapon,
-            slot,
+            source,
             runes,
         },
         Velocity(dir * BULLET_SPEED),

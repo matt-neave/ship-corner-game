@@ -43,6 +43,7 @@ mod main_menu;
 mod settings;
 mod rune;
 mod ship;
+mod stage_complete;
 mod stats;
 mod trails;
 mod turret;
@@ -107,15 +108,16 @@ use rendering::{
 };
 use settings::{apply_loaded_settings, persist_settings_on_change};
 use rune::{tick_echoes, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_resonate};
-use ship::{apply_velocity, friendly_movement, setup_world};
+use ship::{apply_velocity, friendly_movement, friendly_ram_damage, setup_world};
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{sync_turret_config, turret_aim_fire, SlotCfg, TurretConfig};
 use ui::{
-    force_hide_ui_panel, setup_ui, ui_button_system, update_damage_bars, update_fps_text,
-    update_map_button, sync_ally_hp_bars, update_ally_hp_values,
-    update_hp_bar_pixel_scale, update_hp_subdividers,
-    update_score_text, update_slot_labels, update_vsync_label,
-    update_wave_ui, DamageStats,
+    force_hide_ui_panel, reset_damage_stats, setup_damage_panel, setup_ui,
+    sync_ally_hp_bars, sync_damage_panel_visibility, ui_button_system,
+    update_ally_hp_values, update_damage_bars, update_damage_panel, update_fps_text,
+    update_hp_bar_pixel_scale, update_hp_subdividers, update_map_button,
+    update_score_text, update_slot_labels, update_vsync_label, update_wave_ui,
+    DamageStats,
 };
 use wave::{wave_orchestrator, WaveState};
 use weapon::WeaponType;
@@ -135,6 +137,10 @@ pub enum AppState {
     #[default]
     MainMenu,
     Playing,
+    /// 5-second "STAGE COMPLETE" beat between a cleared level and the
+    /// shop opening. Combat-sim systems idle the same way they do in
+    /// `Customize` / `Paused`.
+    StageComplete,
     Customize,
     Paused,
 }
@@ -241,6 +247,8 @@ fn main() {
         .insert_resource(stats::PlayerStats::default())
         .insert_resource(main_menu::MainMenuOpen::default())
         .insert_resource(DebugUiVisible::default())
+        .insert_resource(stage_complete::StageCompleteTimer::default())
+        .insert_resource(modes::ScreenShake::default())
         .init_state::<AppState>()
         .insert_resource(Palette::aap64_naval())
         .insert_resource(ShipPath::default())
@@ -268,7 +276,7 @@ fn main() {
             setup_debug_ui, setup_currency_ui, setup_progress_assets,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
             init_customize_shop, setup_customize_render, setup_customize_ui,
-            setup_pause_menu, main_menu::setup_main_menu,
+            setup_pause_menu, main_menu::setup_main_menu, setup_damage_panel,
         ).chain())
         // State→resources bridge. Runs first so every other system in
         // the same Update sees the freshly-synced flags.
@@ -278,6 +286,22 @@ fn main() {
         // Startup init still seeds it once so any pre-first-open
         // queries see a populated resource.
         .add_systems(OnEnter(AppState::Customize), init_customize_shop)
+        // Wipe per-round damage tallies whenever a new combat is
+        // about to start. Combat → Customize keeps last round's
+        // bars visible during the shop; closing the shop fires
+        // OnExit(Customize) and zeros the slate. PLAY-from-menu
+        // also resets via OnExit(MainMenu).
+        .add_systems(OnExit(AppState::MainMenu), reset_damage_stats)
+        .add_systems(OnExit(AppState::Customize), reset_damage_stats)
+        // Stage-complete buffer: spawn the overlay on entry, despawn
+        // on exit, tick the timer while the state is active.
+        .add_systems(OnEnter(AppState::StageComplete), stage_complete::enter_stage_complete)
+        .add_systems(OnExit(AppState::StageComplete), stage_complete::exit_stage_complete)
+        .add_systems(
+            Update,
+            stage_complete::tick_stage_complete
+                .run_if(in_state(AppState::StageComplete)),
+        )
         .add_systems(Update, (
             // Always-on visual setup. apply_night_mode → apply_palette must
             // be ordered so a night-mode toggle propagates to the camera in
@@ -289,6 +313,7 @@ fn main() {
             friendly_movement,
             enemy_ai,
             apply_velocity,
+            friendly_ram_damage,
             stats::shield_recharge_system,
             bomber_detonate,
             spawn_enemies,
@@ -430,6 +455,7 @@ fn main() {
                 handle_debug_buttons, update_debug_button_tints, update_claim_label,
                 toggle_debug_ui_on_hash, sync_debug_panel_visibility,
                 force_hide_ui_panel,
+                update_damage_panel, sync_damage_panel_visibility,
             ),
             (
                 update_currency_ui,

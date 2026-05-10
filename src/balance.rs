@@ -83,10 +83,12 @@ pub const TURRET_MOUNTS: [f32; 8] = [
      PI_F,        // stern centerline → backward
 ];
 
-/// Half-arc per turret. Wing turrets get 120° (±60°) so they sweep from
-/// fully-forward through diagonal to fully-sideways; axials get 90° (±45°).
+/// Half-arc per turret. Default is the full 360° cone (π half-arc)
+/// for every slot — turrets can fire in any direction at base. The
+/// `T.ARC` stat is headroom on top, capped at π by
+/// `effective_turret_half_arc`.
 pub const TURRET_ARC_HALVES: [f32; 8] = [
-    PI_4, PI_3, PI_3, PI_4, PI_4, PI_3, PI_3, PI_4,
+    PI_F, PI_F, PI_F, PI_F, PI_F, PI_F, PI_F, PI_F,
 ];
 
 /// i18n keys for each turret name (cell index 0..7). Display strings live in

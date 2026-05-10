@@ -62,6 +62,54 @@ pub fn apply_damage(h: &mut Health, fx: &mut HitFx, amount: i32) -> i32 {
     dealt
 }
 
+/// Squared distance from point `p` to the line segment `[a, b]`.
+/// Used by `bullet_collisions` for swept hit-tests so a fast bullet
+/// can't tunnel through a small enemy between frames.
+fn point_segment_dist_sq(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let len_sq = ab.length_squared();
+    if len_sq < 1e-6 {
+        return p.distance_squared(a);
+    }
+    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+    let proj = a + ab * t;
+    p.distance_squared(proj)
+}
+
+/// Credit damage to the right `DamageStats` row by source. `None` is a
+/// no-op (chain hops, enemy fire). Public so direct-`apply_damage`
+/// sites (mines, boarders, missile direct hits) can credit themselves
+/// without going through the bullet pipeline.
+pub fn credit_damage(stats: &mut crate::ui::DamageStats, source: Option<DamageSource>, dealt: i32) {
+    if dealt <= 0 { return; }
+    let dealt_u = dealt as u64;
+    match source {
+        Some(DamageSource::PlayerSlot(s)) => {
+            stats.per_slot[s as usize] = stats.per_slot[s as usize].saturating_add(dealt_u);
+            stats.total = stats.total.saturating_add(dealt_u);
+        }
+        Some(DamageSource::Ally(class)) => {
+            let i = class.to_index();
+            stats.per_ally[i] = stats.per_ally[i].saturating_add(dealt_u);
+            stats.total = stats.total.saturating_add(dealt_u);
+        }
+        None => {}
+    }
+}
+
+/// Who fired a friendly damage instance. Used to credit kills and
+/// damage to the right row in `DamageStats` (and in the LHS damage
+/// panel). `None` = damage that shouldn't be credited (enemy fire,
+/// chain hops, or untracked sources).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DamageSource {
+    /// Player-ship turret slot (0..7).
+    PlayerSlot(u8),
+    /// Ally damage, aggregated by class so multiple PirateShips share
+    /// one row in the panel.
+    Ally(crate::ally::ShipClass),
+}
+
 #[derive(Component)]
 pub struct Bullet {
     pub faction: FactionKind,
@@ -70,9 +118,9 @@ pub struct Bullet {
     /// Weapon that fired this bullet — drives spark/impact colors on hit.
     /// Unused for enemy bullets (always `Standard`).
     pub weapon: WeaponType,
-    /// Originating turret slot index (0-7) for friendly bullets. None for
-    /// enemy bullets — they don't contribute to the slot damage tally.
-    pub slot: Option<u8>,
+    /// Who fired the bullet, for damage-attribution. `None` for enemy
+    /// fire and untracked allied sources.
+    pub source: Option<DamageSource>,
     /// Up to 3 runes carried by the bullet (inherited from the firing
     /// slot's `runes` array). On hit, each non-`None` rune is rolled
     /// through the proc system and may trigger status applies / chain
@@ -102,9 +150,10 @@ struct DamageEvent {
     amount: i32,
     hit_pos: Vec2,
     weapon: WeaponType,
-    /// Slot index for `DamageStats` crediting. `None` for chain hops so the
-    /// secondary damage doesn't inflate the originating slot's share.
-    source_slot: Option<u8>,
+    /// Originating source for `DamageStats` crediting. `None` for chain
+    /// hops so the secondary damage doesn't inflate the originating
+    /// source's share.
+    source: Option<DamageSource>,
     /// All runes attached to the source bullet — each one may proc on this
     /// hit (gated by `procced` + `proc_strength`).
     runes: Vec<Rune>,
@@ -117,12 +166,13 @@ struct DamageEvent {
 }
 
 pub fn bullet_collisions(
+    time: Res<Time>,
     mut commands: Commands,
     mut stats: ResMut<DamageStats>,
     player_stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
-    bullets: Query<(Entity, &Transform, &Bullet)>,
+    bullets: Query<(Entity, &Transform, &Bullet, &Velocity)>,
     mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
     mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
@@ -144,23 +194,40 @@ pub fn bullet_collisions(
         .collect();
 
     let mut chain: Vec<DamageEvent> = Vec::new();
+    let dt = time.delta_secs();
 
-    for (be, btf, b) in &bullets {
+    for (be, btf, b, bv) in &bullets {
         let bp = btf.translation.truncate();
+        // Swept segment for this frame. `apply_velocity` already moved
+        // the bullet to `bp` this tick; rewind by `velocity * dt` for
+        // the pre-step position. Testing the whole segment against
+        // each enemy radius eliminates tunneling — fast bullets
+        // (railgun-speed shotguns, MG with high stride) used to skip
+        // small enemies between frames.
+        let prev_bp = bp - bv.0 * dt;
         match b.faction {
             FactionKind::Friendly => {
-                // First overlapping enemy from the snapshot wins.
-                if let Some(&(ee, ep, _)) =
-                    enemy_snap.iter().find(|(_, ep, hd)| ep.distance(bp) < *hd)
-                {
+                // First enemy whose hit-disc the bullet's swept
+                // segment grazes wins.
+                if let Some(&(ee, ep, _)) = enemy_snap.iter().find(|(_, ep, hd)| {
+                    point_segment_dist_sq(*ep, prev_bp, bp) < *hd * *hd
+                }) {
                     commands.entity(be).despawn();
-                    let crit_mult = player_stats.roll_crit_mult(&mut rng);
+                    // Crits only roll for player-sourced bullets — ally
+                    // damage uses its baseline number for share-bar
+                    // accounting (and so allies don't piggyback on the
+                    // player's crit stat).
+                    let crit_mult = if matches!(b.source, Some(DamageSource::PlayerSlot(_))) {
+                        player_stats.roll_crit_mult(&mut rng) as i32
+                    } else {
+                        1
+                    };
                     chain.push(DamageEvent {
                         target: ee,
-                        amount: b.damage.saturating_mul(crit_mult as i32),
+                        amount: b.damage.saturating_mul(crit_mult),
                         hit_pos: ep,
                         weapon: b.weapon,
-                        source_slot: b.slot,
+                        source: b.source,
                         runes: b.runes.iter().filter_map(|r| *r).collect(),
                         procced: Vec::new(),
                         proc_strength: 1.0,
@@ -172,7 +239,9 @@ pub fn bullet_collisions(
                 // hit logic and skip the proc queue.
                 let mut consumed = false;
                 for (_fe, ftf, mut h, mut fx, shield_opt) in &mut friendly {
-                    if ftf.translation.truncate().distance(bp) < 5.0 {
+                    let fp = ftf.translation.truncate();
+                    // Swept segment vs ship hit radius (5).
+                    if point_segment_dist_sq(fp, prev_bp, bp) < 5.0 * 5.0 {
                         commands.entity(be).despawn();
                         // Friendly ship now takes damage in both modes.
                         // Sandbox invincibility was useful while the
@@ -197,7 +266,8 @@ pub fn bullet_collisions(
                     // collision check, not just at target-selection.
                     if ally_is_submerged(ally) { continue; }
                     let hit_d = ally_hit_radius(ally);
-                    if atf.translation.truncate().distance(bp) < hit_d {
+                    let ap = atf.translation.truncate();
+                    if point_segment_dist_sq(ap, prev_bp, bp) < hit_d * hit_d {
                         commands.entity(be).despawn();
                         apply_damage(&mut h, &mut fx, b.damage);
                         let hit_pos = atf.translation.truncate();
@@ -249,10 +319,7 @@ fn process_damage_event(
     };
 
     let dealt = apply_damage(&mut h, &mut fx, amplify(ev.amount));
-    if let Some(s) = ev.source_slot {
-        stats.per_slot[s as usize] += dealt as u64;
-        stats.total            += dealt as u64;
-    }
+    credit_damage(stats, ev.source, dealt);
 
     // Weapon-color flair burst (more on lethal). The generic enemy-color
     // destruction burst is added by `enemy_death_check` once HP hits zero.
@@ -291,7 +358,7 @@ fn process_damage_event(
                     amount: ev.amount,
                     hit_pos: target_pos,
                     weapon: ev.weapon,
-                    source_slot: None, // chained damage doesn't credit the slot
+                    source: None, // chained damage doesn't credit the source
                     runes: ev.runes.clone(),
                     procced: ev.procced.clone(),
                     proc_strength: ev.proc_strength * Rune::Cascade.proc_coefficient(),
@@ -350,10 +417,10 @@ fn process_damage_event(
                         amount: ev.amount, // shock chain = 100% weapon damage
                         hit_pos: target_pos,
                         weapon: ev.weapon,
-                        // Don't credit chain damage back to the firing slot —
+                        // Don't credit chain damage back to the firing source —
                         // keeps share bars representing "your turret killed it"
                         // rather than "your turret rune chained it elsewhere".
-                        source_slot: None,
+                        source: None,
                         runes: ev.runes.clone(),
                         procced: next_procced,
                         proc_strength: ev.proc_strength * Rune::Shock.proc_coefficient(),
@@ -373,10 +440,7 @@ fn process_damage_event(
                     // player's rune-damage stat before resonate amp.
                     let scaled = (burst as f32 * player_stats.rune_damage_mult()).round() as i32;
                     let dealt = apply_damage(&mut h, &mut fx, amplify(scaled));
-                    if let Some(s) = ev.source_slot {
-                        stats.per_slot[s as usize] += dealt as u64;
-                        stats.total            += dealt as u64;
-                    }
+                    credit_damage(stats, ev.source, dealt);
                     // Two-tone flair: weapon spark + a flame puff so
                     // the consumed status reads as "popped".
                     spawn_hit_particles(commands, em, spark_mat, ev.hit_pos, 8, 90.0, rng);
@@ -391,7 +455,7 @@ fn process_damage_event(
                     timer: ECHO_DELAY,
                     target: ev.target,
                     damage: ev.amount,
-                    source_slot: ev.source_slot,
+                    source: ev.source,
                     weapon: ev.weapon,
                 });
             }

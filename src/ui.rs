@@ -16,6 +16,7 @@
 
 use bevy::prelude::*;
 
+mod damage_panel;
 mod hud;
 mod panel;
 
@@ -24,6 +25,10 @@ pub use hud::{
     update_hp_subdividers, update_map_button, update_score_text, update_vsync_label,
     update_wave_ui, AllyHpRow, CameraFollowButton, FpsText, ReturnToMapButton, ScoreText,
     WaveHpUi,
+};
+pub use damage_panel::{
+    reset_damage_stats, setup_damage_panel, sync_damage_panel_visibility,
+    update_damage_panel,
 };
 pub use panel::{update_damage_bars, update_slot_labels, UiPanel};
 
@@ -70,6 +75,9 @@ pub enum ButtonKind {
 #[derive(Resource, Default)]
 pub struct DamageStats {
     pub per_slot: [u64; 8],
+    /// Per-ally-class damage, indexed by `ShipClass::to_index()`.
+    /// Sized to `ShipClass::COUNT` (currently 6).
+    pub per_ally: [u64; crate::ally::ShipClass::COUNT],
     pub total: u64,
 }
 

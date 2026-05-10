@@ -286,6 +286,21 @@ impl ShipClass {
         ShipClass::Tender,
         ShipClass::Blackbeard,
     ];
+    pub const COUNT: usize = Self::ALL.len();
+
+    /// Stable index for slotting per-class data into a fixed array
+    /// (e.g. `DamageStats.per_ally`). Order mirrors `ALL`.
+    pub fn to_index(self) -> usize {
+        match self {
+            ShipClass::PirateShip => 0,
+            ShipClass::Carrier    => 1,
+            ShipClass::Submarine  => 2,
+            ShipClass::Minelayer  => 3,
+            ShipClass::Tender     => 4,
+            ShipClass::Blackbeard => 5,
+        }
+    }
+
 }
 
 #[derive(Component)]
@@ -314,6 +329,10 @@ pub struct MissileLauncher {
     pub muzzle_offset: f32,
     /// Faction the launched missiles seek + damage.
     pub target_faction: FactionKind,
+    /// Damage-credit source baked at spawn time so the
+    /// `bullet_collisions` pipeline can attribute kills correctly.
+    /// `None` for enemy launchers (no per-class tracking on that side).
+    pub source: Option<crate::bullet::DamageSource>,
 }
 
 /// Tag on an in-flight homing missile. The missile is otherwise a regular
@@ -751,6 +770,9 @@ fn build_ship_for_faction(
             cd: 1.0 / fire_rate,
             muzzle_offset: hull_h * 0.5,
             target_faction,
+            // Credit submarine missile kills to the SUB row in the
+            // damage panel.
+            source: Some(crate::bullet::DamageSource::Ally(ShipClass::Submarine)),
         });
 
         // Conning tower — small light-grey rectangle on top of the
@@ -1069,6 +1091,7 @@ pub fn ally_turret_aim_fire(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     owners: Query<(&Transform, &Heading), Without<AllyTurret>>,
+    owner_class: Query<&Ally>,
     targets: Query<(&Transform, &Faction), Without<AllyTurret>>,
     mut turrets: Query<
         (&ChildOf, &mut AllyTurret, &mut Transform),
@@ -1141,6 +1164,13 @@ pub fn ally_turret_aim_fire(
                 let total_angle = owner_h + turret.barrel_angle;
                 let barrel_forward = Vec2::new(-total_angle.sin(), total_angle.cos());
                 let muzzle_pos = turret_world + barrel_forward * 4.0;
+                // Credit ally-turret kills to the parent ship's class
+                // (e.g. multiple PirateShip cannons all roll up into
+                // one PIR row in the damage panel).
+                let source = owner_class
+                    .get(parent.0)
+                    .ok()
+                    .map(|a| crate::bullet::DamageSource::Ally(a.class));
                 spawn_combat_bullet(
                     &mut commands,
                     &em,
@@ -1150,7 +1180,7 @@ pub fn ally_turret_aim_fire(
                     barrel_forward,
                     WeaponType::Standard,
                     turret.class.fire_damage(),
-                    None, // not a player slot — skip damage-stat crediting
+                    source,
                     TURRET_RANGE,
                     [None; 3], // ally turrets don't currently carry runes
                     turret.target_faction.opposite(),
@@ -1226,6 +1256,7 @@ fn spawn_homing_missile(
     damage: i32,
     initial_target: Option<Entity>,
     target_faction: FactionKind,
+    source: Option<crate::bullet::DamageSource>,
 ) {
     let heading_rot = (-forward.x).atan2(forward.y);
     let bullet = commands.spawn((
@@ -1238,7 +1269,7 @@ fn spawn_homing_missile(
             damage,
             remaining: MISSILE_RANGE,
             weapon: WeaponType::Standard,
-            slot: None,
+            source,
             runes: [None; 3],
         },
         Velocity(forward * MISSILE_SPEED),
@@ -1309,7 +1340,7 @@ pub fn missile_launcher_fire(
         spawn_homing_missile(
             &mut commands, &em, &pm,
             muzzle, forward, launcher.damage, target,
-            launcher.target_faction,
+            launcher.target_faction, launcher.source,
         );
     }
 }
@@ -1502,6 +1533,7 @@ pub fn boarder_tick(
     // friendly-side spawned by the launcher, so they never carry the
     // Enemy marker — the filter just teaches the type system that.
     mut boarders: Query<(Entity, &mut Transform, &mut Boarder), Without<Enemy>>,
+    mut stats: ResMut<crate::ui::DamageStats>,
 ) {
     let dt = time.delta_secs();
 
@@ -1546,7 +1578,14 @@ pub fn boarder_tick(
                 boarder.tick_cd -= dt;
                 if boarder.tick_cd <= 0.0 {
                     boarder.tick_cd = boarder.tick_interval;
-                    crate::bullet::apply_damage(&mut h, &mut fx, boarder.damage_per_tick);
+                    let dealt = crate::bullet::apply_damage(&mut h, &mut fx, boarder.damage_per_tick);
+                    // Boarders are launched by Blackbeard — credit the
+                    // BLK row in the damage panel.
+                    crate::bullet::credit_damage(
+                        &mut stats,
+                        Some(crate::bullet::DamageSource::Ally(ShipClass::Blackbeard)),
+                        dealt,
+                    );
                 }
 
                 if new_remaining <= 0.0 {
@@ -1699,6 +1738,7 @@ pub fn mine_tick(
     em: Option<Res<EffectMeshes>>,
     mut victims: Query<(Entity, &Transform, &Faction, &mut Health, &mut HitFx)>,
     mut mines: Query<(Entity, &Transform, &mut Mine)>,
+    mut stats: ResMut<crate::ui::DamageStats>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
@@ -1735,7 +1775,13 @@ pub fn mine_tick(
             if f != mine.target_faction { continue; }
             if ep.distance_squared(mp) >= r2 { continue; }
             if let Ok((_, _, _, mut h, mut fx)) = victims.get_mut(e) {
-                crate::bullet::apply_damage(&mut h, &mut fx, mine.damage);
+                let dealt = crate::bullet::apply_damage(&mut h, &mut fx, mine.damage);
+                // Mines belong to Minelayer — credit the MIN row.
+                crate::bullet::credit_damage(
+                    &mut stats,
+                    Some(crate::bullet::DamageSource::Ally(ShipClass::Minelayer)),
+                    dealt,
+                );
             }
         }
 
@@ -2141,6 +2187,7 @@ fn spawn_plane_bullets(
     forward: Vec2,
     heading: f32,
     bullet_faction: FactionKind,
+    source: Option<crate::bullet::DamageSource>,
 ) {
     let perp = Vec2::new(-forward.y, forward.x);
     for side in [-1.0_f32, 1.0] {
@@ -2158,7 +2205,7 @@ fn spawn_plane_bullets(
                 damage: PLANE_FIRE_DAMAGE,
                 remaining: PLANE_BULLET_RANGE,
                 weapon: WeaponType::Standard,
-                slot: None,
+                source,
                 runes: [None; 3],
             },
             Velocity(forward * PLANE_BULLET_SPEED),
@@ -2280,6 +2327,9 @@ pub fn plane_ai(
                     spawn_plane_bullets(
                         &mut commands, &pm, &em, new_pos, forward, heading.0,
                         plane.target_faction.opposite(),
+                        // Carrier-launched planes credit kills to the
+                        // CARRIER row in the damage panel.
+                        Some(crate::bullet::DamageSource::Ally(ShipClass::Carrier)),
                     );
                 }
 

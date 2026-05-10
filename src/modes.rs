@@ -294,7 +294,9 @@ pub fn apply_window_mode(
 /// it disjoint from the friendly query for Bevy's parameter-conflict
 /// checker.
 pub fn apply_camera_follow(
+    time: Res<Time>,
     follow: Res<CameraFollow>,
+    mut shake: ResMut<ScreenShake>,
     friendly: Query<
         &Transform,
         (
@@ -321,8 +323,48 @@ pub fn apply_camera_follow(
     } else {
         Vec2::ZERO
     };
+
+    // Trauma-based shake (Linden's method): trauma in [0, 1], offset
+    // proportional to trauma². Decays each frame.
+    let dt = time.delta_secs();
+    shake.trauma = (shake.trauma - dt * SHAKE_DECAY).max(0.0);
+    let shake_off = if shake.trauma > 0.0 {
+        let s = shake.trauma * shake.trauma;
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        Vec2::new(
+            rng.gen_range(-1.0..1.0),
+            rng.gen_range(-1.0..1.0),
+        ) * SHAKE_MAX_OFFSET * s
+    } else {
+        Vec2::ZERO
+    };
+
     for mut cam_tf in &mut cameras {
-        cam_tf.translation.x = target.x;
-        cam_tf.translation.y = target.y;
+        cam_tf.translation.x = target.x + shake_off.x;
+        cam_tf.translation.y = target.y + shake_off.y;
     }
 }
+
+// ---------- Screen shake ----------
+
+/// Trauma-based camera shake. Callers add trauma via `add_trauma`;
+/// `apply_camera_follow` decays it each frame and offsets every camera
+/// that follows the play world. Range is [0, 1]; offset scales with
+/// `trauma²`, so small kicks barely register and big kicks really
+/// punch.
+#[derive(Resource, Default)]
+pub struct ScreenShake {
+    pub trauma: f32,
+}
+
+impl ScreenShake {
+    pub fn add_trauma(&mut self, amount: f32) {
+        self.trauma = (self.trauma + amount).clamp(0.0, 1.0);
+    }
+}
+
+/// Trauma → 0 in this many seconds when nothing else feeds it.
+const SHAKE_DECAY: f32 = 1.5;
+/// Peak offset in world units when trauma == 1.0.
+const SHAKE_MAX_OFFSET: f32 = 4.0;

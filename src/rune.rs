@@ -247,7 +247,7 @@ pub struct EchoPending {
     pub timer: f32,
     pub target: Entity,
     pub damage: i32,
-    pub source_slot: Option<u8>,
+    pub source: Option<crate::bullet::DamageSource>,
     pub weapon: WeaponType,
 }
 
@@ -284,10 +284,7 @@ pub fn tick_echoes(
                 let mult = resonate_multiplier(on_resonate.get(echo.target).ok());
                 let amount = (echo.damage as f32 * mult).round() as i32;
                 let dealt = apply_damage(&mut h, &mut fx, amount);
-                if let Some(s) = echo.source_slot {
-                    stats.per_slot[s as usize] += dealt as u64;
-                    stats.total += dealt as u64;
-                }
+                crate::bullet::credit_damage(&mut stats, echo.source, dealt);
                 let pos = tf.translation.truncate();
                 // Two-tone burst: weapon spark + a second cooler ring
                 // so the echo reads as a distinct beat rather than a
