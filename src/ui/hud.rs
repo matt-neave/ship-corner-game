@@ -224,11 +224,14 @@ pub fn setup_hud(commands: &mut Commands) {
         });
     });
 
-    // Player HP bar + ally bars — anchored inside the play square's top-left.
+    // Player HP bar + ally bars — anchored inside the play square's
+    // top-left, pushed BELOW the XP bar (which spans the play area's
+    // top edge). Top = `XP_BAR_TOP_INSET + XP_BAR_HEIGHT + gap`.
+    let hp_top = crate::xp::XP_BAR_TOP_INSET + crate::xp::XP_BAR_HEIGHT + 4.0;
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(0.0),
+            top: Val::Px(hp_top),
             left: Val::Px(0.0),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::FlexStart,
@@ -239,13 +242,21 @@ pub fn setup_hud(commands: &mut Commands) {
         WaveHpUi,
     ))
     .with_children(|p| {
-        // Main bar — 180×22 track with fill, ticks, right-aligned readout.
+        // Main bar — 180×22 track with fill, ticks, right-aligned
+        // readout. `overflow: clip` keeps the shield overlay
+        // bounded inside the track — when shield_max + HP would
+        // overflow the bar, the cyan portion gets cropped at the
+        // border rather than spilling onto the world.
         p.spawn((
             Node {
                 width: Val::Px(180.0),
                 height: Val::Px(22.0),
-                border: UiRect::all(Val::Px(1.0)),
+                // 2 px border — matches the XP bar's outline weight
+                // so both bars read as the same UI family at any
+                // window scale.
+                border: UiRect::all(Val::Px(2.0)),
                 position_type: PositionType::Relative,
+                overflow: Overflow::clip(),
                 ..default()
             },
             BackgroundColor(theme::BORDER_SUBTLE),
@@ -265,10 +276,11 @@ pub fn setup_hud(commands: &mut Commands) {
                 BackgroundColor(Color::srgb(0.25, 0.85, 0.30)),
                 WaveHpFill,
             ));
-            // Shield overlay — sits on top of the HP fill so an active
-            // shield reads as cyan in the bar's leading region. Width
-            // is driven per-frame in `update_wave_ui`. Hidden by
-            // default; only shown when `stats.shield_max > 0`.
+            // Shield overlay — drawn on top of the green HP fill at
+            // the leading edge of the bar. `update_wave_ui` sizes it
+            // as `min(shield_cur, max_hp)` so it can never extend
+            // past the track's right edge (the `overflow: clip` on
+            // the track is a belt-and-braces gate).
             track.spawn((
                 Node {
                     position_type: PositionType::Absolute,
@@ -282,23 +294,37 @@ pub fn setup_hud(commands: &mut Commands) {
                 Visibility::Hidden,
                 ShieldFill,
             ));
-            // Numeric overlay.
-            track.spawn(Node {
-                position_type: PositionType::Absolute,
-                top: Val::Px(0.0),
-                left: Val::Px(0.0),
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::FlexEnd,
-                align_items: AlignItems::Center,
-                padding: UiRect::right(Val::Px(6.0)),
-                ..default()
-            })
+            // Numeric overlay — high ZIndex so the readout renders
+            // above the per-50-HP subdivider lines (which are
+            // dynamically respawned by `update_hp_subdividers` and
+            // would otherwise occlude the digits).
+            track.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(0.0),
+                    left: Val::Px(0.0),
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    justify_content: JustifyContent::FlexEnd,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::right(Val::Px(6.0)),
+                    ..default()
+                },
+                ZIndex(10),
+            ))
             .with_children(|over| {
                 over.spawn((
                     Text::new(format!("{}", FRIENDLY_HP_WAVE)),
                     TextFont { font_size: 13.0, ..default() },
                     TextColor(theme::ON_SURFACE),
+                    // Black drop shadow so the white digits read
+                    // clearly over BOTH the green HP fill and the
+                    // dark empty-bar background (without the shadow
+                    // they vanish into the green at high HP).
+                    TextShadow {
+                        offset: Vec2::splat(1.0),
+                        color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+                    },
                     WaveHpText,
                 ));
             });
@@ -364,6 +390,7 @@ pub fn update_score_text(
 pub fn update_fps_text(
     diagnostics: Res<DiagnosticsStore>,
     time: Res<Time>,
+    run_timer: Res<crate::RunTimer>,
     mut refresh_timer: Local<f32>,
     mut q: Query<&mut Text, With<FpsText>>,
 ) {
@@ -382,8 +409,15 @@ pub fn update_fps_text(
     let idx = ((sorted.len() as f64 * 0.01) as usize).min(sorted.len() - 1);
     let one_pct_low = sorted[idx];
 
+    let total = run_timer.secs.max(0.0) as u32;
+    let mins = total / 60;
+    let secs = total % 60;
+
     for mut t in &mut q {
-        **t = format!("FPS {:.0}\n1%LOW {:.0}", avg, one_pct_low);
+        **t = format!(
+            "FPS {:.0}\n1%LOW {:.0}\n{:02}:{:02}",
+            avg, one_pct_low, mins, secs,
+        );
     }
 }
 
@@ -446,26 +480,42 @@ pub fn update_wave_ui(
 
     let Ok((h, shield)) = friendly.single() else { return; };
     let max_hp = current_max_hp(&mode, &stats);
-    let pct = (h.0 as f32 / max_hp as f32).clamp(0.0, 1.0);
+    let shield_max = stats.shield_max.effective().max(0.0).round() as i32;
+    let shield_cur = shield.map(|s| s.current).unwrap_or(0.0).max(0.0);
+
+    // Bar pool = HP + shield. The bar's full width represents this
+    // combined pool, so HP and shield each get their own dedicated
+    // region whose SIZE is proportional to their max — independent
+    // of how full they currently are. Shield gets the right portion
+    // of the bar, HP the left, with HP region width = max_hp/pool.
+    let total_pool = (max_hp + shield_max).max(1) as f32;
+
+    let hp_fill_pct = (h.0 as f32 / total_pool).clamp(0.0, 1.0);
+    let shield_region_left_pct = max_hp as f32 / total_pool;
+    let shield_fill_pct = (shield_cur / total_pool)
+        .clamp(0.0, (1.0 - shield_region_left_pct).max(0.0));
+
+    // Readout: "HP+shield / max_hp". With 100 HP + 25 shield this
+    // reads "125/100" — the slash is "current effective pool / hp
+    // baseline", so the player can see total survivability at a
+    // glance.
+    let total_cur = h.0.max(0) + shield_cur.round() as i32;
+    for mut t in &mut hp_text_q {
+        **t = format!("{}/{}", total_cur, max_hp);
+    }
 
     for mut node in &mut hp_fill_q {
-        node.width = Val::Percent(pct * 100.0);
-    }
-    for mut t in &mut hp_text_q {
-        **t = format!("{}/{}", h.0.max(0), max_hp);
+        node.width = Val::Percent(hp_fill_pct * 100.0);
     }
 
-    // Shield: width tracks shield.current relative to the player's
-    // current max-HP scale (so the cyan bar visually overlaps the HP
-    // bar 1-to-1). Hidden when the player hasn't bought any shield.
-    let shield_max = stats.shield_max.effective().max(0.0);
-    let shield_cur = shield.map(|s| s.current).unwrap_or(0.0);
-    let shield_pct = if max_hp > 0 {
-        (shield_cur / max_hp as f32).clamp(0.0, 1.0)
-    } else { 0.0 };
-    let want_vis = if shield_max > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+    // Shield fill: positioned so it occupies its dedicated region on
+    // the right side of the bar. Hidden entirely when shield_max
+    // is 0 (no shield bought).
+    let want_vis = if shield_max > 0 { Visibility::Inherited } else { Visibility::Hidden };
     for (mut node, mut vis) in &mut shield_q {
-        let want_w = Val::Percent(shield_pct * 100.0);
+        let want_left = Val::Percent(shield_region_left_pct * 100.0);
+        let want_w = Val::Percent(shield_fill_pct * 100.0);
+        if node.left != want_left { node.left = want_left; }
         if node.width != want_w { node.width = want_w; }
         if *vis != want_vis { *vis = want_vis; }
     }

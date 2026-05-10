@@ -838,22 +838,29 @@ pub fn update_enemy_hp_bars(
 }
 
 /// Despawn enemies whose HP has dropped to 0, regardless of damage source
-/// (bullet, beam, fire, future debuffs). Awards score and emits the generic
-/// enemy-color destruction burst — source-specific flair (weapon-color
-/// sparks for bullets) is spawned at the call site before HP hits zero.
+/// (bullet, beam, fire, future debuffs). Awards score, scrap, and XP, and
+/// emits the generic enemy-color destruction burst — source-specific flair
+/// (weapon-color sparks for bullets) is spawned at the call site before HP
+/// hits zero.
+///
+/// XP grant: 1 per normal enemy, 5 per boss-tier kill. We detect boss-tier
+/// by `Enemy.max_hp >= 50` since the smallest boss HP (Submarine, 60)
+/// dwarfs the largest non-boss variant (Heavy, 15).
 pub fn enemy_death_check(
     mut commands: Commands,
     mut score: ResMut<Score>,
     mut scrap: ResMut<Scrap>,
+    mut xp: ResMut<crate::xp::Xp>,
+    mut pending: ResMut<crate::xp::LevelUpsPending>,
     player_stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
-    enemies: Query<(Entity, &Transform, &Health), With<Enemy>>,
+    enemies: Query<(Entity, &Transform, &Health, &Enemy)>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
     let mut rng = rand::thread_rng();
-    for (e, tf, h) in &enemies {
+    for (e, tf, h, enemy) in &enemies {
         if h.0 > 0 { continue; }
         commands.entity(e).despawn();
         score.0 += 10;
@@ -861,6 +868,10 @@ pub fn enemy_death_check(
         // (RoR-style: 0% → 1, 50% → 50/50 between 1 and 2, 100% → 2, …).
         let scrap_drop = player_stats.roll_harvest_mult(&mut rng);
         scrap.0 = scrap.0.saturating_add(scrap_drop);
+        // XP grant. Boss-tier detection by max_hp threshold (smallest
+        // boss = 60 HP, largest variant = 15 HP).
+        let is_boss = enemy.max_hp >= 50;
+        crate::xp::grant_kill_xp(&mut xp, &mut pending, is_boss);
         let pos = tf.translation.truncate();
         spawn_hit_particles(&mut commands, &em, &pm.enemy, pos, 10, 60.0, &mut rng);
     }

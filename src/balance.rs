@@ -200,30 +200,6 @@ pub const PIER_CELL_H:  f32 = 21.0;
 pub const PIER_Y_STEP:  f32 = 22.0;
 pub const PIER_Y_START: f32 = -PIER_Y_STEP * 3.5;
 
-// ---------- Per-level enemy budget ----------
-//
-// Each section's combat is capped at a fixed total enemy spawn count
-// keyed off the section's star tier and how far the player is into
-// the campaign. Once the budget is drained AND every enemy is dead,
-// the section is auto-claimed and the view flips back to the map.
-//
-// Base curve: 1★=10 (light skirmish), 5★=40 (proper swarm). On top
-// of that, every previously-cleared battle adds a flat bonus to all
-// subsequent levels — so a 2★ fought after 5 wins is meaningfully
-// harder than the same tier picked first.
-pub const CAMPAIGN_SCALING_PER_BATTLE: u32 = 2;
-
-pub fn level_enemy_budget(stars: u8, battles_cleared: u32) -> u32 {
-    let base = match stars {
-        1 => 10,
-        2 => 15,
-        3 => 22,
-        4 => 30,
-        _ => 40, // 5+
-    };
-    base + CAMPAIGN_SCALING_PER_BATTLE * battles_cleared
-}
-
 // ---------- Wave structure ----------
 //
 // A combat encounter is split into discrete waves. Star tier picks the
@@ -233,14 +209,18 @@ pub fn level_enemy_budget(stars: u8, battles_cleared: u32) -> u32 {
 // designer-facing trigger lives in `is_boss_wave` and currently
 // returns `false` so the path is wired but inert.
 
-/// Total waves in a stage. 1★ → 7, … 5★ → 15.
+/// Total waves in a stage. Sized for ~4 stages of combat (1★→4★ along
+/// the BFS shortest path to the first 5★ boss zone) to fill roughly
+/// ~17 minutes of combat — leaving ~3 minutes for shop / level-up /
+/// map traversal so the first boss fight lands near the 20-minute
+/// mark for a fresh run.
 pub fn waves_for_stars(stars: u8) -> u8 {
     match stars {
-        1 => 7,
-        2 => 9,
-        3 => 11,
-        4 => 13,
-        _ => 15,
+        1 => 10,
+        2 => 14,
+        3 => 18,
+        4 => 22,
+        _ => 26,
     }
 }
 
@@ -248,7 +228,7 @@ pub fn waves_for_stars(stars: u8) -> u8 {
 /// (`+1` every two waves) so later waves feel weightier than the
 /// opener without exploding the cap.
 pub fn wave_size(wave_idx: u8, _stars: u8) -> u32 {
-    3 + (wave_idx as u32) / 2
+    4 + (wave_idx as u32) / 2
 }
 
 /// True when this wave should swap to the boss-style variant mix.

@@ -245,7 +245,10 @@ pub fn handle_play_click(
 ) {
     for interaction in &interactions {
         if matches!(*interaction, Interaction::Pressed) {
-            next.set(crate::AppState::Playing);
+            // PLAY drops the player onto the hull-selection screen
+            // (not straight into combat) so they pick an archetype
+            // every fresh run.
+            next.set(crate::AppState::HullSelect);
         }
     }
 }

@@ -1097,6 +1097,19 @@ pub fn helicopter_ai(
         heli.fire_cd -= dt;
         let Some((_, ep)) = best else { continue; };
         if heli.fire_cd > 0.0 { continue; }
+        // Aim-gate: only fire when the heli is actually pointed at
+        // the enemy. Bullets exit along the body's forward vector,
+        // so mid-turn shots would otherwise spray off-target.
+        let to_enemy = ep - new_pos;
+        if to_enemy.length_squared() > 0.01 {
+            let desired = (-to_enemy.x).atan2(to_enemy.y);
+            let delta = (heli.heading - desired + std::f32::consts::PI)
+                .rem_euclid(std::f32::consts::TAU)
+                - std::f32::consts::PI;
+            if delta.abs() > std::f32::consts::FRAC_PI_8 {
+                continue;
+            }
+        }
 
         // Bullets exit the *nose turret*, not the body centre. The
         // nose barrel is at local y = 2.7 with length 2.5, so the tip

@@ -19,8 +19,9 @@ use super::drag::{
 use super::setup::{
     empty_slot_color, empty_socket_color, rune_color_for, turret_barrel_color_for,
     turret_color_for, CustomizeScrapText, ShipRuneSocketPart, ShipSlotBadgeText,
-    ShipSlotBase, ShopRerollBg, ShopRerollBtn, ShopRerollCostText, ShopRuneCostText,
-    ShopRuneNameText, ShopRuneVisual, ShopTurretBadgeText, ShopTurretBase,
+    ShipSlotBase, ShopRerollBg, ShopRerollBtn, ShopRerollCostText, ShopRuneAoeTag,
+    ShopRuneAoeTagText, ShopRuneCostText, ShopRuneNameText, ShopRuneVisual,
+    ShopTurretAoeTag, ShopTurretAoeTagText, ShopTurretBadgeText, ShopTurretBase,
     ShopTurretCostText, ShopTurretNameText, ShopTurretVisual,
 };
 use super::CustomizeOpen;
@@ -127,6 +128,7 @@ pub fn update_customize_shop(
     open: Res<CustomizeOpen>,
     shop: Option<Res<CustomizeShop>>,
     drag: Res<DragState>,
+    viewport: Res<super::render::CustomizeViewport>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     shop_turrets: Query<(&ShopTurretVisual, &MeshMaterial2d<ColorMaterial>)>,
     shop_bases: Query<(&ShopTurretBase, &MeshMaterial2d<ColorMaterial>)>,
@@ -138,6 +140,8 @@ pub fn update_customize_shop(
             Without<ShopRuneNameText>,
             Without<ShopTurretCostText>,
             Without<ShopRuneCostText>,
+            Without<ShopTurretAoeTagText>,
+            Without<ShopRuneAoeTagText>,
         ),
     >,
     mut shop_name_texts: Query<
@@ -147,6 +151,8 @@ pub fn update_customize_shop(
             Without<ShopRuneNameText>,
             Without<ShopTurretCostText>,
             Without<ShopRuneCostText>,
+            Without<ShopTurretAoeTagText>,
+            Without<ShopRuneAoeTagText>,
         ),
     >,
     mut shop_rune_name_texts: Query<
@@ -156,6 +162,8 @@ pub fn update_customize_shop(
             Without<ShopTurretNameText>,
             Without<ShopTurretCostText>,
             Without<ShopRuneCostText>,
+            Without<ShopTurretAoeTagText>,
+            Without<ShopRuneAoeTagText>,
         ),
     >,
     mut shop_turret_cost_texts: Query<
@@ -165,6 +173,8 @@ pub fn update_customize_shop(
             Without<ShopTurretNameText>,
             Without<ShopRuneNameText>,
             Without<ShopRuneCostText>,
+            Without<ShopTurretAoeTagText>,
+            Without<ShopRuneAoeTagText>,
         ),
     >,
     mut shop_rune_cost_texts: Query<
@@ -174,11 +184,67 @@ pub fn update_customize_shop(
             Without<ShopTurretNameText>,
             Without<ShopRuneNameText>,
             Without<ShopTurretCostText>,
+            Without<ShopTurretAoeTagText>,
+            Without<ShopRuneAoeTagText>,
+        ),
+    >,
+    // AOE badge sprites (parents) — combined turret + rune via
+    // `Or` filter to keep the system within Bevy's tuple-arg limit.
+    // Each entity has exactly one of the two markers, so the
+    // `Option<...>` reads cleanly fork on which branch we're in.
+    mut shop_aoe_tag_sprites: Query<
+        (
+            Option<&ShopTurretAoeTag>,
+            Option<&ShopRuneAoeTag>,
+            &mut Sprite,
+            &mut Transform,
+            &mut Visibility,
+        ),
+        (
+            Or<(With<ShopTurretAoeTag>, With<ShopRuneAoeTag>)>,
+            Without<ShopTurretAoeTagText>,
+            Without<ShopRuneAoeTagText>,
+        ),
+    >,
+    // AOE badge "AOE" text labels (siblings) — owned visibility, not
+    // `CustomizeText`, since the shared sync would force-show them on
+    // every card whenever the shop is open. Combined with `Or`
+    // for the same arg-budget reason.
+    mut shop_aoe_tag_texts: Query<
+        (
+            Option<&ShopTurretAoeTagText>,
+            Option<&ShopRuneAoeTagText>,
+            &mut Text2d,
+            &mut Transform,
+            &mut Visibility,
+        ),
+        (
+            Or<(With<ShopTurretAoeTagText>, With<ShopRuneAoeTagText>)>,
+            Without<ShopTurretBadgeText>,
+            Without<ShopTurretNameText>,
+            Without<ShopRuneNameText>,
+            Without<ShopTurretCostText>,
+            Without<ShopRuneCostText>,
+            Without<ShopTurretAoeTag>,
+            Without<ShopRuneAoeTag>,
         ),
     >,
 ) {
-    if !open.open {
-        return;
+    // When the shop closes (or hasn't been initialised yet) hide every
+    // AOE tag entity. Other shop visuals also "go stale" but they're
+    // owned by the customize root's `Visibility::Inherited` cascade —
+    // the AOE tags live on UPSCALE_LAYER without a parent in that tree
+    // so we have to flip their visibility ourselves.
+    if !open.open || shop.is_none() {
+        for (_, _, _, _, mut v) in &mut shop_aoe_tag_sprites {
+            if *v != Visibility::Hidden { *v = Visibility::Hidden; }
+        }
+        for (_, _, _, _, mut v) in &mut shop_aoe_tag_texts {
+            if *v != Visibility::Hidden { *v = Visibility::Hidden; }
+        }
+        if !open.open {
+            return;
+        }
     }
     let Some(shop) = shop.as_deref() else { return };
 
@@ -339,6 +405,20 @@ pub fn update_customize_shop(
         if text.0 != want {
             text.0 = want.to_string();
         }
+    }
+
+    // ---------- AOE badges ----------
+    // Force-hide every AOE badge entity. The AOE tag was moved into
+    // the tooltip description (see `customize::tooltip::AOE_TAG`),
+    // so the on-card overlay is redundant. Spawn entities are kept
+    // for an easy revert by re-introducing the per-card sync.
+    let _ = viewport;
+    let _ = (dragged_shop_turret, dragged_shop_rune);
+    for (_, _, _, _, mut vis) in &mut shop_aoe_tag_sprites {
+        if *vis != Visibility::Hidden { *vis = Visibility::Hidden; }
+    }
+    for (_, _, _, _, mut vis) in &mut shop_aoe_tag_texts {
+        if *vis != Visibility::Hidden { *vis = Visibility::Hidden; }
     }
 }
 

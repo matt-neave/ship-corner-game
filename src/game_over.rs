@@ -98,16 +98,26 @@ pub fn reset_run_for_restart(
     mut combat_ctx: ResMut<CombatContext>,
     mut map_state: ResMut<MapState>,
     mut damage_stats: ResMut<crate::ui::DamageStats>,
+    mut xp: ResMut<crate::xp::Xp>,
+    mut pending: ResMut<crate::xp::LevelUpsPending>,
+    selected_hull: Res<crate::hull::SelectedHull>,
     mut friendly: Query<&mut crate::components::Health, With<crate::components::Friendly>>,
     arena: Query<Entity, crate::wave::ArenaDisposeFilter>,
     mut boat: Query<&mut Transform, With<MapBoat>>,
     mut commands: Commands,
 ) {
     *stats = crate::stats::PlayerStats::default();
+    // Re-apply the active hull's stat modifiers so a RESTART picks
+    // up where the original PLAY left off — the player picked Glass
+    // Cannon once, they keep Glass Cannon after dying. Returning to
+    // MainMenu and re-PLAY-ing routes through HullSelect to repick.
+    selected_hull.0.apply(&mut stats);
     scrap.0 = 15;
     *campaign = crate::CampaignProgress::default();
     *cfg = crate::turret::TurretConfig::default();
     *damage_stats = crate::ui::DamageStats::default();
+    xp.reset();
+    pending.0 = 0;
 
     if let Ok(mut h) = friendly.single_mut() {
         h.0 = stats.max_hp();

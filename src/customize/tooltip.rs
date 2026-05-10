@@ -8,7 +8,8 @@
 
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
-use bevy::text::FontSmoothing;
+use bevy::sprite::Anchor;
+use bevy::text::{FontSmoothing, TextBounds};
 
 use crate::balance::{CUSTOMIZE_INTERNAL_H, CUSTOMIZE_INTERNAL_W, UPSCALE_LAYER};
 use crate::rune::Rune;
@@ -34,17 +35,38 @@ pub struct CustomizeTooltipTitle;
 #[derive(Component)]
 pub struct CustomizeTooltipBody;
 
+/// Marker on each `TextSpan` child of the body entity. Used by the
+/// per-frame body-text updater to find + despawn the old segment
+/// spans before respawning a fresh set for the new description.
+#[derive(Component)]
+pub struct CustomizeTooltipBodySpan;
+
 /// Minimum tooltip box dims in spec pixels — the box grows beyond this
-/// when the body/title text is wider. Multiplied by `display_scale` to
-/// get the native-pixel size each frame.
+/// when the body/title text needs more space. Multiplied by
+/// `display_scale` to get the native-pixel size each frame.
 const TOOLTIP_MIN_W: f32 = 48.0;
 const TOOLTIP_H: f32 = 22.0;
 /// Spec-pixel gap between the hovered source and the tooltip edge.
 const TOOLTIP_GAP: f32 = 2.0;
 /// Native-pixel padding between the text bounds and the fill edge.
-const TOOLTIP_TEXT_PAD: f32 = 10.0;
+const TOOLTIP_TEXT_PAD: f32 = 12.0;
 /// Native-pixel thickness of the white outline ring around the fill.
 const TOOLTIP_BORDER_PX: f32 = 2.0;
+/// Title + body font sizes (native pixels). Both bumped so labels read
+/// clearly without zooming in.
+const TOOLTIP_TITLE_FONT: f32 = 18.0;
+const TOOLTIP_BODY_FONT: f32 = 14.0;
+/// Native-pixel cap on body text width — body wraps at word boundaries
+/// when it would exceed this. Big enough that short descriptions fit on
+/// one line; small enough that long descriptions stack neatly without
+/// dominating the canvas.
+const TOOLTIP_BODY_MAX_W: f32 = 280.0;
+/// Approx char width (chars × font_size × this ≈ rendered native width).
+/// Used both for the title's auto-fit and the body's line-count estimate.
+const TOOLTIP_CHAR_W: f32 = 0.55;
+/// Vertical line-height multiplier for the wrapped body — turns
+/// `body_font * lines` into the total body block height.
+const TOOLTIP_LINE_HEIGHT_MULT: f32 = 1.25;
 
 // Z layering. Other customize UI text sits at z=100 on UPSCALE_LAYER, so
 // the tooltip needs to be above that to avoid being clipped.
@@ -84,29 +106,37 @@ pub fn spawn_customize_tooltip(commands: &mut Commands) {
         RenderLayers::layer(UPSCALE_LAYER),
         CustomizeTooltipFill,
     ));
-    // Title — bright accent.
+    // Title — bright accent. Top-centre anchor so the title sits at
+    // the top of the box; the update system positions the y so the
+    // top edge lines up with the fill rectangle minus padding.
     commands.spawn((
         Text2d::new(""),
         TextFont {
-            font_size: 14.0,
+            font_size: TOOLTIP_TITLE_FONT,
             font_smoothing: FontSmoothing::None,
             ..default()
         },
         TextColor(Color::srgb(1.0, 0.85, 0.30)),
+        Anchor::TopCenter,
         Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_TEXT),
         Visibility::Hidden,
         RenderLayers::layer(UPSCALE_LAYER),
         CustomizeTooltipTitle,
     ));
-    // Body — softer.
+    // Body — softer. Word-wrapped at `TOOLTIP_BODY_MAX_W` via
+    // `TextBounds`. Top-centre anchor so we can stack it under the
+    // title cleanly.
     commands.spawn((
         Text2d::new(""),
         TextFont {
-            font_size: 11.0,
+            font_size: TOOLTIP_BODY_FONT,
             font_smoothing: FontSmoothing::None,
             ..default()
         },
         TextColor(Color::srgb(0.85, 0.88, 0.94)),
+        TextLayout::new_with_justify(JustifyText::Center),
+        TextBounds::new_horizontal(TOOLTIP_BODY_MAX_W),
+        Anchor::TopCenter,
         Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_TEXT),
         Visibility::Hidden,
         RenderLayers::layer(UPSCALE_LAYER),
@@ -115,11 +145,15 @@ pub fn spawn_customize_tooltip(commands: &mut Commands) {
 }
 
 pub fn update_customize_tooltip(
+    mut commands: Commands,
     open: Res<CustomizeOpen>,
     drag: Res<DragState>,
     cfg: Res<TurretConfig>,
     shop: Option<Res<CustomizeShop>>,
     viewport: Res<CustomizeViewport>,
+    mut body_cache: Local<String>,
+    body_entity_q: Query<Entity, With<CustomizeTooltipBody>>,
+    existing_body_spans: Query<Entity, With<CustomizeTooltipBodySpan>>,
     sources: Query<(&Transform, &HitArea, &DragSourceMarker)>,
     stat_hovers: Query<(&Transform, &HitArea, &super::stats_panel::StatHover), Without<DragSourceMarker>>,
     mut outline_q: Query<
@@ -226,15 +260,25 @@ pub fn update_customize_tooltip(
         return;
     };
 
-    // Size the box to fit the wider of (title, body). Dynamic so short
-    // descriptions get a tight box and long ones don't overspill.
+    // Size the box to fit (title width vs wrapped-body width) and a
+    // height proportional to the wrapped body's line count + title.
     let s = viewport.display_scale;
-    let title_w_native = estimate_text_native_width(&title, 14.0);
-    let body_w_native = estimate_text_native_width(&body, 11.0);
-    let text_w_native = title_w_native.max(body_w_native);
+    let title_w_native = estimate_text_native_width(&title, TOOLTIP_TITLE_FONT);
+    let body_unwrapped_w = estimate_text_native_width(&body, TOOLTIP_BODY_FONT);
+    // Wrapped body width never exceeds the cap; if the unwrapped body
+    // is narrower than the cap, use the actual width so the box is
+    // tight on short descriptions.
+    let body_wrapped_w = body_unwrapped_w.min(TOOLTIP_BODY_MAX_W);
+    let text_w_native = title_w_native.max(body_wrapped_w);
     let fill_w_native = (text_w_native + 2.0 * TOOLTIP_TEXT_PAD).max(TOOLTIP_MIN_W * s);
-    let fill_h_native = TOOLTIP_H * s;
+    // Line-count estimate: how many `TOOLTIP_BODY_MAX_W` slabs the
+    // unwrapped body needs. `ceil(body_w / max_w)`, min 1.
+    let body_lines = (body_unwrapped_w / TOOLTIP_BODY_MAX_W).ceil().max(1.0);
+    let body_block_h = body_lines * TOOLTIP_BODY_FONT * TOOLTIP_LINE_HEIGHT_MULT;
+    let title_block_h = TOOLTIP_TITLE_FONT * TOOLTIP_LINE_HEIGHT_MULT;
+    let fill_h_native = title_block_h + body_block_h + 2.0 * TOOLTIP_TEXT_PAD;
     let tooltip_w_spec = fill_w_native / s;
+    let tooltip_h_spec = fill_h_native / s;
 
     // Anchor to the hovered source. Right of the source by default; flip
     // left if that would clip the canvas edge.
@@ -247,7 +291,7 @@ pub fn update_customize_tooltip(
         pos.x = left_x;
     }
     pos.x = pos.x.clamp(-canvas_half_w + tooltip_w_spec * 0.5, canvas_half_w - tooltip_w_spec * 0.5);
-    pos.y = pos.y.clamp(-canvas_half_h + TOOLTIP_H * 0.5, canvas_half_h - TOOLTIP_H * 0.5);
+    pos.y = pos.y.clamp(-canvas_half_h + tooltip_h_spec * 0.5, canvas_half_h - tooltip_h_spec * 0.5);
 
     let native_centre = Vec2::new(pos.x * s, pos.y * s);
     let fill_size_native = Vec2::new(fill_w_native, fill_h_native);
@@ -273,12 +317,16 @@ pub fn update_customize_tooltip(
             sprite.custom_size = Some(fill_size_native);
         }
     }
+    // Title pinned to the top of the fill (anchor TopCenter); body
+    // sits directly below it. Top-of-fill y = native_centre.y + h/2 -
+    // pad; body starts at top_y - title_block_h.
+    let fill_top_native = native_centre.y + fill_h_native * 0.5 - TOOLTIP_TEXT_PAD;
     if let Ok((mut v, mut tf, mut text)) = title_q.single_mut() {
         if *v != Visibility::Inherited {
             *v = Visibility::Inherited;
         }
         tf.translation.x = native_centre.x;
-        tf.translation.y = (pos.y + TOOLTIP_H * 0.25) * s;
+        tf.translation.y = fill_top_native;
         if text.0 != title {
             text.0 = title;
         }
@@ -288,11 +336,90 @@ pub fn update_customize_tooltip(
             *v = Visibility::Inherited;
         }
         tf.translation.x = native_centre.x;
-        tf.translation.y = (pos.y - TOOLTIP_H * 0.25) * s;
-        if text.0 != body {
-            text.0 = body;
+        tf.translation.y = fill_top_native - title_block_h;
+        // Clear the root section text — all visible text lives in
+        // colored `TextSpan` children spawned below. The root stays
+        // as the layout/anchor host.
+        if !text.0.is_empty() { text.0 = String::new(); }
+    }
+
+    // Rebuild colored body spans when the description text changes.
+    // `+30%` / `+1` get a green tint, `-50` / `-70%` get red; the
+    // rest stays the default body color. Despawning + respawning is
+    // cheap here — bodies change only on hover-target switches, not
+    // every frame, gated by the `body_cache` compare.
+    if *body_cache != body {
+        *body_cache = body.clone();
+        for span in existing_body_spans.iter() {
+            commands.entity(span).despawn();
+        }
+        if let Ok(body_entity) = body_entity_q.single() {
+            let segments = colorize_bonuses(&body);
+            commands.entity(body_entity).with_children(|p| {
+                for (segment, color) in segments {
+                    p.spawn((
+                        TextSpan::new(segment),
+                        TextFont {
+                            font_size: TOOLTIP_BODY_FONT,
+                            font_smoothing: FontSmoothing::None,
+                            ..default()
+                        },
+                        TextColor(color),
+                        CustomizeTooltipBodySpan,
+                    ));
+                }
+            });
         }
     }
+}
+
+/// Default body color (matches the root `Text2d`'s `TextColor`).
+const TOOLTIP_BODY_COLOR: Color = Color::srgb(0.85, 0.88, 0.94);
+/// Tint for positive numeric tokens (`+30%`, `+1`).
+const TOOLTIP_BUFF_COLOR: Color = Color::srgb(0.55, 0.95, 0.55);
+/// Tint for negative numeric tokens (`-50`, `-70%`).
+const TOOLTIP_NERF_COLOR: Color = Color::srgb(1.00, 0.55, 0.55);
+
+/// Split body text into colored segments. A run starting with `+`
+/// or `-` immediately followed by a digit (optionally with a
+/// trailing `%`) is a buff/nerf token and gets the corresponding
+/// tint; everything else stays the default body color.
+fn colorize_bonuses(text: &str) -> Vec<(String, Color)> {
+    let mut segments: Vec<(String, Color)> = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let is_sign_token = (c == '+' || c == '-')
+            && i + 1 < chars.len()
+            && chars[i + 1].is_ascii_digit();
+        if is_sign_token {
+            if !current.is_empty() {
+                segments.push((std::mem::take(&mut current), TOOLTIP_BODY_COLOR));
+            }
+            let mut tok = String::new();
+            tok.push(c);
+            i += 1;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                tok.push(chars[i]);
+                i += 1;
+            }
+            if i < chars.len() && chars[i] == '%' {
+                tok.push('%');
+                i += 1;
+            }
+            let color = if c == '+' { TOOLTIP_BUFF_COLOR } else { TOOLTIP_NERF_COLOR };
+            segments.push((tok, color));
+        } else {
+            current.push(c);
+            i += 1;
+        }
+    }
+    if !current.is_empty() {
+        segments.push((current, TOOLTIP_BODY_COLOR));
+    }
+    segments
 }
 
 fn hide_all(
@@ -399,14 +526,30 @@ fn describe_source(
 /// default font (Fira) averages ~0.55× font_size per glyph; we round up
 /// so the box never under-sizes its content.
 fn estimate_text_native_width(text: &str, font_size: f32) -> f32 {
-    text.chars().count() as f32 * font_size * 0.6
+    text.chars().count() as f32 * font_size * TOOLTIP_CHAR_W
 }
+
+/// Prefix the description with an `[AOE]` tag for weapons / runes
+/// that participate in the splash-radius family. Surfaces the tag in
+/// the tooltip body rather than as a card badge — same color cue as
+/// the in-game splash particles.
+const AOE_TAG: &str = "[AOE] ";
 
 fn turret_tooltip(weapon: WeaponType, barrels: u8) -> (String, String) {
     let title = format!("{} {}B", weapon.label(), barrels);
-    (title, weapon.description().to_string())
+    let mut body = String::new();
+    if matches!(weapon, WeaponType::Mortar) {
+        body.push_str(AOE_TAG);
+    }
+    body.push_str(weapon.description());
+    (title, body)
 }
 
 fn rune_tooltip(rune: Rune) -> (String, String) {
-    (rune.label().to_string(), rune.description().to_string())
+    let mut body = String::new();
+    if matches!(rune, Rune::Splash) {
+        body.push_str(AOE_TAG);
+    }
+    body.push_str(rune.description());
+    (rune.label().to_string(), body)
 }

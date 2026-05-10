@@ -1011,16 +1011,16 @@ fn build_ship_for_faction(
         )).id();
         commands.entity(prow).insert(ChildOf(ship));
 
-        // Central mast — short thick dark-wood pole sitting in the
-        // middle of the deck, clearly *central* lengthwise rather
-        // than running most of the hull. Rotates with the ship via
-        // the shared `ChildOf` tree.
-        let mast_h = hull_h * 0.40;
+        // Central mast — long dark-wood pole running most of the
+        // deck length, shifted forward so its midpoint aligns with
+        // the visual centre of the ship including the prow extension.
+        let mast_h = hull_h * 0.78;
+        let mast_y = hull_h * 0.04;
         let mast_mesh = meshes.add(Rectangle::new(hull_w * 0.22, mast_h));
         let mast = commands.spawn((
             Mesh2d(mast_mesh),
             MeshMaterial2d(pm.mast.clone()),
-            Transform::from_xyz(0.0, 0.0, 0.05),
+            Transform::from_xyz(0.0, mast_y, 0.05),
             RenderLayers::layer(PLAY_LAYER),
         )).id();
         commands.entity(mast).insert(ChildOf(ship));
@@ -1030,7 +1030,7 @@ fn build_ship_for_faction(
         // not a leaning sail.
         let flag_w = hull_w * 1.1;
         let flag_h = hull_h * 0.16;
-        let mast_top_y = mast_h * 0.5;
+        let mast_top_y = mast_y + mast_h * 0.5;
         let flag_mesh = meshes.add(Rectangle::new(flag_w, flag_h));
         let flag = commands.spawn((
             Mesh2d(flag_mesh),

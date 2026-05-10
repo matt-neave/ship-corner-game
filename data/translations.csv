@@ -53,14 +53,14 @@ rune_echo,ECHO
 rune_cascade,CASCADE
 rune_conduit,CONDUIT
 rune_resonate,RESONATE
-rune_fire_desc,Burns the target. 100% rune damage per tick over 4s.
+rune_fire_desc,Burns the target. 1 (100%) damage per tick over 4s.
 rune_frost_desc,Slows the target's movement.
-rune_shock_desc,Chains lightning to a nearby enemy.
-rune_detonate_desc,Consumes Fire/Frost on target. Releases stored rune damage.
-rune_echo_desc,Repeats the hit a moment later.
-rune_cascade_desc,On killing blow, hits the nearest enemy.
-rune_conduit_desc,Marked targets take stronger procs.
-rune_resonate_desc,Each hit on the same target stacks more damage.
+rune_shock_desc,Chains lightning to a nearby enemy at 100% damage.
+rune_detonate_desc,Consumes Fire/Frost on target. Releases stored damage at 100% rune mult.
+rune_echo_desc,Repeats the hit at 100% damage a moment later.
+rune_cascade_desc,On killing blow, hits the nearest enemy at 100% damage.
+rune_conduit_desc,Marked targets take +50% proc damage.
+rune_resonate_desc,Each stack adds +20% damage. Up to 5 stacks (+100% max).
 rune_target_furthest,FURTHEST
 rune_target_max_hp,MAX HP
 rune_target_min_hp,MIN HP

@@ -227,8 +227,6 @@ pub enum StatKind {
     Range,
     Harvest,
     ShieldMax,
-    ShieldRechargeRate,
-    ShieldRechargeDelay,
     RuneDamage,
 }
 
@@ -248,8 +246,6 @@ impl StatKind {
         StatKind::ProcStrength,
         StatKind::Harvest,
         StatKind::RuneDamage,
-        StatKind::ShieldRechargeRate,
-        StatKind::ShieldRechargeDelay,
     ];
     /// Short uppercase label rendered in the panel.
     pub fn label(self) -> &'static str {
@@ -265,8 +261,6 @@ impl StatKind {
             StatKind::Range => "RANGE",
             StatKind::Harvest => "HARV",
             StatKind::ShieldMax => "SHIELD",
-            StatKind::ShieldRechargeRate => "S.RATE",
-            StatKind::ShieldRechargeDelay => "S.DLY",
             StatKind::RuneDamage => "RUNE",
         }
     }
@@ -291,12 +285,6 @@ impl StatKind {
             StatKind::Range => format!("{:.0}%", stats.range_pct.effective()),
             StatKind::Harvest => format!("{:.0}%", stats.harvest_pct.effective()),
             StatKind::ShieldMax => format!("{:.0}", stats.shield_max.effective()),
-            StatKind::ShieldRechargeRate => {
-                format!("{:.0}%/s", stats.shield_recharge_rate_pct.effective())
-            }
-            StatKind::ShieldRechargeDelay => {
-                format!("{:.1}s", stats.shield_recharge_delay.effective())
-            }
             StatKind::RuneDamage => format!("{:.1}", stats.rune_damage.effective()),
         }
     }
@@ -321,8 +309,6 @@ impl StatKind {
             StatKind::Range => crate::i18n::tr("stat_range_desc"),
             StatKind::Harvest => crate::i18n::tr("stat_harvest_desc"),
             StatKind::ShieldMax => crate::i18n::tr("stat_shield_max_desc"),
-            StatKind::ShieldRechargeRate => crate::i18n::tr("stat_shield_rate_desc"),
-            StatKind::ShieldRechargeDelay => crate::i18n::tr("stat_shield_delay_desc"),
             StatKind::RuneDamage => crate::i18n::tr("stat_rune_damage_desc"),
         }
     }
@@ -341,8 +327,6 @@ impl StatKind {
             StatKind::Range => 10.0,
             StatKind::Harvest => 25.0,
             StatKind::ShieldMax => 25.0,
-            StatKind::ShieldRechargeRate => 5.0,
-            StatKind::ShieldRechargeDelay => 0.5, // seconds
             StatKind::RuneDamage => 0.5,
         }
     }
@@ -361,8 +345,6 @@ impl StatKind {
             StatKind::Range => &mut stats.range_pct,
             StatKind::Harvest => &mut stats.harvest_pct,
             StatKind::ShieldMax => &mut stats.shield_max,
-            StatKind::ShieldRechargeRate => &mut stats.shield_recharge_rate_pct,
-            StatKind::ShieldRechargeDelay => &mut stats.shield_recharge_delay,
             StatKind::RuneDamage => &mut stats.rune_damage,
         }
     }

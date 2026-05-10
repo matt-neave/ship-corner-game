@@ -83,9 +83,12 @@ pub fn update_wave_indicator(
             // Distance from the window's right edge to the play area's
             // right edge.
             let right_inset = (w.width() - (left + size)).max(0.0);
-            (top + 6.0, right_inset + 8.0)
+            // Sit BELOW the XP bar that runs across the play-area top.
+            // Inset (6 px) + XP bar height (22 px) + small gap (4 px).
+            let below_xp = crate::xp::XP_BAR_TOP_INSET + crate::xp::XP_BAR_HEIGHT + 4.0;
+            (top + below_xp, right_inset + 8.0)
         })
-        .unwrap_or((6.0, 8.0));
+        .unwrap_or((32.0, 8.0));
 
     for (mut v, mut t, mut c, mut node) in &mut q {
         if *v != want_vis { *v = want_vis; }

@@ -128,10 +128,18 @@ pub fn exit_stage_complete(
 pub fn tick_stage_complete(
     time: Res<Time>,
     mut timer: ResMut<StageCompleteTimer>,
+    pending: Res<crate::xp::LevelUpsPending>,
     mut next: ResMut<NextState<crate::AppState>>,
 ) {
     timer.0 += time.delta_secs();
     if timer.0 >= DURATION {
-        next.set(crate::AppState::Customize);
+        // Level-ups earned this stage get spent before the shop opens.
+        // Each pick decrements the queue; the click handler routes back
+        // here-or-onward to Customize when it's drained.
+        if pending.0 > 0 {
+            next.set(crate::AppState::LevelUp);
+        } else {
+            next.set(crate::AppState::Customize);
+        }
     }
 }

@@ -56,25 +56,39 @@ pub struct DamageRowSlotIcon { pub slot: u8 }
 pub struct DamageRowSlotBarrel { pub slot: u8, pub idx: u8 }
 
 // Sized to match the in-game turret silhouette's proportions
-// (`Circle::new(2.0)` base + `Rectangle::new(1.5, 4.0)` barrels) so a
-// glance reads as "the same turret you see on the ship". 2× the
-// previous panel dims — small enough to stay LHS-compact, big enough
-// for the base + barrels to be visually distinct rather than blurring
-// into a single dot.
-const ROW_HEIGHT: f32 = 22.0;
+// (`Circle::new(2.0)` base + `Rectangle::new(1.5, 4.0)` barrels) but
+// scaled so the barrels visibly *extend past* the base — otherwise
+// the icon reads as "a circle with stripes on top" instead of "a
+// turret". Barrels are oriented along the +X axis (pointing right)
+// so the panel turrets all face the bar — reads as "shooting toward
+// the damage bar to the right".
+//
+// Geometry: barrel rectangles are LONG along X (= `BARREL_LEN`) and
+// THIN along Y (= `BARREL_THICK`); the three of them stack on Y at
+// `BARREL_Y_SPREAD` offsets. Base disc sits centred vertically and
+// left of centre so the barrels can extend past its right edge.
+const ROW_HEIGHT: f32 = 26.0;
 const ROW_GAP: f32 = 3.0;
-const ICON_W: f32 = 30.0;
+const ICON_W: f32 = 32.0;
 const ICON_H: f32 = ROW_HEIGHT;
-/// Mini-turret base radius. 8 px ≈ a 16-px-diameter circle, big
-/// enough to read as a turret base rather than a bullet.
-const BASE_R: f32 = 8.0;
-/// Barrel dims, mirroring the in-game `1.5:4.0` width:length ratio so
-/// the silhouette feels like the real thing.
-const BARREL_W: f32 = 3.0;
-const BARREL_H: f32 = 12.0;
-const BARREL_TOP: f32 = 1.0;
-const BARREL_X_SPREAD: f32 = 4.0;
-const ALLY_MARK: f32 = 10.0;
+/// Mini-turret base radius. Tuned smaller relative to the barrels so
+/// the silhouette doesn't blur into a single dot.
+const BASE_R: f32 = 6.0;
+/// Barrel dims rotated 90° from the in-game vertical orientation —
+/// LEN along X (right-facing), THICK along Y. Length is the long
+/// axis of the barrel; thickness is the short axis.
+const BARREL_LEN: f32 = 18.0;
+const BARREL_THICK: f32 = 4.0;
+/// X of the barrel's left edge inside the icon. Tuned so the
+/// barrel-tip sits ~6 px past the base's right edge → unmistakably
+/// a turret that's facing right.
+const BARREL_LEFT: f32 = 1.0;
+const BARREL_Y_SPREAD: f32 = 5.5;
+/// Ally-row hull marker: capsule shape (rounded rectangle) sized
+/// like a top-down ship hull so the row reads as "ally ship" rather
+/// than a generic dot. Taller than wide; class-tinted background.
+const ALLY_HULL_W: f32 = 8.0;
+const ALLY_HULL_H: f32 = 18.0;
 const LABEL_W: f32 = 56.0;
 const BAR_W: f32 = 90.0;
 const BAR_H: f32 = 5.0;
@@ -172,12 +186,12 @@ fn spawn_row(parent: &mut ChildSpawnerCommands, source: DamageSource) {
         });
 }
 
-/// Mini turret diagram: 3 barrel rectangles + a circle base on top,
-/// mirroring the in-game / customize-shop silhouette. All three
-/// barrels are spawned and toggled per-frame based on `slot.barrels`
-/// (1 = middle only, 2 = port + stbd, 3 = all). Colors live-sync
-/// from the equipped weapon so re-equipping in the shop updates the
-/// indicator immediately.
+/// Mini turret diagram facing right: 3 horizontal barrel rectangles
+/// stacked vertically + a circle base on top of their inboard ends.
+/// All three barrels are spawned and toggled per-frame based on
+/// `slot.barrels` (1 = middle only, 2 = port + stbd, 3 = all).
+/// Colors live-sync from the equipped weapon so re-equipping in the
+/// shop updates the indicator immediately.
 fn spawn_turret_icon(row: &mut ChildSpawnerCommands, slot: u8) {
     row.spawn((
         Node {
@@ -190,20 +204,22 @@ fn spawn_turret_icon(row: &mut ChildSpawnerCommands, slot: u8) {
     ))
     .with_children(|icon| {
         // Barrels first so the base renders on top of their rears.
+        // Barrels run along +X (right-facing); the three indices
+        // stack vertically with the centre barrel on the icon mid-y.
         for idx in 0..3u8 {
-            let dx = match idx {
-                0 => -BARREL_X_SPREAD,
-                2 =>  BARREL_X_SPREAD,
+            let dy = match idx {
+                0 => -BARREL_Y_SPREAD,
+                2 =>  BARREL_Y_SPREAD,
                 _ =>  0.0,
             };
-            let left = ICON_W * 0.5 + dx - BARREL_W * 0.5;
+            let top = ICON_H * 0.5 + dy - BARREL_THICK * 0.5;
             icon.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    left: Val::Px(left),
-                    top: Val::Px(BARREL_TOP),
-                    width: Val::Px(BARREL_W),
-                    height: Val::Px(BARREL_H),
+                    left: Val::Px(BARREL_LEFT),
+                    top: Val::Px(top),
+                    width: Val::Px(BARREL_LEN),
+                    height: Val::Px(BARREL_THICK),
                     ..default()
                 },
                 BackgroundColor(Color::srgb(0.55, 0.60, 0.70)),
@@ -211,11 +227,13 @@ fn spawn_turret_icon(row: &mut ChildSpawnerCommands, slot: u8) {
                 DamageRowSlotBarrel { slot, idx },
             ));
         }
-        // Circular base on top.
+        // Circular base on top, slightly left of centre so the
+        // barrels can extend past the base's right edge.
+        let base_cx = BARREL_LEFT + BASE_R * 0.6;
         icon.spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(ICON_W * 0.5 - BASE_R),
+                left: Val::Px(base_cx - BASE_R),
                 top: Val::Px(ICON_H * 0.5 - BASE_R),
                 width: Val::Px(BASE_R * 2.0),
                 height: Val::Px(BASE_R * 2.0),
@@ -228,8 +246,9 @@ fn spawn_turret_icon(row: &mut ChildSpawnerCommands, slot: u8) {
     });
 }
 
-/// Class-color circle in lieu of a per-class silhouette. Compact and
-/// visually distinct from the player-slot turret diagrams.
+/// Class-tinted capsule "hull" — taller than wide with rounded ends,
+/// reading as a top-down ship rather than a generic dot. Distinct
+/// from the player-slot turret diagrams which use circle+barrels.
 fn spawn_ally_icon(row: &mut ChildSpawnerCommands, class: ShipClass) {
     row.spawn((
         Node {
@@ -244,12 +263,15 @@ fn spawn_ally_icon(row: &mut ChildSpawnerCommands, class: ShipClass) {
     .with_children(|icon| {
         icon.spawn((
             Node {
-                width: Val::Px(ALLY_MARK),
-                height: Val::Px(ALLY_MARK),
+                width: Val::Px(ALLY_HULL_W),
+                height: Val::Px(ALLY_HULL_H),
                 ..default()
             },
             BackgroundColor(class_color(class)),
-            BorderRadius::all(Val::Px(ALLY_MARK * 0.5)),
+            // Half-width corner radius makes the rectangle into a
+            // proper capsule — rounded top/bottom caps, straight
+            // sides — matching the in-game `Capsule2d` hull shape.
+            BorderRadius::all(Val::Px(ALLY_HULL_W * 0.5)),
         ));
     });
 }
@@ -364,18 +386,22 @@ fn amount_for(source: DamageSource, stats: &DamageStats) -> u64 {
     }
 }
 
-/// Visibility gate: LHS damage panel intentionally hidden in-game.
-/// Flip the `let visible = false;` short-circuit back to its prior
-/// `(Playing | StageComplete) && Combat` predicate to restore the
-/// per-slot turret + share bars on the left edge.
+/// Visibility gate: shown during live combat + the StageComplete
+/// buffer so the player can read the just-finished round's totals
+/// before the shop opens.
 pub fn sync_damage_panel_visibility(
     state: Res<State<crate::AppState>>,
     view: Res<crate::map::ViewMode>,
     mut q: Query<&mut Visibility, With<DamagePanelRoot>>,
 ) {
-    let _ = (&*state, &*view);
-    let visible = false;
-    let want = if visible { Visibility::Inherited } else { Visibility::Hidden };
+    let s = *state.get();
+    let want = if matches!(s, crate::AppState::Playing | crate::AppState::StageComplete)
+        && *view == crate::map::ViewMode::Combat
+    {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
     for mut v in &mut q {
         if *v != want { *v = want; }
     }

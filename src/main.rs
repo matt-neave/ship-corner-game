@@ -33,6 +33,7 @@ mod customize;
 mod effects;
 mod enemy;
 mod game_over;
+mod hull;
 mod i18n;
 mod map;
 mod modes;
@@ -52,6 +53,7 @@ mod ui;
 mod ui_kit;
 mod wave;
 mod weapon;
+mod xp;
 
 use ally::{
     ally_ai, ally_death_check, ally_turret_aim_fire, boarder_tick,
@@ -152,6 +154,18 @@ pub enum AppState {
     /// shop opening. Combat-sim systems idle the same way they do in
     /// `Customize` / `Paused`.
     StageComplete,
+    /// XP-driven level-up screen. Sits between StageComplete and
+    /// Customize when the player has unspent levels in the queue.
+    /// Each pick decrements `LevelUpsPending`; the screen re-enters
+    /// itself (re-rolling buffs) until the queue drains, then moves
+    /// on to `Customize`.
+    LevelUp,
+    /// Hull selection — sits between MainMenu and Playing. PLAY
+    /// click on the main menu lands here; clicking a hull applies
+    /// its stat modifiers and transitions to Playing. Game-over
+    /// RESTART re-applies the same hull without re-prompting; only
+    /// returning to MainMenu re-shows this screen on the next PLAY.
+    HullSelect,
     Customize,
     /// Between-stage map screen. Player navigates the boat to an
     /// unowned section to start the next combat. Reached by closing
@@ -208,6 +222,18 @@ fn enter_combat_view(mut view: ResMut<map::ViewMode>) {
 /// pass through `Map` — so a mid-fight resume keeps the player's HP
 /// and a death-restart already gets a full reset via
 /// `game_over::reset_run_for_restart`.
+/// `OnEnter(MainMenu)` — reset XP + queued level-ups so a fresh PLAY
+/// session starts at LV 1 / 0 XP. RESTART from the game-over screen
+/// also resets via `reset_run_for_restart`; this covers the
+/// quit-to-menu path.
+fn reset_xp_for_main_menu(
+    mut xp: ResMut<xp::Xp>,
+    mut pending: ResMut<xp::LevelUpsPending>,
+) {
+    xp.reset();
+    pending.0 = 0;
+}
+
 fn refill_and_clean_for_next_stage(
     stats: Res<stats::PlayerStats>,
     mut friendly: Query<&mut components::Health, With<components::Friendly>>,
@@ -260,6 +286,29 @@ pub struct RefinedSteel(pub u32);
 #[derive(Resource)]
 pub struct SpawnTimer { pub t: f32, pub elapsed: f32 }
 
+/// Wall-clock seconds since the current run started (PLAY → HullSelect
+/// → Playing). Ticks while the player is *in* a run; pauses on the
+/// MainMenu and HullSelect screens. Reset on `OnEnter(HullSelect)` so
+/// each new run starts from `00:00`.
+#[derive(Resource, Default)]
+pub struct RunTimer { pub secs: f32 }
+
+fn reset_run_timer(mut timer: ResMut<RunTimer>) {
+    timer.secs = 0.0;
+}
+
+fn tick_run_timer(
+    time: Res<Time>,
+    state: Res<State<AppState>>,
+    mut timer: ResMut<RunTimer>,
+) {
+    let s = *state.get();
+    let counts = !matches!(s, AppState::MainMenu | AppState::HullSelect);
+    if counts {
+        timer.secs += time.delta_secs();
+    }
+}
+
 fn main() {
     let mut cfg = TurretConfig::default();
     cfg.slots[0] = SlotCfg {
@@ -307,7 +356,12 @@ fn main() {
         .insert_resource(main_menu::MainMenuView::default())
         .insert_resource(DebugUiVisible::default())
         .insert_resource(stage_complete::StageCompleteTimer::default())
+        .insert_resource(xp::Xp::default())
+        .insert_resource(xp::LevelUpsPending::default())
+        .insert_resource(xp::LevelUpChoices::default())
+        .insert_resource(hull::SelectedHull::default())
         .insert_resource(modes::ScreenShake::default())
+        .insert_resource(RunTimer::default())
         .init_state::<AppState>()
         .insert_resource(Palette::aap64_naval())
         .insert_resource(ShipPath::default())
@@ -341,6 +395,7 @@ fn main() {
             init_customize_shop, setup_customize_render, setup_customize_ui,
             setup_pause_menu, main_menu::setup_main_menu, setup_damage_panel,
             setup_wave_indicator, setup_spawn_indicator_assets,
+            xp::setup_xp_bar,
         ).chain())
         // State→resources bridge. Runs first so every other system in
         // the same Update sees the freshly-synced flags.
@@ -376,11 +431,45 @@ fn main() {
         // despawn it + run the full fresh-run reset on exit. Both the
         // RESTART and MAIN MENU click paths leave through OnExit, so
         // the reset runs once for either choice.
+        // Hull selection: full-screen overlay between MainMenu and
+        // Playing. PLAY click on the main menu sets state to
+        // HullSelect; clicking a card applies stats + flips to
+        // Playing.
+        .add_systems(OnEnter(AppState::HullSelect), (hull::enter_hull_select, reset_run_timer))
+        .add_systems(OnExit(AppState::HullSelect), hull::exit_hull_select)
         .add_systems(OnEnter(AppState::GameOver), game_over::enter_game_over)
         .add_systems(
             OnExit(AppState::GameOver),
             (game_over::exit_game_over, game_over::reset_run_for_restart),
         )
+        // Level-up overlay: spawn the buff cards on entry, despawn on
+        // exit. Click handler runs while the state is active.
+        .add_systems(OnEnter(AppState::LevelUp), xp::enter_level_up)
+        .add_systems(OnExit(AppState::LevelUp), xp::exit_level_up)
+        .add_systems(
+            Update,
+            xp::handle_level_up_click.run_if(in_state(AppState::LevelUp)),
+        )
+        .add_systems(
+            Update,
+            (
+                hull::handle_card_click,
+                hull::handle_play_click,
+                hull::handle_back_click,
+                hull::handle_back_on_esc,
+                hull::sync_hull_select_on_change,
+                hull::sync_hull_apply,
+            ).run_if(in_state(AppState::HullSelect)),
+        )
+        // Reset XP + pending level-ups when returning to the main menu
+        // so a fresh PLAY session starts at LV 1 / 0 XP. RESTART from
+        // the game-over screen also resets via `reset_run_for_restart`.
+        .add_systems(OnEnter(AppState::MainMenu), reset_xp_for_main_menu)
+        // Global safety net: clamp the friendly's `Health.0` to
+        // `stats.max_hp()` every frame so a stale stat-vs-HP mismatch
+        // (e.g. picking Glass Cannon's -50 HP after the ship spawned
+        // with 100) never paints a "100/50" readout on the bar.
+        .add_systems(Update, (hull::clamp_hp_to_max, tick_run_timer))
         // Stage-complete buffer: spawn the overlay on entry, despawn
         // on exit, tick the timer while the state is active.
         .add_systems(OnEnter(AppState::StageComplete), stage_complete::enter_stage_complete)
@@ -583,6 +672,7 @@ fn main() {
                 update_damage_panel, update_damage_row_icons, sync_damage_panel_visibility,
                 update_wave_indicator,
                 tick_spawn_indicators,
+                xp::update_xp_bar,
             ),
             (
                 update_currency_ui,
@@ -606,27 +696,27 @@ fn main() {
             // into sub-tuples so the outer add_systems tuple stays
             // under Bevy's 20-cap. Every system self-gates on
             // `CustomizeOpen` so it idles while the overlay is closed.
-            (
-                toggle_customize_render,
-                resize_customize_display,
-                track_customize_cursor,
-                sync_customize_text,
-            ),
-            (
-                update_customize_ui,
-                update_customize_ship,
-                update_customize_shop,
-                update_customize_tooltip,
-                sync_stats_panel,
-                handle_stat_debug_buttons,
-                update_shop_mod_cards,
-                handle_shop_mod_click,
-                handle_close_click,
-                handle_reroll_button,
-            ),
-            // Cursor tracking → drag start → ghost follow → drop resolve.
-            (start_drag, update_drag_ghost, complete_drag).chain(),
+            toggle_customize_render,
+            resize_customize_display,
+            track_customize_cursor,
+            sync_customize_text,
+            update_customize_ui,
+            update_customize_ship,
+            update_customize_shop,
+            update_customize_tooltip,
+            sync_stats_panel,
+            handle_stat_debug_buttons,
+            update_shop_mod_cards,
+            handle_shop_mod_click,
+            handle_close_click,
+            handle_reroll_button,
         ))
+        // Cursor tracking → drag start → ghost follow → drop resolve.
+        // Kept in its own `add_systems` so the schedule-tuple in the
+        // block above stays a flat 14-item tuple (Bevy's trait impl
+        // gets unhappy with nested chained tuples past a certain
+        // shape).
+        .add_systems(Update, (start_drag, update_drag_ghost, complete_drag).chain())
         .add_systems(Update, (
             // Persistent settings: load once on first frame; persist on
             // any change to NIGHT / CRT / VSYNC.

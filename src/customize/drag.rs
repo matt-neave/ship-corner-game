@@ -119,10 +119,18 @@ impl ShopMod {
 
 /// Scrap cost to re-roll the shop. Refills every slot — sold or not.
 pub const SHOP_REROLL_COST: u32 = 5;
-/// Scrap cost for any single shop purchase (turret / rune / mod).
-/// Same flat number for now; per-item tier pricing is a future
-/// iteration.
-pub const SHOP_ITEM_COST: u32 = 5;
+/// Scrap cost for a turret purchase.
+pub const SHOP_TURRET_COST: u32 = 15;
+/// Scrap cost for a rune purchase.
+pub const SHOP_RUNE_COST: u32 = 10;
+/// Scrap cost for a stat-mod card purchase (currently flat — mods
+/// are smaller upgrades than turrets).
+pub const SHOP_MOD_COST: u32 = 5;
+/// Backwards-compatibility alias: existing callers that don't yet
+/// distinguish turret/rune/mod still reference `SHOP_ITEM_COST`.
+/// Pointed at `SHOP_TURRET_COST` so the most expensive baseline wins
+/// when used as a guardrail (e.g. cost-display defaults).
+pub const SHOP_ITEM_COST: u32 = SHOP_TURRET_COST;
 
 /// Roll a fresh set of offerings. Used by both the startup init and the
 /// runtime reroll button. Always returns a fully-stocked shop (every
@@ -198,13 +206,12 @@ pub fn track_customize_cursor(
 pub fn start_drag(
     mut commands: Commands,
     open: Res<CustomizeOpen>,
-    mut cfg: ResMut<TurretConfig>,
-    shop_opt: Option<ResMut<CustomizeShop>>,
+    cfg: Res<TurretConfig>,
+    shop_opt: Option<Res<CustomizeShop>>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut drag: ResMut<DragState>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut scrap: ResMut<crate::Scrap>,
     sources: Query<(&Transform, &HitArea, &DragSourceMarker)>,
 ) {
     if !open.open || drag.picked.is_some() {
@@ -214,7 +221,7 @@ pub fn start_drag(
         return;
     }
     let Some(cursor) = drag.spec_cursor else { return };
-    let Some(mut shop) = shop_opt else { return };
+    let Some(shop) = shop_opt else { return };
 
     // Find the smallest hit-area containing the cursor — when sockets
     // overlap larger panels visually, the more-specific source wins.
@@ -230,15 +237,11 @@ pub fn start_drag(
     }
     let Some((_, source)) = best else { return };
 
-    // Shop sources are click-to-equip — auto-place into the first empty
-    // slot/socket and consume the shop offering. No drag, no ghost.
-    // Only places into EMPTY targets so click-buy never accidentally
-    // upgrades an existing turret's barrel level.
-    if matches!(source, DragSourceKind::ShopTurret(_) | DragSourceKind::ShopRune(_)) {
-        click_buy_shop(source, &mut cfg, &mut shop, &mut scrap);
-        return;
-    }
-
+    // Shop AND ship sources both enter the drag flow now. Shop drops
+    // on a valid slot/socket consume the shop offering + deduct cost
+    // in `complete_drag`. Releasing without hitting a drop target
+    // falls back to click-buy (auto-place to the first empty slot)
+    // so a quick click still buys without requiring precise aim.
     let Some(payload) = payload_for(source, &cfg, &shop) else { return };
     drag.picked = Some(Picked { source, payload });
     let ghost = spawn_ghost(&mut commands, &mut meshes, &mut materials, payload, cursor);
@@ -256,10 +259,16 @@ fn click_buy_shop(
     shop: &mut CustomizeShop,
     scrap: &mut crate::Scrap,
 ) -> bool {
-    if scrap.0 < SHOP_ITEM_COST { return false; }
+    // Cost depends on what the player is buying.
+    let cost = match source {
+        DragSourceKind::ShopTurret(_) => SHOP_TURRET_COST,
+        DragSourceKind::ShopRune(_)   => SHOP_RUNE_COST,
+        _ => return false,
+    };
+    if scrap.0 < cost { return false; }
     let placed = try_place_shop_item(source, cfg, shop);
     if placed {
-        scrap.0 = scrap.0.saturating_sub(SHOP_ITEM_COST);
+        scrap.0 = scrap.0.saturating_sub(cost);
     }
     placed
 }
@@ -427,6 +436,7 @@ pub fn complete_drag(
     mut drag: ResMut<DragState>,
     mut cfg: ResMut<TurretConfig>,
     mut shop: Option<ResMut<CustomizeShop>>,
+    mut scrap: ResMut<crate::Scrap>,
     targets: Query<(&Transform, &HitArea, &DropTargetMarker)>,
     ghosts: Query<Entity, With<DragGhost>>,
 ) {
@@ -457,26 +467,63 @@ pub fn complete_drag(
             best = Some((area, marker.0));
         }
     }
-    let Some((_, target)) = best else { return };
 
-    // Successful drop on a shop-sourced item consumes the shop slot
-    // so the player can't pick the same offering twice.
-    if resolve_drop(&picked, target, &mut cfg) {
-        if let Some(shop) = shop.as_mut() {
-            match picked.source {
-                DragSourceKind::ShopTurret(idx) => {
-                    if let Some(slot) = shop.turrets.get_mut(idx) {
-                        *slot = None;
+    let from_shop = matches!(
+        picked.source,
+        DragSourceKind::ShopTurret(_) | DragSourceKind::ShopRune(_)
+    );
+    let shop_cost = match picked.source {
+        DragSourceKind::ShopTurret(_) => SHOP_TURRET_COST,
+        DragSourceKind::ShopRune(_) => SHOP_RUNE_COST,
+        _ => 0,
+    };
+
+    match best {
+        Some((_, target)) => {
+            // Drag-drop path. Shop-sourced drops cost scrap; ship-
+            // sourced drops are free (just moving turrets around).
+            if from_shop && scrap.0 < shop_cost {
+                return; // can't afford — leave shop + cfg untouched
+            }
+            if resolve_drop(&picked, target, &mut cfg) {
+                if from_shop {
+                    scrap.0 = scrap.0.saturating_sub(shop_cost);
+                    if let Some(shop) = shop.as_mut() {
+                        consume_shop_slot(&picked.source, shop);
                     }
                 }
-                DragSourceKind::ShopRune(idx) => {
-                    if let Some(slot) = shop.runes.get_mut(idx) {
-                        *slot = None;
-                    }
-                }
-                _ => {}
             }
         }
+        None => {
+            // Released without aim on a slot/socket — for shop
+            // sources, behave like a click-buy: auto-place into the
+            // first empty target. Keeps the quick-click UX even
+            // though we always spawn a ghost on mouse-down now.
+            if from_shop {
+                if let Some(mut shop_ref) = shop {
+                    click_buy_shop(picked.source, &mut cfg, &mut shop_ref, &mut scrap);
+                }
+            }
+        }
+    }
+}
+
+/// Helper for `complete_drag`: blank the shop slot a successful
+/// drag-buy came from so the player can't pick the same offering
+/// twice. Cost deduction is the caller's responsibility.
+fn consume_shop_slot(source: &DragSourceKind, shop: &mut CustomizeShop) {
+    match source {
+        DragSourceKind::ShopTurret(idx) => {
+            if let Some(slot) = shop.turrets.get_mut(*idx) {
+                *slot = None;
+            }
+        }
+        DragSourceKind::ShopRune(idx) => {
+            if let Some(slot) = shop.runes.get_mut(*idx) {
+                *slot = None;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -492,6 +539,14 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
                     return false;
                 }
             }
+            // Runes carry with the turret: when picking up a ship-
+            // slot turret and dropping it on a fresh slot, the
+            // socketed runes travel with it. Shop-sourced turrets
+            // start with empty sockets.
+            let carried_runes = match picked.source {
+                DragSourceKind::ShipSlot(src) => cfg.slots[src].runes,
+                _ => [None; 3],
+            };
             let target_state = cfg.slots[target_slot];
             if !target_state.equipped {
                 cfg.slots[target_slot] = SlotCfg {
@@ -500,7 +555,7 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
                     damage: weapon.defaults().0,
                     fire_rate: weapon.defaults().1,
                     barrels,
-                    runes: [None; 3],
+                    runes: carried_runes,
                 };
                 clear_source_if_ship(picked, cfg);
                 true
@@ -508,7 +563,17 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
                 && target_state.barrels == barrels
                 && target_state.barrels < 3
             {
+                // Stack-merge: bump barrels and slot any carried
+                // runes into the target's empty sockets so they
+                // don't vanish into the void.
                 cfg.slots[target_slot].barrels = (target_state.barrels + 1).min(3);
+                let mut merged = cfg.slots[target_slot].runes;
+                for r in carried_runes.iter().flatten() {
+                    if let Some(slot) = merged.iter_mut().find(|s| s.is_none()) {
+                        *slot = Some(*r);
+                    }
+                }
+                cfg.slots[target_slot].runes = merged;
                 clear_source_if_ship(picked, cfg);
                 true
             } else {

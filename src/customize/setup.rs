@@ -144,6 +144,43 @@ pub struct ShopRuneCostText {
     pub idx: usize,
 }
 
+/// AOE badge on a shop turret card. Currently force-hidden — the
+/// AOE tag was moved into the tooltip description. Entities are kept
+/// around for a cheap revert by reactivating the per-card sync.
+#[derive(Component, Clone, Copy)]
+#[allow(dead_code)]
+pub struct ShopTurretAoeTag {
+    pub idx: usize,
+    pub spec_pos: Vec2,
+}
+
+/// Sibling text label "AOE" tied to a `ShopTurretAoeTag`. Currently
+/// force-hidden alongside its parent.
+#[derive(Component, Clone, Copy)]
+#[allow(dead_code)]
+pub struct ShopTurretAoeTagText {
+    pub idx: usize,
+    pub spec_pos: Vec2,
+}
+
+/// AOE badge on a shop rune card. Currently force-hidden — see
+/// `ShopTurretAoeTag`.
+#[derive(Component, Clone, Copy)]
+#[allow(dead_code)]
+pub struct ShopRuneAoeTag {
+    pub idx: usize,
+    pub spec_pos: Vec2,
+}
+
+/// Sibling text label "AOE" tied to a `ShopRuneAoeTag`. Currently
+/// force-hidden alongside its parent.
+#[derive(Component, Clone, Copy)]
+#[allow(dead_code)]
+pub struct ShopRuneAoeTagText {
+    pub idx: usize,
+    pub spec_pos: Vec2,
+}
+
 // ---------- Hit areas ----------
 
 #[derive(Component, Clone, Copy)]
@@ -162,6 +199,15 @@ pub struct DropTargetMarker(pub DropTargetKind);
 const Z_HULL: f32 = 1.0;
 const Z_TILE_BG: f32 = 2.0;
 const Z_TILE_FG: f32 = 3.0;
+
+// AOE badge — bright orange, sized to read as a tag without dominating
+// the card. Both turret + rune cards use the same colour so the player
+// links "Mortar (AOE weapon) ↔ Splash rune (AOE buff)".
+pub const AOE_TAG_COLOR: Color = Color::srgb(1.0, 0.55, 0.15);
+pub const AOE_TAG_SIZE: Vec2 = Vec2::new(14.0, 7.0);
+/// Z above tile body (Z_TILE_FG) so the badge overlays the card.
+const Z_AOE_TAG: f32 = 100.5;
+const Z_AOE_TAG_TEXT: f32 = 101.0;
 
 /// Pixels per in-game-hull-unit. Comfortable hull footprint inside the
 /// 320×200 spec canvas without dominating it.
@@ -638,11 +684,39 @@ fn spawn_shop_turret_tile(
     spawn_text(
         commands,
         pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 14.0),
-        format!("{}", super::drag::SHOP_ITEM_COST),
+        format!("{}", super::drag::SHOP_TURRET_COST),
         Color::srgb(1.0, 0.85, 0.30),
         10.0,
         ShopTurretCostText { idx },
     );
+
+    // AOE badge — top-right corner of the card. Hidden by default;
+    // updater flips visibility based on stocked weapon (= Mortar).
+    let tag_spec = pos + Vec2::new(SHOP_TILE * 0.5 - 7.0, SHOP_TILE * 0.5 - 4.0);
+    commands.spawn((
+        Sprite {
+            color: AOE_TAG_COLOR,
+            custom_size: Some(AOE_TAG_SIZE),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, Z_AOE_TAG),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        ShopTurretAoeTag { idx, spec_pos: tag_spec },
+    ));
+    commands.spawn((
+        Text2d::new("AOE"),
+        TextFont {
+            font_size: 7.0,
+            font_smoothing: FontSmoothing::None,
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.05, 0.02)),
+        Transform::from_xyz(0.0, 0.0, Z_AOE_TAG_TEXT),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        ShopTurretAoeTagText { idx, spec_pos: tag_spec },
+    ));
 
     commands.spawn((
         Transform::from_translation(pos.extend(Z_TILE_BG)),
@@ -765,6 +839,40 @@ fn spawn_shop_rune_tile(
         10.0,
         ShopRuneCostText { idx },
     );
+
+    // AOE badge — perched above the (smaller) rune socket and skewed
+    // to its right edge to mirror the turret card's top-right placement.
+    // Sits clear of both the socket body and the neighbouring socket
+    // (sockets are spaced `SOCKET + 6.0` apart, so `+1` overlap from the
+    // tag's right edge at the next socket's left edge is acceptable —
+    // the badge is well above the socket vertically). Hidden by default;
+    // updater flips visibility based on stocked rune (= Splash).
+    let tag_spec = pos + Vec2::new(SOCKET * 0.5 - 3.0, SOCKET * 0.5 + 5.0);
+    commands.spawn((
+        Sprite {
+            color: AOE_TAG_COLOR,
+            custom_size: Some(AOE_TAG_SIZE),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, Z_AOE_TAG),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        ShopRuneAoeTag { idx, spec_pos: tag_spec },
+    ));
+    commands.spawn((
+        Text2d::new("AOE"),
+        TextFont {
+            font_size: 7.0,
+            font_smoothing: FontSmoothing::None,
+            ..default()
+        },
+        TextColor(Color::srgb(0.10, 0.05, 0.02)),
+        Transform::from_xyz(0.0, 0.0, Z_AOE_TAG_TEXT),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        ShopRuneAoeTagText { idx, spec_pos: tag_spec },
+    ));
+
     commands.spawn((
         Transform::from_translation(pos.extend(Z_TILE_BG)),
         HitArea { size: Vec2::splat(SOCKET + 4.0) },
