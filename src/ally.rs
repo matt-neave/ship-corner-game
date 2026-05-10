@@ -102,6 +102,13 @@ pub enum ShipClass {
     /// free-standing world entities so they keep burning even if the
     /// tanker is sunk mid-cycle.
     OilTanker,
+    /// Viking longship — ram-charge attacker. No turrets, no
+    /// projectiles. Charges directly at the nearest opposite-faction
+    /// unit at high speed and deals heavy contact damage. Tough hull
+    /// so it survives the approach. Identity is "commits to the
+    /// collision," distinct from every other class which fights at
+    /// range or via deployables.
+    Viking,
 }
 
 impl ShipClass {
@@ -121,6 +128,8 @@ impl ShipClass {
             // tanker to survive its full cycle under light fire so
             // the player sees the burn payoff.
             ShipClass::OilTanker  => 70,
+            // Built for ramming — sturdy enough to survive the charge.
+            ShipClass::Viking     => 75,
         }
     }
     pub fn speed(self) -> f32 {
@@ -143,6 +152,9 @@ impl ShipClass {
             // trail it lays reads as a deliberate ribbon, not a
             // dotted line of distant smudges.
             ShipClass::OilTanker  => 13.0,
+            // Aggressive — fastest in the fleet. Charges have to feel
+            // committed and unavoidable.
+            ShipClass::Viking     => 28.0,
         }
     }
     pub fn turn_rate(self) -> f32 {
@@ -156,6 +168,9 @@ impl ShipClass {
             // Sluggish — matches the slow speed and the chunky
             // silhouette. A nimble tanker would feel wrong.
             ShipClass::OilTanker  => 0.7,
+            // Moderate — committed to a charge once it picks one, but
+            // quick enough to re-aim between rams.
+            ShipClass::Viking     => 1.6,
         }
     }
     /// Hull dimensions: `(width, length)`. Width drives the capsule radius;
@@ -181,6 +196,9 @@ impl ShipClass {
             // and longer than the Carrier-class so the silhouette
             // reads "tanker" instantly.
             ShipClass::OilTanker  => (5.0, 16.0),
+            // Long narrow longship silhouette — distinctive prow visual
+            // is added on top in the spawn block.
+            ShipClass::Viking     => (3.5, 14.0),
         }
     }
     /// Per-turret `(local_x, local_y, mount_angle_radians)` in hull frame.
@@ -210,6 +228,8 @@ impl ShipClass {
             ShipClass::Blackbeard => &[],
             // OilTanker — pure area-denial via oil spray + ignition.
             ShipClass::OilTanker => &[],
+            // Viking — pure ram, no turrets.
+            ShipClass::Viking => &[],
         }
     }
     pub fn fire_rate(self) -> f32 {
@@ -221,6 +241,7 @@ impl ShipClass {
             ShipClass::Tender     => 0.0,
             ShipClass::Blackbeard => 0.0,
             ShipClass::OilTanker  => 0.0,
+            ShipClass::Viking     => 0.0,
         }
     }
     pub fn fire_damage(self) -> i32 {
@@ -232,6 +253,7 @@ impl ShipClass {
             ShipClass::Tender     => 0,
             ShipClass::Blackbeard => 0,
             ShipClass::OilTanker  => 0,
+            ShipClass::Viking     => 0,
         }
     }
     /// Half-arc per turret (radians).
@@ -246,6 +268,7 @@ impl ShipClass {
             ShipClass::Tender     => 0.0,
             ShipClass::Blackbeard => 0.0,
             ShipClass::OilTanker  => 0.0,
+            ShipClass::Viking     => 0.0,
         }
     }
     /// Diameter to use for the bullet/turret hit-radius approximation.
@@ -259,6 +282,8 @@ impl ShipClass {
             ShipClass::Blackbeard => 4.0,
             // Chunkier hit radius matching the wider hull.
             ShipClass::OilTanker  => 4.0,
+            // Long narrow longship — moderate hit radius.
+            ShipClass::Viking     => 3.0,
         }
     }
     /// Desired engagement range for `ally_ai`'s combat orbit. Most
@@ -271,6 +296,10 @@ impl ShipClass {
             // boarding range mid-orbit and the launcher cooldown has
             // a steady chance to fire.
             ShipClass::Blackbeard => 18.0,
+            // Viking has no projectile range — `ally_ai` special-cases
+            // it to charge directly at the target rather than holding
+            // an orbit. This value is unused but kept for symmetry.
+            ShipClass::Viking     => 0.0,
             _                     => TURRET_RANGE * 0.7,
         }
     }
@@ -298,6 +327,9 @@ impl ShipClass {
             // HP so the player has to commit to interrupting the
             // burn loop rather than instagibbing it.
             ShipClass::OilTanker  => 250,
+            // Viking boss is a ramming juggernaut — high HP since
+            // the player has to outmanoeuvre rather than out-DPS it.
+            ShipClass::Viking     => 220,
         }
     }
 
@@ -313,6 +345,7 @@ impl ShipClass {
             ShipClass::Tender     => "TENDER",
             ShipClass::Blackbeard => "BLKBEARD",
             ShipClass::OilTanker  => "OILER",
+            ShipClass::Viking     => "VIKING",
         }
     }
 
@@ -326,6 +359,7 @@ impl ShipClass {
         ShipClass::Tender,
         ShipClass::Blackbeard,
         ShipClass::OilTanker,
+        ShipClass::Viking,
     ];
     pub const COUNT: usize = Self::ALL.len();
 
@@ -340,6 +374,7 @@ impl ShipClass {
             ShipClass::Tender     => 4,
             ShipClass::Blackbeard => 5,
             ShipClass::OilTanker  => 6,
+            ShipClass::Viking     => 7,
         }
     }
 
@@ -612,6 +647,7 @@ impl PaletteMaterials {
             ShipClass::Tender     => &self.tender_hull,
             ShipClass::Blackbeard => &self.blackbeard_hull,
             ShipClass::OilTanker  => &self.oil_tanker_hull,
+            ShipClass::Viking     => &self.viking_hull,
         }
     }
 }
@@ -954,6 +990,39 @@ fn build_ship_for_faction(
     // furniture: a wide flat deck cap (cargo manifold) in turret grey
     // and a small forward bridge so the silhouette reads "tanker"
     // instantly.
+    // Viking — pure ram-attacker. No turrets / projectiles. The
+    // distinctive silhouette is a dragon-head prow (small triangle
+    // on the bow) + a white shield-rail stripe along the gunwale,
+    // sold cheaply with two child meshes.
+    if class == ShipClass::Viking {
+        commands.entity(ship).insert(VikingRamCharge);
+
+        // Dragon prow — pointed triangle just past the bow tip.
+        let prow_mesh = meshes.add(Triangle2d::new(
+            Vec2::new(0.0, hull_h * 0.62),
+            Vec2::new(-hull_w * 0.45, hull_h * 0.42),
+            Vec2::new( hull_w * 0.45, hull_h * 0.42),
+        ));
+        let prow = commands.spawn((
+            Mesh2d(prow_mesh),
+            MeshMaterial2d(pm.viking_hull.clone()),
+            Transform::from_xyz(0.0, 0.0, 0.04),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(prow).insert(ChildOf(ship));
+
+        // Shield rail — white stripe along the deck centreline so the
+        // longship reads as Viking at a glance.
+        let stripe_mesh = meshes.add(Rectangle::new(hull_w * 0.55, hull_h * 0.65));
+        let stripe = commands.spawn((
+            Mesh2d(stripe_mesh),
+            MeshMaterial2d(pm.ally_flag.clone()),
+            Transform::from_xyz(0.0, 0.0, 0.05),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(stripe).insert(ChildOf(ship));
+    }
+
     if class == ShipClass::OilTanker {
         commands.entity(ship).insert(OilTankerCycle {
             phase: OilCyclePhase::Spraying,
@@ -1204,20 +1273,27 @@ pub fn ally_ai(
         }
 
         let target = if let Some((d, ep)) = nearest {
-            // Engage: orbit at the class's preferred range. Broadside
-            // ships sit at ~70% of TURRET_RANGE so their cannons can
-            // bear; Blackbeard sits closer (its `orbit_range` of 18
-            // sits comfortably inside the new BOARDING_RANGE = 45).
-            let to = ep - pos;
-            let unit = to.normalize_or_zero();
-            let desired_range = ally.class.orbit_range();
-            if d > desired_range + 8.0 {
+            // Viking commits to a charge — always heads straight for
+            // the target. No orbit, no standoff. `viking_ram_damage`
+            // delivers the payoff on contact.
+            if matches!(ally.class, ShipClass::Viking) {
                 ep
-            } else if d < desired_range - 8.0 {
-                pos - unit * 30.0
             } else {
-                let perp = Vec2::new(-unit.y, unit.x);
-                pos + perp * 30.0
+                // Engage: orbit at the class's preferred range. Broadside
+                // ships sit at ~70% of TURRET_RANGE so their cannons can
+                // bear; Blackbeard sits closer (its `orbit_range` of 18
+                // sits comfortably inside the new BOARDING_RANGE = 45).
+                let to = ep - pos;
+                let unit = to.normalize_or_zero();
+                let desired_range = ally.class.orbit_range();
+                if d > desired_range + 8.0 {
+                    ep
+                } else if d < desired_range - 8.0 {
+                    pos - unit * 30.0
+                } else {
+                    let perp = Vec2::new(-unit.y, unit.x);
+                    pos + perp * 30.0
+                }
             }
         } else {
             // No enemies — wander between random waypoints.
@@ -3007,6 +3083,84 @@ pub fn oil_slick_burn_tick(
                 Velocity(vel),
                 RenderLayers::layer(PLAY_LAYER),
             ));
+        }
+    }
+}
+
+// ---------- Viking ram ----------
+//
+// Viking longships have no projectiles — their entire damage output
+// is delivered by ramming opposite-faction units. The pattern mirrors
+// the player ship's `friendly_ram_damage`: per-victim grace prevents
+// per-frame multi-tap, and a screen-shake kick punches the impact.
+
+#[derive(Component)]
+pub struct VikingRamCharge;
+
+/// Per-victim cooldown so a Viking pressed against an enemy doesn't
+/// chunk it every frame. Cleared after the grace window expires.
+#[derive(Component)]
+pub struct VikingRamGrace {
+    pub remaining: f32,
+}
+
+const VIKING_RAM_DAMAGE: i32 = 18;
+const VIKING_RAM_GRACE: f32 = 0.55;
+const VIKING_RAM_TRAUMA: f32 = 0.5;
+
+/// Snapshot every Viking's position + the faction it wants to ram,
+/// then iterate every faction-bearing entity and apply ram damage on
+/// contact. Faction-agnostic — friendly Vikings ram enemies, boss-side
+/// Vikings ram allies + the player ship.
+pub fn viking_ram_damage(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut shake: ResMut<crate::modes::ScreenShake>,
+    vikings: Query<(&Transform, &Faction, &Ally), With<VikingRamCharge>>,
+    mut victims: Query<(
+        Entity,
+        &Transform,
+        &Faction,
+        &mut Health,
+        &mut HitFx,
+        Option<&mut VikingRamGrace>,
+    )>,
+    mut stats: ResMut<crate::ui::DamageStats>,
+) {
+    let dt = time.delta_secs();
+    // Snapshot first so the inner mut-victims pass doesn't overlap
+    // the read-only viking pass on the same components.
+    let viking_snap: Vec<(Vec2, FactionKind)> = vikings
+        .iter()
+        .map(|(tf, fac, _)| (tf.translation.truncate(), fac.0.opposite()))
+        .collect();
+    if viking_snap.is_empty() { return; }
+
+    for (e, vtf, vfac, mut h, mut fx, grace) in &mut victims {
+        if let Some(mut g) = grace {
+            g.remaining -= dt;
+            if g.remaining > 0.0 { continue; }
+            commands.entity(e).remove::<VikingRamGrace>();
+        }
+        if h.0 <= 0 { continue; }
+        let vp = vtf.translation.truncate();
+        for &(viking_pos, target_faction) in &viking_snap {
+            if vfac.0 != target_faction { continue; }
+            // Combined approximate hit radius (longship hit ~3 +
+            // typical victim hit ~3.5, plus a bit of slop so the
+            // ram registers as soon as silhouettes overlap).
+            let r = 8.0;
+            if vp.distance_squared(viking_pos) < r * r {
+                let dealt = crate::bullet::apply_damage(&mut h, &mut fx, VIKING_RAM_DAMAGE);
+                crate::bullet::credit_damage(
+                    &mut stats,
+                    Some(crate::bullet::DamageSource::Ally(ShipClass::Viking)),
+                    dealt,
+                );
+                shake.add_trauma(VIKING_RAM_TRAUMA);
+                commands.entity(e).insert(VikingRamGrace { remaining: VIKING_RAM_GRACE });
+                break;
+            }
         }
     }
 }

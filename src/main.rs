@@ -32,6 +32,7 @@ mod components;
 mod customize;
 mod effects;
 mod enemy;
+mod game_over;
 mod i18n;
 mod map;
 mod modes;
@@ -57,7 +58,7 @@ use ally::{
     boarding_launcher_fire, flash_mine_dots, homing_missile_track,
     mine_layer_drop, mine_tick, missile_launcher_fire,
     oil_slick_burn_tick, oil_slick_grow_tick, oil_tanker_cycle, plane_ai,
-    tender_heal_beam, update_boarding_ropes,
+    tender_heal_beam, update_boarding_ropes, viking_ram_damage,
 };
 use customize::{
     complete_drag, handle_close_click, handle_reroll_button, init_customize_shop,
@@ -149,6 +150,10 @@ pub enum AppState {
     StageComplete,
     Customize,
     Paused,
+    /// Player died — shows a transparent overlay with RESTART / MAIN
+    /// MENU / QUIT controls. The dead ship + frozen arena read through
+    /// the backdrop. Combat sim idles (gated on `Playing`).
+    GameOver,
 }
 
 /// One-way mirror: write the existing boolean overlay flags from the
@@ -306,6 +311,15 @@ fn main() {
         .add_systems(OnEnter(AppState::MainMenu), main_menu::clear_arena_on_main_menu)
         .add_systems(OnExit(AppState::Customize), reset_damage_stats)
         .add_systems(OnEnter(AppState::Customize), clear_spawn_indicators)
+        // Game over: spawn the transparent end-screen overlay on entry,
+        // despawn it + run the full fresh-run reset on exit. Both the
+        // RESTART and MAIN MENU click paths leave through OnExit, so
+        // the reset runs once for either choice.
+        .add_systems(OnEnter(AppState::GameOver), game_over::enter_game_over)
+        .add_systems(
+            OnExit(AppState::GameOver),
+            (game_over::exit_game_over, game_over::reset_run_for_restart),
+        )
         // Stage-complete buffer: spawn the overlay on entry, despawn
         // on exit, tick the timer while the state is active.
         .add_systems(OnEnter(AppState::StageComplete), stage_complete::enter_stage_complete)
@@ -431,10 +445,8 @@ fn main() {
             sync_pier_visuals,
             draft_input,
             update_draft_ui,
-            ally_ai,
-            ally_turret_aim_fire,
-            ally_death_check,
-            plane_ai,
+            // Sub-tuple to keep the outer count under Bevy's 20-cap.
+            (ally_ai, ally_turret_aim_fire, ally_death_check, plane_ai),
             // Missile launcher fires forward; missile track re-aims in
             // flight. Tracking runs *before* `apply_velocity` so the
             // updated direction drives this frame's integration.
@@ -449,6 +461,8 @@ fn main() {
             flash_mine_dots,
             // Tender: pick heal target + apply HP regen + spawn beam visual.
             tender_heal_beam,
+            // Viking: ram damage on contact with opposite-faction units.
+            viking_ram_damage,
             // Blackbeard: launch boarding parties; boarders travel
             // and tick damage on their targets; rope visual tracks
             // both ends each frame for the connection effect.
@@ -556,6 +570,14 @@ fn main() {
             main_menu::handle_settings_click,
             main_menu::handle_settings_item_click,
             main_menu::update_settings_labels,
+            // Game-over overlay click handlers. State-driven exit means
+            // the cleanup (reset_run_for_restart) runs from OnExit and
+            // each handler just transitions; nothing here is per-frame
+            // gated since `Changed<Interaction>` keeps them inert until
+            // the player presses a button.
+            game_over::handle_restart_click,
+            game_over::handle_main_menu_click,
+            game_over::handle_quit_click,
         ))
         .run();
 }

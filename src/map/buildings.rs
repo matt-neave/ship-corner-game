@@ -29,7 +29,7 @@ use crate::{RefinedSteel, Scrap, Steel};
 use super::{
     AnimBeam, AnimPulse, BuildingChoiceButton, BuildingCostLabel, BuildingPopup,
     BuildingPopupDescription, BuildingProgressBar, BuildingProgressBg, BuildingTickState,
-    BuildingTimers, BuildingTooltip, CombatContext, MapAnimTimeline, MapBoat, MapBuilding,
+    BuildingTimers, BuildingTooltip, CombatContext, MapAnimTimeline, MapBuilding,
     MapState, ProgressBarAssets, ViewMode, MAP_LAYER, SLOT_HALF, Z_OUTLINE,
 };
 
@@ -599,35 +599,21 @@ pub fn queue_next_stage_combat(
 }
 
 /// Failure path: when the friendly hull is destroyed during a Sandbox
-/// level, wipe the arena, restore the player ship to full HP, send the
-/// map boat back to the starting section, and flip the view back to the
-/// map.
+/// level, transition to the `GameOver` state. The arena is left intact
+/// deliberately so the dead ship + frozen enemies show through the
+/// transparent end-screen overlay; cleanup runs from the overlay's
+/// RESTART / MAIN MENU click handlers instead.
 pub fn level_fail_check(
-    mut view: ResMut<ViewMode>,
-    mut state: ResMut<MapState>,
-    mut combat_ctx: ResMut<CombatContext>,
+    view: Res<ViewMode>,
     mode: Res<crate::modes::GameMode>,
-    mut commands: Commands,
-    mut friendly: Query<&mut crate::components::Health, With<crate::components::Friendly>>,
-    arena: Query<Entity, crate::wave::ArenaDisposeFilter>,
-    mut boat: Query<&mut Transform, With<MapBoat>>,
+    friendly: Query<&crate::components::Health, With<crate::components::Friendly>>,
+    mut next: ResMut<NextState<crate::AppState>>,
 ) {
     if !matches!(*view, ViewMode::Combat) { return; }
     if !matches!(*mode, crate::modes::GameMode::Sandbox) { return; }
 
-    let Ok(mut h) = friendly.single_mut() else { return; };
+    let Ok(h) = friendly.single() else { return; };
     if h.0 > 0 { return; }
 
-    for e in &arena { commands.entity(e).despawn(); }
-
-    h.0 = 100;
-    combat_ctx.enemy_budget = 0;
-    state.boat_target = None;
-    state.current = 0;
-    if let Ok(mut tf) = boat.single_mut() {
-        let s0 = state.sections.first().map(|s| s.center).unwrap_or(Vec2::ZERO);
-        tf.translation.x = s0.x;
-        tf.translation.y = s0.y;
-    }
-    *view = ViewMode::Map;
+    next.set(crate::AppState::GameOver);
 }

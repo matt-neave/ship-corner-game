@@ -108,6 +108,8 @@ pub const BLACKBEARD_HEX: &str = "#2e2e3c";
 // carrier hulls, and pairs visually with the dark-oil slicks it
 // drops behind itself.
 pub const OIL_TANKER_HEX: &str = "#7a1d1a";
+/// Viking longship hull — dark wood / russet brown.
+pub const VIKING_HEX:         &str = "#5e2a16";
 /// Oil slick body — near-black with a faint sheen, sits flat on the
 /// water before ignition.
 pub const OIL_SLICK_HEX: &str = "#0d0e12";
@@ -265,6 +267,9 @@ pub struct PaletteMaterials {
     pub tender_hull: Handle<ColorMaterial>,
     pub blackbeard_hull: Handle<ColorMaterial>,
     pub oil_tanker_hull: Handle<ColorMaterial>,
+    /// Viking longship hull — wood-brown / russet, deliberately dark
+    /// so the white shield-stripe on top reads as a proper shield rack.
+    pub viking_hull: Handle<ColorMaterial>,
     /// Dark oil slick material — used by the OilTanker's freshly-laid
     /// pools before ignition. Burning slicks swap their material to
     /// `pm.fire` for the flaming-pool look.
@@ -368,6 +373,7 @@ impl PaletteMaterials {
             tender_hull:           materials.add(hex(TENDER_HEX)),
             blackbeard_hull:       materials.add(hex(BLACKBEARD_HEX)),
             oil_tanker_hull:       materials.add(hex(OIL_TANKER_HEX)),
+            viking_hull:           materials.add(hex(VIKING_HEX)),
             oil_slick:             materials.add(hex(OIL_SLICK_HEX)),
             skull_flag:            materials.add(hex(SKULL_FLAG_HEX)),
             boarder:               materials.add(hex(BOARDER_HEX)),

@@ -265,6 +265,7 @@ fn class_color(class: ShipClass) -> Color {
         ShipClass::Submarine  => Color::srgb(0.30, 0.40, 0.50), // steel
         ShipClass::Minelayer  => Color::srgb(0.55, 0.50, 0.20), // dirty yellow
         ShipClass::OilTanker  => Color::srgb(0.55, 0.18, 0.18), // industrial red
+        ShipClass::Viking     => Color::srgb(0.45, 0.22, 0.13), // wood-brown
     }
 }
 

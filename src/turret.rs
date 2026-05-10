@@ -947,40 +947,55 @@ pub fn helicopter_ai(
             cur + perp * 20.0
         };
 
-        // Turn the body toward the target at a fixed rate (no snap)
-        // and walk forward at constant speed. The nose turret is a
-        // body child, so it points wherever the body is heading — no
-        // independent turret rotation.
-        let to = target_pos - cur;
-        if to.length_squared() > 0.01 {
-            let desired = (-to.x).atan2(to.y);
-            heli.heading = approach_angle(heli.heading, desired, HELI_TURN_RATE * dt);
-        }
-        let forward = Vec2::new(-heli.heading.sin(), heli.heading.cos());
-        let new_pos = cur + forward * HELI_SPEED * dt;
+        // Two states drive the body's heading:
+        //
+        // - **Attacking** (an enemy is in detect range): face the
+        //   enemy directly so the nose turret is locked on. Movement
+        //   vector is *decoupled* — the heli still flies toward
+        //   `target_pos` (orbit/standoff math), so the body strafes
+        //   sideways/backward around the enemy while keeping the nose
+        //   pointed at it.
+        // - **Patrolling**: face the direction of travel. Movement
+        //   and heading align so the heli flies nose-first.
+        let move_dir = (target_pos - cur).try_normalize().unwrap_or_else(|| {
+            Vec2::new(-heli.heading.sin(), heli.heading.cos())
+        });
+        let desired_heading = if let Some((_, ep)) = best {
+            let to_enemy = ep - cur;
+            if to_enemy.length_squared() > 0.01 {
+                (-to_enemy.x).atan2(to_enemy.y)
+            } else {
+                heli.heading
+            }
+        } else {
+            (-move_dir.x).atan2(move_dir.y)
+        };
+        heli.heading = approach_angle(heli.heading, desired_heading, HELI_TURN_RATE * dt);
+        let new_pos = cur + move_dir * HELI_SPEED * dt;
         tf.translation.x = new_pos.x;
         tf.translation.y = new_pos.y;
         tf.rotation = Quat::from_rotation_z(heli.heading);
 
-        // Tick cooldown + fire when on-target.
+        // Tick cooldown + fire when an enemy is in range.
         heli.fire_cd -= dt;
         let Some((_, ep)) = best else { continue; };
         if heli.fire_cd > 0.0 { continue; }
 
-        let to = ep - new_pos;
-        let len = to.length();
-        if len < 0.01 { continue; }
-        let dir = to / len;
+        // Bullets exit the *nose turret*, not the body centre. The
+        // nose barrel is at local y = 2.7 with length 2.5, so the tip
+        // sits at y ≈ 3.95 in body-local space. The body is rotated
+        // to `heli.heading`, so the world-space tip is offset by that
+        // distance along the body's forward vector.
+        let body_forward = Vec2::new(-heli.heading.sin(), heli.heading.cos());
+        let body_perp = Vec2::new(body_forward.y, -body_forward.x);
 
         // Twin / triple barrels = N x effective rate (same convention
         // as turret_aim_fire). Reset cooldown using slot's fire_rate.
         let barrels_n = slot_cfg.barrels.max(1) as f32;
         heli.fire_cd = 1.0 / (slot_cfg.fire_rate.max(0.1) * barrels_n);
 
-        // Lateral muzzle offset so multi-barrel fire feels paired
-        // (mirrors turret_aim_fire's BARREL_LATERAL pattern, scaled
-        // smaller for the helicopter's tighter wingspan).
-        let perp = Vec2::new(-dir.y, dir.x);
+        // Lateral muzzle offset for multi-barrel pairing (perp to the
+        // body's forward, scaled tight for the heli's narrow nose).
         let lateral = match (slot_cfg.barrels.max(1), heli.next_barrel) {
             (1, _) => 0.0,
             (2, 0) => -1.0,
@@ -991,7 +1006,14 @@ pub fn helicopter_ai(
             _      =>  0.0,
         };
         heli.next_barrel = (heli.next_barrel + 1) % slot_cfg.barrels.max(1);
-        let muzzle = new_pos + dir * 3.0 + perp * lateral;
+        const NOSE_TIP_OFFSET: f32 = 3.95;
+        let muzzle = new_pos + body_forward * NOSE_TIP_OFFSET + body_perp * lateral;
+        // Bullets fly along the body's forward (= toward the enemy
+        // since the body is facing it), not directly at the enemy's
+        // *current* position — so a turning heli's shots arc with
+        // the body rather than tele-corrected to the target.
+        let dir = body_forward;
+        let _ = ep;
 
         // Spawn a Standard-flavoured bullet — the SLOT's runes carry
         // over so all procs (Fire/Frost/Shock/etc.) work end-to-end.
