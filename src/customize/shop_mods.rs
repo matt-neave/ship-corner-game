@@ -1,0 +1,193 @@
+//! Shop mod cards — 3 click-to-buy stat-modifier offerings rendered
+//! below the rune row.
+//!
+//! Visual: thin white outline + dark fill on `UPSCALE_LAYER` (sharp
+//! edges, like the tooltip), with a single text line inside showing
+//! the signed delta + stat name (e.g. `+25 CRIT`). Clicking applies
+//! the delta to the targeted stat's `flat` field and consumes the
+//! slot.
+
+use bevy::prelude::*;
+use bevy::render::view::RenderLayers;
+use bevy::text::FontSmoothing;
+
+use crate::balance::{CUSTOMIZE_LAYER, UPSCALE_LAYER};
+use crate::stats::PlayerStats;
+
+use super::drag::{CustomizeShop, DragState};
+use super::render::CustomizeViewport;
+use super::setup::HitArea;
+use super::CustomizeOpen;
+
+// Spec-pixel layout. Three cards in a row; the spawn helper centres
+// the row on its `centre_x` argument.
+pub const MOD_CARD_W: f32 = 22.0;
+pub const MOD_CARD_H: f32 = 12.0;
+pub const MOD_CARD_GAP: f32 = 2.0;
+const Z_OUTLINE: f32 = 99.0;
+const Z_FILL: f32 = 99.5;
+const Z_TEXT: f32 = 100.0;
+/// Native-pixel border thickness on the white outline.
+const BORDER_PX: f32 = 2.0;
+
+/// Marker on the click target. The `idx` indexes into `CustomizeShop.mods`.
+#[derive(Component, Clone, Copy)]
+pub struct ShopModSlot { pub idx: usize }
+
+/// White outline sprite. Carries its own spec position so the layout
+/// updater doesn't need to recompute the row geometry.
+#[derive(Component, Clone, Copy)]
+pub struct ShopModOutline { pub idx: usize, pub spec_pos: Vec2 }
+
+/// Dark fill sprite (rendered above the outline).
+#[derive(Component, Clone, Copy)]
+pub struct ShopModFill { pub idx: usize, pub spec_pos: Vec2 }
+
+/// Card label. Owned visibility — *not* a `CustomizeText`, since the
+/// shared sync would override our "hide when slot empty" state.
+#[derive(Component, Clone, Copy)]
+pub struct ShopModText { pub idx: usize, pub spec_pos: Vec2 }
+
+/// Spawn three card slots centred on `centre_x` at the given `y`.
+pub fn spawn_mod_cards(commands: &mut Commands, centre_x: f32, y: f32) {
+    let step = MOD_CARD_W + MOD_CARD_GAP;
+    for idx in 0..3usize {
+        let x = centre_x + (idx as f32 - 1.0) * step;
+        let pos = Vec2::new(x, y);
+        spawn_card(commands, idx, pos);
+    }
+}
+
+fn spawn_card(commands: &mut Commands, idx: usize, spec_pos: Vec2) {
+    commands.spawn((
+        Sprite {
+            color: Color::WHITE,
+            custom_size: Some(Vec2::new(MOD_CARD_W, MOD_CARD_H)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, Z_OUTLINE),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        ShopModOutline { idx, spec_pos },
+    ));
+    commands.spawn((
+        Sprite {
+            color: Color::srgb(0.13, 0.14, 0.17),
+            custom_size: Some(Vec2::new(MOD_CARD_W, MOD_CARD_H)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, Z_FILL),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        ShopModFill { idx, spec_pos },
+    ));
+    commands.spawn((
+        Text2d::new(""),
+        TextFont {
+            font_size: 11.0,
+            font_smoothing: FontSmoothing::None,
+            ..default()
+        },
+        TextColor(Color::srgb(1.0, 0.85, 0.30)),
+        Transform::from_xyz(0.0, 0.0, Z_TEXT),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        ShopModText { idx, spec_pos },
+    ));
+    // Hit area on the customize layer. Used for cursor-in-rect tests.
+    commands.spawn((
+        Transform::from_translation(spec_pos.extend(2.0)),
+        HitArea { size: Vec2::new(MOD_CARD_W, MOD_CARD_H) },
+        ShopModSlot { idx },
+        RenderLayers::layer(CUSTOMIZE_LAYER),
+    ));
+}
+
+/// Per-frame layout + visibility + content sync.
+pub fn update_shop_mod_cards(
+    open: Res<CustomizeOpen>,
+    viewport: Res<CustomizeViewport>,
+    shop: Option<Res<CustomizeShop>>,
+    mut outlines: Query<(&ShopModOutline, &mut Visibility, &mut Transform, &mut Sprite),
+        (Without<ShopModFill>, Without<ShopModText>)>,
+    mut fills: Query<(&ShopModFill, &mut Visibility, &mut Transform, &mut Sprite),
+        (Without<ShopModOutline>, Without<ShopModText>)>,
+    mut texts: Query<(&ShopModText, &mut Visibility, &mut Transform, &mut Text2d),
+        (Without<ShopModOutline>, Without<ShopModFill>)>,
+) {
+    let panel_visible = open.open && shop.is_some();
+    if !panel_visible {
+        for (_, mut v, _, _) in &mut outlines { hide_one(&mut v); }
+        for (_, mut v, _, _) in &mut fills    { hide_one(&mut v); }
+        for (_, mut v, _, _) in &mut texts    { hide_one(&mut v); }
+        return;
+    }
+    let shop = shop.unwrap();
+    let s = viewport.display_scale;
+    let fill_size = Vec2::new(MOD_CARD_W * s, MOD_CARD_H * s);
+    let outline_size = fill_size + Vec2::splat(2.0 * BORDER_PX);
+
+    for (slot, mut vis, mut tf, mut sprite) in &mut outlines {
+        let occupied = shop.mods.get(slot.idx).map_or(false, |m| m.is_some());
+        set_vis(&mut vis, if occupied { Visibility::Inherited } else { Visibility::Hidden });
+        if !occupied { continue; }
+        if sprite.custom_size != Some(outline_size) { sprite.custom_size = Some(outline_size); }
+        tf.translation.x = slot.spec_pos.x * s;
+        tf.translation.y = slot.spec_pos.y * s;
+    }
+    for (slot, mut vis, mut tf, mut sprite) in &mut fills {
+        let occupied = shop.mods.get(slot.idx).map_or(false, |m| m.is_some());
+        set_vis(&mut vis, if occupied { Visibility::Inherited } else { Visibility::Hidden });
+        if !occupied { continue; }
+        if sprite.custom_size != Some(fill_size) { sprite.custom_size = Some(fill_size); }
+        tf.translation.x = slot.spec_pos.x * s;
+        tf.translation.y = slot.spec_pos.y * s;
+    }
+    for (slot, mut vis, mut tf, mut text) in &mut texts {
+        let m = shop.mods.get(slot.idx).and_then(|m| *m);
+        let occupied = m.is_some();
+        set_vis(&mut vis, if occupied { Visibility::Inherited } else { Visibility::Hidden });
+        if let Some(m) = m {
+            let label = m.label();
+            if text.0 != label { text.0 = label; }
+            tf.translation.x = slot.spec_pos.x * s;
+            tf.translation.y = slot.spec_pos.y * s;
+        }
+    }
+}
+
+fn set_vis(vis: &mut Visibility, want: Visibility) {
+    if *vis != want { *vis = want; }
+}
+fn hide_one(vis: &mut Visibility) { set_vis(vis, Visibility::Hidden); }
+
+/// Click handler — applies the mod and consumes the slot.
+pub fn handle_shop_mod_click(
+    open: Res<CustomizeOpen>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    drag: Res<DragState>,
+    shop: Option<ResMut<CustomizeShop>>,
+    mut stats: ResMut<PlayerStats>,
+    btn_q: Query<(&Transform, &HitArea, &ShopModSlot)>,
+) {
+    if !open.open { return; }
+    if !mouse.just_pressed(MouseButton::Left) { return; }
+    if drag.picked.is_some() { return; }
+    let Some(cursor) = drag.spec_cursor else { return };
+    let Some(mut shop) = shop else { return };
+    for (tf, hit, slot) in &btn_q {
+        let centre = tf.translation.truncate();
+        let half = hit.size * 0.5;
+        if cursor.x < centre.x - half.x
+            || cursor.x > centre.x + half.x
+            || cursor.y < centre.y - half.y
+            || cursor.y > centre.y + half.y
+        { continue; }
+        let Some(slot_entry) = shop.mods.get_mut(slot.idx) else { return };
+        let Some(m) = *slot_entry else { return };
+        let stat = m.kind.stat_mut(&mut stats);
+        stat.flat += m.delta;
+        *slot_entry = None;
+        return;
+    }
+}

@@ -113,7 +113,12 @@ pub struct PlayerStats {
     pub shield_max: Stat,
     pub shield_recharge_rate_pct: Stat,
     pub shield_recharge_delay: Stat,
-    pub rune_damage_pct: Stat,
+    /// Raw rune-damage scalar (default 1.0). Each rune declares its
+    /// effect as a percentage of this value — Fire's "100% rune damage
+    /// per tick" means `1.0 × rune_damage` per tick. The two halves of
+    /// the description (the rune's % and the player's raw value)
+    /// multiply.
+    pub rune_damage: Stat,
 }
 
 impl Default for PlayerStats {
@@ -133,7 +138,7 @@ impl Default for PlayerStats {
             shield_max: Stat::new(0.0),
             shield_recharge_rate_pct: Stat::new(20.0),
             shield_recharge_delay: Stat::new(3.0),
-            rune_damage_pct: Stat::new(100.0),
+            rune_damage: Stat::new(1.0),
         }
     }
 }
@@ -148,9 +153,10 @@ impl PlayerStats {
     pub fn range_mult(&self) -> f32 {
         self.range_pct.effective() / 100.0
     }
-    /// Rune-damage multiplier (1.0 at 100% baseline).
+    /// Rune-damage scalar (default 1.0). Each rune coefficient
+    /// multiplies this directly — fire's "100%" → `1.0 × rune_damage`.
     pub fn rune_damage_mult(&self) -> f32 {
-        self.rune_damage_pct.effective() / 100.0
+        self.rune_damage.effective().max(0.0)
     }
     /// Additive bonus to rune proc strength, expressed as 0..1.
     pub fn proc_strength_bonus(&self) -> f32 {
@@ -289,7 +295,7 @@ impl StatKind {
             StatKind::ShieldRechargeDelay => {
                 format!("{:.1}s", stats.shield_recharge_delay.effective())
             }
-            StatKind::RuneDamage => format!("{:.0}%", stats.rune_damage_pct.effective()),
+            StatKind::RuneDamage => format!("{:.1}", stats.rune_damage.effective()),
         }
     }
 }
@@ -335,7 +341,7 @@ impl StatKind {
             StatKind::ShieldMax => 25.0,
             StatKind::ShieldRechargeRate => 5.0,
             StatKind::ShieldRechargeDelay => 0.5, // seconds
-            StatKind::RuneDamage => 25.0,
+            StatKind::RuneDamage => 0.5,
         }
     }
     /// Mutable handle on this kind's `Stat` slot inside `PlayerStats`.
@@ -355,7 +361,7 @@ impl StatKind {
             StatKind::ShieldMax => &mut stats.shield_max,
             StatKind::ShieldRechargeRate => &mut stats.shield_recharge_rate_pct,
             StatKind::ShieldRechargeDelay => &mut stats.shield_recharge_delay,
-            StatKind::RuneDamage => &mut stats.rune_damage_pct,
+            StatKind::RuneDamage => &mut stats.rune_damage,
         }
     }
 }

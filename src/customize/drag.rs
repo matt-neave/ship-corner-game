@@ -28,6 +28,7 @@ use rand::seq::SliceRandom;
 
 use crate::balance::CUSTOMIZE_LAYER;
 use crate::rune::Rune;
+use crate::stats::StatKind;
 use crate::turret::{SlotCfg, TurretConfig};
 use crate::weapon::WeaponType;
 
@@ -87,12 +88,33 @@ pub struct DragGhost;
 pub struct CustomizeShop {
     pub turrets: Vec<Option<ShopTurretOffer>>,
     pub runes: Vec<Option<Rune>>,
+    /// Stat-modifier cards. Click-to-apply: the delta is added to the
+    /// stat's `flat` field and the slot is consumed.
+    pub mods: Vec<Option<ShopMod>>,
 }
 
 #[derive(Clone, Copy)]
 pub struct ShopTurretOffer {
     pub weapon: WeaponType,
     pub barrels: u8,
+}
+
+#[derive(Clone, Copy)]
+pub struct ShopMod {
+    pub kind: StatKind,
+    pub delta: f32,
+}
+
+impl ShopMod {
+    /// Card text, e.g. "+25 CRIT" or "+0.5 RUNE". Sign is always
+    /// included so stacking direction reads at a glance.
+    pub fn label(self) -> String {
+        if self.delta.fract().abs() < 0.01 {
+            format!("{:+.0} {}", self.delta, self.kind.label())
+        } else {
+            format!("{:+.1} {}", self.delta, self.kind.label())
+        }
+    }
 }
 
 /// Scrap cost to re-roll the shop. Refills every slot — sold or not.
@@ -128,7 +150,14 @@ pub fn roll_fresh_stock() -> CustomizeShop {
     let mut runes_owned: Vec<_> = runes_pool.to_vec();
     runes_owned.shuffle(&mut rng);
     let runes = runes_owned.into_iter().take(2).map(Some).collect();
-    CustomizeShop { turrets, runes }
+    let mut mods = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let kind = *StatKind::ALL.choose(&mut rng).unwrap();
+        // Reuse the debug step as the shop delta — already tuned per
+        // stat to be a meaningful nudge in that stat's natural unit.
+        mods.push(Some(ShopMod { kind, delta: kind.debug_step() }));
+    }
+    CustomizeShop { turrets, runes, mods }
 }
 
 pub fn init_customize_shop(mut commands: Commands) {
@@ -159,8 +188,8 @@ pub fn track_customize_cursor(
 pub fn start_drag(
     mut commands: Commands,
     open: Res<CustomizeOpen>,
-    cfg: Res<TurretConfig>,
-    shop: Option<Res<CustomizeShop>>,
+    mut cfg: ResMut<TurretConfig>,
+    shop_opt: Option<ResMut<CustomizeShop>>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut drag: ResMut<DragState>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -174,7 +203,7 @@ pub fn start_drag(
         return;
     }
     let Some(cursor) = drag.spec_cursor else { return };
-    let Some(shop) = shop else { return };
+    let Some(mut shop) = shop_opt else { return };
 
     // Find the smallest hit-area containing the cursor — when sockets
     // overlap larger panels visually, the more-specific source wins.
@@ -190,10 +219,59 @@ pub fn start_drag(
     }
     let Some((_, source)) = best else { return };
 
+    // Shop sources are click-to-equip — auto-place into the first empty
+    // slot/socket and consume the shop offering. No drag, no ghost.
+    // Only places into EMPTY targets so click-buy never accidentally
+    // upgrades an existing turret's barrel level.
+    if matches!(source, DragSourceKind::ShopTurret(_) | DragSourceKind::ShopRune(_)) {
+        click_buy_shop(source, &mut cfg, &mut shop);
+        return;
+    }
+
     let Some(payload) = payload_for(source, &cfg, &shop) else { return };
     drag.picked = Some(Picked { source, payload });
     let ghost = spawn_ghost(&mut commands, &mut meshes, &mut materials, payload, cursor);
     drag.ghost = Some(ghost);
+}
+
+/// Place a shop offering into the first empty target slot/socket.
+/// Returns false silently when there's no room — clicks on a fully
+/// loaded ship are no-ops, the player can still drag-and-drop existing
+/// items around manually.
+fn click_buy_shop(source: DragSourceKind, cfg: &mut TurretConfig, shop: &mut CustomizeShop) -> bool {
+    match source {
+        DragSourceKind::ShopTurret(idx) => {
+            let Some(offering) = shop.turrets.get(idx).and_then(|o| *o) else { return false };
+            let Some(slot_i) = (0..cfg.slots.len()).find(|&i| !cfg.slots[i].equipped) else {
+                return false;
+            };
+            cfg.slots[slot_i] = SlotCfg {
+                equipped: true,
+                weapon: offering.weapon,
+                damage: offering.weapon.defaults().0,
+                fire_rate: offering.weapon.defaults().1,
+                barrels: offering.barrels,
+                runes: [None; 3],
+            };
+            if let Some(slot) = shop.turrets.get_mut(idx) { *slot = None; }
+            true
+        }
+        DragSourceKind::ShopRune(idx) => {
+            let Some(rune) = shop.runes.get(idx).and_then(|o| *o) else { return false };
+            for slot_i in 0..cfg.slots.len() {
+                if !cfg.slots[slot_i].equipped { continue; }
+                for r in 0..3 {
+                    if cfg.slots[slot_i].runes[r].is_none() {
+                        cfg.slots[slot_i].runes[r] = Some(rune);
+                        if let Some(slot) = shop.runes.get_mut(idx) { *slot = None; }
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
 }
 
 fn hit_test(cursor: Vec2, centre: Vec2, size: Vec2) -> bool {

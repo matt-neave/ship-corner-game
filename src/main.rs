@@ -39,6 +39,7 @@ mod palette;
 mod pause;
 mod pier;
 mod rendering;
+mod main_menu;
 mod settings;
 mod rune;
 mod ship;
@@ -59,8 +60,8 @@ use ally::{
 use customize::{
     complete_drag, handle_close_click, handle_reroll_button, init_customize_shop,
     resize_customize_display, setup_customize_render, setup_customize_ui, start_drag,
-    handle_stat_debug_buttons, sync_customize_text, sync_stats_panel,
-    toggle_customize_render, track_customize_cursor,
+    handle_shop_mod_click, handle_stat_debug_buttons, sync_customize_text, sync_stats_panel,
+    toggle_customize_render, track_customize_cursor, update_shop_mod_cards,
     update_customize_ship, update_customize_shop, update_customize_tooltip,
     update_customize_ui, update_drag_ghost, CustomizeOpen, DragState,
 };
@@ -200,6 +201,7 @@ fn main() {
         .insert_resource(cfg)
         .insert_resource(DamageStats::default())
         .insert_resource(stats::PlayerStats::default())
+        .insert_resource(main_menu::MainMenuOpen::default())
         .insert_resource(Palette::aap64_naval())
         .insert_resource(ShipPath::default())
         .insert_resource(WindowMode::default())
@@ -226,7 +228,7 @@ fn main() {
             setup_debug_ui, setup_currency_ui, setup_progress_assets,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
             init_customize_shop, setup_customize_render, setup_customize_ui,
-            setup_pause_menu,
+            setup_pause_menu, main_menu::setup_main_menu,
         ).chain())
         .add_systems(Update, (
             // Always-on visual setup. apply_night_mode → apply_palette must
@@ -412,6 +414,8 @@ fn main() {
                 update_customize_tooltip,
                 sync_stats_panel,
                 handle_stat_debug_buttons,
+                update_shop_mod_cards,
+                handle_shop_mod_click,
                 handle_close_click,
                 handle_reroll_button,
             ),
@@ -429,6 +433,11 @@ fn main() {
             sync_pause_menu_visibility,
             handle_resume_click,
             handle_quit_click,
+            // Boot-time main menu. PLAY closes it; SETTINGS is a stub
+            // for now (existing settings live behind keys).
+            main_menu::sync_main_menu_visibility,
+            main_menu::handle_play_click,
+            main_menu::handle_settings_click,
         ))
         .run();
 }

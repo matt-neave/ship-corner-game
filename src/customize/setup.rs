@@ -260,10 +260,14 @@ pub fn setup_customize_ui(
         spawn_shop_rune_tile(&mut commands, &mut meshes, &mut materials, idx, Vec2::new(x, y));
     }
 
+    // Stat-modifier cards — 3 click-to-buy options below the runes.
+    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y - 70.0), "MODS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
+    super::shop_mods::spawn_mod_cards(&mut commands, shop_x, shop_top_y - 84.0);
+
     // Reroll button — sits at the bottom of the shop column. Costs
     // `SHOP_REROLL_COST` scrap (`drag::SHOP_REROLL_COST`); refills every
     // sold slot with fresh offerings.
-    let reroll_pos = Vec2::new(shop_x, shop_top_y - 80.0);
+    let reroll_pos = Vec2::new(shop_x, shop_top_y - 100.0);
     spawn_container(
         &mut commands,
         &mut meshes,
