@@ -122,8 +122,17 @@ pub fn reset_run_for_restart(
     // the smallest tier rather than continuing the run that just
     // failed.
     combat_ctx.reset_for(1, 0);
+    combat_ctx.boss_pending = None;
     map_state.boat_target = None;
     map_state.current = 0;
+    // Drop every section back to "unclaimed" except the starting one so
+    // the run truly starts over. Section layout is preserved — only the
+    // ownership bits + current pointer reset.
+    let n = map_state.owned.len();
+    map_state.owned = vec![false; n];
+    if !map_state.owned.is_empty() {
+        map_state.owned[0] = true;
+    }
     if let Ok(mut tf) = boat.single_mut() {
         let s0 = map_state
             .sections

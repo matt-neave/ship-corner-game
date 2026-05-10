@@ -120,6 +120,13 @@ pub struct ShopTurretNameText {
     pub idx: usize,
 }
 
+/// Cost label below a shop turret tile. Cleared when the slot is sold
+/// or being dragged out — same lifecycle as `ShopTurretNameText`.
+#[derive(Component)]
+pub struct ShopTurretCostText {
+    pub idx: usize,
+}
+
 #[derive(Component, Clone, Copy)]
 pub struct ShopRuneVisual {
     pub idx: usize,
@@ -127,6 +134,13 @@ pub struct ShopRuneVisual {
 
 #[derive(Component)]
 pub struct ShopRuneNameText {
+    pub idx: usize,
+}
+
+/// Cost label below a shop rune socket. Same clear-on-sold/dragged
+/// behaviour as `ShopRuneNameText`.
+#[derive(Component)]
+pub struct ShopRuneCostText {
     pub idx: usize,
 }
 
@@ -253,21 +267,27 @@ pub fn setup_customize_ui(
         let y = shop_top_y - 16.0;
         spawn_shop_turret_tile(&mut commands, &mut meshes, &mut materials, idx, Vec2::new(x, y));
     }
-    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y - 42.0), "RUNES", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
+    // Vertical layout — each row leaves room for its tile body PLUS
+    // its name + cost label below before the next section header. The
+    // turret-cost label hangs at -38 from `shop_top_y`, so RUNES starts
+    // 14 below that, etc. Bumping any of these requires checking the
+    // labels (`spawn_shop_*_tile` apply offsets relative to the tile
+    // pos) for overlap with the next row's header.
+    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y - 52.0), "RUNES", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
     for idx in 0..2usize {
         let x = shop_x + (idx as f32 - 0.5) * (SOCKET + 6.0);
-        let y = shop_top_y - 58.0;
+        let y = shop_top_y - 68.0;
         spawn_shop_rune_tile(&mut commands, &mut meshes, &mut materials, idx, Vec2::new(x, y));
     }
 
     // Stat-modifier cards — 3 click-to-buy options below the runes.
-    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y - 70.0), "MODS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
-    super::shop_mods::spawn_mod_cards(&mut commands, shop_x, shop_top_y - 84.0);
+    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y - 98.0), "MODS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
+    super::shop_mods::spawn_mod_cards(&mut commands, shop_x, shop_top_y - 114.0);
 
     // Reroll button — sits at the bottom of the shop column. Costs
     // `SHOP_REROLL_COST` scrap (`drag::SHOP_REROLL_COST`); refills every
     // sold slot with fresh offerings.
-    let reroll_pos = Vec2::new(shop_x, shop_top_y - 100.0);
+    let reroll_pos = Vec2::new(shop_x, shop_top_y - 144.0);
     spawn_container(
         &mut commands,
         &mut meshes,
@@ -613,6 +633,17 @@ fn spawn_shop_turret_tile(
         ShopTurretNameText { idx },
     );
 
+    // Cost label, just below the name. Gold/scrap accent. Updater
+    // clears it when the slot is sold or being dragged out.
+    spawn_text(
+        commands,
+        pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 14.0),
+        format!("{}", super::drag::SHOP_ITEM_COST),
+        Color::srgb(1.0, 0.85, 0.30),
+        10.0,
+        ShopTurretCostText { idx },
+    );
+
     commands.spawn((
         Transform::from_translation(pos.extend(Z_TILE_BG)),
         HitArea { size: Vec2::splat(SHOP_TILE) },
@@ -724,6 +755,15 @@ fn spawn_shop_rune_tile(
         Color::WHITE,
         12.0,
         ShopRuneNameText { idx },
+    );
+    // Cost label, below the rune name. Gold/scrap accent.
+    spawn_text(
+        commands,
+        pos + Vec2::new(0.0, -SOCKET * 0.5 - 13.0),
+        format!("{}", super::drag::SHOP_ITEM_COST),
+        Color::srgb(1.0, 0.85, 0.30),
+        10.0,
+        ShopRuneCostText { idx },
     );
     commands.spawn((
         Transform::from_translation(pos.extend(Z_TILE_BG)),

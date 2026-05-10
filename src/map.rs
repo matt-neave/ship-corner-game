@@ -27,6 +27,7 @@
 use bevy::prelude::*;
 
 mod anim;
+mod boss_patrol;
 mod build;
 mod buildings;
 mod hud;
@@ -34,6 +35,7 @@ mod input;
 mod setup;
 
 pub use anim::{advance_map_anim_timeline, map_begin_phase, update_anim_beams, update_anim_pulses};
+pub use boss_patrol::{boss_patrol_movement, spawn_boss_patrols};
 pub use build::{apply_view_mode, refresh_map_fill};
 pub use buildings::{
     close_popup_on_view_change, handle_building_choice_clicks, level_complete_check,
@@ -143,6 +145,12 @@ pub struct CombatContext {
     /// `Spawning` entry, drained one-per-spawn. Empty in `Fighting` /
     /// `Cooldown`.
     pub pending_spawns: Vec<PendingSpawn>,
+    /// `Some(class)` when the active stage was entered on a 5★ section
+    /// with a boss assigned. `spawn_enemies` consumes this on the first
+    /// frame of the final wave, drops one boss into the arena via
+    /// `spawn_boss`, and clears it back to `None` so it doesn't
+    /// re-fire each frame.
+    pub boss_pending: Option<crate::ally::ShipClass>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -178,6 +186,7 @@ impl Default for CombatContext {
             spawn_tick: 0.0,
             is_boss_wave: false,
             pending_spawns: Vec::new(),
+            boss_pending: None,
         };
         c.reset_for(1, 0);
         c
@@ -295,6 +304,12 @@ pub struct MapSection {
     pub adjacencies: Vec<u32>,
     pub stars: u8,
     pub slots: Vec<Option<MapBuilding>>,
+    /// Boss assigned to this section. Populated for 5★ sections at
+    /// `MapState::new` time with a random `ShipClass`; `None` for
+    /// every other tier. Drives both the patrol entity rendered on
+    /// the map view and the boss spawned during the section's final
+    /// combat wave.
+    pub boss_class: Option<crate::ally::ShipClass>,
 }
 
 #[derive(Default)]
@@ -320,9 +335,29 @@ impl MapState {
     pub fn new() -> Self {
         let mut sections = build::build_default_map();
         let stars = compute_stars(&sections, 0);
+        let mut rng = rand::thread_rng();
+        use rand::seq::SliceRandom;
+        let boss_pool = [
+            crate::ally::ShipClass::PirateShip,
+            crate::ally::ShipClass::Carrier,
+            crate::ally::ShipClass::Submarine,
+            crate::ally::ShipClass::Minelayer,
+            crate::ally::ShipClass::Tender,
+            crate::ally::ShipClass::Blackbeard,
+            crate::ally::ShipClass::OilTanker,
+            crate::ally::ShipClass::Viking,
+        ];
         for (i, s) in sections.iter_mut().enumerate() {
             s.stars = stars[i];
             s.slots = vec![None; 1];
+            // 5★ sections get a random boss; every other tier stays
+            // boss-less. Picking from `boss_pool` rather than indexing
+            // by hand keeps the list of eligible classes obvious.
+            s.boss_class = if s.stars == 5 {
+                boss_pool.choose(&mut rng).copied()
+            } else {
+                None
+            };
         }
         let mut owned: Vec<bool> = vec![false; sections.len()];
         owned[0] = true;
@@ -527,6 +562,7 @@ pub enum DebugButton {
     SpawnAlly(crate::ally::ShipClass),
     SpawnBoss(crate::ally::ShipClass),
     OpenCustomize,
+    AddScrap,
 }
 
 #[derive(Component)]

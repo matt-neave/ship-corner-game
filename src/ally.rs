@@ -992,10 +992,10 @@ fn build_ship_for_faction(
     // instantly.
     // Viking — pure ram-attacker. No turrets / projectiles. The
     // distinctive silhouette is a dragon-head prow (small triangle
-    // on the bow) + a white shield-rail stripe along the gunwale,
-    // sold cheaply with two child meshes.
+    // on the bow) + a central mast (thin dark-wood vertical pole)
+    // amidships, sold cheaply with two child meshes.
     if class == ShipClass::Viking {
-        commands.entity(ship).insert(VikingRamCharge);
+        commands.entity(ship).insert(VikingRamCharge::default());
 
         // Dragon prow — pointed triangle just past the bow tip.
         let prow_mesh = meshes.add(Triangle2d::new(
@@ -1011,16 +1011,56 @@ fn build_ship_for_faction(
         )).id();
         commands.entity(prow).insert(ChildOf(ship));
 
-        // Shield rail — white stripe along the deck centreline so the
-        // longship reads as Viking at a glance.
-        let stripe_mesh = meshes.add(Rectangle::new(hull_w * 0.55, hull_h * 0.65));
-        let stripe = commands.spawn((
-            Mesh2d(stripe_mesh),
-            MeshMaterial2d(pm.ally_flag.clone()),
+        // Central mast — thin vertical dark-wood pole running most of
+        // the deck length, centred on the hull. Reads as a pirate /
+        // longship mast at a glance and rotates with the hull because
+        // it's parented under the same `ChildOf` tree.
+        let mast_mesh = meshes.add(Rectangle::new(hull_w * 0.18, hull_h * 0.7));
+        let mast = commands.spawn((
+            Mesh2d(mast_mesh),
+            MeshMaterial2d(pm.mast.clone()),
             Transform::from_xyz(0.0, 0.0, 0.05),
             RenderLayers::layer(PLAY_LAYER),
         )).id();
-        commands.entity(stripe).insert(ChildOf(ship));
+        commands.entity(mast).insert(ChildOf(ship));
+
+        // Square white pennant centred on the mast top — sits flush
+        // over the dark wood pole so the silhouette reads as a banner,
+        // not a leaning sail.
+        let flag_w = hull_w * 1.1;
+        let flag_h = hull_h * 0.16;
+        let mast_top_y = hull_h * 0.35;
+        let flag_mesh = meshes.add(Rectangle::new(flag_w, flag_h));
+        let flag = commands.spawn((
+            Mesh2d(flag_mesh),
+            MeshMaterial2d(pm.ally_flag.clone()),
+            Transform::from_xyz(0.0, mast_top_y - flag_h * 0.5, 0.06),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(flag).insert(ChildOf(ship));
+
+        // Oars — three pairs of horizontal wood paddles sticking out
+        // each gunwale. The shaft length runs across the hull edge so
+        // the inner end is hidden by the deck; the outer end is the
+        // visible "blade". Shared mesh handle (one Rectangle, six
+        // instances) keeps this cheap.
+        let oar_len = hull_w * 1.6;
+        let oar_thick = 0.55;
+        let oar_mesh = meshes.add(Rectangle::new(oar_len, oar_thick));
+        // Y-positions span the middle ~70% of the hull, skipping the
+        // bow (occupied by the prow) and a small stern margin.
+        let oar_ys = [-hull_h * 0.28, -hull_h * 0.04, hull_h * 0.20];
+        for &oy in &oar_ys {
+            for &side in &[-1.0_f32, 1.0_f32] {
+                let oar = commands.spawn((
+                    Mesh2d(oar_mesh.clone()),
+                    MeshMaterial2d(pm.mast.clone()),
+                    Transform::from_xyz(side * (hull_w * 0.5 + oar_len * 0.35), oy, 0.02),
+                    RenderLayers::layer(PLAY_LAYER),
+                )).id();
+                commands.entity(oar).insert(ChildOf(ship));
+            }
+        }
     }
 
     if class == ShipClass::OilTanker {
@@ -1183,6 +1223,7 @@ pub fn ally_ai(
         &mut Ally,
         &Faction,
         Option<&HealBeamEmitter>,
+        Option<&mut VikingRamCharge>,
     )>,
 ) {
     let dt = time.delta_secs();
@@ -1193,13 +1234,15 @@ pub fn ally_ai(
     // outer `&mut Transform` borrow.
     let ally_snap: Vec<(Entity, Vec2, FactionKind)> = allies
         .iter()
-        .map(|(e, tf, _, _, _, fac, _)| (e, tf.translation.truncate(), fac.0))
+        .map(|(e, tf, _, _, _, fac, _, _)| (e, tf.translation.truncate(), fac.0))
         .collect();
 
-    for (entity, mut tf, mut vel, mut heading, mut ally, faction, emitter) in &mut allies {
+    for (entity, mut tf, mut vel, mut heading, mut ally, faction, emitter, mut viking_charge)
+        in &mut allies
+    {
         let pos = tf.translation.truncate();
-        let speed = ally.class.speed();
-        let turn = ally.class.turn_rate();
+        let mut speed = ally.class.speed();
+        let mut turn = ally.class.turn_rate();
 
         // Tender follows the closest unit of its `heal_faction` so the
         // heal-beam emitter (range 50) stays on target. Falls back to
@@ -1272,11 +1315,15 @@ pub fn ally_ai(
             }
         }
 
+        // Track whether this tick had a live ram target so the Viking
+        // charge ramp below knows whether to build speed or reset.
+        let mut viking_has_target = false;
         let target = if let Some((d, ep)) = nearest {
             // Viking commits to a charge — always heads straight for
             // the target. No orbit, no standoff. `viking_ram_damage`
             // delivers the payoff on contact.
             if matches!(ally.class, ShipClass::Viking) {
+                viking_has_target = true;
                 ep
             } else {
                 // Engage: orbit at the class's preferred range. Broadside
@@ -1307,6 +1354,34 @@ pub fn ally_ai(
             }
             ally.waypoint
         };
+
+        // Viking charge ramp: while a target is held, build current
+        // speed from base toward max over `VIKING_RAM_RAMP_TIME`. As
+        // speed climbs the turn rate falls toward `VIKING_RAM_TURN_AT_MAX`,
+        // so a Viking at full charge overshoots and has to circle
+        // back. Without a target the speed snaps back to base so the
+        // next charge starts slow. `viking_ram_damage` resets the
+        // component on contact via `Commands` for the same reason.
+        if let Some(charge) = viking_charge.as_deref_mut() {
+            if viking_has_target {
+                let ramp_per_sec =
+                    (VIKING_RAM_MAX_SPEED - VIKING_RAM_BASE_SPEED) / VIKING_RAM_RAMP_TIME;
+                charge.current_speed = (charge.current_speed + ramp_per_sec * dt)
+                    .min(VIKING_RAM_MAX_SPEED);
+            } else {
+                // Bleed instead of snapping — momentum carries over
+                // brief spawn gaps so the Viking stays visibly fast
+                // rather than flickering between max and base.
+                charge.current_speed = (charge.current_speed - VIKING_RAM_DECAY_PER_SEC * dt)
+                    .max(VIKING_RAM_BASE_SPEED);
+            }
+            let t = ((charge.current_speed - VIKING_RAM_BASE_SPEED)
+                / (VIKING_RAM_MAX_SPEED - VIKING_RAM_BASE_SPEED))
+                .clamp(0.0, 1.0);
+            speed = charge.current_speed;
+            turn = ally.class.turn_rate()
+                + (VIKING_RAM_TURN_AT_MAX - ally.class.turn_rate()) * t;
+        }
 
         // Keep target inside the play area so we don't crash the wall.
         let margin = 10.0;
@@ -1440,6 +1515,69 @@ pub fn ally_turret_aim_fire(
 /// Despawn allies that have hit 0 HP, with a destruction burst. Decoupled
 /// from the bullet collision system so we can keep the bullet-vs-friendly
 /// query simple (it just decrements HP).
+/// Boss-side Viking AI — `enemy_ai` doesn't know about
+/// `VikingRamCharge`, so a 5★ Viking boss would otherwise sit at
+/// `EnemyVariant::Standard` walking pace. This system overrides the
+/// boss's heading + velocity each frame to use the same charge-ramp
+/// curve as the friendly Viking ally: build speed toward
+/// `VIKING_RAM_MAX_SPEED` while a target is held, decay slowly when
+/// the target is lost, lerp turn rate toward `VIKING_RAM_TURN_AT_MAX`
+/// at peak so a missed charge has to circle back wide.
+///
+/// Runs on `With<Enemy>` so it only touches boss-side ships;
+/// friendly Vikings keep going through `ally_ai`.
+pub fn boss_viking_ai(
+    time: Res<Time>,
+    candidates: Query<(&Transform, &Faction), Without<VikingRamCharge>>,
+    mut vikings: Query<
+        (&mut Transform, &mut Velocity, &mut Heading, &Faction, &mut VikingRamCharge),
+        With<crate::enemy::Enemy>,
+    >,
+) {
+    let dt = time.delta_secs();
+    for (mut tf, mut vel, mut heading, faction, mut charge) in &mut vikings {
+        let pos = tf.translation.truncate();
+        let target_faction = faction.0.opposite();
+
+        let mut nearest: Option<(f32, Vec2)> = None;
+        for (otf, ofac) in &candidates {
+            if ofac.0 != target_faction { continue; }
+            let op = otf.translation.truncate();
+            let d = op.distance(pos);
+            if nearest.map_or(true, |(bd, _)| d < bd) {
+                nearest = Some((d, op));
+            }
+        }
+
+        if nearest.is_some() {
+            let ramp = (VIKING_RAM_MAX_SPEED - VIKING_RAM_BASE_SPEED) / VIKING_RAM_RAMP_TIME;
+            charge.current_speed = (charge.current_speed + ramp * dt)
+                .min(VIKING_RAM_MAX_SPEED);
+        } else {
+            charge.current_speed = (charge.current_speed - VIKING_RAM_DECAY_PER_SEC * dt)
+                .max(VIKING_RAM_BASE_SPEED);
+        }
+
+        let speed = charge.current_speed;
+        let t = ((charge.current_speed - VIKING_RAM_BASE_SPEED)
+            / (VIKING_RAM_MAX_SPEED - VIKING_RAM_BASE_SPEED))
+            .clamp(0.0, 1.0);
+        let base_turn = ShipClass::Viking.turn_rate();
+        let turn = base_turn + (VIKING_RAM_TURN_AT_MAX - base_turn) * t;
+
+        if let Some((_, ep)) = nearest {
+            let to = ep - pos;
+            if to.length_squared() > 1.0 {
+                let desired = (-to.x).atan2(to.y);
+                heading.0 = approach_angle(heading.0, desired, turn * dt);
+            }
+        }
+        let dir = Vec2::new(-heading.0.sin(), heading.0.cos());
+        vel.0 = dir * speed;
+        tf.rotation = Quat::from_rotation_z(heading.0);
+    }
+}
+
 pub fn ally_death_check(
     mut commands: Commands,
     pm: Option<Res<PaletteMaterials>>,
@@ -3094,8 +3232,22 @@ pub fn oil_slick_burn_tick(
 // the player ship's `friendly_ram_damage`: per-victim grace prevents
 // per-frame multi-tap, and a screen-shake kick punches the impact.
 
+/// Per-Viking ram-charge state. `current` is the current forward speed
+/// while charging; it ramps from `VIKING_RAM_BASE_SPEED` up to
+/// `VIKING_RAM_MAX_SPEED` over `VIKING_RAM_RAMP_TIME` seconds while a
+/// target is held, and resets when the target is lost / the ram lands /
+/// the charge is interrupted. Acts as the unique marker `viking_ram_damage`
+/// queries on, replacing the old zero-sized `VikingRamCharge` tag.
 #[derive(Component)]
-pub struct VikingRamCharge;
+pub struct VikingRamCharge {
+    pub current_speed: f32,
+}
+
+impl Default for VikingRamCharge {
+    fn default() -> Self {
+        Self { current_speed: VIKING_RAM_BASE_SPEED }
+    }
+}
 
 /// Per-victim cooldown so a Viking pressed against an enemy doesn't
 /// chunk it every frame. Cleared after the grace window expires.
@@ -3104,9 +3256,35 @@ pub struct VikingRamGrace {
     pub remaining: f32,
 }
 
-const VIKING_RAM_DAMAGE: i32 = 18;
+/// Base damage applied on a low-speed contact ram. Scaled up by the
+/// current charge speed in `viking_ram_damage` (up to `VIKING_RAM_DAMAGE_CAP`).
+const VIKING_RAM_DAMAGE: i32 = 35;
+/// Cap on the charge-speed-scaled damage. Even a perfectly-timed
+/// full-speed ram can't exceed this.
+const VIKING_RAM_DAMAGE_CAP: i32 = 50;
 const VIKING_RAM_GRACE: f32 = 0.55;
 const VIKING_RAM_TRAUMA: f32 = 0.5;
+
+/// Charge ramp parameters. The longship starts every charge slow so
+/// the player has a window to react, but builds up to a speed that
+/// outpaces every other ship in the fleet — at full charge the only
+/// safe play is to dodge sideways and let the Viking overshoot.
+pub const VIKING_RAM_BASE_SPEED: f32 = 18.0;
+/// Cap on charge speed — 2.5× the player's 30 u/s baseline so the
+/// Viking is the fastest thing on the field without overshooting
+/// the play boundary every time it commits.
+pub const VIKING_RAM_MAX_SPEED: f32  = 75.0;
+/// Seconds to ramp from base to max while a target is held.
+pub const VIKING_RAM_RAMP_TIME: f32  = 1.0;
+/// Turn rate at full charge — slower than the base 1.6 rad/s so a
+/// missed charge has to circle back, but generous enough to
+/// re-acquire before the Viking flies all the way to the edge.
+pub const VIKING_RAM_TURN_AT_MAX: f32 = 0.5;
+/// Speed bleed (units/sec) while no target is held. Bleeding
+/// gradually instead of snapping back to base preserves momentum
+/// across brief spawn gaps so the Viking doesn't visibly lurch
+/// between fast/slow every time an enemy dies.
+pub const VIKING_RAM_DECAY_PER_SEC: f32 = 30.0;
 
 /// Snapshot every Viking's position + the faction it wants to ram,
 /// then iterate every faction-bearing entity and apply ram damage on
@@ -3116,7 +3294,7 @@ pub fn viking_ram_damage(
     time: Res<Time>,
     mut commands: Commands,
     mut shake: ResMut<crate::modes::ScreenShake>,
-    vikings: Query<(&Transform, &Faction, &Ally), With<VikingRamCharge>>,
+    mut vikings: Query<(Entity, &Transform, &Faction, &Ally, &mut VikingRamCharge)>,
     mut victims: Query<(
         Entity,
         &Transform,
@@ -3129,12 +3307,20 @@ pub fn viking_ram_damage(
 ) {
     let dt = time.delta_secs();
     // Snapshot first so the inner mut-victims pass doesn't overlap
-    // the read-only viking pass on the same components.
-    let viking_snap: Vec<(Vec2, FactionKind)> = vikings
+    // the read-only viking pass on the same components. Carries the
+    // Viking entity + its current charge speed so we can both reset
+    // on contact and scale damage by impact speed.
+    let viking_snap: Vec<(Entity, Vec2, FactionKind, f32)> = vikings
         .iter()
-        .map(|(tf, fac, _)| (tf.translation.truncate(), fac.0.opposite()))
+        .map(|(e, tf, fac, _, charge)| {
+            (e, tf.translation.truncate(), fac.0.opposite(), charge.current_speed)
+        })
         .collect();
     if viking_snap.is_empty() { return; }
+
+    // Track which Vikings landed a hit this frame so we can reset
+    // their charge speed back to base after the loop.
+    let mut hit_this_frame: Vec<Entity> = Vec::new();
 
     for (e, vtf, vfac, mut h, mut fx, grace) in &mut victims {
         if let Some(mut g) = grace {
@@ -3144,14 +3330,23 @@ pub fn viking_ram_damage(
         }
         if h.0 <= 0 { continue; }
         let vp = vtf.translation.truncate();
-        for &(viking_pos, target_faction) in &viking_snap {
+        for &(viking_e, viking_pos, target_faction, charge_speed) in &viking_snap {
             if vfac.0 != target_faction { continue; }
             // Combined approximate hit radius (longship hit ~3 +
             // typical victim hit ~3.5, plus a bit of slop so the
             // ram registers as soon as silhouettes overlap).
             let r = 8.0;
             if vp.distance_squared(viking_pos) < r * r {
-                let dealt = crate::bullet::apply_damage(&mut h, &mut fx, VIKING_RAM_DAMAGE);
+                // Damage scales with the impact speed: a fresh charge
+                // starts at the base damage, a full-charge ram caps
+                // at `VIKING_RAM_DAMAGE_CAP`.
+                let t = ((charge_speed - VIKING_RAM_BASE_SPEED)
+                    / (VIKING_RAM_MAX_SPEED - VIKING_RAM_BASE_SPEED))
+                    .clamp(0.0, 1.0);
+                let bonus = (VIKING_RAM_DAMAGE_CAP - VIKING_RAM_DAMAGE) as f32 * t;
+                let dmg = (VIKING_RAM_DAMAGE + bonus.round() as i32)
+                    .min(VIKING_RAM_DAMAGE_CAP);
+                let dealt = crate::bullet::apply_damage(&mut h, &mut fx, dmg);
                 crate::bullet::credit_damage(
                     &mut stats,
                     Some(crate::bullet::DamageSource::Ally(ShipClass::Viking)),
@@ -3159,7 +3354,21 @@ pub fn viking_ram_damage(
                 );
                 shake.add_trauma(VIKING_RAM_TRAUMA);
                 commands.entity(e).insert(VikingRamGrace { remaining: VIKING_RAM_GRACE });
+                hit_this_frame.push(viking_e);
                 break;
+            }
+        }
+    }
+
+    // Bleed off a bit of charge on impact but DON'T reset to base —
+    // a Viking that's locked onto a victim should stay scary across
+    // consecutive rams. The full reset to base only happens when the
+    // Viking loses its target (handled in `ally_ai`).
+    if !hit_this_frame.is_empty() {
+        for (e, _, _, _, mut charge) in &mut vikings {
+            if hit_this_frame.contains(&e) {
+                charge.current_speed = (charge.current_speed * 0.75)
+                    .max(VIKING_RAM_BASE_SPEED);
             }
         }
     }

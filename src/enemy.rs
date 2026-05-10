@@ -275,6 +275,23 @@ pub fn spawn_enemies(
                 }
                 combat_ctx.pending_spawns = queue;
                 combat_ctx.spawn_tick = WAVE_TELEGRAPH_DELAY;
+
+                // Final wave of a 5★ section drops the boss into the
+                // arena alongside the normal wave roster. The boss is
+                // tagged `Enemy` (via `spawn_boss`) so the existing
+                // death / collision / level-complete plumbing handles
+                // it without bespoke wiring; budget isn't decremented
+                // for the boss, so `level_complete_check` keeps
+                // waiting for it to die after the last regular spawn.
+                if combat_ctx.wave_idx + 1 == combat_ctx.wave_count {
+                    if let Some(class) = combat_ctx.boss_pending.take() {
+                        let pos = random_edge_pos(&mut rng);
+                        let heading = (-pos.x).atan2(pos.y) + std::f32::consts::PI;
+                        crate::ally::spawn_boss(
+                            &mut commands, &pm, &em, &mut meshes, pos, heading, class,
+                        );
+                    }
+                }
                 return;
             }
 
@@ -372,6 +389,9 @@ pub struct SpawnIndicator;
 
 #[derive(Resource)]
 pub struct SpawnIndicatorAssets {
+    /// Solid filled triangle pointing outward toward the spawn site.
+    /// Broad base, tall tip — reads as a simple wedge of incoming
+    /// trouble without the steep / pointy chevron silhouette.
     pub mesh: Handle<Mesh>,
     pub material: Handle<ColorMaterial>,
 }
@@ -381,14 +401,18 @@ pub fn setup_spawn_indicator_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    // Triangle pointing along +Y; the spawner rotates per-instance to
-    // face outward.
+    // Solid wedge — wider base + taller tip than the original tiny
+    // triangle so it reads at a glance even at low alpha. Tip along
+    // +Y; the spawner rotates per-instance to point outward.
     let mesh = meshes.add(Triangle2d::new(
-        Vec2::new(-3.0, -2.5),
-        Vec2::new(3.0, -2.5),
-        Vec2::new(0.0, 4.5),
+        Vec2::new(-4.5, -2.8),
+        Vec2::new( 4.5, -2.8),
+        Vec2::new( 0.0,  5.6),
     ));
-    let material = materials.add(Color::srgba(0.95, 0.30, 0.40, 0.85));
+    // Deeper blood-red at peak alpha — the previous pinkish hue read
+    // as a generic UI accent. Darker reds carry "danger / spawn"
+    // weight better and contrast cleanly with the bright ocean.
+    let material = materials.add(Color::srgba(0.72, 0.10, 0.12, 0.85));
     commands.insert_resource(SpawnIndicatorAssets { mesh, material });
 }
 
@@ -418,7 +442,9 @@ fn spawn_indicator(
 }
 
 /// Pulse the shared indicator-material alpha. All indicators share
-/// the asset, so this single write animates every visible marker.
+/// the asset, so this single write animates every visible arrow.
+/// Faster + wider-range than the original sine so the marker reads
+/// as an active warning rather than a passive blip.
 pub fn tick_spawn_indicators(
     time: Res<Time>,
     assets: Option<Res<SpawnIndicatorAssets>>,
@@ -427,7 +453,9 @@ pub fn tick_spawn_indicators(
     let Some(assets) = assets else { return };
     if let Some(mat) = materials.get_mut(&assets.material) {
         let t = time.elapsed_secs();
-        let alpha = 0.30 + 0.55 * (0.5 + 0.5 * (t * 8.0).sin());
+        // 12 rad/s ≈ 1.9 Hz; range 0.18→1.0 so the dim end nearly
+        // disappears for a punchier flash.
+        let alpha = 0.18 + 0.82 * (0.5 + 0.5 * (t * 12.0).sin());
         mat.color = mat.color.with_alpha(alpha);
     }
 }

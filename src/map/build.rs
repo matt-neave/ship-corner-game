@@ -83,6 +83,9 @@ pub fn build_default_map() -> Vec<MapSection> {
                 adjacencies: adj.to_vec(),
                 stars: 1,
                 slots: Vec::new(),
+                // Filled in by `MapState::new` after `compute_stars`
+                // — only 5★ sections get a boss assigned.
+                boss_class: None,
             }
         })
         .collect()

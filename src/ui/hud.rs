@@ -396,6 +396,7 @@ pub fn update_map_button(
 pub fn update_wave_ui(
     mode: Res<GameMode>,
     view: Res<ViewMode>,
+    stats: Res<crate::stats::PlayerStats>,
     friendly: Query<&Health, With<Friendly>>,
     mut pier_q: Query<&mut Visibility, (With<PierVisual>, Without<WaveHpUi>)>,
     mut hp_root_q: Query<&mut Visibility, (With<WaveHpUi>, Without<PierVisual>)>,
@@ -420,30 +421,31 @@ pub fn update_wave_ui(
     }
 
     let Ok(h) = friendly.single() else { return; };
-    let max_hp = current_max_hp(&mode);
+    let max_hp = current_max_hp(&mode, &stats);
     let pct = (h.0 as f32 / max_hp as f32).clamp(0.0, 1.0);
 
     for mut node in &mut hp_fill_q {
         node.width = Val::Percent(pct * 100.0);
     }
     for mut t in &mut hp_text_q {
-        **t = format!("{}", h.0.max(0));
+        **t = format!("{}/{}", h.0.max(0), max_hp);
     }
 }
 
 /// Despawn + respawn the bar's vertical tick lines whenever max HP
-/// changes (currently mode flips: Sandbox 100 ↔ Wave 50).
+/// changes (mode flips OR PlayerStats.hp upgrades).
 pub fn update_hp_subdividers(
     mode: Res<GameMode>,
+    stats: Res<crate::stats::PlayerStats>,
     mut commands: Commands,
     track_q: Query<Entity, With<WaveHpTrack>>,
     subdivider_q: Query<Entity, With<HpBarSubdivider>>,
 ) {
-    if !mode.is_changed() { return; }
+    if !mode.is_changed() && !stats.is_changed() { return; }
     for e in &subdivider_q { commands.entity(e).despawn(); }
     let Ok(track) = track_q.single() else { return; };
 
-    let max_hp = current_max_hp(&mode);
+    let max_hp = current_max_hp(&mode, &stats);
     commands.entity(track).with_children(|t| {
         let step = 50;
         let mut hp = step;
@@ -466,8 +468,11 @@ pub fn update_hp_subdividers(
     });
 }
 
-fn current_max_hp(mode: &GameMode) -> i32 {
-    if matches!(mode, GameMode::Wave) { FRIENDLY_HP_WAVE } else { 100 }
+fn current_max_hp(mode: &GameMode, stats: &crate::stats::PlayerStats) -> i32 {
+    // Wave mode keeps its hardcoded balance value; Sandbox follows
+    // `PlayerStats::max_hp()` so HP upgrades from the shop / debug
+    // panel actually shift the bar's full-fill mark.
+    if matches!(mode, GameMode::Wave) { FRIENDLY_HP_WAVE } else { stats.max_hp() }
 }
 
 fn spawn_ally_hp_bar(parent: &mut ChildSpawnerCommands, ally: Entity) {

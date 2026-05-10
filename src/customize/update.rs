@@ -13,14 +13,15 @@ use crate::weapon::WeaponType;
 use crate::Scrap;
 
 use super::drag::{
-    roll_fresh_stock, CustomizeShop, DragSourceKind, DragState, SHOP_REROLL_COST,
+    roll_fresh_stock, CustomizeShop, DragSourceKind, DragState, SHOP_ITEM_COST,
+    SHOP_REROLL_COST,
 };
 use super::setup::{
     empty_slot_color, empty_socket_color, rune_color_for, turret_barrel_color_for,
     turret_color_for, CustomizeScrapText, ShipRuneSocketPart, ShipSlotBadgeText,
-    ShipSlotBase, ShopRerollBg, ShopRerollBtn, ShopRerollCostText, ShopRuneNameText,
-    ShopRuneVisual, ShopTurretBadgeText, ShopTurretBase, ShopTurretNameText,
-    ShopTurretVisual,
+    ShipSlotBase, ShopRerollBg, ShopRerollBtn, ShopRerollCostText, ShopRuneCostText,
+    ShopRuneNameText, ShopRuneVisual, ShopTurretBadgeText, ShopTurretBase,
+    ShopTurretCostText, ShopTurretNameText, ShopTurretVisual,
 };
 use super::CustomizeOpen;
 
@@ -132,15 +133,48 @@ pub fn update_customize_shop(
     shop_runes: Query<(&ShopRuneVisual, &MeshMaterial2d<ColorMaterial>)>,
     mut shop_badge_texts: Query<
         (&ShopTurretBadgeText, &mut Text2d),
-        (Without<ShopTurretNameText>, Without<ShopRuneNameText>),
+        (
+            Without<ShopTurretNameText>,
+            Without<ShopRuneNameText>,
+            Without<ShopTurretCostText>,
+            Without<ShopRuneCostText>,
+        ),
     >,
     mut shop_name_texts: Query<
         (&ShopTurretNameText, &mut Text2d, &mut TextColor),
-        (Without<ShopTurretBadgeText>, Without<ShopRuneNameText>),
+        (
+            Without<ShopTurretBadgeText>,
+            Without<ShopRuneNameText>,
+            Without<ShopTurretCostText>,
+            Without<ShopRuneCostText>,
+        ),
     >,
     mut shop_rune_name_texts: Query<
         (&ShopRuneNameText, &mut Text2d, &mut TextColor),
-        (Without<ShopTurretBadgeText>, Without<ShopTurretNameText>),
+        (
+            Without<ShopTurretBadgeText>,
+            Without<ShopTurretNameText>,
+            Without<ShopTurretCostText>,
+            Without<ShopRuneCostText>,
+        ),
+    >,
+    mut shop_turret_cost_texts: Query<
+        (&ShopTurretCostText, &mut Text2d),
+        (
+            Without<ShopTurretBadgeText>,
+            Without<ShopTurretNameText>,
+            Without<ShopRuneNameText>,
+            Without<ShopRuneCostText>,
+        ),
+    >,
+    mut shop_rune_cost_texts: Query<
+        (&ShopRuneCostText, &mut Text2d),
+        (
+            Without<ShopTurretBadgeText>,
+            Without<ShopTurretNameText>,
+            Without<ShopRuneNameText>,
+            Without<ShopTurretCostText>,
+        ),
     >,
 ) {
     if !open.open {
@@ -275,6 +309,37 @@ pub fn update_customize_shop(
             }
         }
     }
+
+    // Cost labels — show the scrap price while a tile is stocked,
+    // blank when sold or being dragged. Cost is the same on every
+    // card today (`SHOP_ITEM_COST`); no per-tile math.
+    let cost_str = SHOP_ITEM_COST.to_string();
+    for (cost_marker, mut text) in &mut shop_turret_cost_texts {
+        let dragged = dragged_shop_turret == Some(cost_marker.idx);
+        let stocked = !dragged
+            && shop
+                .turrets
+                .get(cost_marker.idx)
+                .and_then(|o| o.as_ref())
+                .is_some();
+        let want: &str = if stocked { cost_str.as_str() } else { "" };
+        if text.0 != want {
+            text.0 = want.to_string();
+        }
+    }
+    for (cost_marker, mut text) in &mut shop_rune_cost_texts {
+        let dragged = dragged_shop_rune == Some(cost_marker.idx);
+        let stocked = !dragged
+            && shop
+                .runes
+                .get(cost_marker.idx)
+                .and_then(|o| o.as_ref())
+                .is_some();
+        let want: &str = if stocked { cost_str.as_str() } else { "" };
+        if text.0 != want {
+            text.0 = want.to_string();
+        }
+    }
 }
 
 fn weapon_short_label(w: WeaponType) -> &'static str {
@@ -389,7 +454,12 @@ pub fn handle_close_click(
             && cursor.y >= centre.y - half.y
             && cursor.y <= centre.y + half.y
         {
-            next.set(crate::AppState::Playing);
+            // Closing the shop drops the player onto the map between
+            // stages — they pick the next section to attack rather
+            // than getting yanked straight into combat. The `OnExit(Map)`
+            // hook refills HP + clears the arena when they enter a
+            // section.
+            next.set(crate::AppState::Map);
             return;
         }
     }

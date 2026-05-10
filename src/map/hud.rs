@@ -243,8 +243,12 @@ pub fn update_level_status_ui(
     mut text_q: Query<&mut Text, With<LevelStatusText>>,
     mut bar_q:  Query<&mut Node, (With<LevelEnemyBar>, Without<LevelStatusUi>)>,
 ) {
-    let visible = matches!(*view, ViewMode::Combat)
-        && matches!(*mode, crate::modes::GameMode::Sandbox);
+    // Banner intentionally hidden — the wave indicator (top-right)
+    // already covers wave-progress feedback; the centred enemy bar
+    // doubled up. Flip back by setting `visible` to its old value
+    // (`Combat && Sandbox`) if the banner is wanted again.
+    let _ = (&*view, &*mode);
+    let visible = false;
     let want_vis = if visible { Visibility::Inherited } else { Visibility::Hidden };
 
     let Ok(win) = windows.single() else { return; };
@@ -325,6 +329,11 @@ pub fn setup_debug_ui(mut commands: Commands) {
                 b.spawn(ui_kit::label("CUSTOMIZE", theme::FONT_MD, theme::ON_SURFACE));
             });
 
+        p.spawn((ui_kit::button(theme::SURFACE), DebugButton::AddScrap))
+            .with_children(|b| {
+                b.spawn(ui_kit::label("+10 SCRAP", theme::FONT_MD, theme::ON_SURFACE));
+            });
+
         p.spawn(ui_kit::label("SPAWN ALLY", theme::FONT_SM, theme::ON_SURFACE_DIM));
         for &class in crate::ally::ShipClass::ALL {
             p.spawn((
@@ -367,6 +376,7 @@ pub fn handle_debug_buttons(
     em: Option<Res<crate::effects::EffectMeshes>>,
     mut meshes: ResMut<Assets<Mesh>>,
     friendly: Query<&Transform, With<crate::components::Friendly>>,
+    mut scrap: ResMut<crate::Scrap>,
 ) {
     for (interaction, button) in &interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
@@ -374,6 +384,7 @@ pub fn handle_debug_buttons(
             DebugButton::ClaimMode => claim_mode.active = !claim_mode.active,
             DebugButton::Phase => { phase_evt.write(TriggerMapPhase); }
             DebugButton::OpenCustomize => { next_state.set(crate::AppState::Customize); }
+            DebugButton::AddScrap => { scrap.0 = scrap.0.saturating_add(10); }
             DebugButton::SpawnAlly(class) => {
                 let Some(pm_ref) = pm.as_deref() else { continue; };
                 let Some(em_ref) = em.as_deref() else { continue; };

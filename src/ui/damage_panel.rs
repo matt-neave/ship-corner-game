@@ -364,24 +364,18 @@ fn amount_for(source: DamageSource, stats: &DamageStats) -> u64 {
     }
 }
 
-/// Visibility gate: panel shows only during live combat. Hidden in
-/// menus, shop, pause, and on the (deprecated) map view.
+/// Visibility gate: LHS damage panel intentionally hidden in-game.
+/// Flip the `let visible = false;` short-circuit back to its prior
+/// `(Playing | StageComplete) && Combat` predicate to restore the
+/// per-slot turret + share bars on the left edge.
 pub fn sync_damage_panel_visibility(
     state: Res<State<crate::AppState>>,
     view: Res<crate::map::ViewMode>,
     mut q: Query<&mut Visibility, With<DamagePanelRoot>>,
 ) {
-    // Visible during live combat AND during the StageComplete buffer
-    // so the player can read the just-finished round's totals before
-    // the shop opens.
-    let s = *state.get();
-    let want = if matches!(s, crate::AppState::Playing | crate::AppState::StageComplete)
-        && *view == crate::map::ViewMode::Combat
-    {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
+    let _ = (&*state, &*view);
+    let visible = false;
+    let want = if visible { Visibility::Inherited } else { Visibility::Hidden };
     for mut v in &mut q {
         if *v != want { *v = want; }
     }

@@ -554,10 +554,10 @@ pub fn tick_buildings(
 
 /// End of a level: when the per-section enemy budget is fully drained
 /// AND no enemies are alive, claim the section, bump the campaign
-/// counter, immediately queue up the *next* combat's enemy budget,
-/// and open the shop. When the player closes the shop the AppState
-/// flips back to Playing and combat resumes against the fresh wave —
-/// no map detour.
+/// counter, and transition into the StageComplete buffer. The buffer
+/// hands off to Customize (shop) → Map → Playing, where the next
+/// section's combat budget is queued as the boat crosses into it
+/// (`map_boat_movement`).
 pub fn level_complete_check(
     view: Res<ViewMode>,
     mut state: ResMut<MapState>,

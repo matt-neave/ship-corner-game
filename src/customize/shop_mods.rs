@@ -48,6 +48,11 @@ pub struct ShopModFill { pub idx: usize, pub spec_pos: Vec2 }
 #[derive(Component, Clone, Copy)]
 pub struct ShopModText { pub idx: usize, pub spec_pos: Vec2 }
 
+/// Cost label below the card. Same owned-visibility lifecycle as
+/// `ShopModText`: shown while the slot is occupied, hidden when empty.
+#[derive(Component, Clone, Copy)]
+pub struct ShopModCostText { pub idx: usize, pub spec_pos: Vec2 }
+
 /// Spawn three card slots centred on `centre_x` at the given `y`.
 pub fn spawn_mod_cards(commands: &mut Commands, centre_x: f32, y: f32) {
     let step = MOD_CARD_W + MOD_CARD_GAP;
@@ -94,6 +99,22 @@ fn spawn_card(commands: &mut Commands, idx: usize, spec_pos: Vec2) {
         RenderLayers::layer(UPSCALE_LAYER),
         ShopModText { idx, spec_pos },
     ));
+    // Cost label, positioned below the card. Same gold accent as the
+    // other shop labels; per-frame sync rewrites position + visibility.
+    let cost_spec = spec_pos + Vec2::new(0.0, -MOD_CARD_H * 0.5 - 6.0);
+    commands.spawn((
+        Text2d::new(""),
+        TextFont {
+            font_size: 10.0,
+            font_smoothing: FontSmoothing::None,
+            ..default()
+        },
+        TextColor(Color::srgb(1.0, 0.85, 0.30)),
+        Transform::from_xyz(0.0, 0.0, Z_TEXT),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        ShopModCostText { idx, spec_pos: cost_spec },
+    ));
     // Hit area on the customize layer. Used for cursor-in-rect tests.
     commands.spawn((
         Transform::from_translation(spec_pos.extend(2.0)),
@@ -109,17 +130,20 @@ pub fn update_shop_mod_cards(
     viewport: Res<CustomizeViewport>,
     shop: Option<Res<CustomizeShop>>,
     mut outlines: Query<(&ShopModOutline, &mut Visibility, &mut Transform, &mut Sprite),
-        (Without<ShopModFill>, Without<ShopModText>)>,
+        (Without<ShopModFill>, Without<ShopModText>, Without<ShopModCostText>)>,
     mut fills: Query<(&ShopModFill, &mut Visibility, &mut Transform, &mut Sprite),
-        (Without<ShopModOutline>, Without<ShopModText>)>,
+        (Without<ShopModOutline>, Without<ShopModText>, Without<ShopModCostText>)>,
     mut texts: Query<(&ShopModText, &mut Visibility, &mut Transform, &mut Text2d),
-        (Without<ShopModOutline>, Without<ShopModFill>)>,
+        (Without<ShopModOutline>, Without<ShopModFill>, Without<ShopModCostText>)>,
+    mut cost_texts: Query<(&ShopModCostText, &mut Visibility, &mut Transform, &mut Text2d),
+        (Without<ShopModOutline>, Without<ShopModFill>, Without<ShopModText>)>,
 ) {
     let panel_visible = open.open && shop.is_some();
     if !panel_visible {
-        for (_, mut v, _, _) in &mut outlines { hide_one(&mut v); }
-        for (_, mut v, _, _) in &mut fills    { hide_one(&mut v); }
-        for (_, mut v, _, _) in &mut texts    { hide_one(&mut v); }
+        for (_, mut v, _, _) in &mut outlines   { hide_one(&mut v); }
+        for (_, mut v, _, _) in &mut fills      { hide_one(&mut v); }
+        for (_, mut v, _, _) in &mut texts      { hide_one(&mut v); }
+        for (_, mut v, _, _) in &mut cost_texts { hide_one(&mut v); }
         return;
     }
     let shop = shop.unwrap();
@@ -153,6 +177,15 @@ pub fn update_shop_mod_cards(
             tf.translation.x = slot.spec_pos.x * s;
             tf.translation.y = slot.spec_pos.y * s;
         }
+    }
+    let cost_label = super::drag::SHOP_ITEM_COST.to_string();
+    for (slot, mut vis, mut tf, mut text) in &mut cost_texts {
+        let occupied = shop.mods.get(slot.idx).map_or(false, |m| m.is_some());
+        set_vis(&mut vis, if occupied { Visibility::Inherited } else { Visibility::Hidden });
+        if !occupied { continue; }
+        if text.0 != cost_label { text.0 = cost_label.clone(); }
+        tf.translation.x = slot.spec_pos.x * s;
+        tf.translation.y = slot.spec_pos.y * s;
     }
 }
 

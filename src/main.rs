@@ -55,7 +55,7 @@ mod weapon;
 
 use ally::{
     ally_ai, ally_death_check, ally_turret_aim_fire, boarder_tick,
-    boarding_launcher_fire, flash_mine_dots, homing_missile_track,
+    boarding_launcher_fire, boss_viking_ai, flash_mine_dots, homing_missile_track,
     mine_layer_drop, mine_tick, missile_launcher_fire,
     oil_slick_burn_tick, oil_slick_grow_tick, oil_tanker_cycle, plane_ai,
     tender_heal_beam, update_boarding_ropes, viking_ram_damage,
@@ -80,11 +80,12 @@ use enemy::{
     tick_spawn_indicators, track_enemy_damage_for_hp_bars, update_enemy_hp_bars,
 };
 use map::{
-    advance_map_anim_timeline, apply_view_mode, close_popup_on_view_change,
-    handle_building_choice_clicks, handle_debug_buttons,
+    advance_map_anim_timeline, apply_view_mode, boss_patrol_movement,
+    close_popup_on_view_change, handle_building_choice_clicks, handle_debug_buttons,
     in_combat_view, level_complete_check, level_fail_check, map_begin_phase,
     map_boat_movement, map_click_input, refresh_map_fill, setup_currency_ui,
     setup_debug_ui, setup_level_status_ui, setup_map, setup_progress_assets,
+    spawn_boss_patrols,
     sync_debug_panel_visibility, sync_owned_slot_visuals, tick_buildings,
     toggle_debug_ui_on_hash, update_anim_beams, update_anim_pulses,
     update_building_button_tints, update_building_description, update_building_hover_tooltip,
@@ -114,8 +115,8 @@ use rune::{tick_echoes, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_re
 use ship::{apply_velocity, friendly_movement, friendly_ram_damage, setup_world};
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{
-    helicopter_ai, mortar_shell_tick, sync_helipad_helicopters, sync_turret_config,
-    turret_aim_fire, SlotCfg, TurretConfig,
+    helicopter_ai, mortar_shell_tick, sync_helipad_helicopters, sync_helipad_nose_barrels,
+    sync_turret_config, turret_aim_fire, SlotCfg, TurretConfig,
 };
 use ui::{
     force_hide_ui_panel, reset_damage_stats, setup_damage_panel, setup_ui,
@@ -143,12 +144,20 @@ use weapon::WeaponType;
 pub enum AppState {
     #[default]
     MainMenu,
+    /// Active combat in a section. The combat-sim run-conditions all
+    /// gate on this state, so anything else (Map / Customize / Paused
+    /// / etc.) freezes gameplay.
     Playing,
     /// 5-second "STAGE COMPLETE" beat between a cleared level and the
     /// shop opening. Combat-sim systems idle the same way they do in
     /// `Customize` / `Paused`.
     StageComplete,
     Customize,
+    /// Between-stage map screen. Player navigates the boat to an
+    /// unowned section to start the next combat. Reached by closing
+    /// the shop; left when the boat crosses into a section, which
+    /// transitions to `Playing`.
+    Map,
     Paused,
     /// Player died — shows a transparent overlay with RESTART / MAIN
     /// MENU / QUIT controls. The dead ship + frozen arena read through
@@ -173,6 +182,44 @@ fn sync_state_to_open_resources(
     if menu.0 != menu_want { menu.0 = menu_want; }
     if customize.open != customize_want { customize.open = customize_want; }
     if paused.0 != paused_want { paused.0 = paused_want; }
+}
+
+/// `OnEnter(Map)` — flip the ViewMode to Map so the cameras swap to the
+/// map view. ViewMode used to be set imperatively in click handlers and
+/// `map_boat_movement`; with Map now its own `AppState`, the state
+/// transition is the single source of truth and ViewMode follows it.
+fn enter_map_view(mut view: ResMut<map::ViewMode>) {
+    if *view != map::ViewMode::Map { *view = map::ViewMode::Map; }
+}
+
+/// `OnEnter(Playing)` — flip ViewMode back to Combat. Covers every path
+/// into combat (boot's MainMenu→Playing, Map→Playing on section click,
+/// GameOver→Playing on RESTART, Paused→Playing on resume).
+fn enter_combat_view(mut view: ResMut<map::ViewMode>) {
+    if *view != map::ViewMode::Combat { *view = map::ViewMode::Combat; }
+}
+
+/// `OnExit(Map)` — running this set on the Map→Playing transition is
+/// the canonical "stage starting" hook. Refills the friendly hull to
+/// max and despawns lingering bullets / mines / oil slicks / particles
+/// from the previous stage so each new combat starts clean.
+///
+/// Doesn't fire on Paused→Playing or GameOver→Playing — those don't
+/// pass through `Map` — so a mid-fight resume keeps the player's HP
+/// and a death-restart already gets a full reset via
+/// `game_over::reset_run_for_restart`.
+fn refill_and_clean_for_next_stage(
+    stats: Res<stats::PlayerStats>,
+    mut friendly: Query<&mut components::Health, With<components::Friendly>>,
+    arena: Query<Entity, wave::ArenaDisposeFilter>,
+    mut commands: Commands,
+) {
+    if let Ok(mut h) = friendly.single_mut() {
+        h.0 = stats.max_hp();
+    }
+    for e in &arena {
+        commands.entity(e).despawn();
+    }
 }
 
 // ---------- Cross-cutting resources ----------
@@ -285,6 +332,10 @@ fn main() {
         .insert_resource(Paused::default())
         .add_systems(Startup, (
             setup_render, setup_world, setup_ui, setup_map,
+            // Spawn boss patrol icons after `setup_map` has populated
+            // `MapState.sections` so 5★ section polygons are available
+            // when `spawn_boss_patrols` reject-samples patrol targets.
+            spawn_boss_patrols,
             setup_debug_ui, setup_currency_ui, setup_progress_assets,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
             init_customize_shop, setup_customize_render, setup_customize_ui,
@@ -311,6 +362,16 @@ fn main() {
         .add_systems(OnEnter(AppState::MainMenu), main_menu::clear_arena_on_main_menu)
         .add_systems(OnExit(AppState::Customize), reset_damage_stats)
         .add_systems(OnEnter(AppState::Customize), clear_spawn_indicators)
+        // ViewMode follows AppState. The OnEnter hooks are the single
+        // source of truth for camera/view swaps; old call sites that
+        // imperatively set `*view = ViewMode::*` have moved to setting
+        // the state instead.
+        .add_systems(OnEnter(AppState::Map), enter_map_view)
+        .add_systems(OnEnter(AppState::Playing), enter_combat_view)
+        // Stage-start hook: HP refill + arena cleanup on the Map→Playing
+        // transition. Keyed off `OnExit(Map)` so it doesn't accidentally
+        // fire on Paused→Playing or GameOver→Playing.
+        .add_systems(OnExit(AppState::Map), refill_and_clean_for_next_stage)
         // Game over: spawn the transparent end-screen overlay on entry,
         // despawn it + run the full fresh-run reset on exit. Both the
         // RESTART and MAIN MENU click paths leave through OnExit, so
@@ -365,7 +426,11 @@ fn main() {
             // invariant first so a freshly spawned heli ticks this frame
             // in `helicopter_ai`. Both gate themselves on slot config so
             // they idle harmlessly when no HeliPad is equipped.
-            (sync_helipad_helicopters, helicopter_ai).chain(),
+            // `sync_helipad_helicopters` first so freshly-spawned heli
+            // entities exist when `sync_helipad_nose_barrels` looks up
+            // their owning slot for visibility. `.chain()` inserts the
+            // command-flush sync point that makes that hand-off safe.
+            (sync_helipad_helicopters, sync_helipad_nose_barrels, helicopter_ai).chain(),
             // Damage application chain: every source writes Health, then
             // `enemy_death_check` despawns anything that hit zero. Chained so
             // sources see consistent HP and only one despawn fires per kill.
@@ -461,6 +526,11 @@ fn main() {
             flash_mine_dots,
             // Tender: pick heal target + apply HP regen + spawn beam visual.
             tender_heal_beam,
+            // Viking: boss-side AI overrides the standard `enemy_ai`
+            // chase with the same charge-ramp curve as the friendly
+            // ally Viking. Runs before `viking_ram_damage` so the
+            // hit-frame snapshot already reflects this frame's speed.
+            boss_viking_ai,
             // Viking: ram damage on contact with opposite-faction units.
             viking_ram_damage,
             // Blackbeard: launch boarding parties; boarders travel
@@ -491,6 +561,13 @@ fn main() {
             update_anim_beams,
             map_click_input,
             map_boat_movement,
+            // Patrol icons on 5★ sections — wander inside their
+            // polygon while the player is on the map. Gated below
+            // via the block-level `run_if` would be wrong (this
+            // outer block also drives Combat-view systems like
+            // `apply_view_mode`); patrol gates itself on
+            // `AppState::Map` instead.
+            boss_patrol_movement.run_if(in_state(AppState::Map)),
             refresh_map_fill,
             sync_owned_slot_visuals,
             update_map_button,

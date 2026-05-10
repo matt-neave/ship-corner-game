@@ -11,17 +11,20 @@
 //! unowned section flips the view to combat (with budget snapshot).
 
 use bevy::prelude::*;
+use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
 
 use crate::balance::PLAY_WORLD;
 use crate::components::Heading;
+use crate::effects::{spawn_particles_on_layer, EffectMeshes};
 use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
+use crate::palette::PaletteMaterials;
 use crate::ship::approach_angle;
 
 use super::buildings::spawn_building_popup;
 use super::{
     point_in_polygon, BuildingPopup, CombatContext, DebugClaimMode, MapBoat, MapBuilding,
-    MapState, ViewMode, SLOT_HALF,
+    MapState, ViewMode, MAP_LAYER, SLOT_HALF,
 };
 
 pub fn map_click_input(
@@ -34,6 +37,8 @@ pub fn map_click_input(
     mut commands: Commands,
     interactions: Query<&Interaction, With<Button>>,
     popups: Query<Entity, With<BuildingPopup>>,
+    em: Option<Res<EffectMeshes>>,
+    pm: Option<Res<PaletteMaterials>>,
 ) {
     if *view != ViewMode::Map { return; }
     if !mouse.just_pressed(MouseButton::Left) { return; }
@@ -88,6 +93,25 @@ pub fn map_click_input(
     }
 
     state.boat_target = Some(world);
+
+    // Cosmetic splash burst at the click position. Spawned on `MAP_LAYER`
+    // so the map camera sees it (the combat play camera is on a different
+    // layer). Reuses `HitParticle` + `update_hit_particles` — no extra
+    // tick system. Skipped if asset caches aren't ready yet.
+    if let (Some(em), Some(pm)) = (em, pm) {
+        let mut rng = rand::thread_rng();
+        let count = rand::Rng::gen_range(&mut rng, 6..=10);
+        spawn_particles_on_layer(
+            &mut commands,
+            &em,
+            &pm.splash,
+            world,
+            count,
+            60.0,
+            RenderLayers::layer(MAP_LAYER),
+            &mut rng,
+        );
+    }
 }
 
 /// Steer the boat toward `state.boat_target` using the same turn-then-
@@ -96,10 +120,11 @@ pub fn map_click_input(
 pub fn map_boat_movement(
     time: Res<Time>,
     mut state: ResMut<MapState>,
-    mut view: ResMut<ViewMode>,
+    view: Res<ViewMode>,
     mut combat_ctx: ResMut<CombatContext>,
     campaign: Res<crate::CampaignProgress>,
     stats: Res<crate::stats::PlayerStats>,
+    mut next_state: ResMut<NextState<crate::AppState>>,
     mut q: Query<(&mut Transform, &mut Heading), With<MapBoat>>,
 ) {
     if *view != ViewMode::Map { return; }
@@ -138,7 +163,16 @@ pub fn map_boat_movement(
                 state.boat_target = None;
                 let stars = state.sections[id as usize].stars;
                 combat_ctx.reset_for(stars, campaign.battles_cleared);
-                *view = ViewMode::Combat;
+                // Carry the section's pre-rolled boss class into the
+                // combat. `spawn_enemies` consumes it on the first
+                // frame of the final wave; `None` here means a normal
+                // section with no boss kicker.
+                combat_ctx.boss_pending = state.sections[id as usize].boss_class;
+                // Hand off to the state machine — `OnEnter(Playing)`
+                // flips ViewMode to Combat and `OnExit(Map)` runs the
+                // stage-start refill + arena cleanup. ViewMode is
+                // derived from AppState now, no longer set here.
+                next_state.set(crate::AppState::Playing);
             }
         }
     }

@@ -119,6 +119,25 @@ pub fn spawn_hit_particles(
     speed: f32,
     rng: &mut rand::rngs::ThreadRng,
 ) {
+    spawn_particles_on_layer(
+        commands, em, mat, pos, count, speed,
+        RenderLayers::layer(PLAY_LAYER), rng,
+    );
+}
+
+/// Same circle-burst as `spawn_hit_particles` but on a caller-supplied
+/// render layer — used by the map view to spit a small splash of particles
+/// when the player clicks empty water (different camera/layer than combat).
+pub fn spawn_particles_on_layer(
+    commands: &mut Commands,
+    em: &EffectMeshes,
+    mat: &Handle<ColorMaterial>,
+    pos: Vec2,
+    count: u32,
+    speed: f32,
+    layer: RenderLayers,
+    rng: &mut rand::rngs::ThreadRng,
+) {
     use std::f32::consts::TAU;
     for _ in 0..count {
         let a = rng.gen_range(0.0..TAU);
@@ -139,7 +158,7 @@ pub fn spawn_hit_particles(
             },
             HitParticle { life, max_life: life, base_scale: scale },
             Velocity(v),
-            RenderLayers::layer(PLAY_LAYER),
+            layer.clone(),
         ));
     }
 }

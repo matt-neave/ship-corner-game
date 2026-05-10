@@ -727,13 +727,19 @@ pub const HELI_SPEED: f32 = 28.0;
 /// Body turn rate (rad/s). Slow enough that the heli has visible
 /// inertia — wide turning circles, no instant heading flips.
 pub const HELI_TURN_RATE: f32 = 2.5;
-/// Bullet speed for helicopter MG fire — same scale as plane bullets so
-/// it reads as light arms, not the player's main batteries.
-pub const HELI_BULLET_SPEED: f32 = 80.0;
-/// Bullet lifetime / range cap on a helicopter shot. The slot's own range
-/// (TURRET_RANGE x stats range_mult) drives target acquisition; the
-/// bullet itself just needs enough remaining-distance to reach.
-pub const HELI_BULLET_RANGE: f32 = 80.0;
+/// Bullet speed for helicopter MG fire — punchy enough to read as
+/// light arms tracking a moving target.
+pub const HELI_BULLET_SPEED: f32 = 120.0;
+/// Lateral offset (perp to forward) for each of the three nose barrels.
+/// Indexed by `HeliNoseBarrel.idx`; the firing logic uses the same
+/// numbers when emitting bullets so muzzle visuals line up with where
+/// the projectile actually leaves the chassis.
+pub const HELI_BARREL_LATERAL: [f32; 3] = [-1.4, 0.0, 1.4];
+/// Bullet lifetime / range cap on a helicopter shot. Bullet's own
+/// travel budget — bumped alongside `HELI_BULLET_SPEED` so the
+/// effective travel-distance stays reasonable even when the heli
+/// detects a far-away enemy.
+pub const HELI_BULLET_RANGE: f32 = 120.0;
 
 /// Free-flying helicopter spawned by an equipped `HeliPad` slot. Owns
 /// its own world-space heading + fire cooldown so each pad's heli is
@@ -755,6 +761,16 @@ pub struct Helicopter {
     /// `TurretSlot::next_barrel`'s alternation).
     pub next_barrel: u8,
 }
+
+/// One nose-barrel rectangle. Three are spawned per helicopter (idx
+/// 0/1/2 = port/centre/stbd); `sync_helipad_helicopters` toggles
+/// visibility per slot's `barrels` count using the same rule as
+/// regular turrets:
+///   - barrels=1 → only idx 1 visible
+///   - barrels=2 → idx 0 + idx 2
+///   - barrels=3 → all three
+#[derive(Component)]
+pub struct HeliNoseBarrel { pub heli: Entity, pub idx: u8 }
 
 /// Marks the spinning rotor child of a helicopter. The rotor has its
 /// own Transform that we tick each frame for visual flair.
@@ -812,14 +828,26 @@ pub fn sync_helipad_helicopters(
         // face its current desired heading each frame.
         let body_mesh = meshes.add(Capsule2d::new(2.0, 2.5));
         let rotor_mesh = meshes.add(Rectangle::new(8.0, 0.8));
-        // Forward turret on the nose: small Circle base + small
-        // Rectangle barrel pointing along +Y (parented to the body
-        // so they rotate with it — no independent rotation).
-        let nose_base_mesh = meshes.add(Circle::new(1.1));
-        let nose_barrel_mesh = meshes.add(Rectangle::new(0.7, 2.5));
+        // Forward turret on the nose: chunky Circle base + 3 long
+        // barrel rectangles parented to the body so they rotate with
+        // it. Visibility per `slot.barrels` is set every frame in
+        // `sync_helipad_nose_barrels`.
+        let nose_base_mesh = meshes.add(Circle::new(1.7));
+        let nose_barrel_mesh = meshes.add(Rectangle::new(1.0, 3.5));
         let body_mat = pm.helipad_deck.clone();
         let nose_mat = pm.turret.clone();
-        let rotor_mat = pm.helipad_h.clone();
+        // Rotors share the dark-grey turret material so the spinning
+        // X reads as a mechanical fitting (motion blur on metal),
+        // not a yellow caution stripe.
+        let rotor_mat = pm.turret.clone();
+        // Tail boom + tail rotor reuse the body deck colour so they
+        // read as one continuous chassis. Canopy uses the white flag
+        // material so the cockpit pops as a clear front-of-hull mark.
+        let tail_mat = pm.helipad_deck.clone();
+        let canopy_mat = pm.ally_flag.clone();
+        let tail_boom_mesh = meshes.add(Rectangle::new(0.7, 3.6));
+        let tail_rotor_mesh = meshes.add(Rectangle::new(2.6, 0.4));
+        let canopy_mesh = meshes.add(Circle::new(0.7));
 
         let heli = commands.spawn((
             Mesh2d(body_mesh),
@@ -835,6 +863,41 @@ pub fn sync_helipad_helicopters(
             RenderLayers::layer(PLAY_LAYER),
         )).id();
 
+        // Tail boom — long thin rectangle extending behind the body.
+        // Body capsule reaches to y ≈ -3.25; boom starts just inside
+        // that and runs back to y ≈ -6.6. Same green as the deck so
+        // the silhouette reads as one fuselage.
+        let tail_boom = commands.spawn((
+            Mesh2d(tail_boom_mesh),
+            MeshMaterial2d(tail_mat.clone()),
+            Transform::from_xyz(0.0, -4.6, 0.02),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(tail_boom).insert(ChildOf(heli));
+
+        // Tail rotor — short horizontal rectangle at the boom tip.
+        // Perpendicular to forward so it reads as the tail-rotor disc
+        // from above. Static (doesn't spin) — selling motion through
+        // the main rotors is enough.
+        let tail_rotor = commands.spawn((
+            Mesh2d(tail_rotor_mesh),
+            MeshMaterial2d(rotor_mat.clone()),
+            Transform::from_xyz(0.0, -6.7, 0.03),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(tail_rotor).insert(ChildOf(heli));
+
+        // Cockpit canopy — small white disc on the forward half of
+        // the body. Sits just behind the nose turret base so the
+        // pilot's "window" reads against the green hull.
+        let canopy = commands.spawn((
+            Mesh2d(canopy_mesh),
+            MeshMaterial2d(canopy_mat),
+            Transform::from_xyz(0.0, 0.4, 0.03),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(canopy).insert(ChildOf(heli));
+
         // Nose turret base — sits forward of body center. Static
         // relative to the body — no independent rotation.
         let nose_base = commands.spawn((
@@ -845,14 +908,23 @@ pub fn sync_helipad_helicopters(
         )).id();
         commands.entity(nose_base).insert(ChildOf(heli));
 
-        // Nose turret barrel — protrudes forward from the base.
-        let nose_barrel = commands.spawn((
-            Mesh2d(nose_barrel_mesh),
-            MeshMaterial2d(nose_mat),
-            Transform::from_xyz(0.0, 2.7, 0.05),
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-        commands.entity(nose_barrel).insert(ChildOf(heli));
+        // Three nose barrels (port / centre / stbd). All spawned
+        // every time so a `barrels` change can flip visibility
+        // without rebuilding the helicopter; firing positions in
+        // `helicopter_ai` use the same lateral offsets so the muzzle
+        // exit lines up with the rendered barrel.
+        for idx in 0u8..3 {
+            let lateral = HELI_BARREL_LATERAL[idx as usize];
+            let nose_barrel = commands.spawn((
+                Mesh2d(nose_barrel_mesh.clone()),
+                MeshMaterial2d(nose_mat.clone()),
+                Transform::from_xyz(lateral, 3.2, 0.05),
+                RenderLayers::layer(PLAY_LAYER),
+                Visibility::Hidden,
+                HeliNoseBarrel { heli, idx },
+            )).id();
+            commands.entity(nose_barrel).insert(ChildOf(heli));
+        }
 
         // Two rotors crossed in an X — both spin at the same rate so
         // the 90° offset is preserved, giving a 4-bladed look.
@@ -867,6 +939,32 @@ pub fn sync_helipad_helicopters(
             )).id();
             commands.entity(rotor).insert(ChildOf(heli));
         }
+    }
+}
+
+/// Toggle each helicopter's nose-barrel visibility from the owning
+/// slot's `barrels` count. Mirrors the rule in `sync_turret_config`
+/// (centre-only / port+stbd / all three) so the heli's nose reads the
+/// same as a fixed turret of equivalent barrel count. Cheap; gated
+/// on `cfg.is_changed()` since barrels only flip via shop / debug.
+pub fn sync_helipad_nose_barrels(
+    cfg: Res<TurretConfig>,
+    helis: Query<&Helicopter>,
+    mut barrels: Query<(&HeliNoseBarrel, &mut Visibility)>,
+) {
+    if !cfg.is_changed() { return; }
+    for (b, mut vis) in &mut barrels {
+        let Ok(heli) = helis.get(b.heli) else { continue; };
+        let slot = cfg.slots.get(heli.owner_slot).copied().unwrap_or_default();
+        let barrels_count = slot.barrels.max(1);
+        let want_visible = match (barrels_count, b.idx) {
+            (1, 1)         => true,
+            (2, 0) | (2, 2) => true,
+            (3, _)         => true,
+            _              => false,
+        };
+        let want = if want_visible { Visibility::Inherited } else { Visibility::Hidden };
+        if *vis != want { *vis = want; }
     }
 }
 
@@ -909,15 +1007,16 @@ pub fn helicopter_ai(
 
         let cur = tf.translation.truncate();
         let effective_range = TURRET_RANGE * stats.range_mult();
-        let detect_range = effective_range * 1.4;
 
-        // Acquire nearest enemy in detection range.
+        // Acquire the nearest enemy ANYWHERE on the map — no
+        // detection radius, no leash to the boat. The heli will
+        // chase across the whole arena, only stopping at the orbit
+        // standoff when it gets close enough to fire.
         let mut best: Option<(f32, Vec2)> = None;
         for (etf, fac) in &enemies {
             if fac.0 != FactionKind::Enemy { continue; }
             let ep = etf.translation.truncate();
             let d = ep.distance(cur);
-            if d > detect_range { continue; }
             if best.map_or(true, |(bd, _)| d < bd) {
                 best = Some((d, ep));
             }
@@ -928,22 +1027,40 @@ pub fn helicopter_ai(
         // differs per anchor — close enough to engage / loose enough
         // to patrol — but the orbit math is identical (mirrors
         // `ally_ai`'s combat-orbit pattern).
+        //
+        // Per-slot stagger: even slots orbit CCW, odd CW; each slot
+        // also gets a small range offset so multiple helis don't
+        // converge on the same circle. Without this, two HeliPads
+        // pick the same nearest enemy and trace identical paths.
+        let orbit_sign = if heli.owner_slot % 2 == 0 { 1.0 } else { -1.0 };
+        let range_offset = (heli.owner_slot as f32) * 1.8;
         let (anchor, anchor_range) = if let Some((_, ep)) = best {
-            (ep, effective_range * 0.7)
+            // Hug the enemy at ~40% of slot range so the helicopter
+            // engages aggressively rather than sniping from the orbit
+            // edge. With TURRET_RANGE 60 that's ~24u — comfortably
+            // inside fire range with room for the ±6u standoff window.
+            (ep, effective_range * 0.4 + range_offset)
         } else {
-            (ship_pos, HELI_ORBIT_RADIUS)
+            (ship_pos, HELI_ORBIT_RADIUS + range_offset)
         };
         let to_anchor = anchor - cur;
         let dist = to_anchor.length();
         let unit = to_anchor.try_normalize().unwrap_or(Vec2::Y);
         let target_pos = if dist > anchor_range + 6.0 {
-            anchor // approach
+            // Approach, but offset by the orbit-direction perp so
+            // multiple helis arrive at the anchor from different
+            // angles rather than stacking on the same vector.
+            let perp = Vec2::new(-unit.y * orbit_sign, unit.x * orbit_sign);
+            anchor + perp * (heli.owner_slot as f32 * 4.0)
         } else if dist < anchor_range - 6.0 {
             cur - unit * 20.0 // back off
         } else {
             // Perpendicular orbit so the heli keeps moving even when
-            // it's at the right standoff distance.
-            let perp = Vec2::new(-unit.y, unit.x);
+            // it's at the right standoff distance. `orbit_sign` flips
+            // direction by slot parity so a pair of helis on the
+            // same enemy orbit *opposite* ways instead of chasing
+            // each other.
+            let perp = Vec2::new(-unit.y * orbit_sign, unit.x * orbit_sign);
             cur + perp * 20.0
         };
 
@@ -994,19 +1111,28 @@ pub fn helicopter_ai(
         let barrels_n = slot_cfg.barrels.max(1) as f32;
         heli.fire_cd = 1.0 / (slot_cfg.fire_rate.max(0.1) * barrels_n);
 
-        // Lateral muzzle offset for multi-barrel pairing (perp to the
-        // body's forward, scaled tight for the heli's narrow nose).
-        let lateral = match (slot_cfg.barrels.max(1), heli.next_barrel) {
-            (1, _) => 0.0,
-            (2, 0) => -1.0,
-            (2, _) =>  1.0,
-            (3, 0) => -1.2,
-            (3, 1) =>  0.0,
-            (3, _) =>  1.2,
-            _      =>  0.0,
+        // Pick which rendered barrel fires this tick + map to its
+        // lateral offset. Visible-barrel index → world-space muzzle
+        // position. Mirrors `sync_helipad_nose_barrels` so muzzle
+        // and visual line up.
+        //
+        //   - barrels=1 → only centre (idx 1) ever fires
+        //   - barrels=2 → alternate idx 0 / idx 2
+        //   - barrels=3 → cycle idx 0 → 1 → 2
+        let barrels_count = slot_cfg.barrels.max(1);
+        let visible_idx = match (barrels_count, heli.next_barrel) {
+            (1, _) => 1,
+            (2, 0) => 0,
+            (2, _) => 2,
+            (3, n) => n % 3,
+            _      => 1,
         };
-        heli.next_barrel = (heli.next_barrel + 1) % slot_cfg.barrels.max(1);
-        const NOSE_TIP_OFFSET: f32 = 3.95;
+        let lateral = HELI_BARREL_LATERAL[visible_idx as usize];
+        heli.next_barrel = (heli.next_barrel + 1) % barrels_count;
+        // Body capsule extends to y≈3.75; barrel sits at y=3.2 with
+        // length 3.5, so the tip is at y=3.2+1.75=4.95 in body-local
+        // space. Bullets exit there.
+        const NOSE_TIP_OFFSET: f32 = 4.95;
         let muzzle = new_pos + body_forward * NOSE_TIP_OFFSET + body_perp * lateral;
         // Bullets fly along the body's forward (= toward the enemy
         // since the body is facing it), not directly at the enemy's

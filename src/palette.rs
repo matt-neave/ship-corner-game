@@ -110,6 +110,9 @@ pub const BLACKBEARD_HEX: &str = "#2e2e3c";
 pub const OIL_TANKER_HEX: &str = "#7a1d1a";
 /// Viking longship hull — dark wood / russet brown.
 pub const VIKING_HEX:         &str = "#5e2a16";
+/// Viking mast — darker wood than the hull so the central pole reads
+/// as a separate piece of furniture sitting on the deck.
+pub const MAST_HEX:           &str = "#3a1c0e";
 /// Oil slick body — near-black with a faint sheen, sits flat on the
 /// water before ignition.
 pub const OIL_SLICK_HEX: &str = "#0d0e12";
@@ -268,8 +271,12 @@ pub struct PaletteMaterials {
     pub blackbeard_hull: Handle<ColorMaterial>,
     pub oil_tanker_hull: Handle<ColorMaterial>,
     /// Viking longship hull — wood-brown / russet, deliberately dark
-    /// so the white shield-stripe on top reads as a proper shield rack.
+    /// so the central mast pole reads as a separate piece of furniture
+    /// sitting on top of the deck.
     pub viking_hull: Handle<ColorMaterial>,
+    /// Viking mast — darker wood than the hull, used for the central
+    /// vertical pole on the longship. Doubles as the oar-shaft material.
+    pub mast: Handle<ColorMaterial>,
     /// Dark oil slick material — used by the OilTanker's freshly-laid
     /// pools before ignition. Burning slicks swap their material to
     /// `pm.fire` for the flaming-pool look.
@@ -324,6 +331,9 @@ pub struct PaletteMaterials {
     /// Small filled mark used for the per-section star rating, drawn in a
     /// row above each slot. Yellow so it pops on both day and night ocean.
     pub map_slot_star: Handle<ColorMaterial>,
+    /// Light blue/white spray color for the splash burst spawned when
+    /// the player clicks empty water on the map view to set a sail target.
+    pub splash: Handle<ColorMaterial>,
 }
 
 impl PaletteMaterials {
@@ -374,6 +384,7 @@ impl PaletteMaterials {
             blackbeard_hull:       materials.add(hex(BLACKBEARD_HEX)),
             oil_tanker_hull:       materials.add(hex(OIL_TANKER_HEX)),
             viking_hull:           materials.add(hex(VIKING_HEX)),
+            mast:                  materials.add(hex(MAST_HEX)),
             oil_slick:             materials.add(hex(OIL_SLICK_HEX)),
             skull_flag:            materials.add(hex(SKULL_FLAG_HEX)),
             boarder:               materials.add(hex(BOARDER_HEX)),
@@ -432,6 +443,14 @@ impl PaletteMaterials {
             // and pop on both ocean tones.
             map_slot_star:         materials.add(ColorMaterial {
                 color: Color::srgb(1.00, 0.85, 0.30),
+                alpha_mode: bevy::sprite::AlphaMode2d::Opaque,
+                ..default()
+            }),
+            // Splash spray: very-light blue, almost white. Reads as water
+            // mist against the deep-ocean fill. Opaque since the particles
+            // are tiny enough that translucency isn't needed.
+            splash:                materials.add(ColorMaterial {
+                color: Color::srgb(0.85, 0.95, 1.00),
                 alpha_mode: bevy::sprite::AlphaMode2d::Opaque,
                 ..default()
             }),
