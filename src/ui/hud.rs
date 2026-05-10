@@ -68,6 +68,11 @@ pub struct WaveHpFill;
 /// Numeric readout overlaid centered inside the track.
 #[derive(Component)]
 pub struct WaveHpText;
+/// Shield bar overlaid on the HP track. Sits between `WaveHpFill`
+/// and the numeric overlay so shield depletion reveals HP underneath.
+/// Width is set per-frame from `Shield::current / stats.shield_max`.
+#[derive(Component)]
+pub struct ShieldFill;
 /// Vertical tick line inside the track, one per 50-HP mark.
 #[derive(Component)]
 pub struct HpBarSubdivider;
@@ -260,6 +265,23 @@ pub fn setup_hud(commands: &mut Commands) {
                 BackgroundColor(Color::srgb(0.25, 0.85, 0.30)),
                 WaveHpFill,
             ));
+            // Shield overlay — sits on top of the HP fill so an active
+            // shield reads as cyan in the bar's leading region. Width
+            // is driven per-frame in `update_wave_ui`. Hidden by
+            // default; only shown when `stats.shield_max > 0`.
+            track.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(0.0),
+                    left: Val::Px(0.0),
+                    width: Val::Percent(0.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.35, 0.85, 0.95)),
+                Visibility::Hidden,
+                ShieldFill,
+            ));
             // Numeric overlay.
             track.spawn(Node {
                 position_type: PositionType::Absolute,
@@ -392,16 +414,18 @@ pub fn update_map_button(
 }
 
 /// Toggle pier + HP-bar visibility and drive the bar's fill width +
-/// numeric readout from the player's current `Health`.
+/// numeric readout from the player's current `Health`. Also drives the
+/// shield overlay from `Shield::current / stats.shield_max`.
 pub fn update_wave_ui(
     mode: Res<GameMode>,
     view: Res<ViewMode>,
     stats: Res<crate::stats::PlayerStats>,
-    friendly: Query<&Health, With<Friendly>>,
+    friendly: Query<(&Health, Option<&crate::stats::Shield>), With<Friendly>>,
     mut pier_q: Query<&mut Visibility, (With<PierVisual>, Without<WaveHpUi>)>,
     mut hp_root_q: Query<&mut Visibility, (With<WaveHpUi>, Without<PierVisual>)>,
-    mut hp_fill_q: Query<&mut Node, With<WaveHpFill>>,
+    mut hp_fill_q: Query<&mut Node, (With<WaveHpFill>, Without<ShieldFill>)>,
     mut hp_text_q: Query<&mut Text, With<WaveHpText>>,
+    mut shield_q: Query<(&mut Node, &mut Visibility), (With<ShieldFill>, Without<WaveHpFill>, Without<WaveHpUi>, Without<PierVisual>)>,
 ) {
     if mode.is_changed() {
         let want_pier = matches!(*mode, GameMode::Wave);
@@ -420,7 +444,7 @@ pub fn update_wave_ui(
         }
     }
 
-    let Ok(h) = friendly.single() else { return; };
+    let Ok((h, shield)) = friendly.single() else { return; };
     let max_hp = current_max_hp(&mode, &stats);
     let pct = (h.0 as f32 / max_hp as f32).clamp(0.0, 1.0);
 
@@ -429,6 +453,21 @@ pub fn update_wave_ui(
     }
     for mut t in &mut hp_text_q {
         **t = format!("{}/{}", h.0.max(0), max_hp);
+    }
+
+    // Shield: width tracks shield.current relative to the player's
+    // current max-HP scale (so the cyan bar visually overlaps the HP
+    // bar 1-to-1). Hidden when the player hasn't bought any shield.
+    let shield_max = stats.shield_max.effective().max(0.0);
+    let shield_cur = shield.map(|s| s.current).unwrap_or(0.0);
+    let shield_pct = if max_hp > 0 {
+        (shield_cur / max_hp as f32).clamp(0.0, 1.0)
+    } else { 0.0 };
+    let want_vis = if shield_max > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+    for (mut node, mut vis) in &mut shield_q {
+        let want_w = Val::Percent(shield_pct * 100.0);
+        if node.width != want_w { node.width = want_w; }
+        if *vis != want_vis { *vis = want_vis; }
     }
 }
 

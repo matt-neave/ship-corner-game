@@ -1011,11 +1011,12 @@ fn build_ship_for_faction(
         )).id();
         commands.entity(prow).insert(ChildOf(ship));
 
-        // Central mast — thin vertical dark-wood pole running most of
-        // the deck length, centred on the hull. Reads as a pirate /
-        // longship mast at a glance and rotates with the hull because
-        // it's parented under the same `ChildOf` tree.
-        let mast_mesh = meshes.add(Rectangle::new(hull_w * 0.18, hull_h * 0.7));
+        // Central mast — short thick dark-wood pole sitting in the
+        // middle of the deck, clearly *central* lengthwise rather
+        // than running most of the hull. Rotates with the ship via
+        // the shared `ChildOf` tree.
+        let mast_h = hull_h * 0.40;
+        let mast_mesh = meshes.add(Rectangle::new(hull_w * 0.22, mast_h));
         let mast = commands.spawn((
             Mesh2d(mast_mesh),
             MeshMaterial2d(pm.mast.clone()),
@@ -1029,7 +1030,7 @@ fn build_ship_for_faction(
         // not a leaning sail.
         let flag_w = hull_w * 1.1;
         let flag_h = hull_h * 0.16;
-        let mast_top_y = hull_h * 0.35;
+        let mast_top_y = mast_h * 0.5;
         let flag_mesh = meshes.add(Rectangle::new(flag_w, flag_h));
         let flag = commands.spawn((
             Mesh2d(flag_mesh),
@@ -1363,15 +1364,32 @@ pub fn ally_ai(
         // next charge starts slow. `viking_ram_damage` resets the
         // component on contact via `Commands` for the same reason.
         if let Some(charge) = viking_charge.as_deref_mut() {
-            if viking_has_target {
+            // Bull-charge gate: only ramp speed when the Viking is
+            // already roughly *facing* the target. Mid-turn, the
+            // ship slows back toward base — so a missed charge has
+            // to re-align before regaining steam, and a hit that
+            // throws off the heading naturally costs momentum.
+            let aligned = if let Some((_, ep)) = nearest {
+                let to_target = ep - pos;
+                if to_target.length_squared() > 1.0 {
+                    let desired = (-to_target.x).atan2(to_target.y);
+                    let delta = (heading.0 - desired + std::f32::consts::PI)
+                        .rem_euclid(std::f32::consts::TAU)
+                        - std::f32::consts::PI;
+                    delta.abs() < VIKING_RAM_ALIGN_THRESHOLD
+                } else { false }
+            } else { false };
+
+            if viking_has_target && aligned {
                 let ramp_per_sec =
                     (VIKING_RAM_MAX_SPEED - VIKING_RAM_BASE_SPEED) / VIKING_RAM_RAMP_TIME;
                 charge.current_speed = (charge.current_speed + ramp_per_sec * dt)
                     .min(VIKING_RAM_MAX_SPEED);
             } else {
-                // Bleed instead of snapping — momentum carries over
-                // brief spawn gaps so the Viking stays visibly fast
-                // rather than flickering between max and base.
+                // Bleed back to base whenever the Viking isn't
+                // pointed at its target — covers turning, target
+                // lost, and the recovery beat after a missed ram
+                // when the heading swings off-line.
                 charge.current_speed = (charge.current_speed - VIKING_RAM_DECAY_PER_SEC * dt)
                     .max(VIKING_RAM_BASE_SPEED);
             }
@@ -1549,7 +1567,20 @@ pub fn boss_viking_ai(
             }
         }
 
-        if nearest.is_some() {
+        // Bull-charge gate — only ramp speed when already aimed at
+        // the target. Bleed otherwise so a miss costs momentum.
+        let aligned = if let Some((_, ep)) = nearest {
+            let to_target = ep - pos;
+            if to_target.length_squared() > 1.0 {
+                let desired = (-to_target.x).atan2(to_target.y);
+                let delta = (heading.0 - desired + std::f32::consts::PI)
+                    .rem_euclid(std::f32::consts::TAU)
+                    - std::f32::consts::PI;
+                delta.abs() < VIKING_RAM_ALIGN_THRESHOLD
+            } else { false }
+        } else { false };
+
+        if nearest.is_some() && aligned {
             let ramp = (VIKING_RAM_MAX_SPEED - VIKING_RAM_BASE_SPEED) / VIKING_RAM_RAMP_TIME;
             charge.current_speed = (charge.current_speed + ramp * dt)
                 .min(VIKING_RAM_MAX_SPEED);
@@ -3280,11 +3311,14 @@ pub const VIKING_RAM_RAMP_TIME: f32  = 1.0;
 /// missed charge has to circle back, but generous enough to
 /// re-acquire before the Viking flies all the way to the edge.
 pub const VIKING_RAM_TURN_AT_MAX: f32 = 0.5;
-/// Speed bleed (units/sec) while no target is held. Bleeding
-/// gradually instead of snapping back to base preserves momentum
-/// across brief spawn gaps so the Viking doesn't visibly lurch
-/// between fast/slow every time an enemy dies.
-pub const VIKING_RAM_DECAY_PER_SEC: f32 = 30.0;
+/// Speed bleed (units/sec) while not actively charging (target lost
+/// OR mid-turn). Continuous bleed keeps the bull-charge mechanic
+/// readable: the Viking only gains speed once it's lined up.
+pub const VIKING_RAM_DECAY_PER_SEC: f32 = 60.0;
+/// Heading-vs-target tolerance for the bull-charge gate. The Viking
+/// only accelerates while its forward vector is within this many
+/// radians of the line to its target. ~17° window.
+pub const VIKING_RAM_ALIGN_THRESHOLD: f32 = 0.30;
 
 /// Snapshot every Viking's position + the faction it wants to ram,
 /// then iterate every faction-bearing entity and apply ram damage on
