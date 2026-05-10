@@ -23,11 +23,11 @@ weapon_sniper,SNIPER
 weapon_mg,MG
 weapon_shotgun,SHOTGUN
 weapon_railgun,RAILGUN
-weapon_standard_desc,Balanced cannon. Steady fire and steady damage.
-weapon_sniper_desc,Slow rate of fire. Heavy damage per shot.
-weapon_mg_desc,Rapid burst with mild spread. Light per-bullet damage.
-weapon_shotgun_desc,Spreads pellets in a cone. Strong up close.
-weapon_railgun_desc,Beam that pierces every enemy in a straight line.
+weapon_standard_desc,Balanced cannon. 100% range.
+weapon_sniper_desc,Slow fire. Heavy per shot. 150% range.
+weapon_mg_desc,Rapid burst with mild spread. 90% range.
+weapon_shotgun_desc,Cone of pellets. 60% range.
+weapon_railgun_desc,Beam pierces every enemy. 160% range.
 building_munitions,MUNITIONS
 building_watchtower,WATCHTOWER
 building_drydock,DRYDOCK
@@ -49,14 +49,28 @@ rune_echo,ECHO
 rune_cascade,CASCADE
 rune_conduit,CONDUIT
 rune_resonate,RESONATE
-rune_fire_desc,Burns the target. Damage over time.
+rune_fire_desc,Burns the target. 100% rune damage per tick over 4s.
 rune_frost_desc,Slows the target's movement.
 rune_shock_desc,Chains lightning to a nearby enemy.
-rune_detonate_desc,Consumes Fire and Frost on the target for a burst of damage.
+rune_detonate_desc,Consumes Fire/Frost on target. Releases stored rune damage.
 rune_echo_desc,Repeats the hit a moment later.
 rune_cascade_desc,On killing blow, hits the nearest enemy.
 rune_conduit_desc,Marked targets take stronger procs.
 rune_resonate_desc,Each hit on the same target stacks more damage.
+stat_hp_desc,Maximum hull health.
+stat_move_speed_desc,How fast the ship moves.
+stat_turn_speed_desc,How fast the ship rotates toward the cursor.
+stat_turret_turn_speed_desc,How fast turrets rotate to track targets.
+stat_turret_arc_bonus_desc,Extra firing arc per turret slot in degrees. Caps each slot at 360.
+stat_luck_desc,On a failed proc, % chance to reroll. 100% guarantees one reroll. Stacks RoR-style.
+stat_proc_strength_desc,Flat % bonus to proc roll strength. Pushes Shock/Cascade chains back to reliability.
+stat_crit_desc,Damage multiplier roll on every hit. 100% always 2x. 200% always 3x. Partial values roll for the next tier.
+stat_range_desc,Multiplier on every turret's effective range.
+stat_harvest_desc,Multiplier on scrap dropped per kill. Same RoR-tier roll as crit.
+stat_shield_max_desc,Recharging hp buffer. Absorbs damage before HP.
+stat_shield_rate_desc,Shield recharge rate, % of max per second.
+stat_shield_delay_desc,Seconds after taking damage before the shield begins to recharge.
+stat_rune_damage_desc,Multiplier on damage dealt by runes (Fire DoT, Detonate burst).
 map_popup_build,BUILD
 map_building_weaponry,WEAPONRY
 map_building_weaponry_desc,Customize turret loadout in this section.

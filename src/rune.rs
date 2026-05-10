@@ -387,6 +387,7 @@ pub fn tick_on_fire(
     em: Option<Res<EffectMeshes>>,
     pm: Option<Res<PaletteMaterials>>,
     game_mode: Res<GameMode>,
+    player_stats: Res<crate::stats::PlayerStats>,
     mut q: Query<(
         Entity,
         &Transform,
@@ -418,7 +419,10 @@ pub fn tick_on_fire(
             let invincible_player =
                 friendly.is_some() && !matches!(*game_mode, GameMode::Wave);
             if !invincible_player {
-                apply_damage(&mut hp, &mut fx, FIRE_DAMAGE_PER_TICK);
+                let scaled = (FIRE_DAMAGE_PER_TICK as f32
+                    * player_stats.rune_damage_mult())
+                    .round() as i32;
+                apply_damage(&mut hp, &mut fx, scaled.max(1));
             }
         }
 

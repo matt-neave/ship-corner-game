@@ -13,7 +13,7 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::balance::{FRIENDLY_SPEED, FRIENDLY_TURN_RATE, PLAY_WORLD};
+use crate::balance::PLAY_WORLD;
 use crate::components::Heading;
 use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
 use crate::ship::approach_angle;
@@ -99,6 +99,7 @@ pub fn map_boat_movement(
     mut view: ResMut<ViewMode>,
     mut combat_ctx: ResMut<CombatContext>,
     campaign: Res<crate::CampaignProgress>,
+    stats: Res<crate::stats::PlayerStats>,
     mut q: Query<(&mut Transform, &mut Heading), With<MapBoat>>,
 ) {
     if *view != ViewMode::Map { return; }
@@ -112,10 +113,10 @@ pub fn map_boat_movement(
             state.boat_target = None;
         } else {
             let desired = (-to.x).atan2(to.y);
-            let new_h = approach_angle(heading.0, desired, FRIENDLY_TURN_RATE * dt);
+            let new_h = approach_angle(heading.0, desired, stats.turn_speed.effective() * dt);
             heading.0 = new_h;
             let dir = Vec2::new(-new_h.sin(), new_h.cos());
-            let new_pos = pos + dir * FRIENDLY_SPEED * dt;
+            let new_pos = pos + dir * stats.move_speed.effective() * dt;
             let half = PLAY_WORLD / 2.0;
             tf.translation.x = new_pos.x.clamp(-half, half);
             tf.translation.y = new_pos.y.clamp(-half, half);

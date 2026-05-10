@@ -36,6 +36,7 @@ use bevy::prelude::*;
 mod render;
 mod setup;
 mod drag;
+mod stats_panel;
 mod tooltip;
 mod update;
 
@@ -47,6 +48,7 @@ pub use drag::{
     complete_drag, init_customize_shop, start_drag, track_customize_cursor,
     update_drag_ghost, DragState,
 };
+pub use stats_panel::{handle_stat_debug_buttons, sync_stats_panel};
 pub use tooltip::update_customize_tooltip;
 pub use update::{
     handle_close_click, handle_reroll_button, update_customize_ship, update_customize_shop,

@@ -42,6 +42,7 @@ mod rendering;
 mod settings;
 mod rune;
 mod ship;
+mod stats;
 mod trails;
 mod turret;
 mod ui;
@@ -58,7 +59,8 @@ use ally::{
 use customize::{
     complete_drag, handle_close_click, handle_reroll_button, init_customize_shop,
     resize_customize_display, setup_customize_render, setup_customize_ui, start_drag,
-    sync_customize_text, toggle_customize_render, track_customize_cursor,
+    handle_stat_debug_buttons, sync_customize_text, sync_stats_panel,
+    toggle_customize_render, track_customize_cursor,
     update_customize_ship, update_customize_shop, update_customize_tooltip,
     update_customize_ui, update_drag_ghost, CustomizeOpen, DragState,
 };
@@ -197,6 +199,7 @@ fn main() {
         .insert_resource(SpawnTimer { t: 0.0, elapsed: 0.0 })
         .insert_resource(cfg)
         .insert_resource(DamageStats::default())
+        .insert_resource(stats::PlayerStats::default())
         .insert_resource(Palette::aap64_naval())
         .insert_resource(ShipPath::default())
         .insert_resource(WindowMode::default())
@@ -236,6 +239,7 @@ fn main() {
             friendly_movement,
             enemy_ai,
             apply_velocity,
+            stats::shield_recharge_system,
             bomber_detonate,
             spawn_enemies,
             sync_turret_config,
@@ -406,6 +410,8 @@ fn main() {
                 update_customize_ship,
                 update_customize_shop,
                 update_customize_tooltip,
+                sync_stats_panel,
+                handle_stat_debug_buttons,
                 handle_close_click,
                 handle_reroll_button,
             ),

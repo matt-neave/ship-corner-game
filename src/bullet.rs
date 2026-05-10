@@ -119,11 +119,12 @@ struct DamageEvent {
 pub fn bullet_collisions(
     mut commands: Commands,
     mut stats: ResMut<DamageStats>,
+    player_stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     bullets: Query<(Entity, &Transform, &Bullet)>,
     mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
-    mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
+    mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
     on_fire: Query<&OnFire>,
     on_frost: Query<&OnFrost>,
@@ -153,9 +154,10 @@ pub fn bullet_collisions(
                     enemy_snap.iter().find(|(_, ep, hd)| ep.distance(bp) < *hd)
                 {
                     commands.entity(be).despawn();
+                    let crit_mult = player_stats.roll_crit_mult(&mut rng);
                     chain.push(DamageEvent {
                         target: ee,
-                        amount: b.damage,
+                        amount: b.damage.saturating_mul(crit_mult as i32),
                         hit_pos: ep,
                         weapon: b.weapon,
                         source_slot: b.slot,
@@ -169,7 +171,7 @@ pub fn bullet_collisions(
                 // Enemy bullets carry no runes — keep the original inline
                 // hit logic and skip the proc queue.
                 let mut consumed = false;
-                for (_fe, ftf, mut h, mut fx) in &mut friendly {
+                for (_fe, ftf, mut h, mut fx, shield_opt) in &mut friendly {
                     if ftf.translation.truncate().distance(bp) < 5.0 {
                         commands.entity(be).despawn();
                         // Friendly ship now takes damage in both modes.
@@ -177,7 +179,10 @@ pub fn bullet_collisions(
                         // map / capture loop was being designed; with
                         // ally HP also live, parity makes the sandbox
                         // feel coherent.
-                        apply_damage(&mut h, &mut fx, b.damage);
+                        let after_shield = shield_opt
+                            .map(|mut s| s.absorb(b.damage))
+                            .unwrap_or(b.damage);
+                        apply_damage(&mut h, &mut fx, after_shield);
                         let hit_pos = ftf.translation.truncate();
                         spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
                         consumed = true;
@@ -209,7 +214,7 @@ pub fn bullet_collisions(
     while let Some(ev) = chain.pop() {
         process_damage_event(
             ev, &mut chain,
-            &mut commands, &mut stats, &pm, &em,
+            &mut commands, &mut stats, &player_stats, &pm, &em,
             &enemy_snap, &mut enemies, &on_fire, &on_frost,
             &on_conduit, &on_resonate, &mut rng,
         );
@@ -221,6 +226,7 @@ fn process_damage_event(
     chain: &mut Vec<DamageEvent>,
     commands: &mut Commands,
     stats: &mut DamageStats,
+    player_stats: &crate::stats::PlayerStats,
     pm: &PaletteMaterials,
     em: &EffectMeshes,
     enemy_snap: &[(Entity, Vec2, f32)],
@@ -302,11 +308,16 @@ fn process_damage_event(
     // Capped at 1.0 in the eventual `>=` comparison so the visible
     // effect is "chain hops at full strength" rather than "absurd
     // super-procs on initial hits (already 100%)."
-    let effective_strength = if on_conduit.get(ev.target).is_ok() {
-        (ev.proc_strength * CONDUIT_PROC_MULT).min(1.0)
-    } else {
-        ev.proc_strength
-    };
+    // Compose the per-roll proc probability:
+    //   1. Conduit on target multiplies base proc strength × 1.5
+    //   2. PROC stat adds a flat bonus
+    //   3. Clamp to 1.0 (you can't exceed certainty)
+    //
+    // LUCK is applied separately as RoR-style rerolls on failure
+    // inside `proc_roll_with_luck`, not folded into this number.
+    let bonus = player_stats.proc_strength_bonus();
+    let conduit_mult = if on_conduit.get(ev.target).is_ok() { CONDUIT_PROC_MULT } else { 1.0 };
+    let strength = (ev.proc_strength * conduit_mult + bonus).min(1.0);
 
     // Roll each rune attached to the source bullet. `proc_strength` gates
     // the chance: initial hits at 1.0 always pass, chain hits at 0.5 are
@@ -314,7 +325,7 @@ fn process_damage_event(
     // per chain.
     for &rune in &ev.runes {
         if ev.procced.contains(&rune) { continue; }
-        if rng.gen::<f32>() >= effective_strength { continue; }
+        if !player_stats.proc_roll_with_luck(&mut *rng, strength) { continue; }
 
         match rune {
             Rune::Fire | Rune::Frost => {
@@ -358,7 +369,10 @@ fn process_damage_event(
                 let frost_ref = on_frost.get(ev.target).ok();
                 let burst = detonate_consume(commands, ev.target, fire_ref, frost_ref);
                 if burst > 0 {
-                    let dealt = apply_damage(&mut h, &mut fx, amplify(burst));
+                    // Detonate is rune-sourced damage — scale by the
+                    // player's rune-damage stat before resonate amp.
+                    let scaled = (burst as f32 * player_stats.rune_damage_mult()).round() as i32;
+                    let dealt = apply_damage(&mut h, &mut fx, amplify(scaled));
                     if let Some(s) = ev.source_slot {
                         stats.per_slot[s as usize] += dealt as u64;
                         stats.total            += dealt as u64;

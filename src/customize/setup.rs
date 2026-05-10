@@ -291,9 +291,9 @@ pub fn setup_customize_ui(
     ));
 
     // ---------- Centre ship + slots + sockets ----------
-    // Ship a touch right of canvas centre so it visually balances
-    // against the LHS shop column.
-    let ship_centre = Vec2::new(30.0, 0.0);
+    // Ship sits left of canvas centre so the RHS stats column has room
+    // to flow down the right edge.
+    let ship_centre = Vec2::new(-10.0, 0.0);
     spawn_hull(&mut commands, ship_centre, hull_capsule, hull_mat);
 
     for (slot, &(gx, gy)) in TURRET_POSITIONS.iter().enumerate() {
@@ -304,6 +304,13 @@ pub fn setup_customize_ui(
         spawn_ship_slot(&mut commands, &mut meshes, &mut materials, slot, pos);
         spawn_rune_triplet_for_slot(&mut commands, &mut meshes, &mut materials, slot, pos);
     }
+
+    // ---------- RHS live stats readout ----------
+    // Right edge of the panel sits a few px in from the canvas edge;
+    // top row begins below the CLOSE button.
+    let stats_right_edge = canvas_half_w - 6.0;
+    let stats_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 28.0;
+    super::stats_panel::spawn_stats_panel(&mut commands, stats_right_edge, stats_top_y);
 
     super::tooltip::spawn_customize_tooltip(&mut commands);
 }

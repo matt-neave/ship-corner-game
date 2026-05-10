@@ -83,6 +83,19 @@ impl WeaponType {
             _ => 0.0,
         }
     }
+
+    /// Per-weapon range multiplier. Multiplied with `PlayerStats.range_pct`
+    /// and any pier buff when computing a turret's effective range. Lets
+    /// the sniper read as "150% range" relative to a 100% baseline weapon.
+    pub fn range_mult(self) -> f32 {
+        match self {
+            WeaponType::Standard   => 1.0,
+            WeaponType::Sniper     => 1.5,
+            WeaponType::MachineGun => 0.9,
+            WeaponType::Shotgun    => 0.6,
+            WeaponType::Railgun    => 1.6,
+        }
+    }
 }
 
 /// Per-weapon material lookups. Lives in this module (not in palette) so

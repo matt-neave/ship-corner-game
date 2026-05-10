@@ -11,7 +11,6 @@ use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
 use crate::ui::DamageStats;
 use crate::weapon::WeaponType;
-use crate::Score;
 
 /// Beam visual. Width is animated via `Transform.scale.x` — it grows fast
 /// then fades out over `max_life`. Damage is resolved once at spawn time
@@ -71,8 +70,8 @@ pub fn update_beams(
 /// effects from `bullet_collisions` so beam kills feel the same.
 pub fn beam_apply_damage(
     mut commands: Commands,
-    mut score: ResMut<Score>,
     mut stats: ResMut<DamageStats>,
+    player_stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     beams: Query<(Entity, &BeamHit), With<BeamPending>>,
@@ -82,7 +81,7 @@ pub fn beam_apply_damage(
     let Some(em) = em else { return; };
     let mut rng = rand::thread_rng();
     for (beam_e, hit) in &beams {
-        for (ee, etf, enemy, mut h, mut fx) in &mut enemies {
+        for (_ee, etf, enemy, mut h, mut fx) in &mut enemies {
             let ep = etf.translation.truncate();
             let to = ep - hit.origin;
             let proj = to.dot(hit.dir);
@@ -90,22 +89,27 @@ pub fn beam_apply_damage(
             let perp_v = to - hit.dir * proj;
             if perp_v.length() > BEAM_HIT_RADIUS * enemy.variant.scale() { continue; }
 
+            // Crit per enemy hit — beam pierces, so each is its own
+            // damage instance per the player's "crit applies to all
+            // ship damage" rule.
+            let crit_mult = player_stats.roll_crit_mult(&mut rng) as i32;
+            let damage = hit.damage.saturating_mul(crit_mult);
             let pre_hp = h.0;
-            h.0 -= hit.damage;
-            let dealt = hit.damage.min(pre_hp).max(0) as u64;
+            h.0 -= damage;
+            let dealt = damage.min(pre_hp).max(0) as u64;
             stats.per_slot[hit.slot as usize] += dealt;
             stats.total += dealt;
 
+            // Source-specific weapon-color spark per hit. Lethal hits get
+            // a denser/faster burst; despawn + score + scrap (with harvest)
+            // are owned by `enemy_death_check`, which runs after this in
+            // the same frame.
             let spark_mat = pm.bullet_inner_for(hit.weapon);
-            if h.0 <= 0 {
-                commands.entity(ee).despawn();
-                score.0 += 10;
-                spawn_hit_particles(&mut commands, &em, &pm.enemy, ep, 10, 60.0, &mut rng);
-                spawn_hit_particles(&mut commands, &em, spark_mat, ep, 6, 75.0, &mut rng);
-            } else {
-                fx.pulse();
-                spawn_hit_particles(&mut commands, &em, spark_mat, ep, 4, 45.0, &mut rng);
-            }
+            let lethal = h.0 <= 0;
+            let count = if lethal { 6 } else { 4 };
+            let speed = if lethal { 75.0 } else { 45.0 };
+            if !lethal { fx.pulse(); }
+            spawn_hit_particles(&mut commands, &em, spark_mat, ep, count, speed, &mut rng);
         }
         // Done with this beam — drop the marker so we never re-process it.
         commands.entity(beam_e).remove::<BeamPending>();

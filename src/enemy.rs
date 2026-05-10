@@ -653,6 +653,7 @@ pub fn enemy_death_check(
     mut commands: Commands,
     mut score: ResMut<Score>,
     mut scrap: ResMut<Scrap>,
+    player_stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     enemies: Query<(Entity, &Transform, &Health), With<Enemy>>,
@@ -664,8 +665,10 @@ pub fn enemy_death_check(
         if h.0 > 0 { continue; }
         commands.entity(e).despawn();
         score.0 += 10;
-        // +1 scrap per kill — spent on map-view building placement.
-        scrap.0 = scrap.0.saturating_add(1);
+        // Base +1 scrap per kill, multiplied by the harvest tier roll
+        // (RoR-style: 0% → 1, 50% → 50/50 between 1 and 2, 100% → 2, …).
+        let scrap_drop = player_stats.roll_harvest_mult(&mut rng);
+        scrap.0 = scrap.0.saturating_add(scrap_drop);
         let pos = tf.translation.truncate();
         spawn_hit_particles(&mut commands, &em, &pm.enemy, pos, 10, 60.0, &mut rng);
     }

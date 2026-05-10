@@ -8,7 +8,7 @@ use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
 
 use crate::balance::{
-    BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH, FRIENDLY_SPEED, FRIENDLY_TURN_RATE, FROST_SPEED_MULT,
+    BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH, FROST_SPEED_MULT,
     HULL_HALF_LEN, HULL_LEN, HULL_WIDTH, PIER_CELL_W, PIER_CELL_X, PIER_Y_START, PIER_Y_STEP,
     PLAY_LAYER, PLAY_WORLD, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
 };
@@ -33,6 +33,7 @@ pub fn setup_world(
     mut materials: ResMut<Assets<ColorMaterial>>,
     cfg: Res<TurretConfig>,
     palette: Res<Palette>,
+    stats: Res<crate::stats::PlayerStats>,
 ) {
     // Build palette-material handles once. Every entity in the play world
     // references one of these — runtime palette swaps update them all.
@@ -79,8 +80,9 @@ pub fn setup_world(
         Visibility::Inherited,
         Friendly,
         Faction(FactionKind::Friendly),
-        Health(100),
-        Velocity(Vec2::new(0.0, FRIENDLY_SPEED)),
+        Health(stats.max_hp()),
+        Velocity(Vec2::new(0.0, stats.move_speed.effective())),
+        crate::stats::Shield::default(),
         Heading(0.0),
         HitFx::new(pm.hull.clone()),
         FireExtent(Vec2::new(HULL_WIDTH * 0.5, HULL_LEN * 0.5)),
@@ -227,6 +229,7 @@ pub fn friendly_movement(
     windows: Query<&Window, With<PrimaryWindow>>,
     mode: Res<WindowMode>,
     game_mode: Res<GameMode>,
+    stats: Res<crate::stats::PlayerStats>,
     enemies: Query<&Transform, (With<Enemy>, Without<Friendly>)>,
     play_camera: Query<&Transform, (With<crate::palette::PlayCamera>, Without<Friendly>, Without<Enemy>)>,
     mut q: Query<(&mut Transform, &mut Velocity, &mut Heading), With<Friendly>>,
@@ -321,10 +324,10 @@ pub fn friendly_movement(
         let to = target - pos;
         if to.length_squared() > 1.0 {
             let desired = to.y.atan2(to.x) - std::f32::consts::FRAC_PI_2;
-            heading.0 = approach_angle(heading.0, desired, FRIENDLY_TURN_RATE * dt);
+            heading.0 = approach_angle(heading.0, desired, stats.turn_speed.effective() * dt);
         }
         let dir = Vec2::new(-heading.0.sin(), heading.0.cos());
-        vel.0 = dir * FRIENDLY_SPEED;
+        vel.0 = dir * stats.move_speed.effective();
         tf.rotation = Quat::from_rotation_z(heading.0);
     }
 }

@@ -12,7 +12,7 @@ use rand::Rng;
 use crate::balance::{
     BARREL_LATERAL, BARREL_MIDDLE_EXTEND, BEAM_LENGTH, BEAM_LIFETIME, BULLET_SPEED,
     FRIENDLY_BARREL_TIP, FRIENDLY_BULLET_HALF_LEN, PLAY_LAYER, SHOTGUN_PELLETS, SHOTGUN_SPREAD,
-    TURRET_ARC_HALVES, TURRET_PIVOT, TURRET_RANGE,
+    TURRET_ARC_HALVES, TURRET_RANGE,
 };
 use crate::beam::{Beam, BeamHit, BeamPending};
 use crate::bullet::Bullet;
@@ -154,6 +154,7 @@ pub fn turret_aim_fire(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     cfg: Res<TurretConfig>,
+    stats: Res<crate::stats::PlayerStats>,
     ship_q: Query<(&Transform, &Heading), With<Friendly>>,
     enemies: Query<(&Transform, &Faction), With<Enemy>>,
     mut turrets: Query<
@@ -185,8 +186,13 @@ pub fn turret_aim_fire(
 
         let hull_forward_world = ship_h;
 
-        // Effective range = base × pier-derived multiplier (Watchtower buffs).
-        let effective_range = TURRET_RANGE * slot.range_mult.max(1.0);
+        // Effective range = base × weapon profile × pier buff × player stat.
+        let weapon_range_mult = slot.weapon.range_mult();
+        let effective_range = TURRET_RANGE
+            * weapon_range_mult
+            * slot.range_mult.max(1.0)
+            * stats.range_mult();
+        let half_arc = stats.effective_turret_half_arc(TURRET_ARC_HALVES[slot.index]);
 
         // Find best target in this turret's arc (centered on its mount angle).
         let mut best: Option<(f32, Vec2)> = None;
@@ -203,7 +209,7 @@ pub fn turret_aim_fire(
             let mut off = local_angle - slot.mount_angle;
             off = (off + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
                 - std::f32::consts::PI;
-            if off.abs() > TURRET_ARC_HALVES[slot.index] { continue; }
+            if off.abs() > half_arc { continue; }
             if best.map_or(true, |(bd, _)| d < bd) {
                 best = Some((d, ep));
             }
@@ -220,11 +226,24 @@ pub fn turret_aim_fire(
             slot.mount_angle
         };
 
-        slot.barrel_angle = approach_angle(slot.barrel_angle, desired_local, TURRET_PIVOT * dt);
+        slot.barrel_angle = approach_angle(
+            slot.barrel_angle,
+            desired_local,
+            stats.effective_turret_turn_speed() * dt,
+        );
         tf.rotation = Quat::from_rotation_z(slot.barrel_angle);
 
         if best.is_some() {
-            let aim_err = (slot.barrel_angle - desired_local).abs();
+            // Wrap-aware aim error. `slot.barrel_angle` accumulates
+            // unbounded over time (each `approach_angle` call returns
+            // `cur + d` without renormalising), so a raw subtraction
+            // can yield ~2π even when the barrel visually points at
+            // the target. Normalise the delta into [-π, π] before the
+            // tolerance check, otherwise turrets get "stuck" facing an
+            // enemy without firing.
+            let delta = slot.barrel_angle - desired_local;
+            let aim_err = ((delta + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+                - std::f32::consts::PI).abs();
             if aim_err < 0.1 && slot.fire_cd <= 0.0 {
                 let barrels_n = slot.barrels.max(1) as f32;
                 // Twin barrels = twice the effective rate (alternating barrels).

@@ -121,6 +121,7 @@ pub fn update_customize_tooltip(
     shop: Option<Res<CustomizeShop>>,
     viewport: Res<CustomizeViewport>,
     sources: Query<(&Transform, &HitArea, &DragSourceMarker)>,
+    stat_hovers: Query<(&Transform, &HitArea, &super::stats_panel::StatHover), Without<DragSourceMarker>>,
     mut outline_q: Query<
         (&mut Visibility, &mut Transform, &mut Sprite),
         (
@@ -129,6 +130,7 @@ pub fn update_customize_tooltip(
             Without<CustomizeTooltipTitle>,
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
+            Without<super::stats_panel::StatHover>,
         ),
     >,
     mut fill_q: Query<
@@ -139,6 +141,7 @@ pub fn update_customize_tooltip(
             Without<CustomizeTooltipTitle>,
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
+            Without<super::stats_panel::StatHover>,
         ),
     >,
     mut title_q: Query<
@@ -149,6 +152,7 @@ pub fn update_customize_tooltip(
             Without<CustomizeTooltipFill>,
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
+            Without<super::stats_panel::StatHover>,
         ),
     >,
     mut body_q: Query<
@@ -159,6 +163,7 @@ pub fn update_customize_tooltip(
             Without<CustomizeTooltipFill>,
             Without<CustomizeTooltipTitle>,
             Without<DragSourceMarker>,
+            Without<super::stats_panel::StatHover>,
         ),
     >,
 ) {
@@ -190,6 +195,30 @@ pub fn update_customize_tooltip(
             info = Some((title, body, centre, half));
             best_area = area;
         }
+    }
+    // Stat-row hovers — same smallest-hit-area selection, so a row only
+    // wins over a turret/rune if the cursor is exclusively on the row.
+    for (tf, hit, hover) in &stat_hovers {
+        let centre = tf.translation.truncate();
+        let half = hit.size * 0.5;
+        if cursor.x < centre.x - half.x
+            || cursor.x > centre.x + half.x
+            || cursor.y < centre.y - half.y
+            || cursor.y > centre.y + half.y
+        {
+            continue;
+        }
+        let area = hit.size.x * hit.size.y;
+        if area >= best_area {
+            continue;
+        }
+        info = Some((
+            hover.0.label().to_string(),
+            hover.0.description().to_string(),
+            centre,
+            half,
+        ));
+        best_area = area;
     }
 
     let Some((title, body, source_centre, source_half)) = info else {
@@ -275,6 +304,7 @@ fn hide_all(
             Without<CustomizeTooltipTitle>,
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
+            Without<super::stats_panel::StatHover>,
         ),
     >,
     fill_q: &mut Query<
@@ -285,6 +315,7 @@ fn hide_all(
             Without<CustomizeTooltipTitle>,
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
+            Without<super::stats_panel::StatHover>,
         ),
     >,
     title_q: &mut Query<
@@ -295,6 +326,7 @@ fn hide_all(
             Without<CustomizeTooltipFill>,
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
+            Without<super::stats_panel::StatHover>,
         ),
     >,
     body_q: &mut Query<
@@ -305,6 +337,7 @@ fn hide_all(
             Without<CustomizeTooltipFill>,
             Without<CustomizeTooltipTitle>,
             Without<DragSourceMarker>,
+            Without<super::stats_panel::StatHover>,
         ),
     >,
 ) {
