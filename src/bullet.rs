@@ -479,6 +479,12 @@ fn process_damage_event(
                 // weapon-color spark.
                 spawn_hit_particles(commands, em, &pm.bullet_sniper, ev.hit_pos, 3, 30.0, rng);
             }
+            // Targeting runes are passive — read at aim time by
+            // `turret_aim_fire`, never proc on hit.
+            Rune::TargetFurthest
+            | Rune::TargetHighestHp
+            | Rune::TargetLowestHp
+            | Rune::Splash => {}
         }
     }
 }

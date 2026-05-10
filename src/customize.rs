@@ -44,7 +44,9 @@ mod update;
 pub use render::{
     resize_customize_display, setup_customize_render, toggle_customize_render,
 };
-pub use setup::{setup_customize_ui, sync_customize_text};
+pub use setup::{
+    setup_customize_ui, sync_customize_text, turret_barrel_color_for, turret_color_for,
+};
 pub use drag::{
     complete_drag, init_customize_shop, start_drag, track_customize_cursor,
     update_drag_ghost, DragState,

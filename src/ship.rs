@@ -20,7 +20,7 @@ use crate::palette::{Palette, PaletteMaterials};
 use crate::pier::PierVisual;
 use crate::rune::{FireExtent, OnFrost};
 use crate::trails::{empty_dynamic_mesh, Trail};
-use crate::turret::{BarrelIndex, TurretBarrel, TurretConfig, TurretSlot};
+use crate::turret::{BarrelIndex, HeliPadDecal, TurretBarrel, TurretConfig, TurretSlot};
 
 // ---------- Setup ----------
 
@@ -126,6 +126,12 @@ pub fn setup_world(
     // entirely between integer-grid angles.
     let base_mesh = meshes.add(Circle::new(2.0));
     let barrel_mesh = meshes.add(Rectangle::new(1.5, 4.0));
+    // Shared H-decal meshes — three rectangles forming a chunky `H`,
+    // painted yellow on the HeliPad deck. Sized to fill most of the
+    // turret-base disc (`Circle::new(2.0)`, diameter 4) so the letter
+    // reads from gameplay distance.
+    let h_post_mesh = meshes.add(Rectangle::new(0.8, 3.0));
+    let h_bar_mesh  = meshes.add(Rectangle::new(2.2, 0.8));
 
     for (i, (lx, ly)) in TURRET_POSITIONS.iter().enumerate() {
         let slot = cfg.slots[i];
@@ -172,6 +178,35 @@ pub fn setup_world(
             )).id();
             commands.entity(barrel).insert(ChildOf(turret_id));
         }
+
+        // Yellow painted `H` for the HeliPad deck — three thin
+        // rectangles forming an H shape, all hidden by default.
+        // `sync_turret_config` toggles them visible iff the slot's
+        // weapon is `HeliPad`.
+        let h_mat = pm.helipad_h.clone();
+        for offset in [
+            Vec3::new(-0.7, 0.0, 0.05), // left post
+            Vec3::new( 0.7, 0.0, 0.05), // right post
+        ] {
+            let seg = commands.spawn((
+                Mesh2d(h_post_mesh.clone()),
+                MeshMaterial2d(h_mat.clone()),
+                Transform::from_translation(offset),
+                Visibility::Hidden,
+                HeliPadDecal,
+                RenderLayers::layer(PLAY_LAYER),
+            )).id();
+            commands.entity(seg).insert(ChildOf(turret_id));
+        }
+        let bar = commands.spawn((
+            Mesh2d(h_bar_mesh.clone()),
+            MeshMaterial2d(h_mat.clone()),
+            Transform::from_xyz(0.0, 0.0, 0.05),
+            Visibility::Hidden,
+            HeliPadDecal,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(bar).insert(ChildOf(turret_id));
     }
 
     // Cache effect meshes once so muzzle flashes / hit particles don't
@@ -368,31 +403,67 @@ pub struct RamGrace {
     pub remaining: f32,
 }
 
-const RAM_DAMAGE: i32 = 5;
+const RAM_DAMAGE_TO_ENEMY: i32 = 5;
+/// Self-damage taken by the player ship per collision. Tuned at the
+/// same magnitude as the damage dealt out so ramming feels reciprocal
+/// — kill an enemy, take a hit yourself.
+const RAM_DAMAGE_TO_SELF: i32 = 5;
 const RAM_GRACE: f32 = 0.5;
-/// Camera trauma added per ram impact. `0.4²` = solid kick.
-const RAM_TRAUMA: f32 = 0.4;
+/// Camera trauma added per ram impact. Bumped well above 0.5 so the
+/// quadratic `trauma²` shake actually registers — at 0.75 we get
+/// roughly 0.56 × `SHAKE_MAX_OFFSET` of peak displacement, which
+/// reads clearly without dragging the camera off-target.
+const RAM_TRAUMA: f32 = 0.75;
 
 /// Detect overlaps between the friendly ship and any enemy and apply
-/// ram damage + a screen-shake kick to each newly contacted enemy.
-/// Per-enemy `RamGrace` keeps the damage discrete (one tick per
-/// physical collision) rather than per-frame while overlapping.
+/// ram damage + a screen-shake kick to *both* sides — ramming costs
+/// the player too. Per-enemy `RamGrace` keeps the damage discrete
+/// (one tick per physical collision) rather than per-frame while
+/// overlapping; `RamSelfGrace` does the same for the ship so each
+/// collision only chunks the player once.
 pub fn friendly_ram_damage(
     time: Res<Time>,
     mut commands: Commands,
     mut shake: ResMut<crate::modes::ScreenShake>,
-    friendly: Query<&Transform, (With<Friendly>, Without<Enemy>)>,
+    mut friendly: Query<
+        (
+            Entity,
+            &Transform,
+            &mut Health,
+            &mut HitFx,
+            Option<&mut crate::stats::Shield>,
+            Option<&mut RamSelfGrace>,
+        ),
+        (With<Friendly>, Without<Enemy>),
+    >,
     mut enemies: Query<
         (Entity, &Transform, &Enemy, &mut Health, &mut HitFx, Option<&mut RamGrace>),
         Without<Friendly>,
     >,
 ) {
-    let Ok(f_tf) = friendly.single() else { return };
+    let Ok((fe, f_tf, mut fh, mut ffx, f_shield, f_self_grace)) = friendly.single_mut() else { return };
     let f_pos = f_tf.translation.truncate();
     let dt = time.delta_secs();
 
+    // Tick the ship's own collision-grace so a sustained overlap can't
+    // chunk us 60 times a second. We still fire screenshake + enemy
+    // damage on each enemy's individual grace expiry, but only chip
+    // the ship once per `RAM_GRACE` window regardless of how many
+    // enemies are pressed against it at the same time.
+    let mut self_grace_remaining = f_self_grace.as_ref().map(|g| g.remaining).unwrap_or(0.0);
+    if let Some(mut g) = f_self_grace {
+        g.remaining -= dt;
+        if g.remaining <= 0.0 {
+            commands.entity(fe).remove::<RamSelfGrace>();
+            self_grace_remaining = 0.0;
+        } else {
+            self_grace_remaining = g.remaining;
+        }
+    }
+    let mut shield_opt = f_shield;
+
     for (e, etf, en, mut h, mut fx, grace) in &mut enemies {
-        // Tick down any active grace and skip damage while it's hot.
+        // Tick down any active enemy grace and skip damage while it's hot.
         if let Some(mut g) = grace {
             g.remaining -= dt;
             if g.remaining > 0.0 { continue; }
@@ -402,14 +473,33 @@ pub fn friendly_ram_damage(
 
         let ep = etf.translation.truncate();
         let enemy_r = 3.5 * en.variant.scale();
-        // Generous-feeling contact: ship's hull half-length + enemy
-        // radius. Treats the ship as a circle (over-eager on
-        // perpendicular sides), but reads as "they touched" reliably.
         let r = HULL_HALF_LEN + enemy_r;
         if f_pos.distance_squared(ep) < r * r {
-            crate::bullet::apply_damage(&mut h, &mut fx, RAM_DAMAGE);
+            // Damage the enemy + flash.
+            crate::bullet::apply_damage(&mut h, &mut fx, RAM_DAMAGE_TO_ENEMY);
             shake.add_trauma(RAM_TRAUMA);
             commands.entity(e).insert(RamGrace { remaining: RAM_GRACE });
+
+            // Self-damage: chip the ship through its shield first,
+            // gated by the global self-grace so simultaneous contacts
+            // don't stack in one frame.
+            if self_grace_remaining <= 0.0 {
+                let after_shield = shield_opt
+                    .as_mut()
+                    .map(|s| s.absorb(RAM_DAMAGE_TO_SELF))
+                    .unwrap_or(RAM_DAMAGE_TO_SELF);
+                crate::bullet::apply_damage(&mut fh, &mut ffx, after_shield);
+                commands.entity(fe).insert(RamSelfGrace { remaining: RAM_GRACE });
+                self_grace_remaining = RAM_GRACE;
+            }
         }
     }
+}
+
+/// Mirror of `RamGrace` but on the friendly ship. Throttles
+/// self-damage so a multi-enemy mash doesn't delete the player in one
+/// frame.
+#[derive(Component)]
+pub struct RamSelfGrace {
+    pub remaining: f32,
 }

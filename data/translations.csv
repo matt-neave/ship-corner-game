@@ -23,11 +23,15 @@ weapon_sniper,SNIPER
 weapon_mg,MG
 weapon_shotgun,SHOTGUN
 weapon_railgun,RAILGUN
+weapon_mortar,MORTAR
+weapon_helipad,HELI PAD
 weapon_standard_desc,Balanced cannon. 100% range.
 weapon_sniper_desc,Slow fire. Heavy per shot. 150% range.
 weapon_mg_desc,Rapid burst with mild spread. 90% range.
 weapon_shotgun_desc,Cone of pellets. 60% range.
 weapon_railgun_desc,Beam pierces every enemy. 160% range.
+weapon_mortar_desc,Lobs long-range shells. 300% range, 100% min range.
+weapon_helipad_desc,Spawns a helicopter that orbits the ship and fires using this slot's stats.
 building_munitions,MUNITIONS
 building_watchtower,WATCHTOWER
 building_drydock,DRYDOCK
@@ -57,6 +61,14 @@ rune_echo_desc,Repeats the hit a moment later.
 rune_cascade_desc,On killing blow, hits the nearest enemy.
 rune_conduit_desc,Marked targets take stronger procs.
 rune_resonate_desc,Each hit on the same target stacks more damage.
+rune_target_furthest,FURTHEST
+rune_target_max_hp,MAX HP
+rune_target_min_hp,MIN HP
+rune_target_furthest_desc,Turret targets the furthest enemy in range.
+rune_target_max_hp_desc,Turret targets the enemy with the most HP.
+rune_target_min_hp_desc,Turret targets the enemy with the least HP.
+rune_splash,SPLASH
+rune_splash_desc,+50% AoE radius on this turret's splash effects. Stacks.
 stat_hp_desc,Maximum hull health.
 stat_move_speed_desc,How fast the ship moves.
 stat_turn_speed_desc,How fast the ship rotates toward the cursor.

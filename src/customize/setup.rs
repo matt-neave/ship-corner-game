@@ -31,7 +31,7 @@ use crate::balance::{
     TURRET_POSITIONS, UPSCALE_LAYER,
 };
 use crate::palette::{
-    hex, Palette, MG_HEX, RAILGUN_HEX, SHOTGUN_HEX, SNIPER_HEX,
+    hex, Palette, MG_HEX, MORTAR_BRIGHT_HEX, MORTAR_HEX, RAILGUN_HEX, SHOTGUN_HEX, SNIPER_HEX,
 };
 use crate::rune::Rune;
 use crate::weapon::WeaponType;
@@ -778,6 +778,10 @@ pub fn turret_color_for(weapon: WeaponType) -> Color {
         WeaponType::MachineGun => hex(MG_HEX),
         WeaponType::Shotgun => hex(SHOTGUN_HEX),
         WeaponType::Railgun => hex(RAILGUN_HEX),
+        WeaponType::Mortar => hex(MORTAR_HEX),
+        // HeliPad reads as army-green deck pad — same hue as the
+        // helicopter that launches from it.
+        WeaponType::HeliPad => hex(crate::palette::HELIPAD_DECK_HEX),
     }
 }
 
@@ -788,20 +792,28 @@ pub fn turret_barrel_color_for(weapon: WeaponType) -> Color {
         WeaponType::MachineGun => hex("#6bd5ff"),
         WeaponType::Shotgun => hex("#ff7080"),
         WeaponType::Railgun => hex("#5cf2e8"),
+        WeaponType::Mortar => hex(MORTAR_BRIGHT_HEX),
+        WeaponType::HeliPad => hex(crate::palette::HELIPAD_DECK_HEX),
     }
 }
 
 pub fn rune_color_for(rune: Rune) -> Color {
     use crate::palette::{FIRE_HEX, FROST_HEX, SHOCK_HEX};
     match rune {
-        Rune::Fire => hex(FIRE_HEX),
-        Rune::Frost => hex(FROST_HEX),
-        Rune::Shock => hex(SHOCK_HEX),
-        Rune::Detonate => Color::srgb(1.0, 0.45, 0.20),
-        Rune::Echo => Color::srgb(0.65, 0.40, 0.95),
-        Rune::Cascade => Color::srgb(0.45, 0.85, 0.50),
-        Rune::Conduit => Color::srgb(0.95, 0.40, 0.75),
-        Rune::Resonate => Color::srgb(0.95, 0.80, 0.45),
+        Rune::Fire             => hex(FIRE_HEX),
+        Rune::Frost            => hex(FROST_HEX),
+        Rune::Shock            => hex(SHOCK_HEX),
+        Rune::Detonate         => Color::srgb(1.0, 0.45, 0.20),
+        Rune::Echo             => Color::srgb(0.65, 0.40, 0.95),
+        Rune::Cascade          => Color::srgb(0.45, 0.85, 0.50),
+        Rune::Conduit          => Color::srgb(0.95, 0.40, 0.75),
+        Rune::Resonate         => Color::srgb(0.95, 0.80, 0.45),
+        // Targeting runes: cool/neutral palette so they read as
+        // "modifier" rather than "elemental".
+        Rune::TargetFurthest   => Color::srgb(0.50, 0.30, 0.80), // long-range purple
+        Rune::TargetHighestHp  => Color::srgb(0.85, 0.30, 0.30), // big-target red
+        Rune::TargetLowestHp   => Color::srgb(0.30, 0.85, 0.40), // execute green
+        Rune::Splash           => Color::srgb(0.95, 0.55, 0.20), // explosive orange
     }
 }
 

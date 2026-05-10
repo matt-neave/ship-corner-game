@@ -22,14 +22,17 @@ use crate::balance::{
     ENEMY_RANGE, ENEMY_WIDTH, HUD_LAYER, PLAY_LAYER, PLAY_WORLD,
 };
 use crate::bullet::Bullet;
+use bevy::sprite::MeshMaterial2d;
+
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
 use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx, MuzzleFlash};
+use crate::map::PendingSpawn;
 use crate::palette::PaletteMaterials;
 use crate::rune::FireExtent;
 use crate::ship::approach_angle;
 use crate::trails::{empty_dynamic_mesh, EnemyTrail};
 use crate::weapon::WeaponType;
-use crate::{GameMode, Score, Scrap, SpawnTimer};
+use crate::{GameMode, Score, Scrap};
 
 // ---------- Components / enums ----------
 
@@ -225,16 +228,25 @@ pub fn spawn_enemy(
 
 // ---------- Systems ----------
 
-/// Sandbox spawner — drips one enemy at a time on a ramping timer from a
-/// random edge of the play area. Disabled in Wave mode (the wave orchestrator
-/// spawns the whole wave in a batch instead).
+/// Wave-based spawner. State machine on `combat_ctx.wave_phase`:
+///
+/// - **Spawning**: pre-rolls every enemy's spawn position on entry +
+///   spawns a flashing on-screen indicator at each pre-clamped edge
+///   point so the player can see what's incoming. Then drips one
+///   enemy per `WAVE_SPAWN_INTERVAL`, despawning each indicator as
+///   its enemy lands. Empties → `Fighting`.
+/// - **Fighting**: wait for the arena to clear → `Cooldown`.
+/// - **Cooldown**: short breather; advance to next wave or sit idle
+///   for `level_complete_check` to take over on the last wave.
+///
+/// Boss waves swap variant distribution to favour Heavy + Bomber.
 pub fn spawn_enemies(
     time: Res<Time>,
-    mut timer: ResMut<SpawnTimer>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
+    indicator_assets: Option<Res<SpawnIndicatorAssets>>,
     mode: Res<GameMode>,
     mut combat_ctx: ResMut<crate::map::CombatContext>,
     enemies: Query<Entity, With<Enemy>>,
@@ -242,44 +254,196 @@ pub fn spawn_enemies(
     if *mode != GameMode::Sandbox { return; }
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
-    // Per-level total budget — once exhausted, no more enemies spawn
-    // and `level_complete_check` will end the encounter when the
-    // arena clears.
+    let Some(indicator_assets) = indicator_assets else { return; };
     if combat_ctx.enemy_budget == 0 { return; }
-    timer.elapsed += time.delta_secs();
-    timer.t -= time.delta_secs();
-    if timer.t > 0.0 { return; }
 
-    let interval = (3.0 - timer.elapsed * 0.025).max(0.5);
-    timer.t = interval;
+    let dt = time.delta_secs();
 
-    // Concurrent on-screen cap scales with the section's stars
-    // (set when the player entered this combat from the map).
-    if enemies.iter().count() >= combat_ctx.enemy_cap() { return; }
+    match combat_ctx.wave_phase {
+        crate::map::WavePhase::Spawning => {
+            // First Spawning frame after `advance_wave`/`reset_for`:
+            // pre-roll every position for this wave + spawn the
+            // flashing indicators. Brief telegraph delay before the
+            // first drip so the player gets a moment to react.
+            if combat_ctx.pending_spawns.is_empty() && combat_ctx.wave_remaining > 0 {
+                let mut rng = rand::thread_rng();
+                let mut queue = Vec::with_capacity(combat_ctx.wave_remaining as usize);
+                for _ in 0..combat_ctx.wave_remaining {
+                    let pos = random_edge_pos(&mut rng);
+                    let indicator = spawn_indicator(&mut commands, &indicator_assets, pos);
+                    queue.push(PendingSpawn { pos, indicator });
+                }
+                combat_ctx.pending_spawns = queue;
+                combat_ctx.spawn_tick = WAVE_TELEGRAPH_DELAY;
+                return;
+            }
 
-    let mut rng = rand::thread_rng();
+            combat_ctx.spawn_tick -= dt;
+            if combat_ctx.spawn_tick > 0.0 { return; }
+            // Concurrent cap still applies.
+            if enemies.iter().count() >= combat_ctx.enemy_cap() { return; }
+            let Some(spawn) = (!combat_ctx.pending_spawns.is_empty())
+                .then(|| combat_ctx.pending_spawns.remove(0)) else { return };
+            // Indicator served its purpose — remove the visual.
+            commands.entity(spawn.indicator).despawn();
+
+            spawn_one_at(&mut commands, &pm, &em, &mut meshes, spawn.pos, combat_ctx.is_boss_wave);
+            combat_ctx.spawn_tick = WAVE_SPAWN_INTERVAL;
+            combat_ctx.wave_remaining = combat_ctx.wave_remaining.saturating_sub(1);
+            combat_ctx.enemy_budget = combat_ctx.enemy_budget.saturating_sub(1);
+
+            if combat_ctx.wave_remaining == 0 {
+                combat_ctx.wave_phase = crate::map::WavePhase::Fighting;
+            }
+        }
+        crate::map::WavePhase::Fighting => {
+            if enemies.iter().count() == 0 {
+                combat_ctx.wave_phase = crate::map::WavePhase::Cooldown;
+                combat_ctx.wave_cd = crate::map::BETWEEN_WAVES_DURATION;
+            }
+        }
+        crate::map::WavePhase::Cooldown => {
+            combat_ctx.wave_cd -= dt;
+            if combat_ctx.wave_cd > 0.0 { return; }
+            if combat_ctx.wave_idx + 1 < combat_ctx.wave_count {
+                combat_ctx.advance_wave();
+            }
+        }
+    }
+}
+
+/// Per-tick interval between drips inside a `Spawning` phase.
+const WAVE_SPAWN_INTERVAL: f32 = 0.15;
+/// Pause between indicator-pop and the first drip — gives the player
+/// a beat to read the directions before enemies start arriving.
+const WAVE_TELEGRAPH_DELAY: f32 = 0.8;
+
+fn random_edge_pos(rng: &mut rand::rngs::ThreadRng) -> Vec2 {
     let half = PLAY_WORLD / 2.0;
     let edge = rng.gen_range(0..4);
-    let pos = match edge {
+    match edge {
         0 => Vec2::new(rng.gen_range(-half..half), half + 20.0),
         1 => Vec2::new(rng.gen_range(-half..half), -half - 20.0),
         2 => Vec2::new(half + 20.0, rng.gen_range(-half..half)),
         _ => Vec2::new(-half - 20.0, rng.gen_range(-half..half)),
+    }
+}
+
+fn spawn_one_at(
+    commands: &mut Commands,
+    pm: &PaletteMaterials,
+    em: &EffectMeshes,
+    meshes: &mut Assets<Mesh>,
+    pos: Vec2,
+    boss_wave: bool,
+) {
+    let mut rng = rand::thread_rng();
+    let variant = if boss_wave {
+        match rng.gen_range(0u32..100) {
+            0..40  => EnemyVariant::Heavy,
+            40..70 => EnemyVariant::Bomber,
+            _      => EnemyVariant::Standard,
+        }
+    } else {
+        match rng.gen_range(0u32..100) {
+            0..50  => EnemyVariant::Standard,
+            50..75 => EnemyVariant::Scout,
+            75..90 => EnemyVariant::Heavy,
+            _      => EnemyVariant::Bomber,
+        }
     };
 
-    // Distribution: 50% Standard / 25% Scout / 15% Heavy / 10% Bomber.
-    // Bombers are the highest-threat outlier so they stay rare.
-    let variant = match rng.gen_range(0u32..100) {
-        0..50  => EnemyVariant::Standard,
-        50..75 => EnemyVariant::Scout,
-        75..90 => EnemyVariant::Heavy,
-        _      => EnemyVariant::Bomber,
-    };
-
-    let inward = (-pos).normalize();
+    let inward = (-pos).normalize_or(Vec2::Y);
     let heading = (-inward.x).atan2(inward.y);
-    spawn_enemy(&mut commands, &pm, &em, &mut meshes, pos, heading, variant);
-    combat_ctx.enemy_budget = combat_ctx.enemy_budget.saturating_sub(1);
+    spawn_enemy(commands, pm, em, meshes, pos, heading, variant);
+}
+
+// ---------- Spawn indicators ----------
+//
+// Flashing on-screen markers showing where the next wave is about to
+// drop in. Each indicator is a small triangle clamped to the play
+// area edge, rotated to point outward toward its associated spawn
+// position (which sits just outside the play area). All indicators
+// share one mesh + material handle so the per-frame alpha pulse only
+// touches a single asset entry.
+
+#[derive(Component)]
+pub struct SpawnIndicator;
+
+#[derive(Resource)]
+pub struct SpawnIndicatorAssets {
+    pub mesh: Handle<Mesh>,
+    pub material: Handle<ColorMaterial>,
+}
+
+pub fn setup_spawn_indicator_assets(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    // Triangle pointing along +Y; the spawner rotates per-instance to
+    // face outward.
+    let mesh = meshes.add(Triangle2d::new(
+        Vec2::new(-3.0, -2.5),
+        Vec2::new(3.0, -2.5),
+        Vec2::new(0.0, 4.5),
+    ));
+    let material = materials.add(Color::srgba(0.95, 0.30, 0.40, 0.85));
+    commands.insert_resource(SpawnIndicatorAssets { mesh, material });
+}
+
+fn spawn_indicator(
+    commands: &mut Commands,
+    assets: &SpawnIndicatorAssets,
+    spawn_pos: Vec2,
+) -> Entity {
+    let half = PLAY_WORLD / 2.0;
+    let inset = 5.0;
+    let inner = half - inset;
+    let pos = Vec2::new(
+        spawn_pos.x.clamp(-inner, inner),
+        spawn_pos.y.clamp(-inner, inner),
+    );
+    let outward = (spawn_pos - pos).normalize_or(Vec2::Y);
+    let angle = (-outward.x).atan2(outward.y);
+
+    commands.spawn((
+        Mesh2d(assets.mesh.clone()),
+        MeshMaterial2d(assets.material.clone()),
+        Transform::from_xyz(pos.x, pos.y, 5.5)
+            .with_rotation(Quat::from_rotation_z(angle)),
+        SpawnIndicator,
+        RenderLayers::layer(PLAY_LAYER),
+    )).id()
+}
+
+/// Pulse the shared indicator-material alpha. All indicators share
+/// the asset, so this single write animates every visible marker.
+pub fn tick_spawn_indicators(
+    time: Res<Time>,
+    assets: Option<Res<SpawnIndicatorAssets>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let Some(assets) = assets else { return };
+    if let Some(mat) = materials.get_mut(&assets.material) {
+        let t = time.elapsed_secs();
+        let alpha = 0.30 + 0.55 * (0.5 + 0.5 * (t * 8.0).sin());
+        mat.color = mat.color.with_alpha(alpha);
+    }
+}
+
+/// Defensive cleanup. Despawns every live indicator and clears the
+/// pending list so the next combat starts with a clean slate. Hooked
+/// to `OnEnter(Customize)` and `OnExit(MainMenu)`.
+pub fn clear_spawn_indicators(
+    mut commands: Commands,
+    mut combat_ctx: ResMut<crate::map::CombatContext>,
+    q: Query<Entity, With<SpawnIndicator>>,
+) {
+    for e in &q {
+        commands.entity(e).despawn();
+    }
+    combat_ctx.pending_spawns.clear();
 }
 
 pub fn enemy_ai(

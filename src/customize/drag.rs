@@ -119,6 +119,10 @@ impl ShopMod {
 
 /// Scrap cost to re-roll the shop. Refills every slot — sold or not.
 pub const SHOP_REROLL_COST: u32 = 5;
+/// Scrap cost for any single shop purchase (turret / rune / mod).
+/// Same flat number for now; per-item tier pricing is a future
+/// iteration.
+pub const SHOP_ITEM_COST: u32 = 5;
 
 /// Roll a fresh set of offerings. Used by both the startup init and the
 /// runtime reroll button. Always returns a fully-stocked shop (every
@@ -131,6 +135,8 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         WeaponType::MachineGun,
         WeaponType::Shotgun,
         WeaponType::Railgun,
+        WeaponType::Mortar,
+        WeaponType::HeliPad,
     ];
     let runes_pool = [
         Rune::Fire,
@@ -141,6 +147,10 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         Rune::Cascade,
         Rune::Conduit,
         Rune::Resonate,
+        Rune::TargetFurthest,
+        Rune::TargetHighestHp,
+        Rune::TargetLowestHp,
+        Rune::Splash,
     ];
     let mut turrets = Vec::with_capacity(3);
     for _ in 0..3 {
@@ -194,6 +204,7 @@ pub fn start_drag(
     mut drag: ResMut<DragState>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut scrap: ResMut<crate::Scrap>,
     sources: Query<(&Transform, &HitArea, &DragSourceMarker)>,
 ) {
     if !open.open || drag.picked.is_some() {
@@ -224,7 +235,7 @@ pub fn start_drag(
     // Only places into EMPTY targets so click-buy never accidentally
     // upgrades an existing turret's barrel level.
     if matches!(source, DragSourceKind::ShopTurret(_) | DragSourceKind::ShopRune(_)) {
-        click_buy_shop(source, &mut cfg, &mut shop);
+        click_buy_shop(source, &mut cfg, &mut shop, &mut scrap);
         return;
     }
 
@@ -235,10 +246,29 @@ pub fn start_drag(
 }
 
 /// Place a shop offering into the first empty target slot/socket.
-/// Returns false silently when there's no room — clicks on a fully
-/// loaded ship are no-ops, the player can still drag-and-drop existing
-/// items around manually.
-fn click_buy_shop(source: DragSourceKind, cfg: &mut TurretConfig, shop: &mut CustomizeShop) -> bool {
+/// Returns false silently when there's no room or the player can't
+/// afford it — clicks that don't apply leave both the shop slot and
+/// the scrap counter untouched. Cost is deducted only on a successful
+/// placement.
+fn click_buy_shop(
+    source: DragSourceKind,
+    cfg: &mut TurretConfig,
+    shop: &mut CustomizeShop,
+    scrap: &mut crate::Scrap,
+) -> bool {
+    if scrap.0 < SHOP_ITEM_COST { return false; }
+    let placed = try_place_shop_item(source, cfg, shop);
+    if placed {
+        scrap.0 = scrap.0.saturating_sub(SHOP_ITEM_COST);
+    }
+    placed
+}
+
+fn try_place_shop_item(
+    source: DragSourceKind,
+    cfg: &mut TurretConfig,
+    shop: &mut CustomizeShop,
+) -> bool {
     match source {
         DragSourceKind::ShopTurret(idx) => {
             let Some(offering) = shop.turrets.get(idx).and_then(|o| *o) else { return false };

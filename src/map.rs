@@ -37,6 +37,7 @@ pub use anim::{advance_map_anim_timeline, map_begin_phase, update_anim_beams, up
 pub use build::{apply_view_mode, refresh_map_fill};
 pub use buildings::{
     close_popup_on_view_change, handle_building_choice_clicks, level_complete_check,
+    queue_next_stage_combat,
     level_fail_check, setup_progress_assets, tick_buildings, update_building_button_tints,
     update_building_description, update_building_hover_tooltip, update_building_progress_bars,
 };
@@ -109,24 +110,77 @@ impl Default for ViewMode {
 /// Snapshot of the section that triggered the current combat. Written
 /// by `map_boat_movement` when the boat crosses into an unowned zone;
 /// `spawn_enemies` reads it to scale enemy density by star rating.
+///
+/// Wave-based combat: `wave_count` total waves per stage, indexed by
+/// `wave_idx`. `wave_phase` drives the spawner's state machine —
+/// `Spawning` drips this wave's allotment, `Fighting` waits for the
+/// arena to clear, `Cooldown` is the breathe-between-waves timer.
 #[derive(Resource)]
 pub struct CombatContext {
     pub stars: u8,
-    /// Total enemies still to spawn this combat.
+    /// Total enemies still to spawn across every remaining wave this
+    /// stage. `level_complete_check` fires when this hits 0 and the
+    /// arena is empty.
     pub enemy_budget: u32,
-    /// Snapshot of `enemy_budget` at level start, used as the depletion
-    /// progress bar's denominator.
+    /// Snapshot of `enemy_budget` at level start (HUD bar denom).
     pub enemy_total: u32,
+    pub wave_count: u8,
+    pub wave_idx: u8,
+    /// Enemies left to spawn in the *current* wave. Hits 0 →
+    /// `Fighting`.
+    pub wave_remaining: u32,
+    pub wave_phase: WavePhase,
+    /// Between-wave breather timer, ticked while `Cooldown`.
+    pub wave_cd: f32,
+    /// Tick interval inside `Spawning` so a wave drips in over ~1s
+    /// rather than appearing in a single frame.
+    pub spawn_tick: f32,
+    /// True when the active wave should use the boss variant mix.
+    /// `balance::is_boss_wave` is the predicate; currently a stub.
+    pub is_boss_wave: bool,
+    /// Pre-rolled spawn positions for the current wave + the indicator
+    /// entity already showing where each one will appear. Filled on
+    /// `Spawning` entry, drained one-per-spawn. Empty in `Fighting` /
+    /// `Cooldown`.
+    pub pending_spawns: Vec<PendingSpawn>,
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct PendingSpawn {
+    pub pos: Vec2,
+    pub indicator: Entity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WavePhase {
+    /// Drip this wave's enemies in.
+    Spawning,
+    /// Wave fully spawned; wait for the arena to clear.
+    Fighting,
+    /// All enemies dead — short pause before the next wave.
+    Cooldown,
+}
+
+/// Seconds of breathing room between waves.
+pub const BETWEEN_WAVES_DURATION: f32 = 2.0;
 
 impl Default for CombatContext {
     fn default() -> Self {
-        let starter = crate::balance::level_enemy_budget(1, 0);
-        Self {
+        let mut c = Self {
             stars: 1,
-            enemy_budget: starter,
-            enemy_total:  starter,
-        }
+            enemy_budget: 0,
+            enemy_total: 0,
+            wave_count: 0,
+            wave_idx: 0,
+            wave_remaining: 0,
+            wave_phase: WavePhase::Spawning,
+            wave_cd: 0.0,
+            spawn_tick: 0.0,
+            is_boss_wave: false,
+            pending_spawns: Vec::new(),
+        };
+        c.reset_for(1, 0);
+        c
     }
 }
 
@@ -135,6 +189,47 @@ impl CombatContext {
     /// at 6 per tier so 5★ = 30, 1★ = 6.
     pub fn enemy_cap(&self) -> usize {
         (6 * self.stars.max(1) as usize).min(30)
+    }
+
+    /// Initialise this context for a fresh stage at the given star
+    /// tier. Call from every combat-start site (entering combat from
+    /// the map, queueing the next round in `level_complete_check`,
+    /// etc.) so wave + budget state stays consistent.
+    pub fn reset_for(&mut self, stars: u8, _battles_cleared: u32) {
+        let wave_count = crate::balance::waves_for_stars(stars);
+        let total: u32 = (0..wave_count)
+            .map(|i| crate::balance::wave_size(i, stars))
+            .sum();
+        self.stars = stars;
+        self.wave_count = wave_count;
+        self.wave_idx = 0;
+        self.wave_remaining = crate::balance::wave_size(0, stars);
+        self.wave_phase = WavePhase::Spawning;
+        self.wave_cd = 0.0;
+        self.spawn_tick = 0.0;
+        self.is_boss_wave = crate::balance::is_boss_wave(0, wave_count);
+        self.enemy_budget = total;
+        self.enemy_total = total;
+        // Pending list is owned by `spawn_enemies`. Caller is
+        // responsible for despawning any orphan indicator entities
+        // before reset (the OnEnter(Customize) cleanup hook covers
+        // the normal flow).
+        self.pending_spawns.clear();
+    }
+
+    /// Move to the next wave. Sets phase to `Spawning`, refills
+    /// `wave_remaining`, and re-evaluates the boss flag. No-op if
+    /// already on the last wave (the caller checks that before
+    /// calling).
+    pub fn advance_wave(&mut self) {
+        self.wave_idx = self.wave_idx.saturating_add(1);
+        self.wave_remaining = crate::balance::wave_size(self.wave_idx, self.stars);
+        self.wave_phase = WavePhase::Spawning;
+        self.wave_cd = 0.0;
+        self.spawn_tick = 0.0;
+        self.is_boss_wave = crate::balance::is_boss_wave(self.wave_idx, self.wave_count);
+        // Spawning state will refill on next tick.
+        self.pending_spawns.clear();
     }
 }
 

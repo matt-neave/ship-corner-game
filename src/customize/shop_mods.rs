@@ -161,13 +161,16 @@ fn set_vis(vis: &mut Visibility, want: Visibility) {
 }
 fn hide_one(vis: &mut Visibility) { set_vis(vis, Visibility::Hidden); }
 
-/// Click handler — applies the mod and consumes the slot.
+/// Click handler — applies the mod and consumes the slot. Costs
+/// `SHOP_ITEM_COST` scrap; does nothing when the player can't afford
+/// it (slot and scrap both untouched).
 pub fn handle_shop_mod_click(
     open: Res<CustomizeOpen>,
     mouse: Res<ButtonInput<MouseButton>>,
     drag: Res<DragState>,
     shop: Option<ResMut<CustomizeShop>>,
     mut stats: ResMut<PlayerStats>,
+    mut scrap: ResMut<crate::Scrap>,
     btn_q: Query<(&Transform, &HitArea, &ShopModSlot)>,
 ) {
     if !open.open { return; }
@@ -175,6 +178,7 @@ pub fn handle_shop_mod_click(
     if drag.picked.is_some() { return; }
     let Some(cursor) = drag.spec_cursor else { return };
     let Some(mut shop) = shop else { return };
+    if scrap.0 < super::drag::SHOP_ITEM_COST { return; }
     for (tf, hit, slot) in &btn_q {
         let centre = tf.translation.truncate();
         let half = hit.size * 0.5;
@@ -188,6 +192,7 @@ pub fn handle_shop_mod_click(
         let stat = m.kind.stat_mut(&mut stats);
         stat.flat += m.delta;
         *slot_entry = None;
+        scrap.0 = scrap.0.saturating_sub(super::drag::SHOP_ITEM_COST);
         return;
     }
 }

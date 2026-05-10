@@ -55,7 +55,8 @@ mod weapon;
 use ally::{
     ally_ai, ally_death_check, ally_turret_aim_fire, boarder_tick,
     boarding_launcher_fire, flash_mine_dots, homing_missile_track,
-    mine_layer_drop, mine_tick, missile_launcher_fire, plane_ai,
+    mine_layer_drop, mine_tick, missile_launcher_fire,
+    oil_slick_burn_tick, oil_slick_grow_tick, oil_tanker_cycle, plane_ai,
     tender_heal_beam, update_boarding_ropes,
 };
 use customize::{
@@ -73,9 +74,9 @@ use effects::{
     apply_hit_fx_visuals, tick_hit_fx, update_hit_particles, update_muzzle_flashes,
 };
 use enemy::{
-    bomber_detonate, enemy_ai, enemy_death_check, enemy_fire,
-    setup_enemy_hp_bar_assets, spawn_enemies, track_enemy_damage_for_hp_bars,
-    update_enemy_hp_bars,
+    bomber_detonate, clear_spawn_indicators, enemy_ai, enemy_death_check, enemy_fire,
+    setup_enemy_hp_bar_assets, setup_spawn_indicator_assets, spawn_enemies,
+    tick_spawn_indicators, track_enemy_damage_for_hp_bars, update_enemy_hp_bars,
 };
 use map::{
     advance_map_anim_timeline, apply_view_mode, close_popup_on_view_change,
@@ -99,7 +100,8 @@ use modes::{
 };
 use palette::{apply_palette, Palette};
 use pause::{
-    handle_quit_click, handle_resume_click, setup_pause_menu, sync_pause_menu_visibility,
+    handle_main_menu_click as handle_pause_main_menu_click, handle_quit_click,
+    handle_resume_click, setup_pause_menu, sync_pause_menu_visibility,
     toggle_pause_on_esc, Paused,
 };
 use pier::{draft_input, sync_pier_visuals, update_draft_ui, Pier, WaveDraft};
@@ -110,14 +112,18 @@ use settings::{apply_loaded_settings, persist_settings_on_change};
 use rune::{tick_echoes, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_resonate};
 use ship::{apply_velocity, friendly_movement, friendly_ram_damage, setup_world};
 use trails::{update_enemy_trails, update_trail, ShipPath};
-use turret::{sync_turret_config, turret_aim_fire, SlotCfg, TurretConfig};
+use turret::{
+    helicopter_ai, mortar_shell_tick, sync_helipad_helicopters, sync_turret_config,
+    turret_aim_fire, SlotCfg, TurretConfig,
+};
 use ui::{
     force_hide_ui_panel, reset_damage_stats, setup_damage_panel, setup_ui,
-    sync_ally_hp_bars, sync_damage_panel_visibility, ui_button_system,
-    update_ally_hp_values, update_damage_bars, update_damage_panel, update_fps_text,
-    update_hp_bar_pixel_scale, update_hp_subdividers, update_map_button,
-    update_score_text, update_slot_labels, update_vsync_label, update_wave_ui,
-    DamageStats,
+    setup_wave_indicator, sync_ally_hp_bars, sync_damage_panel_visibility,
+    ui_button_system, update_ally_hp_values, update_damage_bars, update_damage_panel,
+    update_damage_row_icons, update_fps_text, update_hp_bar_pixel_scale,
+    update_hp_subdividers, update_map_button,
+    update_score_text, update_slot_labels, update_vsync_label, update_wave_indicator,
+    update_wave_ui, DamageStats,
 };
 use wave::{wave_orchestrator, WaveState};
 use weapon::WeaponType;
@@ -246,6 +252,7 @@ fn main() {
         .insert_resource(DamageStats::default())
         .insert_resource(stats::PlayerStats::default())
         .insert_resource(main_menu::MainMenuOpen::default())
+        .insert_resource(main_menu::MainMenuView::default())
         .insert_resource(DebugUiVisible::default())
         .insert_resource(stage_complete::StageCompleteTimer::default())
         .insert_resource(modes::ScreenShake::default())
@@ -277,6 +284,7 @@ fn main() {
             setup_level_status_ui, setup_enemy_hp_bar_assets,
             init_customize_shop, setup_customize_render, setup_customize_ui,
             setup_pause_menu, main_menu::setup_main_menu, setup_damage_panel,
+            setup_wave_indicator, setup_spawn_indicator_assets,
         ).chain())
         // State→resources bridge. Runs first so every other system in
         // the same Update sees the freshly-synced flags.
@@ -291,15 +299,29 @@ fn main() {
         // bars visible during the shop; closing the shop fires
         // OnExit(Customize) and zeros the slate. PLAY-from-menu
         // also resets via OnExit(MainMenu).
-        .add_systems(OnExit(AppState::MainMenu), reset_damage_stats)
+        .add_systems(OnExit(AppState::MainMenu), (reset_damage_stats, clear_spawn_indicators))
+        // Returning to the main menu mid-run leaves a frozen battlefield
+        // behind it. Despawn enemies/bullets/allies on entry so PLAY
+        // starts on an empty stage.
+        .add_systems(OnEnter(AppState::MainMenu), main_menu::clear_arena_on_main_menu)
         .add_systems(OnExit(AppState::Customize), reset_damage_stats)
+        .add_systems(OnEnter(AppState::Customize), clear_spawn_indicators)
         // Stage-complete buffer: spawn the overlay on entry, despawn
         // on exit, tick the timer while the state is active.
         .add_systems(OnEnter(AppState::StageComplete), stage_complete::enter_stage_complete)
-        .add_systems(OnExit(AppState::StageComplete), stage_complete::exit_stage_complete)
+        // Refill the next stage's enemy budget at exit so the wave
+        // readout shows the just-finished stage during the buffer
+        // (rather than the next stage's "WAVE 1/N").
+        .add_systems(
+            OnExit(AppState::StageComplete),
+            (stage_complete::exit_stage_complete, map::queue_next_stage_combat),
+        )
         .add_systems(
             Update,
-            stage_complete::tick_stage_complete
+            (
+                stage_complete::tick_stage_complete,
+                stage_complete::tick_stage_complete_wave,
+            )
                 .run_if(in_state(AppState::StageComplete)),
         )
         .add_systems(Update, (
@@ -324,6 +346,12 @@ fn main() {
             (turret_aim_fire, beam_apply_damage).chain(),
             enemy_fire,
             bullet_update,
+            mortar_shell_tick,
+            // HeliPad slots: sync the "one helicopter per equipped slot"
+            // invariant first so a freshly spawned heli ticks this frame
+            // in `helicopter_ai`. Both gate themselves on slot config so
+            // they idle harmlessly when no HeliPad is equipped.
+            (sync_helipad_helicopters, helicopter_ai).chain(),
             // Damage application chain: every source writes Health, then
             // `enemy_death_check` despawns anything that hit zero. Chained so
             // sources see consistent HP and only one despawn fires per kill.
@@ -427,6 +455,12 @@ fn main() {
             boarding_launcher_fire,
             boarder_tick,
             update_boarding_ropes,
+            // OilTanker: drive the spray → ignite → burn cycle on
+            // each tanker; per-slick lifetime + AOE-burn ticks
+            // damage opposite-faction units inside their radius.
+            oil_tanker_cycle,
+            oil_slick_grow_tick,
+            oil_slick_burn_tick,
         ).run_if(in_combat_view))
         .add_systems(Update, (
             // Map view — camera toggle, click target, boat steering, and
@@ -455,7 +489,9 @@ fn main() {
                 handle_debug_buttons, update_debug_button_tints, update_claim_label,
                 toggle_debug_ui_on_hash, sync_debug_panel_visibility,
                 force_hide_ui_panel,
-                update_damage_panel, sync_damage_panel_visibility,
+                update_damage_panel, update_damage_row_icons, sync_damage_panel_visibility,
+                update_wave_indicator,
+                tick_spawn_indicators,
             ),
             (
                 update_currency_ui,
@@ -510,12 +546,16 @@ fn main() {
             toggle_pause_on_esc,
             sync_pause_menu_visibility,
             handle_resume_click,
+            handle_pause_main_menu_click,
             handle_quit_click,
-            // Boot-time main menu. PLAY closes it; SETTINGS is a stub
-            // for now (existing settings live behind keys).
+            // Boot-time main menu. PLAY closes it; SETTINGS opens a
+            // sub-page with NIGHT / CRT / VSYNC toggles + BACK.
             main_menu::sync_main_menu_visibility,
+            main_menu::sync_main_menu_view,
             main_menu::handle_play_click,
             main_menu::handle_settings_click,
+            main_menu::handle_settings_item_click,
+            main_menu::update_settings_labels,
         ))
         .run();
 }

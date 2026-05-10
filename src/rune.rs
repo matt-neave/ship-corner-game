@@ -77,33 +77,72 @@ pub enum Rune {
     /// sustained-fire weapons; stacks decay after no-hit for
     /// `RESONATE_DECAY` seconds.
     Resonate,
+    // ---- Targeting modifiers (passive) ----
+    //
+    // No proc effect — these runes change which enemy the turret picks
+    // out of its in-arc, in-range candidates. `turret_aim_fire` reads
+    // the slot's runes directly; if more than one targeting rune is
+    // equipped, the first one (by socket index) wins.
+    /// Turret prefers the furthest enemy in arc/range.
+    TargetFurthest,
+    /// Turret prefers the highest-HP enemy in arc/range.
+    TargetHighestHp,
+    /// Turret prefers the lowest-HP enemy in arc/range — good for
+    /// finishing-blow snipers / scrap harvesting.
+    TargetLowestHp,
+    /// Passive AoE-radius modifier. Currently scoped to Mortar's
+    /// splash; future AoE weapons should multiply by the same factor.
+    /// Each socketed `Splash` rune contributes additively (+50% per
+    /// rune) so stacks read cleanly.
+    Splash,
 }
 
 impl Rune {
     pub fn label(self) -> &'static str {
         match self {
-            Rune::Fire     => tr("rune_fire"),
-            Rune::Frost    => tr("rune_frost"),
-            Rune::Shock    => tr("rune_shock"),
-            Rune::Detonate => tr("rune_detonate"),
-            Rune::Echo     => tr("rune_echo"),
-            Rune::Cascade  => tr("rune_cascade"),
-            Rune::Conduit  => tr("rune_conduit"),
-            Rune::Resonate => tr("rune_resonate"),
+            Rune::Fire             => tr("rune_fire"),
+            Rune::Frost            => tr("rune_frost"),
+            Rune::Shock            => tr("rune_shock"),
+            Rune::Detonate         => tr("rune_detonate"),
+            Rune::Echo             => tr("rune_echo"),
+            Rune::Cascade          => tr("rune_cascade"),
+            Rune::Conduit          => tr("rune_conduit"),
+            Rune::Resonate         => tr("rune_resonate"),
+            Rune::TargetFurthest   => tr("rune_target_furthest"),
+            Rune::TargetHighestHp  => tr("rune_target_max_hp"),
+            Rune::TargetLowestHp   => tr("rune_target_min_hp"),
+            Rune::Splash           => tr("rune_splash"),
         }
     }
 
     /// Long-form description for tooltips, looked up via i18n.
     pub fn description(self) -> &'static str {
         match self {
-            Rune::Fire     => tr("rune_fire_desc"),
-            Rune::Frost    => tr("rune_frost_desc"),
-            Rune::Shock    => tr("rune_shock_desc"),
-            Rune::Detonate => tr("rune_detonate_desc"),
-            Rune::Echo     => tr("rune_echo_desc"),
-            Rune::Cascade  => tr("rune_cascade_desc"),
-            Rune::Conduit  => tr("rune_conduit_desc"),
-            Rune::Resonate => tr("rune_resonate_desc"),
+            Rune::Fire             => tr("rune_fire_desc"),
+            Rune::Frost            => tr("rune_frost_desc"),
+            Rune::Shock            => tr("rune_shock_desc"),
+            Rune::Detonate         => tr("rune_detonate_desc"),
+            Rune::Echo             => tr("rune_echo_desc"),
+            Rune::Cascade          => tr("rune_cascade_desc"),
+            Rune::Conduit          => tr("rune_conduit_desc"),
+            Rune::Resonate         => tr("rune_resonate_desc"),
+            Rune::TargetFurthest   => tr("rune_target_furthest_desc"),
+            Rune::TargetHighestHp  => tr("rune_target_max_hp_desc"),
+            Rune::TargetLowestHp   => tr("rune_target_min_hp_desc"),
+            Rune::Splash           => tr("rune_splash_desc"),
+        }
+    }
+
+    /// If this rune overrides the host turret's target-selection rule,
+    /// the corresponding `TargetPriority`. Non-targeting runes return
+    /// `None` and the slot falls back to `Closest`.
+    pub fn target_priority(self) -> Option<crate::weapon::TargetPriority> {
+        use crate::weapon::TargetPriority;
+        match self {
+            Rune::TargetFurthest  => Some(TargetPriority::Furthest),
+            Rune::TargetHighestHp => Some(TargetPriority::HighestHp),
+            Rune::TargetLowestHp  => Some(TargetPriority::LowestHp),
+            _ => None,
         }
     }
 
@@ -136,6 +175,14 @@ impl Rune {
             // cascade" rule as Fire / Frost.
             Rune::Conduit  => 0.0,
             Rune::Resonate => 0.0,
+            // Targeting runes are passive — `turret_aim_fire` reads
+            // them directly; they never enter the proc chain.
+            Rune::TargetFurthest  => 0.0,
+            Rune::TargetHighestHp => 0.0,
+            Rune::TargetLowestHp  => 0.0,
+            // Splash is a passive AoE-radius modifier read by the
+            // mortar firing path; never procs.
+            Rune::Splash          => 0.0,
         }
     }
 }
@@ -143,30 +190,38 @@ impl Rune {
 /// Cycle a slot's rune forward.
 pub fn cycle_next(current: Option<Rune>) -> Option<Rune> {
     match current {
-        None                 => Some(Rune::Fire),
-        Some(Rune::Fire)     => Some(Rune::Frost),
-        Some(Rune::Frost)    => Some(Rune::Shock),
-        Some(Rune::Shock)    => Some(Rune::Detonate),
-        Some(Rune::Detonate) => Some(Rune::Echo),
-        Some(Rune::Echo)     => Some(Rune::Cascade),
-        Some(Rune::Cascade)  => Some(Rune::Conduit),
-        Some(Rune::Conduit)  => Some(Rune::Resonate),
-        Some(Rune::Resonate) => None,
+        None                       => Some(Rune::Fire),
+        Some(Rune::Fire)           => Some(Rune::Frost),
+        Some(Rune::Frost)          => Some(Rune::Shock),
+        Some(Rune::Shock)          => Some(Rune::Detonate),
+        Some(Rune::Detonate)       => Some(Rune::Echo),
+        Some(Rune::Echo)           => Some(Rune::Cascade),
+        Some(Rune::Cascade)        => Some(Rune::Conduit),
+        Some(Rune::Conduit)        => Some(Rune::Resonate),
+        Some(Rune::Resonate)       => Some(Rune::TargetFurthest),
+        Some(Rune::TargetFurthest) => Some(Rune::TargetHighestHp),
+        Some(Rune::TargetHighestHp)=> Some(Rune::TargetLowestHp),
+        Some(Rune::TargetLowestHp) => Some(Rune::Splash),
+        Some(Rune::Splash)         => None,
     }
 }
 
 /// Cycle backward — reverse of `cycle_next`.
 pub fn cycle_prev(current: Option<Rune>) -> Option<Rune> {
     match current {
-        None                 => Some(Rune::Resonate),
-        Some(Rune::Resonate) => Some(Rune::Conduit),
-        Some(Rune::Conduit)  => Some(Rune::Cascade),
-        Some(Rune::Cascade)  => Some(Rune::Echo),
-        Some(Rune::Echo)     => Some(Rune::Detonate),
-        Some(Rune::Detonate) => Some(Rune::Shock),
-        Some(Rune::Shock)    => Some(Rune::Frost),
-        Some(Rune::Frost)    => Some(Rune::Fire),
-        Some(Rune::Fire)     => None,
+        None                       => Some(Rune::Splash),
+        Some(Rune::Splash)         => Some(Rune::TargetLowestHp),
+        Some(Rune::TargetLowestHp) => Some(Rune::TargetHighestHp),
+        Some(Rune::TargetHighestHp)=> Some(Rune::TargetFurthest),
+        Some(Rune::TargetFurthest) => Some(Rune::Resonate),
+        Some(Rune::Resonate)       => Some(Rune::Conduit),
+        Some(Rune::Conduit)        => Some(Rune::Cascade),
+        Some(Rune::Cascade)        => Some(Rune::Echo),
+        Some(Rune::Echo)           => Some(Rune::Detonate),
+        Some(Rune::Detonate)       => Some(Rune::Shock),
+        Some(Rune::Shock)          => Some(Rune::Frost),
+        Some(Rune::Frost)          => Some(Rune::Fire),
+        Some(Rune::Fire)           => None,
     }
 }
 
@@ -198,6 +253,12 @@ pub fn apply_rune(commands: &mut Commands, entity: Entity, rune: Rune) {
             // Stack-aware insert handled inline by the proc system
             // because we need to read current stacks before writing.
         }
+        // Targeting runes never reach `apply_rune` — they're passive
+        // and `turret_aim_fire` reads them straight off the slot.
+        Rune::TargetFurthest
+        | Rune::TargetHighestHp
+        | Rune::TargetLowestHp
+        | Rune::Splash => {}
     }
 }
 

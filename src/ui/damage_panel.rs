@@ -7,10 +7,10 @@
 //! is one match-arm in `DamageSource` + one extra spawn call.
 //!
 //! Per-row composition:
-//! - **Icon column** — for player-slot rows, a tiny ship hull (capsule)
-//!   with a single bright dot at the slot's position so a glance tells
-//!   you which gun is talking. For ally rows, a small square in the
-//!   class's hull color.
+//! - **Icon column** — for player-slot rows, a single small circle
+//!   tinted with the slot's currently-equipped weapon color (live-synced
+//!   from `TurretConfig` so re-equipping in the shop updates it). For
+//!   ally rows, a small circle in the class's hull color.
 //! - **Label column** — short text abbreviation (`BOW`, `F.P`,
 //!   `PIRATE`, `BLKBEARD`, …).
 //! - **Bar track** — thin grey bar with a white fill child whose
@@ -26,10 +26,9 @@ use bevy::prelude::*;
 use bevy::text::FontSmoothing;
 
 use crate::ally::ShipClass;
-use crate::balance::TURRET_NAME_KEYS;
 use crate::bullet::DamageSource;
-use crate::i18n::tr;
-use crate::palette::Palette;
+use crate::customize::{turret_barrel_color_for, turret_color_for};
+use crate::turret::TurretConfig;
 
 use super::DamageStats;
 
@@ -45,25 +44,44 @@ pub struct DamageBarFill { pub source: DamageSource }
 #[derive(Component, Clone, Copy)]
 pub struct DamagePctText { pub source: DamageSource }
 
-const ROW_HEIGHT: f32 = 14.0;
-const ROW_GAP: f32 = 2.0;
-const ICON_W: f32 = 28.0;
-const ICON_H: f32 = ROW_HEIGHT;
-const HULL_W: f32 = 24.0;
-const HULL_H: f32 = 6.0;
-/// Highlighted (active-slot) dot diameter. The other 7 slots render
-/// at `DOT_DIM_SIZE` so the full layout is legible but the row's
-/// own slot reads at a glance.
-const DOT_ACTIVE_SIZE: f32 = 4.0;
-const DOT_DIM_SIZE: f32 = 2.0;
-const ALLY_MARK: f32 = 6.0;
-const LABEL_W: f32 = 38.0;
-const BAR_W: f32 = 70.0;
-const BAR_H: f32 = 4.0;
-const PCT_W: f32 = 26.0;
-const FONT: f32 = 9.0;
+/// Tag for the circular base of a player-slot turret icon. Live-synced
+/// to the equipped weapon's color each frame.
+#[derive(Component, Clone, Copy)]
+pub struct DamageRowSlotIcon { pub slot: u8 }
 
-pub fn setup_damage_panel(mut commands: Commands, palette: Res<Palette>) {
+/// Tag for one of the three barrel rectangles on a player-slot turret
+/// icon. Visibility + color synced from `TurretConfig` so single /
+/// twin / triple barrels read at a glance.
+#[derive(Component, Clone, Copy)]
+pub struct DamageRowSlotBarrel { pub slot: u8, pub idx: u8 }
+
+// Sized to match the in-game turret silhouette's proportions
+// (`Circle::new(2.0)` base + `Rectangle::new(1.5, 4.0)` barrels) so a
+// glance reads as "the same turret you see on the ship". 2× the
+// previous panel dims — small enough to stay LHS-compact, big enough
+// for the base + barrels to be visually distinct rather than blurring
+// into a single dot.
+const ROW_HEIGHT: f32 = 22.0;
+const ROW_GAP: f32 = 3.0;
+const ICON_W: f32 = 30.0;
+const ICON_H: f32 = ROW_HEIGHT;
+/// Mini-turret base radius. 8 px ≈ a 16-px-diameter circle, big
+/// enough to read as a turret base rather than a bullet.
+const BASE_R: f32 = 8.0;
+/// Barrel dims, mirroring the in-game `1.5:4.0` width:length ratio so
+/// the silhouette feels like the real thing.
+const BARREL_W: f32 = 3.0;
+const BARREL_H: f32 = 12.0;
+const BARREL_TOP: f32 = 1.0;
+const BARREL_X_SPREAD: f32 = 4.0;
+const ALLY_MARK: f32 = 10.0;
+const LABEL_W: f32 = 56.0;
+const BAR_W: f32 = 90.0;
+const BAR_H: f32 = 5.0;
+const PCT_W: f32 = 30.0;
+const FONT: f32 = 11.0;
+
+pub fn setup_damage_panel(mut commands: Commands) {
     commands
         .spawn((
             Node {
@@ -81,19 +99,19 @@ pub fn setup_damage_panel(mut commands: Commands, palette: Res<Palette>) {
         ))
         .with_children(|root| {
             for slot in 0..8u8 {
-                spawn_row(root, DamageSource::PlayerSlot(slot), &palette);
+                spawn_row(root, DamageSource::PlayerSlot(slot));
             }
             for &class in ShipClass::ALL {
-                spawn_row(root, DamageSource::Ally(class), &palette);
+                spawn_row(root, DamageSource::Ally(class));
             }
         });
 }
 
 /// Spawn one row. Modular — adding a new source kind = a new spawn
-/// call. The icon column branches on the source so player-slot rows
-/// get the mini ship + slot dot and ally rows get a class-color
-/// square; everything else (label, bar, percent) is identical.
-fn spawn_row(parent: &mut ChildSpawnerCommands, source: DamageSource, palette: &Palette) {
+/// call. Player-slot rows show a mini turret diagram and skip the
+/// label column (the diagram is the identifier); ally rows show a
+/// class-tinted dot plus a class label.
+fn spawn_row(parent: &mut ChildSpawnerCommands, source: DamageSource) {
     parent
         .spawn((
             Node {
@@ -103,17 +121,26 @@ fn spawn_row(parent: &mut ChildSpawnerCommands, source: DamageSource, palette: &
                 column_gap: Val::Px(4.0),
                 ..default()
             },
+            // Visibility added explicitly so `update_damage_row_icons`
+            // can hide unequipped player-slot rows.
+            Visibility::Inherited,
             DamageRow { source },
         ))
         .with_children(|row| {
-            spawn_icon(row, source, palette);
-            // Label.
-            row.spawn((
-                Text::new(label_for(source)),
-                TextFont { font_size: FONT, font_smoothing: FontSmoothing::None, ..default() },
-                TextColor(Color::srgb(0.55, 0.60, 0.70)),
-                Node { width: Val::Px(LABEL_W), ..default() },
-            ));
+            match source {
+                DamageSource::PlayerSlot(slot) => spawn_turret_icon(row, slot),
+                DamageSource::Ally(class) => {
+                    spawn_ally_icon(row, class);
+                    // Ally rows keep their text label — the dot alone
+                    // doesn't disambiguate `Carrier` vs `Submarine`.
+                    row.spawn((
+                        Text::new(class.short_label().to_string()),
+                        TextFont { font_size: FONT, font_smoothing: FontSmoothing::None, ..default() },
+                        TextColor(Color::srgb(0.55, 0.60, 0.70)),
+                        Node { width: Val::Px(LABEL_W), ..default() },
+                    ));
+                }
+            }
             // Bar track + white fill.
             row.spawn((
                 Node {
@@ -145,76 +172,65 @@ fn spawn_row(parent: &mut ChildSpawnerCommands, source: DamageSource, palette: &
         });
 }
 
-fn spawn_icon(row: &mut ChildSpawnerCommands, source: DamageSource, palette: &Palette) {
-    match source {
-        DamageSource::PlayerSlot(slot) => spawn_ship_icon(row, slot, palette),
-        DamageSource::Ally(class) => spawn_ally_icon(row, class, palette),
-    }
-}
-
-/// Mini diagram of the player's ship, mirroring the customize-shop
-/// layout: capsule hull + all 8 turret slots at their real positions.
-/// The row's own slot is the bright accent dot; the other 7 are dim
-/// so the layout reads as a ship while the active slot still pops.
-fn spawn_ship_icon(row: &mut ChildSpawnerCommands, active_slot: u8, palette: &Palette) {
+/// Mini turret diagram: 3 barrel rectangles + a circle base on top,
+/// mirroring the in-game / customize-shop silhouette. All three
+/// barrels are spawned and toggled per-frame based on `slot.barrels`
+/// (1 = middle only, 2 = port + stbd, 3 = all). Colors live-sync
+/// from the equipped weapon so re-equipping in the shop updates the
+/// indicator immediately.
+fn spawn_turret_icon(row: &mut ChildSpawnerCommands, slot: u8) {
     row.spawn((
         Node {
             width: Val::Px(ICON_W),
             height: Val::Px(ICON_H),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
+            position_type: PositionType::Relative,
             ..default()
         },
         BackgroundColor(Color::NONE),
     ))
     .with_children(|icon| {
+        // Barrels first so the base renders on top of their rears.
+        for idx in 0..3u8 {
+            let dx = match idx {
+                0 => -BARREL_X_SPREAD,
+                2 =>  BARREL_X_SPREAD,
+                _ =>  0.0,
+            };
+            let left = ICON_W * 0.5 + dx - BARREL_W * 0.5;
+            icon.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(left),
+                    top: Val::Px(BARREL_TOP),
+                    width: Val::Px(BARREL_W),
+                    height: Val::Px(BARREL_H),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.55, 0.60, 0.70)),
+                Visibility::Hidden,
+                DamageRowSlotBarrel { slot, idx },
+            ));
+        }
+        // Circular base on top.
         icon.spawn((
             Node {
-                width: Val::Px(HULL_W),
-                height: Val::Px(HULL_H),
-                position_type: PositionType::Relative,
+                position_type: PositionType::Absolute,
+                left: Val::Px(ICON_W * 0.5 - BASE_R),
+                top: Val::Px(ICON_H * 0.5 - BASE_R),
+                width: Val::Px(BASE_R * 2.0),
+                height: Val::Px(BASE_R * 2.0),
                 ..default()
             },
-            BackgroundColor(palette.hull),
-            BorderRadius::all(Val::Px(HULL_H * 0.5)),
-        ))
-        .with_children(|hull| {
-            for slot in 0..8u8 {
-                spawn_slot_dot(hull, slot, slot == active_slot);
-            }
-        });
+            BackgroundColor(Color::srgb(0.55, 0.60, 0.70)),
+            BorderRadius::all(Val::Px(BASE_R)),
+            DamageRowSlotIcon { slot },
+        ));
     });
 }
 
-fn spawn_slot_dot(hull: &mut ChildSpawnerCommands, slot: u8, active: bool) {
-    let (dx, dy) = slot_dot_offset(slot);
-    let (size, color) = if active {
-        (DOT_ACTIVE_SIZE, Color::srgb(1.0, 0.85, 0.30))
-    } else {
-        (DOT_DIM_SIZE,    Color::srgba(0.94, 0.95, 0.97, 0.55))
-    };
-    // Hull's own coord space has top-left at (0, 0) and centre at
-    // (HULL_W/2, HULL_H/2). Slot dots position themselves around the
-    // centre via the signed offsets.
-    let cx = HULL_W * 0.5 + dx - size * 0.5;
-    let cy = HULL_H * 0.5 + dy - size * 0.5;
-    hull.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(cx),
-            top: Val::Px(cy),
-            width: Val::Px(size),
-            height: Val::Px(size),
-            ..default()
-        },
-        BackgroundColor(color),
-        BorderRadius::all(Val::Px(size * 0.5)),
-    ));
-}
-
-/// Class-color square in lieu of a per-class silhouette. Compact and
-/// visually distinct from the player-ship hull marker.
-fn spawn_ally_icon(row: &mut ChildSpawnerCommands, class: ShipClass, palette: &Palette) {
+/// Class-color circle in lieu of a per-class silhouette. Compact and
+/// visually distinct from the player-slot turret diagrams.
+fn spawn_ally_icon(row: &mut ChildSpawnerCommands, class: ShipClass) {
     row.spawn((
         Node {
             width: Val::Px(ICON_W),
@@ -232,18 +248,15 @@ fn spawn_ally_icon(row: &mut ChildSpawnerCommands, class: ShipClass, palette: &P
                 height: Val::Px(ALLY_MARK),
                 ..default()
             },
-            BackgroundColor(class_color(class, palette)),
+            BackgroundColor(class_color(class)),
             BorderRadius::all(Val::Px(ALLY_MARK * 0.5)),
         ));
     });
 }
 
-/// Approximate per-class hull tint. Falls back to the player palette's
-/// hull color when the class doesn't carry an explicit override (the
-/// ones that *do* are PirateShip/Blackbeard/Tender per
-/// `palette::PaletteMaterials::hull_for_class`, but pulling that
-/// requires the materials handles — `Palette` is cheaper here).
-fn class_color(class: ShipClass, palette: &Palette) -> Color {
+/// Approximate per-class hull tint. Hardcoded per-variant; covers every
+/// `ShipClass` so no fallback is needed.
+fn class_color(class: ShipClass) -> Color {
     match class {
         ShipClass::PirateShip => Color::srgb(0.55, 0.32, 0.18), // brown
         ShipClass::Blackbeard => Color::srgb(0.10, 0.10, 0.12), // near-black
@@ -251,42 +264,8 @@ fn class_color(class: ShipClass, palette: &Palette) -> Color {
         ShipClass::Carrier    => Color::srgb(0.45, 0.50, 0.40), // olive
         ShipClass::Submarine  => Color::srgb(0.30, 0.40, 0.50), // steel
         ShipClass::Minelayer  => Color::srgb(0.55, 0.50, 0.20), // dirty yellow
-        // _ => palette.hull, // every variant covered, kept for future-proofing
-        #[allow(unreachable_patterns)]
-        _ => palette.hull,
+        ShipClass::OilTanker  => Color::srgb(0.55, 0.18, 0.18), // industrial red
     }
-}
-
-/// Slot positions inside the 24×6 mini hull. Source values live in
-/// `balance::TURRET_POSITIONS` (game coords, +Y bow / +X starboard);
-/// the mini orients bow → +X UI and starboard → +Y UI (bevy_ui +Y is
-/// down), so we map `(gx, gy)` → `(gy * sx, gx * sy)`.
-fn slot_dot_offset(slot: u8) -> (f32, f32) {
-    let (gx, gy) = crate::balance::TURRET_POSITIONS[slot as usize];
-    let sx = HULL_W / 18.0; // hull length in game units
-    let sy = HULL_H / 4.0;  // hull width in game units
-    (gy * sx, gx * sy)
-}
-
-fn label_for(source: DamageSource) -> String {
-    match source {
-        DamageSource::PlayerSlot(s) => slot_short_label(s),
-        DamageSource::Ally(c) => c.short_label().to_string(),
-    }
-}
-
-/// Read translated slot name and compress multi-word names to
-/// initials so the column stays narrow ("FORE PORT" → "F.P").
-fn slot_short_label(slot: u8) -> String {
-    let s = tr(TURRET_NAME_KEYS[slot as usize]);
-    let words: Vec<&str> = s.split_whitespace().collect();
-    if words.len() <= 1 { return s.to_string(); }
-    words
-        .iter()
-        .filter_map(|w| w.chars().next())
-        .map(|c| c.to_string())
-        .collect::<Vec<_>>()
-        .join(".")
 }
 
 pub fn update_damage_panel(
@@ -304,6 +283,76 @@ pub fn update_damage_panel(
         let pct = (amount_for(txt.source, &stats) as f32 / total * 100.0).round() as i32;
         let s = format!("{}%", pct);
         if text.0 != s { text.0 = s; }
+    }
+}
+
+/// Live-sync each player-slot row from `TurretConfig`:
+/// - Hides the whole row when the slot is unequipped.
+/// - Sets the base + barrel colors from the equipped weapon.
+/// - Toggles each barrel's visibility based on `slot.barrels`
+///   (1 = middle only, 2 = port + stbd, 3 = all).
+///
+/// Three disjoint queries (base, barrels, row containers) so the
+/// borrow checker can prove no entity is touched twice.
+pub fn update_damage_row_icons(
+    cfg: Res<TurretConfig>,
+    mut bases: Query<
+        (&DamageRowSlotIcon, &mut BackgroundColor),
+        (Without<DamageRowSlotBarrel>, Without<DamageRow>),
+    >,
+    mut barrels: Query<
+        (&DamageRowSlotBarrel, &mut BackgroundColor, &mut Visibility),
+        (Without<DamageRowSlotIcon>, Without<DamageRow>),
+    >,
+    mut rows: Query<
+        (&DamageRow, &mut Visibility),
+        (Without<DamageRowSlotIcon>, Without<DamageRowSlotBarrel>),
+    >,
+) {
+    // Bases.
+    for (icon, mut bg) in &mut bases {
+        let s = &cfg.slots[icon.slot as usize];
+        if s.equipped {
+            let want = turret_color_for(s.weapon);
+            if bg.0 != want { bg.0 = want; }
+        }
+    }
+    // Barrels.
+    for (b, mut bg, mut vis) in &mut barrels {
+        let s = &cfg.slots[b.slot as usize];
+        let visible = s.equipped && barrel_visible_for(s.barrels.max(1), b.idx);
+        let want_v = if visible { Visibility::Inherited } else { Visibility::Hidden };
+        if *vis != want_v { *vis = want_v; }
+        if visible {
+            let want = turret_barrel_color_for(s.weapon);
+            if bg.0 != want { bg.0 = want; }
+        }
+    }
+    // Row visibility — hide unequipped player-slot rows entirely.
+    for (row, mut vis) in &mut rows {
+        let want = match row.source {
+            DamageSource::PlayerSlot(slot) => {
+                if cfg.slots[slot as usize].equipped {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                }
+            }
+            DamageSource::Ally(_) => Visibility::Inherited,
+        };
+        if *vis != want { *vis = want; }
+    }
+}
+
+/// Mirror of `sync_turret_config`'s barrel-visibility table — single
+/// barrel uses the middle slot, twin uses port + stbd, triple uses
+/// all three.
+fn barrel_visible_for(count: u8, idx: u8) -> bool {
+    match (count, idx) {
+        (1, 1)         => true,
+        (2, 0) | (2, 2) => true,
+        (3, _)         => true,
+        _              => false,
     }
 }
 

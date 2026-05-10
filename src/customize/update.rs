@@ -284,6 +284,8 @@ fn weapon_short_label(w: WeaponType) -> &'static str {
         WeaponType::MachineGun => "MG",
         WeaponType::Shotgun => "SHOT",
         WeaponType::Railgun => "RAIL",
+        WeaponType::Mortar => "MORT",
+        WeaponType::HeliPad => "HELI",
     }
 }
 

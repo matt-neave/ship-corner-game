@@ -23,6 +23,9 @@ pub struct PauseRoot;
 pub struct ResumeButton;
 
 #[derive(Component)]
+pub struct MainMenuButton;
+
+#[derive(Component)]
 pub struct QuitButton;
 
 pub fn setup_pause_menu(mut commands: Commands) {
@@ -58,6 +61,14 @@ pub fn setup_pause_menu(mut commands: Commands) {
             ))
             .with_children(|b| {
                 b.spawn(ui_kit::label("RESUME", theme::FONT_LG, theme::ON_SURFACE));
+            });
+
+            root.spawn((
+                ui_kit::button(theme::SURFACE_RAISED),
+                MainMenuButton,
+            ))
+            .with_children(|b| {
+                b.spawn(ui_kit::label("MAIN MENU", theme::FONT_LG, theme::ON_SURFACE));
             });
 
             root.spawn((
@@ -129,6 +140,17 @@ pub fn handle_quit_click(
     for interaction in &interactions {
         if matches!(*interaction, Interaction::Pressed) {
             exit.write(AppExit::Success);
+        }
+    }
+}
+
+pub fn handle_main_menu_click(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<MainMenuButton>)>,
+    mut next: ResMut<NextState<crate::AppState>>,
+) {
+    for interaction in &interactions {
+        if matches!(*interaction, Interaction::Pressed) {
+            next.set(crate::AppState::MainMenu);
         }
     }
 }

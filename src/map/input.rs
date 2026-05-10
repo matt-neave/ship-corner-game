@@ -137,13 +137,7 @@ pub fn map_boat_movement(
             if !state.owned[id as usize] {
                 state.boat_target = None;
                 let stars = state.sections[id as usize].stars;
-                let budget = crate::balance::level_enemy_budget(
-                    stars,
-                    campaign.battles_cleared,
-                );
-                combat_ctx.stars        = stars;
-                combat_ctx.enemy_budget = budget;
-                combat_ctx.enemy_total  = budget;
+                combat_ctx.reset_for(stars, campaign.battles_cleared);
                 *view = ViewMode::Combat;
             }
         }

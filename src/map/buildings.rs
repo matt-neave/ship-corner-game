@@ -562,7 +562,7 @@ pub fn level_complete_check(
     view: Res<ViewMode>,
     mut state: ResMut<MapState>,
     mut campaign: ResMut<crate::CampaignProgress>,
-    mut combat_ctx: ResMut<CombatContext>,
+    combat_ctx: Res<CombatContext>,
     mut next_state: ResMut<NextState<crate::AppState>>,
     mode: Res<crate::modes::GameMode>,
     enemies: Query<Entity, With<Enemy>>,
@@ -578,19 +578,24 @@ pub fn level_complete_check(
     }
     campaign.battles_cleared = campaign.battles_cleared.saturating_add(1);
 
-    // Refill the next combat right now so the spawn loop has work to
-    // do as soon as the shop closes. Star tier scales gently with
-    // battles cleared (1★ → 2★ at 3 → 3★ at 6 → cap 5★).
-    let stars = (1 + (campaign.battles_cleared / 3)).min(5) as u8;
-    let budget = crate::balance::level_enemy_budget(stars, campaign.battles_cleared);
-    combat_ctx.stars = stars;
-    combat_ctx.enemy_budget = budget;
-    combat_ctx.enemy_total = budget;
-
-    // Briefly land on `StageComplete` first — the overlay sits for
-    // `stage_complete::DURATION` seconds, then auto-transitions to
-    // the shop. Combat sim freezes the moment we leave Playing.
+    // Don't reset combat-context here — `CombatContext` still holds the
+    // just-finished stage's wave_idx / wave_count so the wave readout
+    // stays correct during the StageComplete buffer. The next stage's
+    // budget is queued via the OnExit(StageComplete) hook
+    // (`queue_next_stage_combat`), right before the shop opens.
     next_state.set(crate::AppState::StageComplete);
+}
+
+/// OnExit(StageComplete) hook — runs once between the stage-complete
+/// overlay disappearing and the shop opening. Refills `CombatContext`
+/// for the next stage so closing the shop drops the player into a
+/// fresh combat with an enemy budget already queued.
+pub fn queue_next_stage_combat(
+    campaign: Res<crate::CampaignProgress>,
+    mut combat_ctx: ResMut<CombatContext>,
+) {
+    let stars = (1 + (campaign.battles_cleared / 3)).min(5) as u8;
+    combat_ctx.reset_for(stars, campaign.battles_cleared);
 }
 
 /// Failure path: when the friendly hull is destroyed during a Sandbox

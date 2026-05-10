@@ -365,6 +365,8 @@ impl ScreenShake {
 }
 
 /// Trauma → 0 in this many seconds when nothing else feeds it.
-const SHAKE_DECAY: f32 = 1.5;
-/// Peak offset in world units when trauma == 1.0.
-const SHAKE_MAX_OFFSET: f32 = 4.0;
+const SHAKE_DECAY: f32 = 1.6;
+/// Peak offset in world units when trauma == 1.0. Bumped up so a
+/// solid hit at ~0.7 trauma reads as a real punch (0.7² × 9 ≈ 4.4
+/// world units).
+const SHAKE_MAX_OFFSET: f32 = 9.0;

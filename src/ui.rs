@@ -19,6 +19,7 @@ use bevy::prelude::*;
 mod damage_panel;
 mod hud;
 mod panel;
+mod wave_indicator;
 
 pub use hud::{
     sync_ally_hp_bars, update_ally_hp_values, update_fps_text, update_hp_bar_pixel_scale,
@@ -28,9 +29,10 @@ pub use hud::{
 };
 pub use damage_panel::{
     reset_damage_stats, setup_damage_panel, sync_damage_panel_visibility,
-    update_damage_panel,
+    update_damage_panel, update_damage_row_icons,
 };
 pub use panel::{update_damage_bars, update_slot_labels, UiPanel};
+pub use wave_indicator::{setup_wave_indicator, update_wave_indicator};
 
 use crate::map::ViewMode;
 use crate::modes::{CrtMode, GameMode, NightMode, VsyncMode, WindowMode};

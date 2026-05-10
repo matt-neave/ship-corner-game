@@ -87,21 +87,10 @@ pub struct AllyHpFill { pub ally: Entity }
 // ---------- Setup ----------
 
 pub fn setup_hud(commands: &mut Commands) {
-    // Score / wave banner — pixel-game compact, top-center over the play area.
-    commands.spawn((
-        Text::new(format!("{} 0", tr("score_label"))),
-        TextFont { font_size: 22.0, ..default() },
-        TextColor(UI_VALUE),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(6.0),
-            left: Val::Px(UI_WIDTH),
-            right: Val::Px(0.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        ScoreText,
-    ));
+    // Score banner removed for the prototype — re-enable by restoring
+    // the spawn with `ScoreText` + `Text::new(format!("{} 0", tr("score_label")))`.
+    // `update_score_text` is harmless when the entity doesn't exist
+    // (the query is just empty).
 
     // FPS counter — small, dim, top-right corner.
     commands.spawn((

@@ -224,6 +224,40 @@ pub fn level_enemy_budget(stars: u8, battles_cleared: u32) -> u32 {
     base + CAMPAIGN_SCALING_PER_BATTLE * battles_cleared
 }
 
+// ---------- Wave structure ----------
+//
+// A combat encounter is split into discrete waves. Star tier picks the
+// wave count (more stars = longer encounter); wave index inside the
+// stage picks the size (later waves are bigger). Boss waves swap the
+// variant distribution but reuse the size formula for now — the
+// designer-facing trigger lives in `is_boss_wave` and currently
+// returns `false` so the path is wired but inert.
+
+/// Total waves in a stage. 1★ → 7, … 5★ → 15.
+pub fn waves_for_stars(stars: u8) -> u8 {
+    match stars {
+        1 => 7,
+        2 => 9,
+        3 => 11,
+        4 => 13,
+        _ => 15,
+    }
+}
+
+/// Enemy count for a single wave. `wave_idx` is 0-based. Mild ramp
+/// (`+1` every two waves) so later waves feel weightier than the
+/// opener without exploding the cap.
+pub fn wave_size(wave_idx: u8, _stars: u8) -> u32 {
+    3 + (wave_idx as u32) / 2
+}
+
+/// True when this wave should swap to the boss-style variant mix.
+/// Currently inert — placeholder for the designer-facing trigger
+/// (likely "last wave of a 3★+ stage" or a campaign-progress gate).
+pub fn is_boss_wave(_wave_idx: u8, _wave_count: u8) -> bool {
+    false
+}
+
 // ---------- Map-view economy ----------
 //
 // Production-tick intervals + boost factor for the Foundry / Crane

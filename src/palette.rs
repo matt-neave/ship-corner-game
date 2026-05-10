@@ -56,6 +56,20 @@ pub const SHOTGUN_HEX:        &str = "#6e2333";
 pub const SHOTGUN_BRIGHT_HEX: &str = "#ff7080";
 pub const RAILGUN_HEX:        &str = "#1e555c";
 pub const RAILGUN_BRIGHT_HEX: &str = "#5cf2e8";
+// Mortar: sandy / desert-orange identity. Dark base reads as "earth";
+// bright core is a saturated amber so the long-range shells pop on
+// either ocean tone. Distinct from MG cyan, Shotgun red, and Sniper
+// magenta — sandy/orange is the unclaimed slot.
+pub const MORTAR_HEX:         &str = "#7a4a1c";
+pub const MORTAR_BRIGHT_HEX:  &str = "#ffb04a";
+
+// ---------- HeliPad ----------
+//
+// Olive-green deck pad with a bright yellow `H` painted on. Reused
+// by the helicopter body so the airborne unit reads as "belongs to
+// that pad" without inventing a third tint.
+pub const HELIPAD_DECK_HEX:   &str = "#3a7a3c";
+pub const HELIPAD_H_HEX:      &str = "#ffd84a";
 
 // ---------- Pier building tints ----------
 pub const BUILDING_MUNITIONS_HEX:  &str = "#ff8a3c";
@@ -89,6 +103,14 @@ pub const TENDER_HEX: &str = "#e85021";
 // the sails sit cleanly on top). Boarding ship: no cannons, only
 // sends pirate boarders across.
 pub const BLACKBEARD_HEX: &str = "#2e2e3c";
+// Oil tanker — chunky industrial hull. Muted olive-green so it
+// reads as an industrial vessel against the warmer pirate / cooler
+// carrier hulls, and pairs visually with the dark-oil slicks it
+// drops behind itself.
+pub const OIL_TANKER_HEX: &str = "#7a1d1a";
+/// Oil slick body — near-black with a faint sheen, sits flat on the
+/// water before ignition.
+pub const OIL_SLICK_HEX: &str = "#0d0e12";
 /// Black flag base for the skull-and-crossbones pennants. Pure dark
 /// so the white skull detail (re-uses `pm.ally_flag`) reads strongly.
 pub const SKULL_FLAG_HEX: &str = "#0a0a12";
@@ -226,6 +248,14 @@ pub struct PaletteMaterials {
     pub turret_railgun: Handle<ColorMaterial>,
     pub bullet_railgun: Handle<ColorMaterial>,
     pub bullet_railgun_outer: Handle<ColorMaterial>,
+    pub turret_mortar: Handle<ColorMaterial>,
+    pub bullet_mortar: Handle<ColorMaterial>,
+    pub bullet_mortar_outer: Handle<ColorMaterial>,
+    /// Deck-pad colour for the HeliPad slot (gray) and the yellow `H`
+    /// painted on top. Both materials are also reused by the in-flight
+    /// helicopter's body / nose-turret.
+    pub helipad_deck: Handle<ColorMaterial>,
+    pub helipad_h: Handle<ColorMaterial>,
     /// Ship-class hull tints — one per `ShipClass`. Looked up via
     /// `ally::PaletteMaterials::hull_for_class`.
     pub pirate_hull: Handle<ColorMaterial>,
@@ -234,6 +264,11 @@ pub struct PaletteMaterials {
     pub minelayer_hull: Handle<ColorMaterial>,
     pub tender_hull: Handle<ColorMaterial>,
     pub blackbeard_hull: Handle<ColorMaterial>,
+    pub oil_tanker_hull: Handle<ColorMaterial>,
+    /// Dark oil slick material — used by the OilTanker's freshly-laid
+    /// pools before ignition. Burning slicks swap their material to
+    /// `pm.fire` for the flaming-pool look.
+    pub oil_slick: Handle<ColorMaterial>,
     /// Black flag for Blackbeard's skull-and-crossbones pennants.
     pub skull_flag: Handle<ColorMaterial>,
     /// Boarder crew dot color (cream-tan).
@@ -293,6 +328,7 @@ impl PaletteMaterials {
         let mg      = hex(MG_HEX);
         let shotgun = hex(SHOTGUN_HEX);
         let railgun = hex(RAILGUN_HEX);
+        let mortar  = hex(MORTAR_HEX);
         Self {
             border:                materials.add(palette.border),
             hull:                  materials.add(palette.hull),
@@ -320,12 +356,19 @@ impl PaletteMaterials {
             turret_railgun:        materials.add(railgun),
             bullet_railgun:        materials.add(hex(RAILGUN_BRIGHT_HEX)),
             bullet_railgun_outer:  materials.add(railgun),
+            turret_mortar:         materials.add(mortar),
+            helipad_deck:          materials.add(hex(HELIPAD_DECK_HEX)),
+            helipad_h:             materials.add(hex(HELIPAD_H_HEX)),
+            bullet_mortar:         materials.add(hex(MORTAR_BRIGHT_HEX)),
+            bullet_mortar_outer:   materials.add(mortar),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),
             carrier_hull:          materials.add(hex(CARRIER_HEX)),
             submarine_hull:        materials.add(hex(SUBMARINE_HEX)),
             minelayer_hull:        materials.add(hex(MINELAYER_HEX)),
             tender_hull:           materials.add(hex(TENDER_HEX)),
             blackbeard_hull:       materials.add(hex(BLACKBEARD_HEX)),
+            oil_tanker_hull:       materials.add(hex(OIL_TANKER_HEX)),
+            oil_slick:             materials.add(hex(OIL_SLICK_HEX)),
             skull_flag:            materials.add(hex(SKULL_FLAG_HEX)),
             boarder:               materials.add(hex(BOARDER_HEX)),
             boarding_rope:         materials.add(hex(BOARDING_ROPE_HEX)),
