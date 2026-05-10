@@ -17,6 +17,7 @@ use bevy::text::FontSmoothing;
 use bevy::window::PrimaryWindow;
 use rand::seq::SliceRandom;
 
+use crate::balance::PLAY_INTERNAL;
 use crate::map::ViewMode;
 use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
 use crate::stats::{PlayerStats, StatKind};
@@ -165,30 +166,30 @@ pub struct XpBarFill;
 #[derive(Component)]
 pub struct XpBarLabel;
 
-/// Match the HP bar's 22 px height + chrome so the two read as the
-/// same UI family. Anchored just inside the play area's top border
-/// (`XP_BAR_TOP_INSET`) so the bar doesn't paint over the in-game
-/// 1-pixel frame.
+/// XP bar dimensions — chosen to match the HP bar (`WaveHpTrack`)
+/// exactly so both rails read as the same UI family. Positioned in
+/// the play-area's top-LEFT corner, stacked above the HP bar.
+pub const XP_BAR_WIDTH: f32 = 180.0;
 pub const XP_BAR_HEIGHT: f32 = 22.0;
-/// Pixels to push the bar inward from the play-area top edge so it
-/// clears the 1-game-pixel border (≈ `upscale` screen px). 6 px works
-/// at every reasonable upscale factor (1×..6×) without being huge.
+/// Pixels from the play-area top edge to the XP bar's top. Leaves a
+/// tiny clearance off the 1-game-pixel frame border.
 pub const XP_BAR_TOP_INSET: f32 = 6.0;
 const XP_BAR_FILL_COLOR: Color = Color::srgb(1.0, 0.78, 0.20);
 
 pub fn setup_xp_bar(mut commands: Commands) {
-    // Root: anchors to the play area's top edge each frame in
-    // `update_xp_bar`. Same surface + border palette as the HP bar
-    // (`WaveHpTrack`) so both UI rails read as the same family.
+    // Same dimensions + chrome as the HP bar (`WaveHpTrack`): 180×22,
+    // `theme::BORDER_SUBTLE` surface, `theme::BORDER_DARK` border at
+    // 2 px. HUD-camera-relative positioning so `top: 6, left: 0`
+    // lands inside the play area's top-left without any screen-coord
+    // math.
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Px(0.0),
+                top: Val::Px(XP_BAR_TOP_INSET),
                 left: Val::Px(0.0),
-                width: Val::Px(0.0),
+                width: Val::Px(XP_BAR_WIDTH),
                 height: Val::Px(XP_BAR_HEIGHT),
-                // 2 px border to match the HP bar's outline weight.
                 border: UiRect::all(Val::Px(2.0)),
                 overflow: Overflow::clip(),
                 ..default()
@@ -251,10 +252,7 @@ pub fn update_xp_bar(
     xp: Res<Xp>,
     windows: Query<&Window, With<PrimaryWindow>>,
     window_mode: Res<WindowMode>,
-    mut roots: Query<
-        (&mut Visibility, &mut Node),
-        (With<XpBarRoot>, Without<XpBarFill>),
-    >,
+    mut roots: Query<(&mut Visibility, &mut Node), With<XpBarRoot>>,
     mut fills: Query<&mut Node, (With<XpBarFill>, Without<XpBarRoot>)>,
     mut labels: Query<&mut Text, With<XpBarLabel>>,
 ) {
@@ -267,37 +265,32 @@ pub fn update_xp_bar(
         Visibility::Hidden
     };
 
-    let (left_px, top_px, width_px) = windows
+    let need = xp_to_next(xp.level).max(1);
+    let pct = (xp.current as f32 / need as f32).clamp(0.0, 1.0) * 100.0;
+
+    // Anchor the root to the play area's top-left every frame, the
+    // same way `update_hp_bar_pixel_scale` does — bevy_ui's default
+    // UI camera covers the whole window, so without this the bar
+    // would render in the letterbox above the play area instead of
+    // inside it.
+    let (anchor_left, anchor_top) = windows
         .single()
         .ok()
         .map(|w| {
             let (left, top, size) =
                 play_area_screen_rect(w.width(), w.height(), effective_ui_width(&window_mode));
-            (left, top, size)
+            let upscale = (size / PLAY_INTERNAL as f32).max(1.0);
+            let margin = upscale * 4.0;
+            (left + margin, top + margin)
         })
-        .unwrap_or((0.0, 0.0, 0.0));
+        .unwrap_or((0.0, 0.0));
 
-    let need = xp_to_next(xp.level).max(1);
-    let pct = (xp.current as f32 / need as f32).clamp(0.0, 1.0) * 100.0;
-
-    // Snap to the chunky-pixel grid so the bar's edges align with
-    // the upscaled frame border. `upscale` = how many native pixels
-    // one in-game pixel covers. Rounding positions and widths to
-    // multiples keeps borders crisp instead of straddling sub-pixel
-    // rows.
-    let upscale = (width_px / crate::balance::PLAY_INTERNAL as f32).max(1.0).floor();
-    let snap = |v: f32| (v / upscale).round() * upscale;
-    let snapped_left = snap(left_px);
-    let snapped_top = snap(top_px + XP_BAR_TOP_INSET);
-    let snapped_w = snap(width_px);
     for (mut v, mut node) in &mut roots {
         if *v != want_vis { *v = want_vis; }
-        let want_left = Val::Px(snapped_left);
-        let want_top = Val::Px(snapped_top);
-        let want_w = Val::Px(snapped_w);
-        if node.left != want_left { node.left = want_left; }
+        let want_top = Val::Px(anchor_top);
+        let want_left = Val::Px(anchor_left);
         if node.top != want_top { node.top = want_top; }
-        if node.width != want_w { node.width = want_w; }
+        if node.left != want_left { node.left = want_left; }
     }
     for mut node in &mut fills {
         let want = Val::Percent(pct);

@@ -536,7 +536,13 @@ fn estimate_text_native_width(text: &str, font_size: f32) -> f32 {
 const AOE_TAG: &str = "[AOE] ";
 
 fn turret_tooltip(weapon: WeaponType, barrels: u8) -> (String, String) {
-    let title = format!("{} {}B", weapon.label(), barrels);
+    // 1-barrel suffix omitted (it's the default — redundant noise on
+    // every popover). 2/3-barrel still surfaces the upgrade.
+    let title = if barrels <= 1 {
+        weapon.label().to_string()
+    } else {
+        format!("{} {}B", weapon.label(), barrels)
+    };
     let mut body = String::new();
     if matches!(weapon, WeaponType::Mortar) {
         body.push_str(AOE_TAG);

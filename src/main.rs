@@ -461,10 +461,16 @@ fn main() {
                 hull::sync_hull_apply,
             ).run_if(in_state(AppState::HullSelect)),
         )
-        // Reset XP + pending level-ups when returning to the main menu
-        // so a fresh PLAY session starts at LV 1 / 0 XP. RESTART from
-        // the game-over screen also resets via `reset_run_for_restart`.
-        .add_systems(OnEnter(AppState::MainMenu), reset_xp_for_main_menu)
+        // Returning to the main menu fully restarts the run — any
+        // path that lands on MainMenu (pause→menu, game-over→menu,
+        // hull-select BACK) wipes stats / scrap / campaign / turret
+        // config / map ownership / friendly HP via the same hook
+        // RESTART uses. Coupled with the XP reset, a fresh PLAY
+        // from the menu always begins from a clean baseline.
+        .add_systems(
+            OnEnter(AppState::MainMenu),
+            (reset_xp_for_main_menu, game_over::reset_run_for_restart),
+        )
         // Global safety net: clamp the friendly's `Health.0` to
         // `stats.max_hp()` every frame so a stale stat-vs-HP mismatch
         // (e.g. picking Glass Cannon's -50 HP after the ship spawned

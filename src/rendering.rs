@@ -75,11 +75,12 @@ pub fn make_scanline_image() -> Image {
     img
 }
 
-/// Build a 192×192 BGRA tile with equal-width diagonal stripes — `light`
-/// stripes on `(x+y) % period < period/2`, otherwise `dark`. Tileable.
-pub fn make_hash_image(light: Color, dark: Color) -> Image {
-    const TILE: u32 = 192;
-    const HALF: u32 = TILE / 2;
+/// Build an `N×N` BGRA tile with equal-width diagonal stripes —
+/// `light` stripes on `(x+y) % tile < tile/2`, otherwise `dark`.
+/// Tileable. `tile` controls the diagonal-stripe period; smaller
+/// tiles repeat the pattern more times within a sprite.
+pub fn make_hash_image_with_tile(light: Color, dark: Color, tile: u32) -> Image {
+    let half = tile / 2;
     let to_bgra = |c: Color| {
         let s: bevy::color::Srgba = c.into();
         [
@@ -91,16 +92,16 @@ pub fn make_hash_image(light: Color, dark: Color) -> Image {
     };
     let lb = to_bgra(light);
     let db = to_bgra(dark);
-    let mut data = Vec::with_capacity((TILE * TILE * 4) as usize);
-    for y in 0..TILE {
-        for x in 0..TILE {
-            let band = ((x + y) % TILE) < HALF;
+    let mut data = Vec::with_capacity((tile * tile * 4) as usize);
+    for y in 0..tile {
+        for x in 0..tile {
+            let band = ((x + y) % tile) < half;
             let bgra = if band { lb } else { db };
             data.extend_from_slice(&bgra);
         }
     }
     let mut img = Image::new(
-        Extent3d { width: TILE, height: TILE, depth_or_array_layers: 1 },
+        Extent3d { width: tile, height: tile, depth_or_array_layers: 1 },
         TextureDimension::D2,
         data,
         TextureFormat::Bgra8UnormSrgb,
@@ -108,6 +109,12 @@ pub fn make_hash_image(light: Color, dark: Color) -> Image {
     );
     img.sampler = ImageSampler::nearest();
     img
+}
+
+/// 192×192 tile — what the BG backdrop uses (wide stripes for the
+/// big window-fill quad).
+pub fn make_hash_image(light: Color, dark: Color) -> Image {
+    make_hash_image_with_tile(light, dark, 192)
 }
 
 // ---------- Setup ----------

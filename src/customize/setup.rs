@@ -97,6 +97,13 @@ pub struct ShopTurretSlot;
 #[derive(Component)]
 pub struct ShopRuneSlot;
 
+/// Tag on the gray-hash sell panel at the bottom of the shop column.
+/// `DropTargetMarker(Sell)` is attached alongside; dropping a
+/// ship-sourced item here refunds `SHOP_SELL_FRACTION` of its
+/// original cost via `complete_drag`.
+#[derive(Component)]
+pub struct ShopSellPanel;
+
 /// Tag on every shape that's part of a shop turret tile body.
 #[derive(Component, Clone, Copy)]
 pub struct ShopTurretVisual {
@@ -241,6 +248,7 @@ pub fn setup_customize_ui(
     palette: Res<Palette>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     let hull_capsule = meshes.add(Capsule2d::new(
         HULL_WIDTH * SHIP_SCALE * 0.5,
@@ -294,14 +302,17 @@ pub fn setup_customize_ui(
     ));
 
     // ---------- LHS shop ----------
-    // Anchor the shop column far enough from the canvas left edge that
-    // the leftmost tile (tile centre - half-width) stays on-canvas.
-    // shop_x sits at the middle of the 3-tile row, so the leftmost tile
-    // centre = shop_x - (SHOP_TILE + gap). Keep the leftmost tile's
-    // outer edge (centre - SHOP_TILE/2) > -canvas_half + margin.
+    // Anchor the shop column far enough from the canvas left edge
+    // that every row fits. The widest row is now the mod-card row
+    // (3 × 22 px wide + 2 × 2 px gap = 70 px total), so the column
+    // needs at least `mod_half_width = 35` px of free space to each
+    // side of `shop_x`. With a 4 px outer margin that means
+    // `shop_x ≥ -canvas_half + 4 + 35 = -121`.
     let canvas_half_w = CUSTOMIZE_INTERNAL_W as f32 * 0.5;
     let tile_gap = 4.0;
-    let shop_x = -canvas_half_w + 4.0 + (SHOP_TILE + tile_gap) + SHOP_TILE * 0.5;
+    let shop_x = -canvas_half_w + 4.0
+        + (super::shop_mods::MOD_CARD_W * 1.5
+            + super::shop_mods::MOD_CARD_GAP);
     // Drop the shop column further from the top edge so the SHOP header
     // sits clearly below the SCRAP counter (both top-left). The previous
     // y=76 placed SHOP at y=90 vs SCRAP at y=88 — they overlapped.
@@ -357,6 +368,57 @@ pub fn setup_customize_ui(
         Transform::from_translation(reroll_pos.extend(Z_TILE_BG)),
         HitArea { size: Vec2::new(48.0, 13.0) },
         ShopRerollBtn,
+        RenderLayers::layer(CUSTOMIZE_LAYER),
+    ));
+
+    // ---------- Sell panel ----------
+    // Sits to the right of the reroll button at the same y. Square,
+    // 22×22 spec px, gray-hash background (same diagonal-stripe style
+    // as the blue window backdrop but in dim gray). Drag a ship-slot
+    // turret/rune onto it to refund `SHOP_SELL_FRACTION` of the
+    // original cost.
+    const SELL_PANEL_SIZE: f32 = 22.0;
+    let sell_pos = Vec2::new(
+        // Right edge of reroll + small gap + half the sell panel.
+        reroll_pos.x + 48.0 * 0.5 + 4.0 + SELL_PANEL_SIZE * 0.5,
+        reroll_pos.y,
+    );
+    let sell_hash_img = images.add(crate::rendering::make_hash_image_with_tile(
+        Color::srgb(0.30, 0.32, 0.36), // light gray
+        Color::srgb(0.16, 0.17, 0.20), // dark gray
+        8,                             // 8-px tile → small diagonal stripes
+    ));
+    commands.spawn((
+        Sprite {
+            image: sell_hash_img,
+            custom_size: Some(Vec2::splat(SELL_PANEL_SIZE)),
+            image_mode: bevy::sprite::SpriteImageMode::Tiled {
+                tile_x: true,
+                tile_y: true,
+                stretch_value: 1.0,
+            },
+            ..default()
+        },
+        Transform::from_translation(sell_pos.extend(Z_TILE_BG)),
+        RenderLayers::layer(CUSTOMIZE_LAYER),
+        ShopSellPanel,
+    ));
+    // "SELL" label centred inside the panel so it's unmissable.
+    // High-contrast white on the gray-hash background.
+    spawn_text(
+        &mut commands,
+        sell_pos,
+        "SELL",
+        Color::WHITE,
+        12.0,
+        ShopHeaderTag,
+    );
+    // Drop target hit area — DropTargetKind::Sell triggers the refund
+    // path in `complete_drag`.
+    commands.spawn((
+        Transform::from_translation(sell_pos.extend(Z_TILE_BG)),
+        HitArea { size: Vec2::splat(SELL_PANEL_SIZE) },
+        DropTargetMarker(DropTargetKind::Sell),
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
 

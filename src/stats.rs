@@ -247,21 +247,21 @@ impl StatKind {
         StatKind::Harvest,
         StatKind::RuneDamage,
     ];
-    /// Short uppercase label rendered in the panel.
+    /// Full label rendered in the panel. Plain words, no shorthand.
     pub fn label(self) -> &'static str {
         match self {
             StatKind::Hp => "HP",
-            StatKind::MoveSpeed => "MOVE",
-            StatKind::TurnSpeed => "TURN",
-            StatKind::TurretTurnSpeed => "T.TURN",
-            StatKind::TurretArcBonus => "T.ARC",
+            StatKind::MoveSpeed => "MOVE SPEED",
+            StatKind::TurnSpeed => "TURN SPEED",
+            StatKind::TurretTurnSpeed => "TURRET TURN",
+            StatKind::TurretArcBonus => "TURRET ARC",
             StatKind::Luck => "LUCK",
-            StatKind::ProcStrength => "PROC",
-            StatKind::Crit => "CRIT",
+            StatKind::ProcStrength => "PROC STRENGTH",
+            StatKind::Crit => "CRIT CHANCE",
             StatKind::Range => "RANGE",
-            StatKind::Harvest => "HARV",
+            StatKind::Harvest => "HARVEST",
             StatKind::ShieldMax => "SHIELD",
-            StatKind::RuneDamage => "RUNE",
+            StatKind::RuneDamage => "RUNE DAMAGE",
         }
     }
     /// Formatted current value (with units / sign where helpful).

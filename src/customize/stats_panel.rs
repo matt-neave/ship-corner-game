@@ -24,9 +24,11 @@ use crate::stats::{PlayerStats, StatKind};
 
 use super::setup::{CustomizeText, CustomizeTextSpec, HitArea};
 
-/// Native-pixel font sizes for the panel.
-const LABEL_FONT: f32 = 11.0;
-const VALUE_FONT: f32 = 11.0;
+/// Native-pixel font sizes for the panel. Bumped a touch over the
+/// rest of the customize chrome so the live stat readout is the
+/// thing the eye lands on.
+const LABEL_FONT: f32 = 13.0;
+const VALUE_FONT: f32 = 13.0;
 /// Spec-pixel vertical step between rows.
 const ROW_STEP: f32 = 9.0;
 /// Spec-pixel horizontal extent of one row from `label_x` to `value_x`.
@@ -143,7 +145,10 @@ fn spawn_label(commands: &mut Commands, spec_pos: Vec2, text: &str) {
             font_smoothing: FontSmoothing::None,
             ..default()
         },
-        TextColor(Color::srgb(0.55, 0.60, 0.70)),
+        // Brighter near-white so the stat names are easy to read
+        // against the dark customize backdrop. Previously a muted
+        // mid-gray that washed out at small sizes.
+        TextColor(Color::srgb(0.92, 0.94, 0.97)),
         Anchor::CenterLeft,
         Transform::from_xyz(0.0, 0.0, 100.0),
         Visibility::Hidden,

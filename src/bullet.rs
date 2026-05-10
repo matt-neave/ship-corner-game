@@ -33,7 +33,7 @@ use rand::Rng;
 
 use crate::ally::{ally_hit_radius, ally_is_submerged, Ally};
 use crate::balance::{
-    BEAM_LENGTH, CASCADE_RANGE, CONDUIT_PROC_MULT, PLAY_LAYER, RESONATE_MAX_STACKS,
+    BEAM_LENGTH, CASCADE_RANGE, PLAY_LAYER, RESONATE_MAX_STACKS,
     SHOCK_CHAIN_RANGE, SHOCK_VISUAL_LIFE,
 };
 use crate::beam::Beam;
@@ -42,7 +42,7 @@ use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
 use crate::rune::{
-    apply_rune, detonate_consume, resonate_multiplier, EchoPending, OnConduit, OnFire,
+    detonate_consume, resonate_multiplier, EchoPending, OnConduit, OnFire,
     OnFrost, OnResonate, Rune, ECHO_DELAY,
 };
 use crate::ui::DamageStats;
@@ -333,37 +333,38 @@ fn process_damage_event(
     // frame of FX on something already despawning).
     if h.0 <= 0 {
         if ev.proc_strength <= 0.0 { return; }
-        for &rune in &ev.runes {
-            if rune != Rune::Cascade { continue; }
-            // Cascade is intentionally NOT added to `procced` —
-            // proc_strength decay (× 0.7 per hop) is what eventually
-            // caps the snowball, not a one-hop limit.
-            if rng.gen::<f32>() >= ev.proc_strength { continue; }
+        // Count Cascade stacks on this bullet — each stack hits one
+        // additional nearest enemy. With 3 Cascade runes a kill
+        // fans out to the 3 nearest unique enemies (one chain
+        // event each).
+        let cascade_stacks = ev.runes.iter().filter(|&&r| r == Rune::Cascade).count();
+        if cascade_stacks == 0 { return; }
+        if rng.gen::<f32>() >= ev.proc_strength { return; }
 
-            let r2 = CASCADE_RANGE * CASCADE_RANGE;
+        let r2 = CASCADE_RANGE * CASCADE_RANGE;
+        let mut excluded: Vec<Entity> = vec![ev.target];
+        for _ in 0..cascade_stacks {
             let next = enemy_snap
                 .iter()
-                .filter(|(e, _, _)| *e != ev.target)
+                .filter(|(e, _, _)| !excluded.contains(e))
                 .map(|&(e, p, _)| (e, p, p.distance_squared(ev.hit_pos)))
                 .filter(|(_, _, d2)| *d2 <= r2)
-                .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
-
-            if let Some((target, target_pos, _)) = next {
-                // Visual trail in the friendly-bullet color so a
-                // cascade reads as "your kill snowballing forward",
-                // distinct from Shock's cyan arc.
-                spawn_lightning_arc(commands, em, &pm.bullet_friendly_outer, ev.hit_pos, target_pos);
-                chain.push(DamageEvent {
-                    target,
-                    amount: ev.amount,
-                    hit_pos: target_pos,
-                    weapon: ev.weapon,
-                    source: None, // chained damage doesn't credit the source
-                    runes: ev.runes.clone(),
-                    procced: ev.procced.clone(),
-                    proc_strength: ev.proc_strength * Rune::Cascade.proc_coefficient(),
+                .min_by(|a, b| {
+                    a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
                 });
-            }
+            let Some((target, target_pos, _)) = next else { break };
+            excluded.push(target);
+            spawn_lightning_arc(commands, em, &pm.bullet_friendly_outer, ev.hit_pos, target_pos);
+            chain.push(DamageEvent {
+                target,
+                amount: ev.amount,
+                hit_pos: target_pos,
+                weapon: ev.weapon,
+                source: None,
+                runes: ev.runes.clone(),
+                procced: ev.procced.clone(),
+                proc_strength: ev.proc_strength * Rune::Cascade.proc_coefficient(),
+            });
         }
         return;
     }
@@ -383,32 +384,56 @@ fn process_damage_event(
     // LUCK is applied separately as RoR-style rerolls on failure
     // inside `proc_roll_with_luck`, not folded into this number.
     let bonus = player_stats.proc_strength_bonus();
-    let conduit_mult = if on_conduit.get(ev.target).is_ok() { CONDUIT_PROC_MULT } else { 1.0 };
+    // Conduit-on-target proc-strength multiplier scales with the
+    // target's Conduit stack count (1 stack = original CONDUIT_PROC_MULT).
+    let conduit_mult = on_conduit
+        .get(ev.target)
+        .map(|c| c.proc_mult())
+        .unwrap_or(1.0);
     let strength = (ev.proc_strength * conduit_mult + bonus).min(1.0);
 
-    // Roll each rune attached to the source bullet. `proc_strength` gates
-    // the chance: initial hits at 1.0 always pass, chain hits at 0.5 are
-    // 50/50, and the procced list ensures each rune fires at most once
-    // per chain.
+    // Group the bullet's runes by kind first so duplicates (3 Fire,
+    // 2 Shock, etc.) get rolled + applied ONCE per kind with the
+    // count as a stack value. Without this the loop applies Fire/
+    // Frost/Conduit three times in a row via `Commands.insert` —
+    // which all overwrite the same component, so the duplicates
+    // would be invisible in those branches but stack properly for
+    // Shock/Echo. Counting up front makes every rune kind behave
+    // consistently with the player's expectation of "3 of X stacks".
+    let mut counts: Vec<(Rune, u8)> = Vec::new();
     for &rune in &ev.runes {
+        if let Some(entry) = counts.iter_mut().find(|(r, _)| *r == rune) {
+            entry.1 += 1;
+        } else {
+            counts.push((rune, 1));
+        }
+    }
+
+    for (rune, stacks) in counts {
         if ev.procced.contains(&rune) { continue; }
         if !player_stats.proc_roll_with_luck(&mut *rng, strength) { continue; }
 
         match rune {
             Rune::Fire | Rune::Frost => {
-                apply_rune(commands, ev.target, rune);
+                crate::rune::apply_rune_stacked(commands, ev.target, rune, stacks);
             }
             Rune::Shock => {
-                // Closest other enemy in `SHOCK_CHAIN_RANGE` of the hit pos.
+                // Spawn `stacks` chain bolts — each finds the
+                // current nearest *unhit* enemy independently. With
+                // 3 Shock runes the bullet branches into 3 bolts.
                 let r2 = SHOCK_CHAIN_RANGE * SHOCK_CHAIN_RANGE;
-                let chain_target = enemy_snap
-                    .iter()
-                    .filter(|(e, _, _)| *e != ev.target)
-                    .map(|&(e, p, _)| (e, p, p.distance_squared(ev.hit_pos)))
-                    .filter(|(_, _, d2)| *d2 <= r2)
-                    .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
-
-                if let Some((target, target_pos, _)) = chain_target {
+                let mut excluded: Vec<Entity> = vec![ev.target];
+                for _ in 0..stacks {
+                    let chain_target = enemy_snap
+                        .iter()
+                        .filter(|(e, _, _)| !excluded.contains(e))
+                        .map(|&(e, p, _)| (e, p, p.distance_squared(ev.hit_pos)))
+                        .filter(|(_, _, d2)| *d2 <= r2)
+                        .min_by(|a, b| {
+                            a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                    let Some((target, target_pos, _)) = chain_target else { break };
+                    excluded.push(target);
                     spawn_lightning_arc(commands, em, &pm.shock, ev.hit_pos, target_pos);
                     let mut next_procced = ev.procced.clone();
                     next_procced.push(Rune::Shock);
@@ -417,9 +442,6 @@ fn process_damage_event(
                         amount: ev.amount, // shock chain = 100% weapon damage
                         hit_pos: target_pos,
                         weapon: ev.weapon,
-                        // Don't credit chain damage back to the firing source —
-                        // keeps share bars representing "your turret killed it"
-                        // rather than "your turret rune chained it elsewhere".
                         source: None,
                         runes: ev.runes.clone(),
                         procced: next_procced,
@@ -428,55 +450,49 @@ fn process_damage_event(
                 }
             }
             Rune::Detonate => {
-                // Pop any primer status (Fire/Frost) on the target. The
-                // burst is itself routed through `apply_damage` so it
-                // pulses HitFx and counts toward the firing slot's
-                // share — Detonate is *your* damage, not a chain hop.
+                // Pop primer statuses (Fire/Frost) once, scale the
+                // burst by stack count: 2 Detonate runes ⇒ 2× burst.
                 let fire_ref = on_fire.get(ev.target).ok();
                 let frost_ref = on_frost.get(ev.target).ok();
                 let burst = detonate_consume(commands, ev.target, fire_ref, frost_ref);
                 if burst > 0 {
-                    // Detonate is rune-sourced damage — scale by the
-                    // player's rune-damage stat before resonate amp.
-                    let scaled = (burst as f32 * player_stats.rune_damage_mult()).round() as i32;
+                    let scaled = (burst as f32
+                        * stacks as f32
+                        * player_stats.rune_damage_mult())
+                        .round() as i32;
                     let dealt = apply_damage(&mut h, &mut fx, amplify(scaled));
                     credit_damage(stats, ev.source, dealt);
-                    // Two-tone flair: weapon spark + a flame puff so
-                    // the consumed status reads as "popped".
                     spawn_hit_particles(commands, em, spark_mat, ev.hit_pos, 8, 90.0, rng);
                     spawn_hit_particles(commands, em, &pm.fire,  ev.hit_pos, 6, 70.0, rng);
                 }
             }
             Rune::Echo => {
-                // Schedule a delayed re-damage event on the same target.
-                // Spawned as a free-standing entity so its lifetime is
-                // independent of the bullet (which has already despawned).
-                commands.spawn(EchoPending {
-                    timer: ECHO_DELAY,
-                    target: ev.target,
-                    damage: ev.amount,
-                    source: ev.source,
-                    weapon: ev.weapon,
-                });
+                // One delayed event per Echo stack — 3 Echo runes ⇒
+                // 3 follow-up hits on the same target.
+                for _ in 0..stacks {
+                    commands.spawn(EchoPending {
+                        timer: ECHO_DELAY,
+                        target: ev.target,
+                        damage: ev.amount,
+                        source: ev.source,
+                        weapon: ev.weapon,
+                    });
+                }
             }
             Rune::Cascade => {
                 // Handled in the lethal branch above — skip here.
             }
             Rune::Conduit => {
-                apply_rune(commands, ev.target, Rune::Conduit);
+                crate::rune::apply_rune_stacked(commands, ev.target, Rune::Conduit, stacks);
                 spawn_hit_particles(commands, em, &pm.shock, ev.hit_pos, 4, 35.0, rng);
             }
             Rune::Resonate => {
-                // Stack-aware insert: read current stacks, increment,
-                // refresh decay timer. Cap at `RESONATE_MAX_STACKS` so
-                // a single target can't be wound up to ridiculous
-                // damage by a sustained-fire weapon.
+                // Add `stacks` Resonate stacks on this hit (capped),
+                // so a 3-Resonate socket winds the amp up 3× faster
+                // than a 1-Resonate socket.
                 let current = on_resonate.get(ev.target).map(|r| r.stacks).unwrap_or(0);
-                let new_stacks = (current + 1).min(RESONATE_MAX_STACKS);
+                let new_stacks = current.saturating_add(stacks).min(RESONATE_MAX_STACKS);
                 commands.entity(ev.target).insert(OnResonate::new(new_stacks));
-                // Sniper-pink flair so a Resonate stack reads as a
-                // distinct on-hit beat without conflicting with the
-                // weapon-color spark.
                 spawn_hit_particles(commands, em, &pm.bullet_sniper, ev.hit_pos, 3, 30.0, rng);
             }
             // Targeting runes are passive — read at aim time by

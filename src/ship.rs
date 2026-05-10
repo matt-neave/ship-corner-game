@@ -8,7 +8,7 @@ use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
 
 use crate::balance::{
-    BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH, FROST_SPEED_MULT,
+    BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH,
     HULL_HALF_LEN, HULL_LEN, HULL_WIDTH, PIER_CELL_W, PIER_CELL_X, PIER_Y_START, PIER_Y_STEP,
     PLAY_LAYER, PLAY_WORLD, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
 };
@@ -387,7 +387,7 @@ pub fn apply_velocity(
 ) {
     let dt = time.delta_secs();
     for (mut tf, v, frost) in &mut q {
-        let mult = if frost.is_some() { FROST_SPEED_MULT } else { 1.0 };
+        let mult = frost.map(|f| f.speed_mult()).unwrap_or(1.0);
         tf.translation.x += v.0.x * mult * dt;
         tf.translation.y += v.0.y * mult * dt;
     }

@@ -333,18 +333,18 @@ impl ShipClass {
         }
     }
 
-    /// Short label for compact UI surfaces (debug spawn buttons, etc.).
-    /// Hand-trimmed so every class fits a similar width — keeps the
-    /// debug panel column visually tidy.
-    pub fn short_label(self) -> &'static str {
+    /// Full label for UI surfaces (damage panel, debug spawn buttons).
+    /// No shorthand — keep names recognisable instead of trimming
+    /// them for column width.
+    pub fn label(self) -> &'static str {
         match self {
-            ShipClass::PirateShip => "PIRATE",
+            ShipClass::PirateShip => "PIRATE SHIP",
             ShipClass::Carrier    => "CARRIER",
-            ShipClass::Submarine  => "SUB",
-            ShipClass::Minelayer  => "MINER",
+            ShipClass::Submarine  => "SUBMARINE",
+            ShipClass::Minelayer  => "MINELAYER",
             ShipClass::Tender     => "TENDER",
-            ShipClass::Blackbeard => "BLKBEARD",
-            ShipClass::OilTanker  => "OILER",
+            ShipClass::Blackbeard => "BLACKBEARD",
+            ShipClass::OilTanker  => "OIL TANKER",
             ShipClass::Viking     => "VIKING",
         }
     }

@@ -45,9 +45,9 @@ impl Hull {
     /// detail-panel header.
     pub fn tagline(self) -> &'static str {
         match self {
-            Hull::Default     => "Balanced. Nothing fancy.",
-            Hull::GlassCannon => "Fragile, brutal, long-armed.",
-            Hull::Rammer      => "Tank. Get in their face.",
+            Hull::Default     => "Baseline hull. No modifiers.",
+            Hull::GlassCannon => "Low HP, long range, harder-hitting runes.",
+            Hull::Rammer      => "Triple HP, very short turret range.",
         }
     }
 
@@ -62,7 +62,7 @@ impl Hull {
                 "+10% crit chance",
             ],
             Hull::Rammer => &[
-                "+200 HP (max 300)",
+                "+200 HP",
                 "+10 move speed",
             ],
         }
@@ -74,10 +74,10 @@ impl Hull {
         match self {
             Hull::Default     => &[],
             Hull::GlassCannon => &[
-                "-50 HP (max 50)",
+                "-50 HP",
             ],
             Hull::Rammer => &[
-                "-70% turret range (effectively melee)",
+                "-70% turret range",
             ],
         }
     }
@@ -105,6 +105,18 @@ impl Hull {
 
 /// Iteration order of hulls in the left column.
 const HULL_ORDER: [Hull; 3] = [Hull::Default, Hull::GlassCannon, Hull::Rammer];
+
+// ---------- Font sizing ----------
+//
+// The hull-select overlay's text was reading as cramped; bumped
+// across the board. `_FONT` constants kept local because they're
+// only used by this overlay's two layout functions and should
+// scale together if we want to retune.
+const CARD_TITLE_FONT: f32 = theme::FONT_LG * 1.2;       // ~17 pt
+const CARD_TAGLINE_FONT: f32 = theme::FONT_LG;           // 14 pt
+const DETAIL_TITLE_FONT: f32 = theme::FONT_LG * 2.0;     // ~28 pt
+const DETAIL_TAGLINE_FONT: f32 = theme::FONT_LG * 1.2;   // ~17 pt
+const DETAIL_BULLET_FONT: f32 = theme::FONT_LG;          // 14 pt
 
 // ---------- Markers ----------
 
@@ -157,14 +169,14 @@ fn spawn_overlay(mut commands: Commands, selected: Hull) {
         .with_children(|root| {
             root.spawn(ui_kit::label(
                 "CHOOSE A HULL",
-                theme::FONT_LG * 2.0,
+                theme::FONT_LG * 2.6,
                 theme::ACCENT,
             ));
 
             // Two-column layout: left grid of hulls, right detail panel.
             root.spawn(Node {
                 flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(theme::GAP_LG * 2.0),
+                column_gap: Val::Px(theme::GAP_LG * 2.5),
                 align_items: AlignItems::Stretch,
                 ..default()
             })
@@ -172,8 +184,8 @@ fn spawn_overlay(mut commands: Commands, selected: Hull) {
                 // ---- LEFT: hull list ----
                 cols.spawn(Node {
                     flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(theme::GAP_MD),
-                    width: Val::Px(220.0),
+                    row_gap: Val::Px(theme::GAP_LG),
+                    width: Val::Px(300.0),
                     ..default()
                 })
                 .with_children(|list| {
@@ -185,12 +197,12 @@ fn spawn_overlay(mut commands: Commands, selected: Hull) {
                 // ---- RIGHT: detail panel ----
                 cols.spawn((
                     Node {
-                        width: Val::Px(380.0),
-                        min_height: Val::Px(320.0),
-                        padding: UiRect::all(Val::Px(theme::PAD_LG * 1.5)),
+                        width: Val::Px(480.0),
+                        min_height: Val::Px(400.0),
+                        padding: UiRect::all(Val::Px(theme::PAD_LG * 2.0)),
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Stretch,
-                        row_gap: Val::Px(theme::GAP_MD),
+                        row_gap: Val::Px(theme::GAP_LG),
                         ..default()
                     },
                     BackgroundColor(theme::SURFACE_RAISED),
@@ -232,11 +244,11 @@ fn spawn_card(parent: &mut ChildSpawnerCommands, hull: Hull, selected: bool) {
         ))
         .with_children(|card| {
             let title_color = if selected { theme::ACCENT } else { theme::ON_SURFACE };
-            card.spawn(ui_kit::label(hull.label(), theme::FONT_LG, title_color));
+            card.spawn(ui_kit::label(hull.label(), CARD_TITLE_FONT, title_color));
             card.spawn((
                 Text::new(hull.tagline()),
                 TextFont {
-                    font_size: theme::FONT_SM,
+                    font_size: CARD_TAGLINE_FONT,
                     font_smoothing: bevy::text::FontSmoothing::None,
                     ..default()
                 },
@@ -250,69 +262,42 @@ fn spawn_card(parent: &mut ChildSpawnerCommands, hull: Hull, selected: bool) {
 /// `with_children` closure of that node, so this fn spawns the
 /// children directly.
 fn spawn_detail_content(panel: &mut ChildSpawnerCommands, hull: Hull) {
-    panel.spawn(ui_kit::label(hull.label(), theme::FONT_LG * 1.4, theme::ACCENT));
+    panel.spawn(ui_kit::label(hull.label(), DETAIL_TITLE_FONT, theme::ACCENT));
     panel.spawn((
         Text::new(hull.tagline()),
         TextFont {
-            font_size: theme::FONT_MD,
+            font_size: DETAIL_TAGLINE_FONT,
             font_smoothing: bevy::text::FontSmoothing::None,
             ..default()
         },
         TextColor(theme::ON_SURFACE),
     ));
 
-    // Buffs section.
-    panel.spawn(ui_kit::label("BUFFS", theme::FONT_MD, Color::srgb(0.50, 0.92, 0.50)));
-    let buffs = hull.buffs();
-    if buffs.is_empty() {
+    // Buffs — green, the leading `+` (already in the buff string)
+    // is the only marker. No section header, no extra bullet glyph.
+    for b in hull.buffs() {
         panel.spawn((
-            Text::new("None."),
+            Text::new(b.to_string()),
             TextFont {
-                font_size: theme::FONT_SM,
+                font_size: DETAIL_BULLET_FONT,
                 font_smoothing: bevy::text::FontSmoothing::None,
                 ..default()
             },
-            TextColor(theme::ON_SURFACE_DIM),
+            TextColor(Color::srgb(0.55, 0.95, 0.55)),
         ));
-    } else {
-        for b in buffs {
-            panel.spawn((
-                Text::new(format!("+ {}", b)),
-                TextFont {
-                    font_size: theme::FONT_SM,
-                    font_smoothing: bevy::text::FontSmoothing::None,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.55, 0.95, 0.55)),
-            ));
-        }
     }
 
-    // Nerfs section.
-    panel.spawn(ui_kit::label("NERFS", theme::FONT_MD, Color::srgb(0.95, 0.45, 0.45)));
-    let nerfs = hull.nerfs();
-    if nerfs.is_empty() {
+    // Nerfs — red, leading `-` from the source string.
+    for n in hull.nerfs() {
         panel.spawn((
-            Text::new("None."),
+            Text::new(n.to_string()),
             TextFont {
-                font_size: theme::FONT_SM,
+                font_size: DETAIL_BULLET_FONT,
                 font_smoothing: bevy::text::FontSmoothing::None,
                 ..default()
             },
-            TextColor(theme::ON_SURFACE_DIM),
+            TextColor(Color::srgb(1.00, 0.55, 0.55)),
         ));
-    } else {
-        for n in nerfs {
-            panel.spawn((
-                Text::new(format!("- {}", n)),
-                TextFont {
-                    font_size: theme::FONT_SM,
-                    font_smoothing: bevy::text::FontSmoothing::None,
-                    ..default()
-                },
-                TextColor(Color::srgb(1.00, 0.55, 0.55)),
-            ));
-        }
     }
 
     // Spacer + PLAY button anchored bottom.

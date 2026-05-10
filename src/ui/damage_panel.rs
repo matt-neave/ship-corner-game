@@ -148,7 +148,7 @@ fn spawn_row(parent: &mut ChildSpawnerCommands, source: DamageSource) {
                     // Ally rows keep their text label — the dot alone
                     // doesn't disambiguate `Carrier` vs `Submarine`.
                     row.spawn((
-                        Text::new(class.short_label().to_string()),
+                        Text::new(class.label().to_string()),
                         TextFont { font_size: FONT, font_smoothing: FontSmoothing::None, ..default() },
                         TextColor(Color::srgb(0.55, 0.60, 0.70)),
                         Node { width: Val::Px(LABEL_W), ..default() },
@@ -309,16 +309,23 @@ pub fn update_damage_panel(
     }
 }
 
-/// Live-sync each player-slot row from `TurretConfig`:
-/// - Hides the whole row when the slot is unequipped.
-/// - Sets the base + barrel colors from the equipped weapon.
-/// - Toggles each barrel's visibility based on `slot.barrels`
-///   (1 = middle only, 2 = port + stbd, 3 = all).
+/// Live-sync each row's existence-in-layout from current world
+/// state. Rows collapse out of the flex column entirely when their
+/// source is inactive — `Display::None` (not just `Visibility::Hidden`)
+/// so the panel behaves like a `VBoxContainer`: equipped/active rows
+/// stack tightly with no gaps where unused slots would sit.
 ///
-/// Three disjoint queries (base, barrels, row containers) so the
-/// borrow checker can prove no entity is touched twice.
+/// Row activity rules:
+///   - **Player slot N**: shown iff `cfg.slots[N].equipped`.
+///   - **Ally class C**: shown iff at least one `Ally` with `class = C`
+///     is currently alive AND that class has dealt non-zero damage
+///     this stage. Both conditions together avoid the "just-spawned
+///     but hasn't contributed yet" and "dead but had a percentage"
+///     edge cases.
 pub fn update_damage_row_icons(
     cfg: Res<TurretConfig>,
+    stats: Res<DamageStats>,
+    allies: Query<&crate::ally::Ally>,
     mut bases: Query<
         (&DamageRowSlotIcon, &mut BackgroundColor),
         (Without<DamageRowSlotBarrel>, Without<DamageRow>),
@@ -328,7 +335,7 @@ pub fn update_damage_row_icons(
         (Without<DamageRowSlotIcon>, Without<DamageRow>),
     >,
     mut rows: Query<
-        (&DamageRow, &mut Visibility),
+        (&DamageRow, &mut Node),
         (Without<DamageRowSlotIcon>, Without<DamageRowSlotBarrel>),
     >,
 ) {
@@ -351,19 +358,26 @@ pub fn update_damage_row_icons(
             if bg.0 != want { bg.0 = want; }
         }
     }
-    // Row visibility — hide unequipped player-slot rows entirely.
-    for (row, mut vis) in &mut rows {
-        let want = match row.source {
-            DamageSource::PlayerSlot(slot) => {
-                if cfg.slots[slot as usize].equipped {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                }
+
+    // Snapshot which ally classes are currently alive.
+    let mut alive_class = [false; ShipClass::COUNT];
+    for ally in &allies {
+        alive_class[ally.class.to_index()] = true;
+    }
+
+    // Toggle each row's `display` so collapsed rows take zero space
+    // — that's the VBox-container behaviour: visible rows fill the
+    // column tightly, inactive rows vanish.
+    for (row, mut node) in &mut rows {
+        let active = match row.source {
+            DamageSource::PlayerSlot(slot) => cfg.slots[slot as usize].equipped,
+            DamageSource::Ally(class) => {
+                let idx = class.to_index();
+                alive_class[idx] && stats.per_ally[idx] > 0
             }
-            DamageSource::Ally(_) => Visibility::Inherited,
         };
-        if *vis != want { *vis = want; }
+        let want = if active { Display::Flex } else { Display::None };
+        if node.display != want { node.display = want; }
     }
 }
 

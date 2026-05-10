@@ -240,15 +240,27 @@ pub fn rune_display(rune: Option<Rune>) -> &'static str {
 /// refreshes its duration. Does nothing for instant-effect runes
 /// (Shock / Detonate / Echo) — those are handled inline by the bullet
 /// damage processor.
-pub fn apply_rune(commands: &mut Commands, entity: Entity, rune: Rune) {
+/// Stack-aware variant of `apply_rune`. Caller passes the stack
+/// count so the bullet proc system can collapse duplicate runes
+/// (3 Fire sockets ⇒ 1 apply at stacks = 3) without doing 3
+/// Commands inserts that would each overwrite the previous one.
+/// Stack count is clamped to `1..=MAX_STATUS_STACKS` inside the
+/// per-status constructors.
+pub fn apply_rune_stacked(
+    commands: &mut Commands,
+    entity: Entity,
+    rune: Rune,
+    stacks: u8,
+) {
+    let stacks = stacks.max(1);
     match rune {
-        Rune::Fire     => { commands.entity(entity).insert(OnFire::new()); }
-        Rune::Frost    => { commands.entity(entity).insert(OnFrost::new()); }
+        Rune::Fire     => { commands.entity(entity).insert(OnFire::new(stacks)); }
+        Rune::Frost    => { commands.entity(entity).insert(OnFrost::new(stacks)); }
         Rune::Shock    => { /* no status — chain damage emitted by proc system */ }
         Rune::Detonate => { /* no status — burst applied inline by proc system */ }
         Rune::Echo     => { /* no status — delayed event spawned by proc system */ }
         Rune::Cascade  => { /* no status — on-kill chain emitted inline */ }
-        Rune::Conduit  => { commands.entity(entity).insert(OnConduit::new()); }
+        Rune::Conduit  => { commands.entity(entity).insert(OnConduit::new(stacks)); }
         Rune::Resonate => {
             // Stack-aware insert handled inline by the proc system
             // because we need to read current stacks before writing.
@@ -361,19 +373,28 @@ pub fn tick_echoes(
 
 // ---------- Fire status ----------
 
+/// Cap on stackable rune effects. Same value across Fire / Frost /
+/// Conduit so duplicate-stacking has a predictable ceiling; higher
+/// would let one bullet stack instantly into invincible enemies
+/// melting.
+pub const MAX_STATUS_STACKS: u8 = 5;
+
 #[derive(Component)]
 pub struct OnFire {
     pub remaining: f32,
     pub damage_tick: f32,
     pub particle_tick: f32,
+    /// Stack count. Damage per tick scales linearly with this.
+    pub stacks: u8,
 }
 
 impl OnFire {
-    pub fn new() -> Self {
+    pub fn new(stacks: u8) -> Self {
         Self {
             remaining: FIRE_DURATION,
             damage_tick: 0.0,
             particle_tick: 0.0,
+            stacks: stacks.clamp(1, MAX_STATUS_STACKS),
         }
     }
 }
@@ -409,20 +430,33 @@ fn random_body_point(
 // ---------- Frost status ----------
 
 /// Slows the entity's movement (see `apply_velocity` in `ship.rs` — it
-/// scales velocity by `FROST_SPEED_MULT` while this is present). Counts
-/// down via `tick_on_frost` and emits cool-blue mist particles.
+/// scales velocity by `frost_speed_mult` while this is present, which
+/// compounds with stack count). Counts down via `tick_on_frost` and
+/// emits cool-blue mist particles.
 #[derive(Component)]
 pub struct OnFrost {
     pub remaining: f32,
     pub particle_tick: f32,
+    /// Stack count. Speed multiplier compounds: 1 stack = `FROST_SPEED_MULT`,
+    /// 2 stacks = `MULT^2`, etc. Capped at `MAX_STATUS_STACKS`.
+    pub stacks: u8,
 }
 
 impl OnFrost {
-    pub fn new() -> Self {
+    pub fn new(stacks: u8) -> Self {
         Self {
             remaining: FROST_DURATION,
             particle_tick: 0.0,
+            stacks: stacks.clamp(1, MAX_STATUS_STACKS),
         }
+    }
+
+    /// Compounded speed multiplier from the stack count. Stacks
+    /// multiply, capped so a fully-stacked frost can't fully stop a
+    /// target (`min_mult = 0.05`).
+    pub fn speed_mult(&self) -> f32 {
+        let m = crate::balance::FROST_SPEED_MULT.powi(self.stacks as i32);
+        m.max(0.05)
     }
 }
 
@@ -477,7 +511,11 @@ pub fn tick_on_fire(
             let invincible_player =
                 friendly.is_some() && !matches!(*game_mode, GameMode::Wave);
             if !invincible_player {
+                // Damage scales linearly with stacks — a triple-Fire
+                // socket burns 3× as fast as a single. Multiplied
+                // through the rune-damage stat afterwards.
                 let scaled = (FIRE_DAMAGE_PER_TICK as f32
+                    * fire.stacks as f32
                     * player_stats.rune_damage_mult())
                     .round() as i32;
                 apply_damage(&mut hp, &mut fx, scaled.max(1));
@@ -576,11 +614,25 @@ pub fn tick_on_frost(
 #[derive(Component)]
 pub struct OnConduit {
     pub remaining: f32,
+    /// Stack count. `tick_on_conduit` reads this to scale the proc
+    /// strength bonus applied while marked.
+    pub stacks: u8,
 }
 
 impl OnConduit {
-    pub fn new() -> Self {
-        Self { remaining: CONDUIT_DURATION }
+    pub fn new(stacks: u8) -> Self {
+        Self {
+            remaining: CONDUIT_DURATION,
+            stacks: stacks.clamp(1, MAX_STATUS_STACKS),
+        }
+    }
+
+    /// Effective proc-strength multiplier. Each stack adds half of
+    /// `CONDUIT_PROC_MULT - 1` over the base 1.0 — so 1 stack is the
+    /// original value, 2 stacks is ~+25% extra, etc.
+    pub fn proc_mult(&self) -> f32 {
+        let extra = crate::balance::CONDUIT_PROC_MULT - 1.0;
+        1.0 + extra * self.stacks as f32
     }
 }
 

@@ -690,8 +690,12 @@ pub fn update_hp_bar_pixel_scale(
     let border = UiRect::all(px);
 
     let margin = upscale * 4.0;
+    // HP bar sits BELOW the XP bar in the play-area top-left stack.
+    // XP is at `play_top + margin`, height `XP_BAR_HEIGHT`; HP picks
+    // up after that with a 4px gap so the two bars read as a
+    // grouped column rather than overlapping.
     let want_left = Val::Px(play_left + margin);
-    let want_top  = Val::Px(play_top  + margin);
+    let want_top  = Val::Px(play_top + margin + crate::xp::XP_BAR_HEIGHT + 4.0);
     for mut node in &mut root_q {
         if node.left != want_left { node.left = want_left; }
         if node.top  != want_top  { node.top  = want_top;  }

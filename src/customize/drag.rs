@@ -72,6 +72,10 @@ pub enum DragSourceKind {
 pub enum DropTargetKind {
     ShipSlot(usize),
     ShipRune { slot: usize, rune_idx: usize },
+    /// Sell panel — drop a ship-sourced turret/rune here to refund a
+    /// fraction of its original shop cost. Source ship-slot/socket
+    /// is cleared; shop-sourced drops on this panel are no-ops.
+    Sell,
 }
 
 #[derive(Component)]
@@ -123,6 +127,11 @@ pub const SHOP_REROLL_COST: u32 = 5;
 pub const SHOP_TURRET_COST: u32 = 15;
 /// Scrap cost for a rune purchase.
 pub const SHOP_RUNE_COST: u32 = 10;
+/// Sell refund fraction — selling returns this share of the
+/// original purchase cost (rounded down). `0.33` → 33%: a 15-scrap
+/// turret refunds 4 (15 × 0.33 = 4.95 → 4); a 10-scrap rune refunds
+/// 3 (10 × 0.33 = 3.3 → 3).
+pub const SHOP_SELL_FRACTION: f32 = 0.33;
 /// Scrap cost for a stat-mod card purchase (currently flat — mods
 /// are smaller upgrades than turrets).
 pub const SHOP_MOD_COST: u32 = 5;
@@ -479,6 +488,16 @@ pub fn complete_drag(
     };
 
     match best {
+        Some((_, DropTargetKind::Sell)) => {
+            // Sell path — refund scrap proportional to the original
+            // purchase cost. Shop-sourced drops here are no-ops
+            // (nothing to "sell" — you don't own them yet).
+            if from_shop { return; }
+            let refund = sell_refund_for(&picked.source, &cfg);
+            if refund == 0 { return; }
+            clear_source(&picked.source, &mut cfg);
+            scrap.0 = scrap.0.saturating_add(refund);
+        }
         Some((_, target)) => {
             // Drag-drop path. Shop-sourced drops cost scrap; ship-
             // sourced drops are free (just moving turrets around).
@@ -505,6 +524,45 @@ pub fn complete_drag(
                 }
             }
         }
+    }
+}
+
+/// Refund a ship-sourced drag (turret or rune) at `SHOP_SELL_FRACTION`
+/// of its original buy cost. Multi-barrel turrets refund per-barrel,
+/// and socketed runes' cost is included in the turret-sell payout so
+/// the player isn't taxed twice for losing them.
+///
+/// Shop-sourced drags return `0` — can't sell something you don't
+/// own yet.
+fn sell_refund_for(source: &DragSourceKind, cfg: &TurretConfig) -> u32 {
+    match *source {
+        DragSourceKind::ShipSlot(slot) => {
+            let s = cfg.slots[slot];
+            if !s.equipped { return 0; }
+            let mut total_cost = SHOP_TURRET_COST * s.barrels.max(1) as u32;
+            for _ in s.runes.iter().flatten() {
+                total_cost += SHOP_RUNE_COST;
+            }
+            (total_cost as f32 * SHOP_SELL_FRACTION).floor() as u32
+        }
+        DragSourceKind::ShipRune { slot, rune_idx } => {
+            if cfg.slots[slot].runes[rune_idx].is_none() { return 0; }
+            (SHOP_RUNE_COST as f32 * SHOP_SELL_FRACTION).floor() as u32
+        }
+        _ => 0,
+    }
+}
+
+/// Clear a ship-sourced slot (or socket) after a successful sell.
+fn clear_source(source: &DragSourceKind, cfg: &mut TurretConfig) {
+    match *source {
+        DragSourceKind::ShipSlot(s) => {
+            cfg.slots[s] = SlotCfg::default();
+        }
+        DragSourceKind::ShipRune { slot, rune_idx } => {
+            cfg.slots[slot].runes[rune_idx] = None;
+        }
+        _ => {}
     }
 }
 

@@ -342,7 +342,7 @@ pub fn setup_debug_ui(mut commands: Commands) {
             ))
             .with_children(|b| {
                 b.spawn(ui_kit::label(
-                    class.short_label(),
+                    class.label(),
                     theme::FONT_SM,
                     theme::ON_SURFACE,
                 ));
@@ -357,7 +357,7 @@ pub fn setup_debug_ui(mut commands: Commands) {
             ))
             .with_children(|b| {
                 b.spawn(ui_kit::label(
-                    class.short_label(),
+                    class.label(),
                     theme::FONT_SM,
                     theme::ON_SURFACE,
                 ));
