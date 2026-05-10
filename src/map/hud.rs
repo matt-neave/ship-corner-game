@@ -8,6 +8,7 @@
 //!   buttons driven by `ShipClass::ALL`.
 
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
@@ -360,7 +361,7 @@ pub fn handle_debug_buttons(
     interactions: Query<(&Interaction, &DebugButton), Changed<Interaction>>,
     mut claim_mode: ResMut<DebugClaimMode>,
     mut phase_evt: EventWriter<TriggerMapPhase>,
-    mut customize: ResMut<crate::customize::CustomizeOpen>,
+    mut next_state: ResMut<NextState<crate::AppState>>,
     mut commands: Commands,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<crate::effects::EffectMeshes>>,
@@ -372,7 +373,7 @@ pub fn handle_debug_buttons(
         match *button {
             DebugButton::ClaimMode => claim_mode.active = !claim_mode.active,
             DebugButton::Phase => { phase_evt.write(TriggerMapPhase); }
-            DebugButton::OpenCustomize => { customize.open = true; }
+            DebugButton::OpenCustomize => { next_state.set(crate::AppState::Customize); }
             DebugButton::SpawnAlly(class) => {
                 let Some(pm_ref) = pm.as_deref() else { continue; };
                 let Some(em_ref) = em.as_deref() else { continue; };
@@ -437,5 +438,54 @@ pub fn update_claim_label(
     let target = if claim_mode.active { "CLAIMING…" } else { "CLAIM" };
     for mut text in &mut q {
         if text.0 != target { text.0 = target.to_string(); }
+    }
+}
+
+// ---------- Debug panel show/hide ----------
+
+/// Toggle for the bottom-right debug panel. Default visible. The `#`
+/// key flips this; `sync_debug_panel_visibility` writes through to the
+/// panel's `Visibility`.
+#[derive(Resource)]
+pub struct DebugUiVisible(pub bool);
+impl Default for DebugUiVisible {
+    fn default() -> Self { Self(true) }
+}
+
+/// Toggle the debug panel on `#` (any keyboard layout — reads the
+/// logical character, not a physical KeyCode). Layered in addition to
+/// the customize-overlay's auto-hide, which still wins via
+/// `sync_debug_panel_visibility` below.
+pub fn toggle_debug_ui_on_hash(
+    mut events: EventReader<KeyboardInput>,
+    mut visible: ResMut<DebugUiVisible>,
+) {
+    for ev in events.read() {
+        if !ev.state.is_pressed() { continue; }
+        if let Key::Character(s) = &ev.logical_key {
+            if s.as_str() == "#" {
+                visible.0 = !visible.0;
+            }
+        }
+    }
+}
+
+/// Sole writer of `DebugPanel` visibility. Combines the customize-open
+/// auto-hide and the `#` toggle, so the two never fight: the panel is
+/// visible only when customize is closed AND the toggle is on.
+pub fn sync_debug_panel_visibility(
+    visible: Res<DebugUiVisible>,
+    customize_open: Res<crate::customize::CustomizeOpen>,
+    main_menu: Res<crate::main_menu::MainMenuOpen>,
+    paused: Res<crate::pause::Paused>,
+    mut q: Query<&mut Visibility, With<DebugPanel>>,
+) {
+    let want = if customize_open.open || main_menu.0 || paused.0 || !visible.0 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for mut v in &mut q {
+        if *v != want { *v = want; }
     }
 }

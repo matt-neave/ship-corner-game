@@ -365,7 +365,8 @@ pub fn handle_reroll_button(
 pub fn handle_close_click(
     mouse: Res<ButtonInput<MouseButton>>,
     drag: Res<super::drag::DragState>,
-    mut open: ResMut<CustomizeOpen>,
+    open: Res<CustomizeOpen>,
+    mut next: ResMut<NextState<crate::AppState>>,
     close_q: Query<(&Transform, &super::setup::HitArea), With<super::CustomizeCloseBtn>>,
 ) {
     if !open.open {
@@ -386,7 +387,7 @@ pub fn handle_close_click(
             && cursor.y >= centre.y - half.y
             && cursor.y <= centre.y + half.y
         {
-            open.open = false;
+            next.set(crate::AppState::Playing);
             return;
         }
     }

@@ -553,14 +553,18 @@ pub fn tick_buildings(
 // ---------- Section combat resolution ----------
 
 /// End of a level: when the per-section enemy budget is fully drained
-/// AND no enemies are alive, claim the current section, bump the
-/// campaign-progress counter, and flip the view back to the map.
+/// AND no enemies are alive, claim the section, bump the campaign
+/// counter, immediately queue up the *next* combat's enemy budget,
+/// and open the shop. When the player closes the shop the AppState
+/// flips back to Playing and combat resumes against the fresh wave —
+/// no map detour.
 pub fn level_complete_check(
-    mut view: ResMut<ViewMode>,
+    view: Res<ViewMode>,
     mut state: ResMut<MapState>,
     mut campaign: ResMut<crate::CampaignProgress>,
+    mut combat_ctx: ResMut<CombatContext>,
+    mut next_state: ResMut<NextState<crate::AppState>>,
     mode: Res<crate::modes::GameMode>,
-    combat_ctx: Res<CombatContext>,
     enemies: Query<Entity, With<Enemy>>,
 ) {
     if !matches!(*view, ViewMode::Combat) { return; }
@@ -573,7 +577,17 @@ pub fn level_complete_check(
         state.owned[id] = true;
     }
     campaign.battles_cleared = campaign.battles_cleared.saturating_add(1);
-    *view = ViewMode::Map;
+
+    // Refill the next combat right now so the spawn loop has work to
+    // do as soon as the shop closes. Star tier scales gently with
+    // battles cleared (1★ → 2★ at 3 → 3★ at 6 → cap 5★).
+    let stars = (1 + (campaign.battles_cleared / 3)).min(5) as u8;
+    let budget = crate::balance::level_enemy_budget(stars, campaign.battles_cleared);
+    combat_ctx.stars = stars;
+    combat_ctx.enemy_budget = budget;
+    combat_ctx.enemy_total = budget;
+
+    next_state.set(crate::AppState::Customize);
 }
 
 /// Failure path: when the friendly hull is destroyed during a Sandbox

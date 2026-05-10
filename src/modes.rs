@@ -112,8 +112,12 @@ pub fn play_area_screen_rect(logical_w: f32, logical_h: f32, ui_width: f32) -> (
     (left, top, size)
 }
 
-pub fn effective_ui_width(mode: &WindowMode) -> f32 {
-    if mode.desktop { 0.0 } else { crate::balance::UI_WIDTH }
+pub fn effective_ui_width(_mode: &WindowMode) -> f32 {
+    // LHS UI panel is hidden for the prototype — keep the play area
+    // centered in the window rather than nudged right by a phantom
+    // panel. Restoring the panel = revert this to the desktop-vs-
+    // windowed branch on `mode.desktop`.
+    0.0
 }
 
 // ---------- Systems ----------

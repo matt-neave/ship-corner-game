@@ -42,8 +42,9 @@ pub use buildings::{
 };
 pub use hud::{
     handle_debug_buttons, setup_currency_ui, setup_debug_ui, setup_level_status_ui,
-    update_claim_label, update_currency_ui, update_debug_button_tints,
-    update_level_status_ui, update_refined_steel_text, update_scrap_text, update_steel_text,
+    sync_debug_panel_visibility, toggle_debug_ui_on_hash, update_claim_label,
+    update_currency_ui, update_debug_button_tints, update_level_status_ui,
+    update_refined_steel_text, update_scrap_text, update_steel_text, DebugUiVisible,
 };
 pub use input::{map_boat_movement, map_click_input};
 pub use setup::{setup_map, sync_owned_slot_visuals, update_map_slot_labels};
@@ -453,14 +454,15 @@ pub struct AnimBeam {
 // ---------- Cross-cutting helpers ----------
 
 /// `run_if` predicate for systems that should only tick during combat.
-/// Pauses combat-side systems while the player is on the map, has the
-/// customize overlay open, or has the ESC pause menu up.
+/// Reads the top-level `AppState` directly — gameplay only ticks when
+/// the player is in `AppState::Playing` AND the active view is combat.
+/// Main menu, customize/shop overlay, and pause all park in non-Playing
+/// states, so they automatically suspend the sim.
 pub fn in_combat_view(
     view: Res<ViewMode>,
-    customize: Res<crate::customize::CustomizeOpen>,
-    paused: Res<crate::pause::Paused>,
+    state: Res<State<crate::AppState>>,
 ) -> bool {
-    *view == ViewMode::Combat && !customize.open && !paused.0
+    *view == ViewMode::Combat && *state.get() == crate::AppState::Playing
 }
 
 /// Standard ray-casting point-in-polygon. Works for the wobbled (but

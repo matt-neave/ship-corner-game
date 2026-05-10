@@ -82,14 +82,14 @@ use map::{
     in_combat_view, level_complete_check, level_fail_check, map_begin_phase,
     map_boat_movement, map_click_input, refresh_map_fill, setup_currency_ui,
     setup_debug_ui, setup_level_status_ui, setup_map, setup_progress_assets,
-    sync_owned_slot_visuals, tick_buildings,
-    update_anim_beams, update_anim_pulses, update_building_button_tints,
-    update_building_description, update_building_hover_tooltip,
+    sync_debug_panel_visibility, sync_owned_slot_visuals, tick_buildings,
+    toggle_debug_ui_on_hash, update_anim_beams, update_anim_pulses,
+    update_building_button_tints, update_building_description, update_building_hover_tooltip,
     update_building_progress_bars, update_claim_label, update_currency_ui,
     update_debug_button_tints, update_level_status_ui, update_map_slot_labels,
     update_refined_steel_text, update_scrap_text, update_steel_text,
-    BuildingTimers, CombatContext, DebugClaimMode, MapAnimTimeline, MapState,
-    TriggerMapPhase, ViewMode,
+    BuildingTimers, CombatContext, DebugClaimMode, DebugUiVisible, MapAnimTimeline,
+    MapState, TriggerMapPhase, ViewMode,
 };
 use modes::{
     apply_camera_follow, apply_crt_mode, apply_night_mode, apply_vsync_mode,
@@ -111,14 +111,52 @@ use ship::{apply_velocity, friendly_movement, setup_world};
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{sync_turret_config, turret_aim_fire, SlotCfg, TurretConfig};
 use ui::{
-    setup_ui, ui_button_system, update_damage_bars, update_fps_text, update_map_button,
-    sync_ally_hp_bars, update_ally_hp_values,
+    force_hide_ui_panel, setup_ui, ui_button_system, update_damage_bars, update_fps_text,
+    update_map_button, sync_ally_hp_bars, update_ally_hp_values,
     update_hp_bar_pixel_scale, update_hp_subdividers,
     update_score_text, update_slot_labels, update_vsync_label,
     update_wave_ui, DamageStats,
 };
 use wave::{wave_orchestrator, WaveState};
 use weapon::WeaponType;
+
+// ---------- Top-level screen state ----------
+//
+// One enum, one source of truth for "which screen is the player on".
+// Game-sim systems gate on `AppState::Playing` so they idle during the
+// main menu, the customize/shop overlay, and the pause menu — that's
+// what makes the menus actually pause gameplay rather than just cover
+// it. Existing `MainMenuOpen` / `CustomizeOpen` / `Paused` resources
+// are still around (lots of UI systems read them); the bridge below
+// drives them from the state each frame.
+
+#[derive(States, Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum AppState {
+    #[default]
+    MainMenu,
+    Playing,
+    Customize,
+    Paused,
+}
+
+/// One-way mirror: write the existing boolean overlay flags from the
+/// authoritative `AppState`. Click handlers and ESC toggle now call
+/// `NextState::set`, and this system propagates the resulting transition
+/// to every UI system that still reads the boolean resources.
+fn sync_state_to_open_resources(
+    state: Res<State<AppState>>,
+    mut menu: ResMut<main_menu::MainMenuOpen>,
+    mut customize: ResMut<customize::CustomizeOpen>,
+    mut paused: ResMut<pause::Paused>,
+) {
+    let s = *state.get();
+    let menu_want = matches!(s, AppState::MainMenu);
+    let customize_want = matches!(s, AppState::Customize);
+    let paused_want = matches!(s, AppState::Paused);
+    if menu.0 != menu_want { menu.0 = menu_want; }
+    if customize.open != customize_want { customize.open = customize_want; }
+    if paused.0 != paused_want { paused.0 = paused_want; }
+}
 
 // ---------- Cross-cutting resources ----------
 //
@@ -202,6 +240,8 @@ fn main() {
         .insert_resource(DamageStats::default())
         .insert_resource(stats::PlayerStats::default())
         .insert_resource(main_menu::MainMenuOpen::default())
+        .insert_resource(DebugUiVisible::default())
+        .init_state::<AppState>()
         .insert_resource(Palette::aap64_naval())
         .insert_resource(ShipPath::default())
         .insert_resource(WindowMode::default())
@@ -230,6 +270,14 @@ fn main() {
             init_customize_shop, setup_customize_render, setup_customize_ui,
             setup_pause_menu, main_menu::setup_main_menu,
         ).chain())
+        // State→resources bridge. Runs first so every other system in
+        // the same Update sees the freshly-synced flags.
+        .add_systems(Update, sync_state_to_open_resources)
+        // Auto-reroll the shop every time the customize overlay
+        // opens — fresh turrets/runes/mods on each visit. The
+        // Startup init still seeds it once so any pre-first-open
+        // queries see a populated resource.
+        .add_systems(OnEnter(AppState::Customize), init_customize_shop)
         .add_systems(Update, (
             // Always-on visual setup. apply_night_mode → apply_palette must
             // be ordered so a night-mode toggle propagates to the camera in
@@ -378,7 +426,11 @@ fn main() {
             update_building_description,
             handle_building_choice_clicks,
             update_building_hover_tooltip,
-            (handle_debug_buttons, update_debug_button_tints, update_claim_label),
+            (
+                handle_debug_buttons, update_debug_button_tints, update_claim_label,
+                toggle_debug_ui_on_hash, sync_debug_panel_visibility,
+                force_hide_ui_panel,
+            ),
             (
                 update_currency_ui,
                 update_scrap_text, update_steel_text, update_refined_steel_text,

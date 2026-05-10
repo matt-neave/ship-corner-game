@@ -137,11 +137,11 @@ pub fn sync_main_menu_visibility(
 
 pub fn handle_play_click(
     interactions: Query<&Interaction, (Changed<Interaction>, With<PlayButton>)>,
-    mut open: ResMut<MainMenuOpen>,
+    mut next: ResMut<NextState<crate::AppState>>,
 ) {
     for interaction in &interactions {
         if matches!(*interaction, Interaction::Pressed) {
-            open.0 = false;
+            next.set(crate::AppState::Playing);
         }
     }
 }

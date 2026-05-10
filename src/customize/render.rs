@@ -146,7 +146,9 @@ pub fn setup_customize_render(
 /// `update_hash_image`) which only write on state change.
 type GameplayChromeFilter = Or<(
     With<crate::ui::UiPanel>,
-    With<crate::map::DebugPanel>,
+    // DebugPanel is owned by `map::hud::sync_debug_panel_visibility`
+    // (combines the `#` toggle + customize-open + pause). Listing it
+    // here would race the two writers.
     With<crate::ui::ScoreText>,
     With<crate::ui::FpsText>,
     With<crate::ui::ReturnToMapButton>,

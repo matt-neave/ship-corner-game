@@ -81,6 +81,18 @@ pub fn setup_ui(mut commands: Commands) {
     panel::setup_panel(&mut commands);
 }
 
+/// Prototype-mode helper — keeps the LHS panel hidden every frame so
+/// other systems (e.g. customize chrome toggle, window-mode switch)
+/// can't sneak it back on. Lift the gate when the panel is wanted
+/// again.
+pub fn force_hide_ui_panel(
+    mut q: Query<&mut Visibility, With<UiPanel>>,
+) {
+    for mut v in &mut q {
+        if *v != Visibility::Hidden { *v = Visibility::Hidden; }
+    }
+}
+
 // ---------- Click router ----------
 
 /// Single click handler covering every `SlotButton` in the UI. Branches

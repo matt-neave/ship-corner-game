@@ -8,7 +8,6 @@
 use bevy::app::AppExit;
 use bevy::prelude::*;
 
-use crate::customize::CustomizeOpen;
 use crate::modes::WindowMode;
 use crate::ui_kit::{self, theme};
 
@@ -71,23 +70,29 @@ pub fn setup_pause_menu(mut commands: Commands) {
         });
 }
 
-/// Toggle pause on ESC. Suppressed while:
-/// - the customize overlay is open (it has its own CLOSE button), or
-/// - desktop drag mode is active (its own ESC handler claims the press
-///   to exit desktop mode — we don't want both to fire on one tap).
+/// Toggle pause on ESC. Reads `AppState` directly so the toggle only
+/// fires when the player is mid-game — pressing ESC on the main menu
+/// or while the customize overlay is up is a no-op (those screens own
+/// their own dismissal). Desktop drag mode also blocks the toggle so
+/// its own ESC handler can claim the press to exit desktop mode.
 pub fn toggle_pause_on_esc(
     keys: Res<ButtonInput<KeyCode>>,
-    customize: Res<CustomizeOpen>,
+    state: Res<State<crate::AppState>>,
     window_mode: Res<WindowMode>,
-    mut paused: ResMut<Paused>,
+    mut next: ResMut<NextState<crate::AppState>>,
 ) {
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    if customize.open || window_mode.desktop {
+    if window_mode.desktop {
         return;
     }
-    paused.0 = !paused.0;
+    match *state.get() {
+        crate::AppState::Playing => next.set(crate::AppState::Paused),
+        crate::AppState::Paused => next.set(crate::AppState::Playing),
+        // Main menu / customize manage their own input; ESC stays inert.
+        _ => {}
+    }
 }
 
 /// Drive the pause-menu visibility from `Paused`.
@@ -108,11 +113,11 @@ pub fn sync_pause_menu_visibility(
 
 pub fn handle_resume_click(
     interactions: Query<&Interaction, (Changed<Interaction>, With<ResumeButton>)>,
-    mut paused: ResMut<Paused>,
+    mut next: ResMut<NextState<crate::AppState>>,
 ) {
     for interaction in &interactions {
         if matches!(*interaction, Interaction::Pressed) {
-            paused.0 = false;
+            next.set(crate::AppState::Playing);
         }
     }
 }
