@@ -164,6 +164,7 @@ pub struct SlotCfg {
 pub fn sync_turret_config(
     cfg: Res<TurretConfig>,
     synergies: Res<crate::synergy::Synergies>,
+    stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     mut q: Query<(&mut TurretSlot, &mut Visibility, &mut Transform, &mut MeshMaterial2d<ColorMaterial>, &Children)>,
     mut barrels: Query<
@@ -175,8 +176,9 @@ pub fn sync_turret_config(
         (With<HeliPadDecal>, Without<TurretBarrel>, Without<TurretSlot>),
     >,
 ) {
-    if !cfg.is_changed() { return; }
+    if !cfg.is_changed() && !stats.is_changed() { return; }
     let Some(pm) = pm else { return; };
+    let turret_damage_mult = stats.turret_damage_mult();
     for (mut slot, mut vis, mut tf, mut mat, children) in &mut q {
         let s = cfg.slots[slot.index];
         let tag = s.weapon.tag();
@@ -186,7 +188,12 @@ pub fn sync_turret_config(
         // ladder.
         let damage_mult = synergies.damage_mult_for(tag);
         let synergy_rate_mult = synergies.fire_rate_mult_for(tag);
-        slot.damage = (s.damage as f32 * damage_mult).round() as i32;
+        // Final damage = base × player TurretDamage % × tag synergy.
+        // Live damage flows through `slot.damage` so every downstream
+        // consumer (bullets, beams, blades, octopus, helipad heli,
+        // mortar shells, cannonballs) inherits the multipliers
+        // without each system reaching back to the stats resource.
+        slot.damage = (s.damage as f32 * turret_damage_mult * damage_mult).round() as i32;
         slot.fire_rate = s.fire_rate
             * crate::booster::boost_multiplier_for_slot(&cfg, slot.index)
             * synergy_rate_mult;

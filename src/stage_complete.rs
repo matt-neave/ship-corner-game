@@ -36,6 +36,19 @@ const WAVE_PHASE_PER_CHAR: f32 = 0.45;
 #[derive(Resource, Default)]
 pub struct StageCompleteTimer(pub f32);
 
+/// Running tally of scrap earned during the current combat stage.
+/// `enemy_death_check` adds every kill drop to this resource as well
+/// as the live `Scrap` total; `enter_stage_complete` reads it to
+/// render the "+N SCRAP" payout line. `OnEnter(Playing)` resets it
+/// so each fresh stage counts from zero.
+#[derive(Resource, Default)]
+pub struct ScrapEarnedThisStage(pub u32);
+
+/// Resets the stage tally to zero at the start of each combat run.
+pub fn reset_scrap_earned_on_play(mut s: ResMut<ScrapEarnedThisStage>) {
+    s.0 = 0;
+}
+
 #[derive(Component)]
 pub struct StageCompleteUi;
 
@@ -44,8 +57,13 @@ pub struct StageCompleteUi;
 #[derive(Component)]
 pub struct StageCompleteWaveChar { pub idx: usize }
 
-pub fn enter_stage_complete(mut commands: Commands, mut timer: ResMut<StageCompleteTimer>) {
+pub fn enter_stage_complete(
+    mut commands: Commands,
+    mut timer: ResMut<StageCompleteTimer>,
+    scrap_earned: Res<ScrapEarnedThisStage>,
+) {
     timer.0 = 0.0;
+    let scrap_text = format!("+{} SCRAP", scrap_earned.0);
     commands
         .spawn((
             Node {
@@ -96,6 +114,26 @@ pub fn enter_stage_complete(mut commands: Commands, mut timer: ResMut<StageCompl
                         StageCompleteWaveChar { idx: i },
                     ));
                 }
+            });
+            // Scrap-earned payout line under the title — bold gold
+            // so the player's eye lands on "what did I just earn"
+            // before the shop opens. A static line (no per-char
+            // wave) keeps the visual hierarchy quiet under the
+            // animated title above.
+            root.spawn(Node {
+                margin: UiRect { top: Val::Px(24.0), ..default() },
+                ..default()
+            })
+            .with_children(|wrap| {
+                wrap.spawn((
+                    Text::new(scrap_text),
+                    TextFont {
+                        font_size: 32.0,
+                        font_smoothing: FontSmoothing::None,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.85, 0.30)),
+                ));
             });
         });
 }

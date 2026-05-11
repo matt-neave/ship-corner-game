@@ -110,18 +110,19 @@ pub struct ShopMod {
 }
 
 impl ShopMod {
-    /// Card text, e.g. "+25 CRIT" or "+0.5 RUNE". Sign is always
-    /// included so stacking direction reads at a glance. Uses a
-    /// SHORT stat label so the string fits inside the card at low
-    /// display scales — the full `StatKind::label` (e.g. "PROC
-    /// STRENGTH") is reserved for the stats panel where there's
-    /// room to display it.
+    /// Card text laid out as TWO lines — the signed value on top,
+    /// the short stat name underneath. Bevy's `Text2d` honours
+    /// embedded newlines, so the card renders the value loud and
+    /// the name compact below it without needing a separate child
+    /// entity. Sign is always shown so stacking direction reads at
+    /// a glance.
     pub fn label(self) -> String {
-        if self.delta.fract().abs() < 0.01 {
-            format!("{:+.0} {}", self.delta, short_stat_label(self.kind))
+        let value = if self.delta.fract().abs() < 0.01 {
+            format!("{:+.0}", self.delta)
         } else {
-            format!("{:+.1} {}", self.delta, short_stat_label(self.kind))
-        }
+            format!("{:+.1}", self.delta)
+        };
+        format!("{}\n{}", value, short_stat_label(self.kind))
     }
 }
 
@@ -130,18 +131,19 @@ impl ShopMod {
 /// names down so the mod card text stays one line.
 fn short_stat_label(kind: StatKind) -> &'static str {
     match kind {
-        StatKind::Hp                => "HP",
+        StatKind::Hp                => "HEALTH",
         StatKind::ShieldMax         => "SHIELD",
         StatKind::MoveSpeed         => "SPEED",
         StatKind::TurnSpeed         => "TURN",
-        StatKind::TurretTurnSpeed   => "T.TURN",
-        StatKind::TurretArcBonus    => "T.ARC",
+        StatKind::TurretTurnSpeed   => "TURRET TURN",
+        StatKind::TurretArcBonus    => "TURRET ARC",
         StatKind::Range             => "RANGE",
         StatKind::Crit              => "CRIT",
         StatKind::Luck              => "LUCK",
-        StatKind::ProcStrength      => "PROC",
+        StatKind::ProcStrength      => "PROC STRENGTH",
         StatKind::Harvest           => "HARVEST",
-        StatKind::RuneDamage        => "RUNE DMG",
+        StatKind::RuneDamage        => "RUNE DAMAGE",
+        StatKind::TurretDamage      => "TURRET DAMAGE",
     }
 }
 

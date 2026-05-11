@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Ship Game</title>
+  <style>
+    /* Black backdrop fills any letterbox area around the game canvas.
+       Bevy creates its own canvas at runtime and Bevy's WindowPlugin
+       sizes it to the resolution requested in main.rs (1280x800 here).
+       The canvas inherits these centring rules from `position: fixed`. */
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #0a0a10;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #cbd0d6;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      /* `outline: none` strips the focus ring that browsers add to a
+         canvas the moment it gains keyboard focus — Bevy's input
+         system needs focus to receive keys, so we always want the
+         focus, just not the visible ring. */
+      outline: none;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    /* Splash shown while the wasm module downloads + initialises.
+       Hidden the moment Bevy's first frame swaps in (we don't wait
+       on a real ready signal — wasm-bindgen's init() promise is the
+       coarse cue, good enough at this size). */
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      font-size: 14px;
+    }
+    #loading.hidden { display: none; }
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 4px solid #2a2e36;
+      border-top-color: #d9b056;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <div class="spinner"></div>
+    <div>Loading...</div>
+  </div>
+  <!-- wasm-bindgen's `init` is called once, then itself fetches and
+       instantiates the .wasm module. Bevy starts its event loop
+       inside the promise resolve. -->
+  <script type="module">
+    import init from './ship-game.js';
+    init().then(() => {
+      document.getElementById('loading').classList.add('hidden');
+    }).catch((err) => {
+      console.error('wasm init failed:', err);
+      document.getElementById('loading').innerText =
+        'Failed to load: ' + (err && err.message ? err.message : err);
+    });
+  </script>
+</body>
+</html>

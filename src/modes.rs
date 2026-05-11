@@ -10,7 +10,12 @@
 
 use bevy::prelude::*;
 use bevy::window::{PresentMode, PrimaryWindow};
+// Direct winit imports are only used by the borderless-desktop window
+// systems below, which are cfg-gated off the wasm target (a browser
+// embed has no movable / resizable OS window for these to drive).
+#[cfg(not(target_arch = "wasm32"))]
 use bevy::winit::WinitWindows;
+#[cfg(not(target_arch = "wasm32"))]
 use winit::window::ResizeDirection;
 
 use crate::balance::{PLAY_INTERNAL_H, PLAY_INTERNAL_W, WINDOW_H, WINDOW_W};
@@ -140,6 +145,14 @@ pub fn handle_desktop_escape(
 /// In desktop mode the window has no decorations, so the OS won't drag or
 /// resize it for us. On LMB press we hand the gesture off to winit:
 /// near a corner / edge → start a system-resize; anywhere else → drag.
+///
+/// WASM build provides a no-op stub: a browser-embedded canvas can't
+/// be dragged/resized via winit's API, and the surrounding desktop
+/// chrome (decorations, monitor positioning) doesn't exist there.
+#[cfg(target_arch = "wasm32")]
+pub fn handle_desktop_drag_resize() {}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn handle_desktop_drag_resize(
     mode: Res<WindowMode>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -228,6 +241,15 @@ pub fn apply_night_mode(
 /// Toggle between full-window mode (UI panel + play area) and "desktop"
 /// mode (play area only, no decorations, snapped to bottom-right of the
 /// current monitor). Runs only when `WindowMode` flips.
+///
+/// WASM build is a no-op stub for the same reason as
+/// `handle_desktop_drag_resize` above — the canvas is whatever size
+/// the embedding page allows, no monitor metrics, no decorations to
+/// strip.
+#[cfg(target_arch = "wasm32")]
+pub fn apply_window_mode() {}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn apply_window_mode(
     mut mode: ResMut<WindowMode>,
     mut windows: Query<(Entity, &mut Window), With<PrimaryWindow>>,

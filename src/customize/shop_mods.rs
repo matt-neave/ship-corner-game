@@ -20,13 +20,13 @@ use super::setup::HitArea;
 use super::CustomizeOpen;
 
 // Spec-pixel layout. Three cards in a row; the spawn helper centres
-// the row on its `centre_x` argument. Sized to fit `+NN SHORT` style
-// labels (see `ShopMod::label`) without overflowing at typical
-// window scales. Width tightened relative to the previous 38 so
-// the whole shop column anchors further left and leaves room for
-// the sell strip to clear the reroll button below.
-pub const MOD_CARD_W: f32 = 28.0;
-pub const MOD_CARD_H: f32 = 16.0;
+// the row on its `centre_x` argument. Sized to fit a TWO-line label
+// (signed value on top, short stat name below — see `ShopMod::label`)
+// at the bumped 14pt font, with the row staying narrow enough to
+// keep the shop column anchored far enough left that the sell strip
+// fits cleanly under the ship.
+pub const MOD_CARD_W: f32 = 30.0;
+pub const MOD_CARD_H: f32 = 22.0;
 pub const MOD_CARD_GAP: f32 = 4.0;
 const Z_OUTLINE: f32 = 99.0;
 const Z_FILL: f32 = 99.5;
@@ -93,11 +93,14 @@ fn spawn_card(commands: &mut Commands, idx: usize, spec_pos: Vec2) {
     commands.spawn((
         Text2d::new(""),
         TextFont {
-            font_size: 11.0,
+            font_size: 14.0,
             font_smoothing: FontSmoothing::None,
             ..default()
         },
         TextColor(Color::srgb(1.0, 0.85, 0.30)),
+        // Centre the two-line value/name pair so each line stacks
+        // on its own row inside the card.
+        TextLayout::new_with_justify(JustifyText::Center),
         Transform::from_xyz(0.0, 0.0, Z_TEXT),
         Visibility::Hidden,
         RenderLayers::layer(UPSCALE_LAYER),
@@ -137,7 +140,7 @@ pub fn update_shop_mod_cards(
         (Without<ShopModFill>, Without<ShopModText>, Without<ShopModCostText>)>,
     mut fills: Query<(&ShopModFill, &mut Visibility, &mut Transform, &mut Sprite),
         (Without<ShopModOutline>, Without<ShopModText>, Without<ShopModCostText>)>,
-    mut texts: Query<(&ShopModText, &mut Visibility, &mut Transform, &mut Text2d),
+    mut texts: Query<(&ShopModText, &mut Visibility, &mut Transform, &mut Text2d, &mut TextColor),
         (Without<ShopModOutline>, Without<ShopModFill>, Without<ShopModCostText>)>,
     mut cost_texts: Query<(&ShopModCostText, &mut Visibility, &mut Transform, &mut Text2d),
         (Without<ShopModOutline>, Without<ShopModFill>, Without<ShopModText>)>,
@@ -146,7 +149,7 @@ pub fn update_shop_mod_cards(
     if !panel_visible {
         for (_, mut v, _, _) in &mut outlines   { hide_one(&mut v); }
         for (_, mut v, _, _) in &mut fills      { hide_one(&mut v); }
-        for (_, mut v, _, _) in &mut texts      { hide_one(&mut v); }
+        for (_, mut v, _, _, _) in &mut texts   { hide_one(&mut v); }
         for (_, mut v, _, _) in &mut cost_texts { hide_one(&mut v); }
         return;
     }
@@ -171,7 +174,7 @@ pub fn update_shop_mod_cards(
         tf.translation.x = slot.spec_pos.x * s;
         tf.translation.y = slot.spec_pos.y * s;
     }
-    for (slot, mut vis, mut tf, mut text) in &mut texts {
+    for (slot, mut vis, mut tf, mut text, mut color) in &mut texts {
         let m = shop.mods.get(slot.idx).and_then(|m| *m);
         let occupied = m.is_some();
         set_vis(&mut vis, if occupied { Visibility::Inherited } else { Visibility::Hidden });
@@ -180,6 +183,18 @@ pub fn update_shop_mod_cards(
             if text.0 != label { text.0 = label; }
             tf.translation.x = slot.spec_pos.x * s;
             tf.translation.y = slot.spec_pos.y * s;
+            // Tint the delta: green for buffs (+), red for nerfs (-),
+            // grey for no-change. Mirrors the stats-panel colouring
+            // so the same colour rule reads everywhere a stat
+            // change is presented.
+            let want = if m.delta > 0.001 {
+                Color::srgb(0.55, 0.95, 0.55)
+            } else if m.delta < -0.001 {
+                Color::srgb(1.00, 0.55, 0.55)
+            } else {
+                Color::srgb(0.70, 0.72, 0.78)
+            };
+            if color.0 != want { color.0 = want; }
         }
     }
     let cost_label = super::drag::SHOP_ITEM_COST.to_string();

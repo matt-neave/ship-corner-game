@@ -165,3 +165,40 @@ pub fn compute_synergies(cfg: Res<TurretConfig>, mut syn: ResMut<Synergies>) {
         melee:      tier_for(counts[5]),
     };
 }
+
+/// Per-tag active tier read off the `Synergies` resource. Mirrors
+/// the lookup in the tooltip; kept here so `discover_synergies`
+/// doesn't need to reach into the tooltip module.
+fn tier_for_tag(tag: WeaponTag, syn: &Synergies) -> u8 {
+    match tag {
+        WeaponTag::Naval      => syn.naval,
+        WeaponTag::Future     => syn.future,
+        WeaponTag::Autonomous => syn.autonomous,
+        WeaponTag::Pirate     => syn.pirate,
+        WeaponTag::Support    => syn.support,
+        WeaponTag::Melee      => syn.melee,
+    }
+}
+
+/// One-shot discovery hook. Runs after `compute_synergies`; when a
+/// tag's tier crosses 0 → ≥1 for the first time this run, marks it
+/// in `DiscoveredSynergies` and pops a "DISCOVERED!" banner in the
+/// bottom-left notification stack. Idempotent — already-discovered
+/// tags are skipped, so de-equipping below T1 and re-equipping
+/// later doesn't re-fire the popup.
+pub fn discover_synergies(
+    mut commands: Commands,
+    synergies: Res<Synergies>,
+    mut discovered: ResMut<crate::onboarding::DiscoveredSynergies>,
+    existing: Query<Entity, With<crate::onboarding::NotificationLifetime>>,
+) {
+    if !synergies.is_changed() { return; }
+    for &tag in WeaponTag::all() {
+        if tier_for_tag(tag, &synergies) >= 1 && !discovered.has(tag) {
+            discovered.mark(tag);
+            crate::onboarding::spawn_synergy_discovered_banner(
+                &mut commands, &existing, tag,
+            );
+        }
+    }
+}

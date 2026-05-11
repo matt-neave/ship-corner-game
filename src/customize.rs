@@ -52,7 +52,7 @@ pub use drag::{
     update_drag_ghost, DragState,
 };
 pub use shop_mods::{handle_shop_mod_click, update_shop_mod_cards};
-pub use stats_panel::{handle_stat_debug_buttons, sync_stats_panel};
+pub use stats_panel::{handle_stat_debug_buttons, sync_stat_debug_visibility, sync_stats_panel};
 pub use tooltip::{update_customize_tooltip, update_synergy_banner, TooltipLayout};
 pub use update::{
     handle_close_click, handle_reroll_button, update_customize_ship, update_customize_shop,

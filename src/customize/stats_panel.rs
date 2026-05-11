@@ -92,12 +92,18 @@ pub fn spawn_stats_panel(commands: &mut Commands, right_edge_x: f32, top_y: f32)
 /// targeted stat's `flat` so the recompute on next read picks it up.
 pub fn handle_stat_debug_buttons(
     open: Res<super::CustomizeOpen>,
+    debug_visible: Res<crate::map::DebugUiVisible>,
     mouse: Res<ButtonInput<MouseButton>>,
     drag: Res<super::DragState>,
     mut stats: ResMut<PlayerStats>,
     btn_q: Query<(&Transform, &HitArea, &StatDebugButton)>,
 ) {
     if !open.open { return; }
+    // Click-through gate: the visible glyphs are hidden when debug
+    // mode is off, but the click-target HitArea entities stay alive
+    // so the player can't accidentally drive the stats by clicking
+    // where the buttons WOULD be. Block here as well so it's robust.
+    if !debug_visible.0 { return; }
     if !mouse.just_pressed(MouseButton::Left) { return; }
     if drag.picked.is_some() { return; }
     let Some(cursor) = drag.spec_cursor else { return };
@@ -119,22 +125,33 @@ pub fn handle_stat_debug_buttons(
 }
 
 /// Per-frame syncer. Writes the formatted value into each row's value
-/// text. Skips work when `PlayerStats` hasn't changed.
+/// text AND tints it green / red / grey by comparing the current
+/// effective value to the baseline (`PlayerStats::default()`). The
+/// stats panel is the central place to see "how do I compare to a
+/// fresh ship?", so the colour cue is more useful there than the
+/// raw number alone.
 pub fn sync_stats_panel(
     stats: Res<PlayerStats>,
     open: Res<super::CustomizeOpen>,
-    mut q: Query<(&StatPanelValue, &mut Text2d)>,
+    mut q: Query<(&StatPanelValue, &mut Text2d, &mut TextColor)>,
 ) {
     if !open.open { return; }
-    // 14-ish rows, all formatted strings; the change-detection gate
-    // would skip first-open population since `insert_resource` doesn't
-    // count as a mutation. Cheaper to always check than to chase that
-    // edge case.
-    for (sv, mut text) in &mut q {
+    let baseline = PlayerStats::default();
+    for (sv, mut text, mut color) in &mut q {
         let s = sv.0.format_value(&stats);
         if text.0 != s {
             text.0 = s;
         }
+        let cur = sv.0.stat(&stats).effective();
+        let base = sv.0.stat(&baseline).effective();
+        let want = if cur > base + 0.001 {
+            Color::srgb(0.55, 0.95, 0.55) // green: buffed
+        } else if cur < base - 0.001 {
+            Color::srgb(1.00, 0.55, 0.55) // red: nerfed
+        } else {
+            Color::srgb(0.70, 0.72, 0.78) // grey: baseline
+        };
+        if color.0 != want { color.0 = want; }
     }
 }
 
@@ -161,8 +178,10 @@ fn spawn_label(commands: &mut Commands, spec_pos: Vec2, text: &str) {
 
 fn spawn_debug_button(commands: &mut Commands, spec_pos: Vec2, kind: StatKind, dir: i32) {
     let glyph = if dir > 0 { "+" } else { "-" };
-    // Visible glyph (text on UPSCALE_LAYER). Toggled visible via the
-    // shared `CustomizeText` sync.
+    // Visible glyph (text on UPSCALE_LAYER). Toggled visible by the
+    // shared `CustomizeText` sync AND by `sync_stat_debug_visibility`
+    // — the latter forces Hidden when `DebugUiVisible` is off so the
+    // `+/-` controls only appear after the player presses `#`.
     commands.spawn((
         Text2d::new(glyph),
         TextFont {
@@ -177,6 +196,7 @@ fn spawn_debug_button(commands: &mut Commands, spec_pos: Vec2, kind: StatKind, d
         RenderLayers::layer(UPSCALE_LAYER),
         CustomizeText,
         CustomizeTextSpec(spec_pos),
+        StatDebugGlyph,
     ));
     // Click target on the customize layer so cursor-in-HitArea checks
     // see it. Z is irrelevant for hit-testing.
@@ -186,6 +206,34 @@ fn spawn_debug_button(commands: &mut Commands, spec_pos: Vec2, kind: StatKind, d
         StatDebugButton { kind, dir },
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
+}
+
+/// Marker on the visible `+/-` text glyphs (NOT the click-target
+/// entity, which carries `StatDebugButton`). `sync_stat_debug_visibility`
+/// queries this to gate them on `DebugUiVisible`.
+#[derive(Component)]
+pub struct StatDebugGlyph;
+
+/// Per-frame: the `+/-` debug glyphs are only visible when BOTH
+/// the customize overlay is open AND the `#` debug toggle is on.
+/// Writes the resolved state unconditionally each frame so a
+/// toggle back ON re-reveals them (an early-return would have left
+/// them stuck Hidden after the first toggle-off). Must run AFTER
+/// `sync_customize_text` so its Inherited write doesn't undo the
+/// Hidden — see the `.after()` ordering in `main.rs`.
+pub fn sync_stat_debug_visibility(
+    visible: Res<crate::map::DebugUiVisible>,
+    open: Res<super::CustomizeOpen>,
+    mut q: Query<&mut Visibility, With<StatDebugGlyph>>,
+) {
+    let want = if open.open && visible.0 {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut q {
+        if *v != want { *v = want; }
+    }
 }
 
 fn spawn_value(commands: &mut Commands, spec_pos: Vec2, kind: StatKind) {

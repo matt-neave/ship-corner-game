@@ -526,12 +526,21 @@ fn process_damage_event(
                 crate::rune::apply_rune_stacked(commands, ev.target, rune, stacks);
             }
             Rune::Shock => {
-                // Spawn `stacks` chain bolts — each finds the
-                // current nearest *unhit* enemy independently. With
-                // 3 Shock runes the bullet branches into 3 bolts.
+                // Total chain bolts = `stacks × chains_per_rune`, where
+                // `chains_per_rune` comes from the player's Rune Damage
+                // stat (rounded, min 1). Default stat = 1.0 keeps the
+                // old "one chain per Shock rune" behaviour; pumping
+                // Rune Damage scales the chain count linearly so the
+                // tooltip's "chain lightning to (Rune Damage) enemies"
+                // matches what actually happens.
                 let r2 = SHOCK_CHAIN_RANGE * SHOCK_CHAIN_RANGE;
+                let chains_per_rune = player_stats
+                    .rune_damage_mult()
+                    .round()
+                    .max(1.0) as u32;
+                let total_chains = stacks as u32 * chains_per_rune;
                 let mut excluded: Vec<Entity> = vec![ev.target];
-                for _ in 0..stacks {
+                for _ in 0..total_chains {
                     let chain_target = enemy_snap
                         .iter()
                         .filter(|(e, _, _)| !excluded.contains(e))

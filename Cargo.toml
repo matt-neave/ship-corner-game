@@ -6,6 +6,13 @@ edition = "2021"
 [dependencies]
 bevy = "0.16"
 rand = "0.8"
+
+# Native-only deps. WASM builds get a stub: `winit`'s direct API (resize
+# direction, drag-window) is meaningless inside an itch.io HTML embed,
+# and `dirs` reads OS config paths that don't exist in a browser. The
+# call sites in `modes.rs` + `settings.rs` are cfg-gated to compile to
+# no-ops on wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Bevy 0.16 uses winit 0.30 internally; we depend on the same version directly
 # to access ResizeDirection / drag_window for the borderless desktop-mode window.
 winit = "0.30"
@@ -13,6 +20,16 @@ winit = "0.30"
 # %APPDATA%\ship-game on Windows / ~/.config on Linux / ~/Library/Application
 # Support on macOS — no hand-rolled OS branching.
 dirs = "5"
+
+# WASM-only deps. `getrandom` is a transitive dep of `rand`; on
+# wasm32-unknown-unknown it can't access an OS entropy source by
+# default. The `js` / `wasm_js` features route through the browser's
+# Web Crypto API, which is what we want for `rand::thread_rng()` to
+# work in the browser. Two versions are pinned in Cargo.lock (0.2 and
+# 0.3) so we enable the appropriate feature on each.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 
 [profile.dev]
 opt-level = 1

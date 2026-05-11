@@ -20,18 +20,18 @@ turret_aft_stbd,AFT STBD
 turret_stern,STERN
 weapon_standard,STANDARD
 weapon_sniper,SNIPER
-weapon_mg,MG
+weapon_mg,MACHINE GUN
 weapon_shotgun,SHOTGUN
 weapon_railgun,RAILGUN
 weapon_mortar,MORTAR
 weapon_helipad,HELI PAD
-weapon_standard_desc,Balanced cannon. 100% range.
-weapon_sniper_desc,Slow fire. Heavy per shot. 150% range.
-weapon_mg_desc,Rapid burst with mild spread. 90% range.
-weapon_shotgun_desc,Cone of pellets. 60% range.
-weapon_railgun_desc,Beam pierces every enemy. 160% range.
-weapon_mortar_desc,Lobs shells in a high arc. 300% range; can't hit anything closer than base range.
-weapon_helipad_desc,Spawns a helicopter that orbits the ship and fires using this slot's stats.
+weapon_standard_desc,Balanced cannon. Reliable workhorse.
+weapon_sniper_desc,Heavy round per shot. Built for long range.
+weapon_mg_desc,Rapid bursts with mild spread.
+weapon_shotgun_desc,Wide cone of pellets up close.
+weapon_railgun_desc,Beam pierces every enemy in its path.
+weapon_mortar_desc,Lobs shells in a high arc. Cannot hit anything close.
+weapon_helipad_desc,Releases a helicopter that orbits and fires.
 weapon_cannon,CANNON
 weapon_booster,BOOSTER
 weapon_blade,BLADE
@@ -67,36 +67,37 @@ rune_echo,ECHO
 rune_cascade,CASCADE
 rune_conduit,CONDUIT
 rune_resonate,RESONATE
-rune_fire_desc,Burns the target. 1 (100%) damage per tick over 4s.
-rune_frost_desc,Slows the target's movement.
-rune_shock_desc,Chains lightning to a nearby enemy at 100% damage.
-rune_detonate_desc,Consumes Fire/Frost on the target and releases the stored damage as a burst.
-rune_echo_desc,Repeats the hit at 100% damage a moment later.
-rune_cascade_desc,On killing blow, hits the nearest enemy at 100% damage.
-rune_conduit_desc,Marked targets take +50% proc damage.
-rune_resonate_desc,Each stack adds +20% damage. Up to 5 stacks (+100% max).
+rune_fire_desc,Sets enemies ablaze. Burns over 4 seconds. Stack to burn harder.
+rune_frost_desc,Freezes enemies in place. Movement crawls. Stack to deepen the chill.
+rune_shock_desc,Chains lightning to nearby enemies. Stack to add more arcs.
+rune_detonate_desc,Pops Fire and Frost on the target for a damage burst. Bigger with stacks.
+rune_echo_desc,Fires a second shot at the same target moments later. Stack for more echoes.
+rune_cascade_desc,Killing blows leap to a nearby enemy. Stack for longer chains.
+rune_conduit_desc,Tags the target. Future hits proc runes harder while the tag holds.
+rune_resonate_desc,Hits weaken the target. Up to 5 stacks. Stacks fade without fire.
 rune_target_furthest,FURTHEST
 rune_target_max_hp,MAX HP
 rune_target_min_hp,MIN HP
-rune_target_furthest_desc,Turret targets the furthest enemy in range.
-rune_target_max_hp_desc,Turret targets the enemy with the most HP.
-rune_target_min_hp_desc,Turret targets the enemy with the least HP.
+rune_target_furthest_desc,Aim at the furthest enemy in range.
+rune_target_max_hp_desc,Aim at the toughest enemy in range.
+rune_target_min_hp_desc,Aim at the weakest enemy in range.
 rune_splash,SPLASH
-rune_splash_desc,+50% AoE radius on this turret's splash effects. Stacks.
+rune_splash_desc,Bigger blast radius on this turret. Stack to widen further.
 stat_hp_desc,Maximum hull health.
 stat_move_speed_desc,Ship movement speed.
 stat_turn_speed_desc,How fast the ship turns toward the cursor.
 stat_turret_turn_speed_desc,How fast turrets rotate to aim.
 stat_turret_arc_bonus_desc,Extra degrees each turret can rotate. 0 keeps the default arc; bigger values let turrets cover more sky.
-stat_luck_desc,If a rune fails to proc, this is the chance it gets a free re-roll. 100% guarantees one re-roll per attempt.
-stat_proc_strength_desc,Bonus to how often runes proc on hit. Higher = more procs per shot.
-stat_crit_desc,Chance to crit on hit. 100% always crits for 2x damage; 200% always for 3x.
+stat_luck_desc,Free re-rolls on failed rune procs. 100% guarantees one re-roll per shot.
+stat_proc_strength_desc,Raises the chance every rune procs on hit.
+stat_crit_desc,Chance to crit on hit. 100% always crits for 2x damage. 200% always for 3x.
 stat_range_desc,Bonus to turret firing range.
 stat_harvest_desc,Bonus scrap per kill. 100% guarantees +1 scrap on every kill.
 stat_shield_max_desc,Recharging shield that absorbs damage before HP takes any.
 stat_shield_rate_desc,How fast the shield refills after a delay.
 stat_shield_delay_desc,Pause after a hit before the shield starts refilling.
-stat_rune_damage_desc,Damage multiplier on rune effects (Fire/Frost/Detonate/etc.).
+stat_rune_damage_desc,Scales rune effects. Boosts Fire and Detonate damage. Adds chain bolts to Shock.
+stat_turret_damage_desc,Percentage bonus to every turret's damage. Stacks with synergies.
 map_popup_build,BUILD
 map_building_weaponry,WEAPONRY
 map_building_weaponry_desc,Customize turret loadout in this section.

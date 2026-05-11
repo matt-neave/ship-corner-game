@@ -49,8 +49,18 @@ const SETTINGS_FILE: &str = "settings.txt";
 const APP_FOLDER: &str = "ship-game";
 
 /// Full on-disk path. Returns `None` if the OS config dir lookup fails.
+/// On WASM there's no filesystem and no `dirs` crate available, so this
+/// always returns None — `load`/`save` callers already treat that as
+/// "skip persistence", which is the right behaviour inside a browser
+/// embed (settings reset each page load).
+#[cfg(not(target_arch = "wasm32"))]
 fn settings_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join(APP_FOLDER).join(SETTINGS_FILE))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn settings_path() -> Option<PathBuf> {
+    None
 }
 
 /// Parse a `key=value` text blob. Anything malformed is silently

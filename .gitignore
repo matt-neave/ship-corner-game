@@ -20,3 +20,6 @@ Thumbs.db
 
 # Local dev files
 *.log
+
+# Release-build output (see scripts/release-web.ps1)
+/dist/

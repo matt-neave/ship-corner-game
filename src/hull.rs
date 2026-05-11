@@ -20,9 +20,19 @@ use crate::stats::PlayerStats;
 use crate::ui_kit::{self, theme};
 
 /// Which hull the player is running. Acts as both the highlighted
-/// card on `HullSelect` and the locked-in pick after PLAY.
+/// card on `HullSelect` and the locked-in pick after PLAY. Committed
+/// by clicking a berth card; hovering only updates `PreviewHull`.
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectedHull(pub Hull);
+
+/// Transient hover preview — the hull currently under the cursor on
+/// the dockyard, or `None` if the cursor isn't over any card. Drives
+/// the right-side detail panel ONLY; the actual selection
+/// (`SelectedHull`) only changes on click. Defaulting to `None`
+/// keeps the panel showing `SelectedHull` until the player hovers
+/// something new.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreviewHull(pub Option<Hull>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Hull {
@@ -281,14 +291,21 @@ const INK: Color = Color::srgb(0.18, 0.13, 0.08);
 pub fn enter_hull_select(
     commands: Commands,
     selected: Res<SelectedHull>,
+    preview: Res<PreviewHull>,
     images: ResMut<Assets<Image>>,
 ) {
-    spawn_overlay(commands, selected.0, images);
+    // Detail panel reflects the hover preview when present, else the
+    // committed selection. Card highlights always track the
+    // committed selection so the player sees which berth they've
+    // chosen even while their cursor is hovering elsewhere.
+    let panel_hull = preview.0.unwrap_or(selected.0);
+    spawn_overlay(commands, selected.0, panel_hull, images);
 }
 
 fn spawn_overlay(
     mut commands: Commands,
     selected: Hull,
+    panel_hull: Hull,
     mut images: ResMut<Assets<Image>>,
 ) {
     // Plank tile — narrow vertical extent (3 planks × 12 px) repeats
@@ -394,7 +411,7 @@ fn spawn_overlay(
                     HullDetailPanel,
                 ))
                 .with_children(|panel| {
-                    spawn_detail_content(panel, selected);
+                    spawn_detail_content(panel, panel_hull);
                 });
             });
 
@@ -623,22 +640,46 @@ pub fn clamp_hp_to_max(
 
 // ---------- Click + input handlers ----------
 
-/// Hover a left-column card → set it as the active pick (preview in
-/// the right detail panel). The PLAY button commits whichever hull
-/// was last hovered. `Interaction::Hovered` fires on cursor-enter,
-/// which also covers click — clicking implies hovering first, so we
-/// don't need a separate `Pressed` branch.
+/// Card interactions, split between hover-preview and click-commit:
+/// - `Interaction::Hovered` → update `PreviewHull` so the right
+///   panel previews that card. Doesn't change `SelectedHull`, so
+///   the player can scan options without losing their committed
+///   pick.
+/// - `Interaction::Pressed` → update `SelectedHull` (the committed
+///   choice); also keep `PreviewHull` in sync so the panel doesn't
+///   flicker on the click frame.
+/// - Cursor leaving every card (no `Hovered` or `Pressed` matches
+///   this frame) clears `PreviewHull`, falling the detail panel
+///   back to whichever hull is `SelectedHull`.
 pub fn handle_card_click(
     interactions: Query<(&Interaction, &HullCard), Changed<Interaction>>,
+    all_cards: Query<&Interaction, With<HullCard>>,
     mut selected: ResMut<SelectedHull>,
+    mut preview: ResMut<PreviewHull>,
 ) {
     for (interaction, card) in &interactions {
-        if !matches!(*interaction, Interaction::Hovered | Interaction::Pressed) {
-            continue;
+        match *interaction {
+            Interaction::Pressed => {
+                if selected.0 != card.0 { selected.0 = card.0; }
+                if preview.0 != Some(card.0) { preview.0 = Some(card.0); }
+            }
+            Interaction::Hovered => {
+                if preview.0 != Some(card.0) { preview.0 = Some(card.0); }
+            }
+            Interaction::None => {
+                // Clearing handled below by scanning all cards — a
+                // single card going to `None` doesn't necessarily
+                // mean the cursor left the whole strip (it might
+                // have moved straight to a neighbour).
+            }
         }
-        if selected.0 != card.0 {
-            selected.0 = card.0;
-        }
+    }
+    // If NO card is currently hovered or pressed, clear the preview.
+    let any_active = all_cards
+        .iter()
+        .any(|i| matches!(i, Interaction::Hovered | Interaction::Pressed));
+    if !any_active && preview.0.is_some() {
+        preview.0 = None;
     }
 }
 
@@ -679,22 +720,24 @@ pub fn handle_back_on_esc(
     }
 }
 
-/// Rebuild the overlay whenever `SelectedHull` changes — keeps the
-/// card highlights + right-panel content in sync without per-text
-/// query plumbing. The overlay is small so the despawn/respawn cost
-/// is fine.
+/// Rebuild the overlay whenever `SelectedHull` OR `PreviewHull`
+/// changes — keeps the card highlights + right-panel content in
+/// sync without per-text query plumbing. The overlay is small so
+/// the despawn/respawn cost is fine.
 pub fn sync_hull_select_on_change(
     selected: Res<SelectedHull>,
+    preview: Res<PreviewHull>,
     commands: Commands,
     q: Query<Entity, With<HullSelectRoot>>,
     state: Res<State<crate::AppState>>,
     images: ResMut<Assets<Image>>,
 ) {
-    if !selected.is_changed() { return; }
+    if !selected.is_changed() && !preview.is_changed() { return; }
     if *state.get() != crate::AppState::HullSelect { return; }
     let mut commands = commands;
     for e in &q {
         commands.entity(e).despawn();
     }
-    spawn_overlay(commands, selected.0, images);
+    let panel_hull = preview.0.unwrap_or(selected.0);
+    spawn_overlay(commands, selected.0, panel_hull, images);
 }

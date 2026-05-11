@@ -119,6 +119,11 @@ pub struct PlayerStats {
     /// the description (the rune's % and the player's raw value)
     /// multiply.
     pub rune_damage: Stat,
+    /// Percentage modifier on every turret slot's base damage —
+    /// composes multiplicatively with synergy multipliers inside
+    /// `sync_turret_config`. 0.0 = +0% (no change); +25.0 = ×1.25.
+    /// All consumers go through `turret_damage_mult()` below.
+    pub turret_damage_pct: Stat,
 }
 
 impl Default for PlayerStats {
@@ -141,6 +146,7 @@ impl Default for PlayerStats {
             shield_recharge_rate_pct: Stat::new(20.0),
             shield_recharge_delay: Stat::new(3.0),
             rune_damage: Stat::new(1.0),
+            turret_damage_pct: Stat::new(0.0),
         }
     }
 }
@@ -159,6 +165,16 @@ impl PlayerStats {
     /// multiplies this directly — fire's "100%" → `1.0 × rune_damage`.
     pub fn rune_damage_mult(&self) -> f32 {
         self.rune_damage.effective().max(0.0)
+    }
+    /// Turret-damage multiplier (default 1.0). Computed from the
+    /// `turret_damage_pct` stat — `1.0 + pct/100`, clamped at 0 so
+    /// a stack of nerfs can't flip damage negative. Composed into
+    /// every slot's `slot.damage` inside `sync_turret_config`, so
+    /// all downstream consumers (bullets / beam / blade / octopus /
+    /// helicopter / mortar / cannon) inherit the buff via
+    /// `slot.damage` without per-system plumbing.
+    pub fn turret_damage_mult(&self) -> f32 {
+        (1.0 + self.turret_damage_pct.effective() / 100.0).max(0.0)
     }
     /// Additive bonus to rune proc strength, expressed as 0..1.
     pub fn proc_strength_bonus(&self) -> f32 {
@@ -227,7 +243,13 @@ pub enum StatKind {
     Range,
     Harvest,
     ShieldMax,
+    /// Multiplier on rune effects (Fire DoT, Detonate burst, Shock
+    /// chain count).
     RuneDamage,
+    /// Percentage modifier on every turret slot's base damage —
+    /// composes multiplicatively with synergies in
+    /// `sync_turret_config`. 0% = no change, +25% = 1.25x damage.
+    TurretDamage,
 }
 
 impl StatKind {
@@ -240,6 +262,7 @@ impl StatKind {
         StatKind::TurnSpeed,
         StatKind::TurretTurnSpeed,
         StatKind::TurretArcBonus,
+        StatKind::TurretDamage,
         StatKind::Range,
         StatKind::Crit,
         StatKind::Luck,
@@ -262,22 +285,37 @@ impl StatKind {
             StatKind::Harvest => "HARVEST",
             StatKind::ShieldMax => "SHIELD",
             StatKind::RuneDamage => "RUNE DAMAGE",
+            StatKind::TurretDamage => "TURRET DAMAGE",
         }
     }
     /// Formatted current value (with units / sign where helpful).
     pub fn format_value(self, stats: &PlayerStats) -> String {
         match self {
             StatKind::Hp => format!("{}", stats.max_hp()),
-            StatKind::MoveSpeed => format!("{:.0}", stats.move_speed.effective()),
+            StatKind::MoveSpeed => {
+                let baseline = PlayerStats::default().move_speed.effective();
+                let pct = (stats.move_speed.effective() / baseline * 100.0).round() as i32;
+                format!("{}%", pct)
+            }
+            // Relative percentages against the baseline so the
+            // stat reads as a tunable knob ("100% = stock") rather
+            // than a raw rad/s value the player has to translate.
+            // Skips the degree glyph (default font has no U+00B0)
+            // which previously rendered as a tofu box that looked
+            // like the digit "1".
             StatKind::TurnSpeed => {
-                format!("{:.0}\u{00B0}/s", stats.turn_speed.effective().to_degrees())
+                let baseline = PlayerStats::default().turn_speed.effective();
+                let pct = (stats.turn_speed.effective() / baseline * 100.0).round() as i32;
+                format!("{}%", pct)
             }
             StatKind::TurretTurnSpeed => {
-                format!("{:.0}\u{00B0}/s", stats.effective_turret_turn_speed().to_degrees())
+                let baseline = PlayerStats::default().effective_turret_turn_speed();
+                let pct = (stats.effective_turret_turn_speed() / baseline * 100.0).round() as i32;
+                format!("{}%", pct)
             }
             StatKind::TurretArcBonus => {
                 let v = stats.turret_arc_bonus_deg.effective();
-                if v > 0.0 { format!("+{:.0}\u{00B0}", v) } else { format!("{:.0}\u{00B0}", v) }
+                if v > 0.0 { format!("+{:.0} deg", v) } else { format!("{:.0} deg", v) }
             }
             StatKind::Luck => format!("{:.0}%", stats.luck_pct.effective()),
             StatKind::ProcStrength => format!("{:.0}%", stats.proc_strength_pct.effective()),
@@ -285,7 +323,17 @@ impl StatKind {
             StatKind::Range => format!("{:.0}%", stats.range_pct.effective()),
             StatKind::Harvest => format!("{:.0}%", stats.harvest_pct.effective()),
             StatKind::ShieldMax => format!("{:.0}", stats.shield_max.effective()),
-            StatKind::RuneDamage => format!("{:.1}", stats.rune_damage.effective()),
+            StatKind::RuneDamage => {
+                // Default 1.0 reads as 100%; players track Rune
+                // Damage as a multiplier, so a percentage cue maps
+                // cleaner to "how much extra burn am I doing?"
+                let pct = (stats.rune_damage.effective() * 100.0).round() as i32;
+                format!("{}%", pct)
+            }
+            StatKind::TurretDamage => {
+                let v = stats.turret_damage_pct.effective();
+                if v >= 0.0 { format!("+{:.0}%", v) } else { format!("{:.0}%", v) }
+            }
         }
     }
 }
@@ -310,13 +358,14 @@ impl StatKind {
             StatKind::Harvest => crate::i18n::tr("stat_harvest_desc"),
             StatKind::ShieldMax => crate::i18n::tr("stat_shield_max_desc"),
             StatKind::RuneDamage => crate::i18n::tr("stat_rune_damage_desc"),
+            StatKind::TurretDamage => crate::i18n::tr("stat_turret_damage_desc"),
         }
     }
     /// Step size for one click of the debug `+/-` button. Tuned per-stat
     /// so each click is a meaningful nudge in that stat's natural unit.
     pub fn debug_step(self) -> f32 {
         match self {
-            StatKind::Hp => 10.0,
+            StatKind::Hp => 25.0,
             StatKind::MoveSpeed => 2.0,
             StatKind::TurnSpeed => 0.5,           // rad/s
             StatKind::TurretTurnSpeed => 0.5,     // rad/s
@@ -326,10 +375,33 @@ impl StatKind {
             StatKind::Crit => 25.0,
             StatKind::Range => 10.0,
             StatKind::Harvest => 25.0,
-            StatKind::ShieldMax => 25.0,
+            StatKind::ShieldMax => 10.0,
             StatKind::RuneDamage => 0.5,
+            StatKind::TurretDamage => 10.0, // +10 percentage points / step
         }
     }
+    /// Read-only handle on this kind's `Stat` slot. Used by the
+    /// stats-panel value coloring to compare current value vs the
+    /// baseline (`PlayerStats::default()`) to decide green / red /
+    /// grey. Mirrors `stat_mut` below — keep both arms in sync.
+    pub fn stat(self, stats: &PlayerStats) -> &Stat {
+        match self {
+            StatKind::Hp => &stats.hp,
+            StatKind::MoveSpeed => &stats.move_speed,
+            StatKind::TurnSpeed => &stats.turn_speed,
+            StatKind::TurretTurnSpeed => &stats.turret_turn_speed,
+            StatKind::TurretArcBonus => &stats.turret_arc_bonus_deg,
+            StatKind::Luck => &stats.luck_pct,
+            StatKind::ProcStrength => &stats.proc_strength_pct,
+            StatKind::Crit => &stats.crit_pct,
+            StatKind::Range => &stats.range_pct,
+            StatKind::Harvest => &stats.harvest_pct,
+            StatKind::ShieldMax => &stats.shield_max,
+            StatKind::RuneDamage => &stats.rune_damage,
+            StatKind::TurretDamage => &stats.turret_damage_pct,
+        }
+    }
+
     /// Mutable handle on this kind's `Stat` slot inside `PlayerStats`.
     /// The debug buttons + future upgrade cards both write through here.
     pub fn stat_mut(self, stats: &mut PlayerStats) -> &mut Stat {
@@ -346,6 +418,7 @@ impl StatKind {
             StatKind::Harvest => &mut stats.harvest_pct,
             StatKind::ShieldMax => &mut stats.shield_max,
             StatKind::RuneDamage => &mut stats.rune_damage,
+            StatKind::TurretDamage => &mut stats.turret_damage_pct,
         }
     }
 }

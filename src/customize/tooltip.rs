@@ -11,6 +11,8 @@ use bevy::render::view::RenderLayers;
 use bevy::sprite::Anchor;
 use bevy::text::{FontSmoothing, TextBounds};
 
+use bevy::ecs::system::SystemParam;
+
 use crate::balance::{CUSTOMIZE_INTERNAL_H, CUSTOMIZE_INTERNAL_W, UPSCALE_LAYER};
 use crate::rune::Rune;
 use crate::synergy::Synergies;
@@ -58,6 +60,25 @@ pub struct SynergyBannerText;
 /// active tier) changes.
 #[derive(Component)]
 pub struct SynergyBannerSpan;
+
+/// Bundle of read-only resources the tooltip body builder reaches
+/// into: the live `TurretConfig` (for ship slot lookups), the
+/// optional `CustomizeShop` (for shop slot lookups), and the
+/// per-run `DiscoveredSynergies` mask (so `[???]` swaps to the real
+/// tag chip the moment the player discovers a synergy). Bundled
+/// via `SystemParam` because `update_customize_tooltip` is at
+/// Bevy's 16-arg cap for `IntoSystem` — one bundled arg unlocks
+/// the discovery plumbing without splitting the system further.
+#[derive(SystemParam)]
+pub struct TooltipDataCtx<'w> {
+    pub cfg: Res<'w, TurretConfig>,
+    pub shop: Option<Res<'w, CustomizeShop>>,
+    pub discovered: Res<'w, crate::onboarding::DiscoveredSynergies>,
+    /// Live player stats — Brotato-style dynamic descriptions use this
+    /// to substitute the current TurretDamage / RuneDamage / etc.
+    /// modifiers into weapon and rune tooltip bodies.
+    pub stats: Res<'w, crate::stats::PlayerStats>,
+}
 
 /// Layout snapshot for the main tooltip. Written by
 /// `update_customize_tooltip` whenever it positions the box;
@@ -116,6 +137,11 @@ const SYNERGY_TEXT_PAD_Y: f32 = 6.0;
 /// Spec-pixel gap between the main tooltip's top edge and the
 /// banner's bottom edge.
 const SYNERGY_GAP: f32 = 2.0;
+/// Native-pixel cap on banner text width. Sized to fit a 2-line
+/// full-sentence synergy description at body font (each line ≈ 50
+/// characters wide), so the player gets the *why* of each tag
+/// rather than the cryptic short-form descriptor.
+const SYNERGY_TEXT_MAX_W: f32 = 380.0;
 /// Dim colour for inactive-tier values in the banner.
 const SYNERGY_INACTIVE_COLOR: Color = Color::srgb(0.45, 0.48, 0.55);
 /// Bright colour for the active-tier value.
@@ -171,6 +197,11 @@ pub fn spawn_customize_tooltip(commands: &mut Commands) {
             ..default()
         },
         TextColor(SYNERGY_DESC_COLOR),
+        // Wrap-friendly: justify centred, cap horizontal width so
+        // long descriptors break to a second line rather than
+        // overflowing the box.
+        TextLayout::new_with_justify(JustifyText::Center),
+        TextBounds::new_horizontal(SYNERGY_TEXT_MAX_W),
         Anchor::Center,
         Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_TEXT),
         Visibility::Hidden,
@@ -244,8 +275,7 @@ pub fn update_customize_tooltip(
     mut commands: Commands,
     open: Res<CustomizeOpen>,
     drag: Res<DragState>,
-    cfg: Res<TurretConfig>,
-    shop: Option<Res<CustomizeShop>>,
+    data: TooltipDataCtx,
     viewport: Res<CustomizeViewport>,
     mut layout: ResMut<TooltipLayout>,
     mut body_cache: Local<String>,
@@ -305,7 +335,7 @@ pub fn update_customize_tooltip(
         return;
     }
     let cursor = drag.spec_cursor.unwrap();
-    let shop_ref = shop.as_deref();
+    let shop_ref = data.shop.as_deref();
 
     // `info` tracks the hovered target's (title, body, centre, half-extent);
     // `info_tag` tracks the WEAPON TAG when the hovered source is a turret
@@ -328,9 +358,11 @@ pub fn update_customize_tooltip(
         if area >= best_area {
             continue;
         }
-        if let Some((title, body)) = describe_source(marker.0, &cfg, shop_ref) {
+        if let Some((title, body)) = describe_source(
+            marker.0, &data.cfg, shop_ref, &data.discovered, &data.stats,
+        ) {
             info = Some((title, body, centre, half));
-            info_tag = turret_tag_for_source(marker.0, &cfg, shop_ref);
+            info_tag = turret_tag_for_source(marker.0, &data.cfg, shop_ref);
             best_area = area;
         }
     }
@@ -504,6 +536,7 @@ pub fn update_synergy_banner(
     layout: Res<TooltipLayout>,
     viewport: Res<CustomizeViewport>,
     synergies: Res<Synergies>,
+    discovered: Res<crate::onboarding::DiscoveredSynergies>,
     mut banner_cache: Local<String>,
     banner_entity_q: Query<Entity, With<SynergyBannerText>>,
     existing_banner_spans: Query<Entity, With<SynergyBannerSpan>>,
@@ -575,16 +608,45 @@ pub fn update_synergy_banner(
         hide(&mut outline_q, &mut fill_q, &mut text_q);
         return;
     };
+    // Hide the banner entirely until the player has discovered
+    // this synergy. The `[???]` chip in the main tooltip body is
+    // the only cue at that point — once 2 of this tag are equipped
+    // (`DiscoveredSynergies` flips the bit) the banner reveals
+    // with full description + value ladder.
+    if !discovered.has(tag) {
+        hide(&mut outline_q, &mut fill_q, &mut text_q);
+        return;
+    }
     let (values, descriptor) = synergy_ladder(tag);
     let tier = active_tier(tag, &synergies);
-    let banner_text_plain = format!(
-        "[{}] {}/{}/{}/{} {}",
-        tag.label(), values[0], values[1], values[2], values[3], descriptor,
+    let description = synergy_description(tag);
+    // Two visible sections, joined with a newline:
+    //  1. Tag chip + full-sentence description (wraps freely).
+    //  2. Value ladder (`V / V / V / V <unit>`) on its own line.
+    // Width estimate uses each section's UNWRAPPED width so the box
+    // accounts for the wider of the two when ladder + chip overflow
+    // the cap by themselves.
+    let header_plain = format!("[{}] {}", tag.label(), description);
+    let ladder_plain = format!(
+        "{} / {} / {} / {} {}",
+        values[0], values[1], values[2], values[3], descriptor,
     );
+    let banner_text_plain = format!("{}\n{}", header_plain, ladder_plain);
     let s = viewport.display_scale;
-    let banner_text_w = estimate_text_native_width(&banner_text_plain, SYNERGY_FONT);
+    let header_w_unwrapped = estimate_text_native_width(&header_plain, SYNERGY_FONT);
+    let ladder_w_unwrapped = estimate_text_native_width(&ladder_plain, SYNERGY_FONT);
+    // Wrapped box width caps at SYNERGY_TEXT_MAX_W but hugs tightly
+    // when both sections fit under the cap.
+    let widest_unwrapped = header_w_unwrapped.max(ladder_w_unwrapped);
+    let banner_text_w = widest_unwrapped.min(SYNERGY_TEXT_MAX_W);
     let banner_fill_w_native = banner_text_w + 2.0 * SYNERGY_TEXT_PAD_X;
-    let banner_fill_h_native = SYNERGY_FONT * TOOLTIP_LINE_HEIGHT_MULT + 2.0 * SYNERGY_TEXT_PAD_Y;
+    // Line count: header wraps at the cap (could be 1-3 lines for a
+    // long description); ladder is normally 1 line. Add them.
+    let header_lines = (header_w_unwrapped / SYNERGY_TEXT_MAX_W).ceil().max(1.0);
+    let ladder_lines = (ladder_w_unwrapped / SYNERGY_TEXT_MAX_W).ceil().max(1.0);
+    let total_lines = header_lines + ladder_lines;
+    let banner_fill_h_native =
+        total_lines * SYNERGY_FONT * TOOLTIP_LINE_HEIGHT_MULT + 2.0 * SYNERGY_TEXT_PAD_Y;
     let banner_w_spec = banner_fill_w_native / s;
     let banner_h_spec = banner_fill_h_native / s;
 
@@ -633,9 +695,9 @@ pub fn update_synergy_banner(
         if !text.0.is_empty() { text.0 = String::new(); }
     }
 
-    // Rebuild spans when tag, tier, or text changes. Cache key
-    // combines all three so a hover-switch between two same-tag
-    // turrets with identical synergy state is a no-op.
+    // Rebuild spans when tag, tier, or text changes. The
+    // undiscovered case early-returns above, so we always render
+    // the full discovered banner here.
     let banner_key = format!("{}|{}|{}", tag.label(), tier, banner_text_plain);
     if *banner_cache != banner_key {
         *banner_cache = banner_key;
@@ -644,12 +706,27 @@ pub fn update_synergy_banner(
         }
         if let Ok(banner_entity) = banner_entity_q.single() {
             commands.entity(banner_entity).with_children(|p| {
+                // ---- Header line: tag chip + full description ----
                 p.spawn((
                     TextSpan::new(format!("[{}] ", tag.label())),
                     TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
                     TextColor(tag.color()),
                     SynergyBannerSpan,
                 ));
+                p.spawn((
+                    TextSpan::new(description.to_string()),
+                    TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                    TextColor(SYNERGY_DESC_COLOR),
+                    SynergyBannerSpan,
+                ));
+                // ---- Newline forces the ladder onto its own line ----
+                p.spawn((
+                    TextSpan::new("\n".to_string()),
+                    TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                    TextColor(SYNERGY_DESC_COLOR),
+                    SynergyBannerSpan,
+                ));
+                // ---- Ladder line: V / V / V / V <unit> ----
                 for (i, v) in values.iter().enumerate() {
                     let active = (tier as usize) == i + 1;
                     let color = if active { SYNERGY_ACTIVE_COLOR } else { SYNERGY_INACTIVE_COLOR };
@@ -661,7 +738,7 @@ pub fn update_synergy_banner(
                     ));
                     if i < values.len() - 1 {
                         p.spawn((
-                            TextSpan::new("/".to_string()),
+                            TextSpan::new(" / ".to_string()),
                             TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
                             TextColor(SYNERGY_INACTIVE_COLOR),
                             SynergyBannerSpan,
@@ -707,6 +784,11 @@ const TOOLTIP_BODY_COLOR: Color = Color::srgb(0.85, 0.88, 0.94);
 const TOOLTIP_BUFF_COLOR: Color = Color::srgb(0.55, 0.95, 0.55);
 /// Tint for negative numeric tokens (`-50`, `-70%`).
 const TOOLTIP_NERF_COLOR: Color = Color::srgb(1.00, 0.55, 0.55);
+/// Tint for bare numeric tokens (`5`, `4.0/s`, `100%`) so stat values
+/// pop against their labels in weapon / rune descriptions. Gold to
+/// match the scrap accent the player already associates with
+/// "important number".
+const TOOLTIP_VALUE_COLOR: Color = Color::srgb(1.00, 0.85, 0.30);
 /// Fallback chip colour for any `[XXX]` tag that isn't a known
 /// `WeaponTag` — currently only `[AOE]` (used by mortar / Splash rune).
 /// Picked to read as "informational tag" rather than buff/nerf.
@@ -726,6 +808,12 @@ fn tag_chip_color(name: &str) -> Option<Color> {
     if name == "AOE" {
         return Some(TOOLTIP_AOE_TAG_COLOR);
     }
+    // `[???]` is rendered in dim grey — it's the "synergy not yet
+    // discovered" placeholder used by `turret_tooltip` when the
+    // player hasn't equipped 2 of this tag this run.
+    if name == "???" {
+        return Some(SYNERGY_INACTIVE_COLOR);
+    }
     None
 }
 
@@ -744,6 +832,11 @@ fn colorize_bonuses(text: &str) -> Vec<(String, Color)> {
         let is_sign_token = (c == '+' || c == '-')
             && i + 1 < chars.len()
             && chars[i + 1].is_ascii_digit();
+        // Bare numeric tokens (no leading +/-) get the stat-value
+        // colour so labels and their values render in different
+        // tints on lines like "Damage 5" or "Fire rate 4.0/s".
+        let is_bare_number = c.is_ascii_digit()
+            && (i == 0 || chars[i - 1].is_whitespace());
         // `[XXX]` tag chip — only recognised at the very start of the
         // body or right after whitespace, so a stray bracket inside
         // sentence text doesn't accidentally get coloured. The chip
@@ -785,6 +878,40 @@ fn colorize_bonuses(text: &str) -> Vec<(String, Color)> {
             }
             let color = if c == '+' { TOOLTIP_BUFF_COLOR } else { TOOLTIP_NERF_COLOR };
             segments.push((tok, color));
+        } else if is_bare_number {
+            if !current.is_empty() {
+                segments.push((std::mem::take(&mut current), TOOLTIP_BODY_COLOR));
+            }
+            let mut tok = String::new();
+            // Integer part.
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                tok.push(chars[i]);
+                i += 1;
+            }
+            // Optional decimal part.
+            if i + 1 < chars.len()
+                && chars[i] == '.'
+                && chars[i + 1].is_ascii_digit()
+            {
+                tok.push('.');
+                i += 1;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    tok.push(chars[i]);
+                    i += 1;
+                }
+            }
+            // Suffix family: %, /s, deg. Greedy match so "4.0/s"
+            // and "100%" stay inside the value segment instead of
+            // splitting across colour boundaries.
+            if i < chars.len() && chars[i] == '%' {
+                tok.push('%');
+                i += 1;
+            } else if i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == 's' {
+                tok.push('/');
+                tok.push('s');
+                i += 2;
+            }
+            segments.push((tok, TOOLTIP_VALUE_COLOR));
         } else {
             current.push(c);
             i += 1;
@@ -868,6 +995,8 @@ fn describe_source(
     source: DragSourceKind,
     cfg: &TurretConfig,
     shop: Option<&CustomizeShop>,
+    discovered: &crate::onboarding::DiscoveredSynergies,
+    stats: &crate::stats::PlayerStats,
 ) -> Option<(String, String)> {
     match source {
         DragSourceKind::ShipSlot(slot) => {
@@ -875,24 +1004,28 @@ fn describe_source(
             if !s.equipped {
                 return None;
             }
-            Some(turret_tooltip(s.weapon, s.barrels.max(1)))
+            let tag_known = discovered.has(s.weapon.tag());
+            Some(turret_tooltip(s.weapon, s.barrels.max(1), tag_known, stats))
         }
         DragSourceKind::ShipRune { slot, rune_idx } => {
             let s = cfg.slots[slot];
             if !s.equipped {
                 return None;
             }
-            s.runes[rune_idx].map(rune_tooltip)
+            s.runes[rune_idx].map(|r| rune_tooltip(r, stats))
         }
         DragSourceKind::ShopTurret(idx) => shop
             .and_then(|s| s.turrets.get(idx))
             .and_then(|o| o.as_ref())
-            .map(|o| turret_tooltip(o.weapon, o.barrels.max(1))),
+            .map(|o| {
+                let tag_known = discovered.has(o.weapon.tag());
+                turret_tooltip(o.weapon, o.barrels.max(1), tag_known, stats)
+            }),
         DragSourceKind::ShopRune(idx) => shop
             .and_then(|s| s.runes.get(idx))
             .and_then(|o| o.as_ref())
             .copied()
-            .map(rune_tooltip),
+            .map(|r| rune_tooltip(r, stats)),
     }
 }
 
@@ -915,12 +1048,34 @@ const AOE_TAG: &str = "[AOE] ";
 /// table — keep in sync when bonus numbers move.
 fn synergy_ladder(tag: WeaponTag) -> ([&'static str; 4], &'static str) {
     match tag {
-        WeaponTag::Naval      => (["10%", "20%", "30%", "40%"], "global dmg"),
-        WeaponTag::Future     => (["0.1s", "0.2s", "0.3s", "0.4s"], "stun on hit"),
-        WeaponTag::Autonomous => (["10%", "20%", "30%", "40%"], "Auto rate + speed"),
-        WeaponTag::Pirate     => (["50%", "100%", "150%", "200%"], "scrap"),
-        WeaponTag::Support    => (["10%", "20%", "30%", "40%"], "rate others"),
-        WeaponTag::Melee      => (["1", "2", "3", "4"], "HP / Melee kill"),
+        WeaponTag::Naval      => (["10%", "20%", "30%", "40%"], "global damage"),
+        WeaponTag::Future     => (["0.1s", "0.2s", "0.3s", "0.4s"], "stun on every hit"),
+        WeaponTag::Autonomous => (["10%", "20%", "30%", "40%"], "fire rate and movement"),
+        WeaponTag::Pirate     => (["+50%", "+100%", "+150%", "+200%"], "scrap drops from kills"),
+        WeaponTag::Support    => (["10%", "20%", "30%", "40%"], "fire rate to non-Support turrets"),
+        WeaponTag::Melee      => (["+1", "+2", "+3", "+4"], "HP healed per Melee kill"),
+    }
+}
+
+/// Plain-English explanation of what this synergy does and why the
+/// player wants to stack it. Renders above the value ladder in the
+/// banner, wrapped at `SYNERGY_TEXT_MAX_W`. Intentionally a full
+/// sentence — the prior shorthand ("Auto rate + speed") read as
+/// notation rather than gameplay information.
+fn synergy_description(tag: WeaponTag) -> &'static str {
+    match tag {
+        WeaponTag::Naval =>
+            "Every Naval turret buffs the damage of every weapon you own. Higher tiers, bigger buff.",
+        WeaponTag::Future =>
+            "Future weapons stun enemies on hit. Higher tiers freeze them longer.",
+        WeaponTag::Autonomous =>
+            "Autonomous units fire faster and move faster. Higher tiers push both further.",
+        WeaponTag::Pirate =>
+            "Every kill drops more scrap. Higher tiers, fatter loot.",
+        WeaponTag::Support =>
+            "Boosts every neighbour that is not Support. Fire rate first, then damage from tier two onward.",
+        WeaponTag::Melee =>
+            "Melee kills heal your hull. Higher tiers, bigger heal.",
     }
 }
 
@@ -936,28 +1091,130 @@ fn active_tier(tag: WeaponTag, syn: &Synergies) -> u8 {
     }
 }
 
-fn turret_tooltip(weapon: WeaponType, _barrels: u8) -> (String, String) {
-    // Title is just the weapon name — barrel count is conveyed by
-    // the slot's visual on the ship and the `BARRELS` row in the
-    // LHS panel, so the tooltip doesn't need to repeat it.
+fn turret_tooltip(
+    weapon: WeaponType,
+    barrels: u8,
+    tag_discovered: bool,
+    stats: &crate::stats::PlayerStats,
+) -> (String, String) {
     let title = weapon.label().to_string();
-    // Body layout: `[TAG]` chip on its own line, then a blank line,
-    // then the description. The colorizer paints the bracketed chip
-    // in the tag's colour. The newline keeps the chip from blending
-    // into the description on narrow tooltips.
-    let mut body = format!("[{}]\n", weapon.tag().label());
+    let chip = if tag_discovered { weapon.tag().label() } else { "???" };
+    let mut body = format!("[{}]\n", chip);
     if matches!(weapon, WeaponType::Mortar) {
         body.push_str(AOE_TAG);
     }
     body.push_str(weapon.description());
+    body.push_str("\n\n");
+    // Brotato-style dynamic stat lines below the flavour. Show base
+    // damage × current TurretDamage modifier, plus weapon-specific
+    // notes (knockback / splash / pierce) where relevant.
+    body.push_str(&weapon_damage_line(weapon, stats));
+    if let Some(rate_line) = weapon_rate_line(weapon, barrels) {
+        body.push('\n');
+        body.push_str(&rate_line);
+    }
+    if let Some(extra) = weapon_extra_line(weapon, stats) {
+        body.push('\n');
+        body.push_str(&extra);
+    }
     (title, body)
 }
 
-fn rune_tooltip(rune: Rune) -> (String, String) {
+fn rune_tooltip(rune: Rune, stats: &crate::stats::PlayerStats) -> (String, String) {
     let mut body = String::new();
     if matches!(rune, Rune::Splash) {
         body.push_str(AOE_TAG);
     }
-    body.push_str(rune.description());
+    body.push_str(&rune_dynamic_description(rune, stats));
     (rune.label().to_string(), body)
+}
+
+/// "Damage X" line, expanded with a base + stat breakdown when the
+/// player's Turret Damage stat isn't at default. Single value at
+/// default keeps the tooltip lean; with a buff/nerf the player can
+/// see what the weapon WOULD do raw and where the bonus came from
+/// without doing the math themselves.
+fn weapon_damage_line(weapon: WeaponType, stats: &crate::stats::PlayerStats) -> String {
+    let (base_dmg, _rate) = weapon.defaults();
+    let mult = stats.turret_damage_mult();
+    let final_dmg = (base_dmg as f32 * mult).round() as i32;
+    let pct_bonus = ((mult - 1.0) * 100.0).round() as i32;
+    if pct_bonus == 0 {
+        format!("Damage {}", final_dmg)
+    } else {
+        let sign = if pct_bonus > 0 { "+" } else { "" };
+        format!(
+            "Damage {} from {} base and {}{}% Turret Damage",
+            final_dmg, base_dmg, sign, pct_bonus,
+        )
+    }
+}
+
+/// "Cooldown Xs" line. Twin / triple barrels alternate on the slot
+/// cooldown so effective rate is `base x barrels`; cooldown is the
+/// reciprocal. Returns None when the weapon doesn't fire from the
+/// deck (Booster).
+fn weapon_rate_line(weapon: WeaponType, barrels: u8) -> Option<String> {
+    let (_base_dmg, base_rate) = weapon.defaults();
+    if base_rate <= 0.0 { return None; }
+    let effective_rate = base_rate * (barrels.max(1) as f32);
+    let cooldown = 1.0 / effective_rate;
+    Some(format!("Cooldown {:.2}s", cooldown))
+}
+
+/// "Range X%" line, with a base + player-stat breakdown when the
+/// final differs from 100%. Same explainable shape as the damage
+/// line: when the weapon's own range isn't 100% AND the player's
+/// Range stat is at default, show "Range 90% from 90% base". With
+/// a non-default Range stat, show all three components so the
+/// player can see where the final came from without doing the
+/// multiplication themselves.
+fn weapon_extra_line(
+    weapon: WeaponType,
+    stats: &crate::stats::PlayerStats,
+) -> Option<String> {
+    let weapon_pct = (weapon.range_mult() * 100.0).round() as i32;
+    let player_pct = (stats.range_mult() * 100.0).round() as i32;
+    let final_pct = (weapon.range_mult() * stats.range_mult() * 100.0).round() as i32;
+    let stat_bonus = player_pct - 100;
+    if weapon_pct == 100 && stat_bonus == 0 {
+        None
+    } else if stat_bonus == 0 {
+        Some(format!("Range {}% from {}% base", final_pct, weapon_pct))
+    } else {
+        let sign = if stat_bonus > 0 { "+" } else { "" };
+        Some(format!(
+            "Range {}% from {}% base and {}{}% Range stat",
+            final_pct, weapon_pct, sign, stat_bonus,
+        ))
+    }
+}
+
+/// Plain-English description for a rune with current `PlayerStats`
+/// substituted in. Mirrors the static `Rune::description()` text
+/// but with the dynamic numbers baked in (Fire's per-tick damage
+/// after rune-damage scaling, Shock's chain count from rune-damage
+/// rounded, etc.). Static-only runes (Frost, Echo, etc.) fall
+/// through to `rune.description()`.
+fn rune_dynamic_description(rune: Rune, stats: &crate::stats::PlayerStats) -> String {
+    let rune_dmg = stats.rune_damage_mult();
+    let chain_count = rune_dmg.round().max(1.0) as i32;
+    match rune {
+        Rune::Fire => {
+            let per_tick = (1.0 * rune_dmg).max(0.1);
+            let total = (8.0 * rune_dmg).max(0.0);
+            format!(
+                "Sets enemies ablaze. {:.1} damage every 0.5s for 4 seconds. {:.0} total. Stack to burn harder.",
+                per_tick, total,
+            )
+        }
+        Rune::Shock => format!(
+            "Chains lightning to {} nearby enemies. 100% weapon damage each. Stack to add more arcs.",
+            chain_count,
+        ),
+        Rune::Detonate => {
+            "Pops Fire and Frost on the target for a damage burst. Bigger with stacks. Rune Damage scales the burst.".to_string()
+        }
+        _ => rune.description().to_string(),
+    }
 }

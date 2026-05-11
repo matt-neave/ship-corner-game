@@ -321,16 +321,18 @@ impl EnemyVariant {
     /// Onboarding gate — minimum `CampaignProgress.battles_cleared`
     /// before this variant is eligible to spawn. Standard + Scout
     /// always spawn (the gentle openers); harder variants unlock one
-    /// per cleared stage so players meet new threats one at a time.
+    /// every TWO cleared stages so each new threat gets a full
+    /// stage of breathing room before the next one arrives, instead
+    /// of half the roster appearing within the first few battles.
     pub fn unlock_battles(self) -> u32 {
         match self {
             EnemyVariant::Standard  => 0,
             EnemyVariant::Scout     => 0,
-            EnemyVariant::Heavy     => 1,
-            EnemyVariant::Bomber    => 2,
-            EnemyVariant::Rammer    => 3,
-            EnemyVariant::Sniper    => 4,
-            EnemyVariant::Artillery => 5,
+            EnemyVariant::Heavy     => 2,
+            EnemyVariant::Bomber    => 4,
+            EnemyVariant::Rammer    => 6,
+            EnemyVariant::Sniper    => 8,
+            EnemyVariant::Artillery => 10,
         }
     }
 
@@ -511,7 +513,7 @@ pub fn spawn_enemies(
     mut return_state: ResMut<crate::xp::LevelUpReturn>,
     mut next_state: ResMut<NextState<crate::AppState>>,
     mut seen: ResMut<crate::onboarding::SeenVariants>,
-    existing_banners: Query<Entity, With<crate::onboarding::NewEnemyBanner>>,
+    existing_banners: Query<Entity, With<crate::onboarding::NotificationLifetime>>,
     enemies: Query<Entity, With<Enemy>>,
 ) {
     if *mode != GameMode::Sandbox { return; }
@@ -1263,21 +1265,17 @@ pub fn sniper_fire(
         let to = target_pos - pos;
         if to.length() > SNIPER_FIRE_RANGE { continue; }
 
-        // Spawn the telegraph line. Free entity so the live transform
-        // can span sniper → locked target without inheriting the
-        // sniper's body rotation.
-        let mid = (pos + target_pos) * 0.5;
-        let length = to.length().max(1.0);
-        let angle = (-(to.x)).atan2(to.y);
+        // Spawn the telegraph: a small reticule (pulsing ring) at
+        // the locked target position. Replaces the previous
+        // sniper-to-target beam line which read as a hairline scar
+        // across the screen — the ring puts the warning AT the
+        // danger spot. `sniper_aim_line_tick` pulses + grows it
+        // over the aim window so the moment of fire is unmissable.
         let line = commands.spawn((
-            Mesh2d(em.beam.clone()),
+            Mesh2d(em.bullet_round_outer.clone()),
             MeshMaterial2d(pm.sniper_aim.clone()),
-            Transform::from_xyz(mid.x, mid.y, 3.5)
-                .with_rotation(Quat::from_rotation_z(angle))
-                // Beam mesh is `Rectangle::new(1.0, BEAM_LENGTH)` —
-                // scale Y to match the sniper-target distance and X
-                // narrow to a hairline that grows during aim.
-                .with_scale(Vec3::new(0.25, length / crate::balance::BEAM_LENGTH, 1.0)),
+            Transform::from_xyz(target_pos.x, target_pos.y, 3.5)
+                .with_scale(Vec3::splat(0.5)),
             SniperAimLine {
                 sniper: entity,
                 target_world: target_pos,
@@ -1522,21 +1520,25 @@ pub fn sniper_aim_line_tick(
             continue;
         };
         line.remaining = (line.remaining - dt).max(0.0);
-        let _ = aim; // keeping the back-ref consistent; aim.remaining
-                     // is the canonical timer, mirrored above.
+        let _ = aim;
+        let _ = sniper_tf; // sniper position no longer drives the
+                           // reticule — it lives at the locked
+                           // target_world, which never moves.
 
-        let pos = sniper_tf.translation.truncate();
-        let to = line.target_world - pos;
-        let mid = (pos + line.target_world) * 0.5;
-        let length = to.length().max(1.0);
-        let angle = (-(to.x)).atan2(to.y);
-        // Width pulse: starts hairline, grows to full as fire approaches.
+        // Two scale terms compose:
+        //   - `growth`: ring expands from 0.5x to 1.6x over the aim
+        //     window so the danger zone reads as expanding.
+        //   - `pulse`:  small sinusoidal flicker that speeds up as
+        //     fire approaches, making the last ~0.3s look urgent.
         let progress = 1.0 - (line.remaining / line.aim_total).clamp(0.0, 1.0);
-        let width = 0.25 + 0.75 * progress;
-        tf.translation.x = mid.x;
-        tf.translation.y = mid.y;
-        tf.rotation = Quat::from_rotation_z(angle);
-        tf.scale = Vec3::new(width, length / crate::balance::BEAM_LENGTH, 1.0);
+        let growth = 0.5 + 1.1 * progress;
+        let pulse_speed = 6.0 + 20.0 * progress;
+        let pulse = 1.0 + 0.15 * (line.remaining * pulse_speed).sin();
+        let scale = growth * pulse;
+        tf.translation.x = line.target_world.x;
+        tf.translation.y = line.target_world.y;
+        tf.rotation = Quat::IDENTITY;
+        tf.scale = Vec3::new(scale, scale, 1.0);
     }
 }
 
@@ -1667,6 +1669,7 @@ pub fn enemy_death_check(
     mut commands: Commands,
     mut score: ResMut<Score>,
     mut scrap: ResMut<Scrap>,
+    mut scrap_earned: ResMut<crate::stage_complete::ScrapEarnedThisStage>,
     mut xp: ResMut<crate::xp::Xp>,
     mut pending: ResMut<crate::xp::LevelUpsPending>,
     player_stats: Res<crate::stats::PlayerStats>,
@@ -1692,6 +1695,10 @@ pub fn enemy_death_check(
             .round()
             .max(0.0) as u32;
         scrap.0 = scrap.0.saturating_add(scrap_drop);
+        // Mirror the increment into the per-stage tally so the
+        // StageComplete transition can render "+N SCRAP" earned
+        // this round.
+        scrap_earned.0 = scrap_earned.0.saturating_add(scrap_drop);
         // XP grant. Boss-tier detection by max_hp threshold (smallest
         // boss = 60 HP, largest variant = 15 HP).
         let is_boss = enemy.max_hp >= 50;

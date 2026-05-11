@@ -471,18 +471,22 @@ pub fn update_sell_label(
 }
 
 fn weapon_short_label(w: WeaponType) -> &'static str {
+    // Full names everywhere, no shorthand. Shop tiles are sized to
+    // accommodate the longer names; if a future weapon name pushes
+    // the layout, widen the shop tile rather than reverting to
+    // abbreviations.
     match w {
-        WeaponType::Standard => "STD",
-        WeaponType::Sniper => "SNIPER",
-        WeaponType::MachineGun => "MG",
-        WeaponType::Shotgun => "SHOT",
-        WeaponType::Railgun => "RAIL",
-        WeaponType::Mortar => "MORT",
-        WeaponType::HeliPad => "HELI",
-        WeaponType::Cannon => "CANN",
-        WeaponType::Booster => "BOOST",
-        WeaponType::Blade => "BLADE",
-        WeaponType::Cage => "CAGE",
+        WeaponType::Standard   => "STANDARD",
+        WeaponType::Sniper     => "SNIPER",
+        WeaponType::MachineGun => "MACHINE GUN",
+        WeaponType::Shotgun    => "SHOTGUN",
+        WeaponType::Railgun    => "RAILGUN",
+        WeaponType::Mortar     => "MORTAR",
+        WeaponType::HeliPad    => "HELIPAD",
+        WeaponType::Cannon     => "CANNON",
+        WeaponType::Booster    => "BOOSTER",
+        WeaponType::Blade      => "BLADE",
+        WeaponType::Cage       => "CAGE",
     }
 }
 

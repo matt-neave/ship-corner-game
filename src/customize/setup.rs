@@ -303,11 +303,12 @@ pub fn setup_customize_ui(
 
     // ---------- LHS shop ----------
     // Anchor the shop column far enough from the canvas left edge
-    // that every row fits. The widest row is now the mod-card row
-    // (3 × 22 px wide + 2 × 2 px gap = 70 px total), so the column
-    // needs at least `mod_half_width = 35` px of free space to each
-    // side of `shop_x`. With a 4 px outer margin that means
-    // `shop_x ≥ -canvas_half + 4 + 35 = -121`.
+    // that every row fits. The mod-card row (3 × MOD_CARD_W + 2
+    // gaps) is the widest, so `shop_x` is computed from the
+    // half-width of that row plus a small outer margin. Tightened
+    // mod-card width pushes the whole column further left, which
+    // gives the sell strip below the ship room to clear the reroll
+    // button without overlap.
     let canvas_half_w = CUSTOMIZE_INTERNAL_W as f32 * 0.5;
     let tile_gap = 4.0;
     let shop_x = -canvas_half_w + 4.0
@@ -397,15 +398,14 @@ pub fn setup_customize_ui(
     super::stats_panel::spawn_stats_panel(&mut commands, stats_right_edge, stats_top_y);
 
     // ---------- Sell strip ----------
-    // Long horizontal rectangle below the ship — drag a ship-sourced
-    // turret/rune onto it to refund `SHOP_SELL_FRACTION` of the
-    // original cost. Sized wide so it reads as an obvious "drop
-    // zone" without crowding the shop column. Static "SELL" label
-    // on the left; gold "+N SCRAP" preview pops on the right while
-    // the player drags a sellable.
-    const SELL_PANEL_W: f32 = 220.0;
-    const SELL_PANEL_H: f32 = 26.0;
-    let sell_pos = Vec2::new(ship_centre.x, -78.0);
+    // Stacked two-line block below the ship: bold "SELL" header on
+    // top, gold "+N SCRAP" preview underneath. Taller than the
+    // earlier one-line strip so both lines get readable padding;
+    // both texts sit centred on the panel's X so the block reads as
+    // a vertical pair.
+    const SELL_PANEL_W: f32 = 90.0;
+    const SELL_PANEL_H: f32 = 13.0;
+    let sell_pos = Vec2::new(ship_centre.x, -75.0);
     let sell_hash_img = images.add(crate::rendering::make_hash_image_with_tile(
         Color::srgb(0.30, 0.32, 0.36), // light gray
         Color::srgb(0.16, 0.17, 0.20), // dark gray
@@ -423,32 +423,39 @@ pub fn setup_customize_ui(
             ..default()
         },
         Transform::from_translation(sell_pos.extend(Z_TILE_BG)),
+        // HitArea on the sprite entity itself, mirroring the drop
+        // target footprint, so `update_sell_label` can locate the
+        // strip via `Query<(&Transform, &HitArea), With<ShopSellPanel>>`
+        // and detect cursor-over-strip for the preview swap. (The
+        // drop target below carries its own HitArea for the drop
+        // resolution path in `complete_drag` — they intentionally
+        // duplicate so each system queries its own marker.)
+        HitArea { size: Vec2::new(SELL_PANEL_W, SELL_PANEL_H) },
         RenderLayers::layer(CUSTOMIZE_LAYER),
         ShopSellPanel,
     ));
-    // Static "SELL" label — left-anchored inside the strip so the
-    // gold "+N SCRAP" preview has room to sit on the right without
-    // overlapping. Large, readable font (the old 12pt centred label
-    // got lost in the tile pattern).
+    // Static "SELL" label — left side of the (now slim) strip.
+    // Panel is 0.4x its old height so the two texts have to sit
+    // side-by-side rather than stacked. Compact font keeps both
+    // legible inside the 13-tall band.
     spawn_text(
         &mut commands,
-        Vec2::new(sell_pos.x - SELL_PANEL_W * 0.5 + 22.0, sell_pos.y),
+        Vec2::new(sell_pos.x - SELL_PANEL_W * 0.5 + 14.0, sell_pos.y),
         "SELL",
         Color::WHITE,
-        16.0,
+        10.0,
         SellPanelLabel,
     );
-    // Refund-preview text — right side of the strip. Hidden by
-    // default; `update_sell_label` flips it visible with the live
-    // `+N SCRAP` payout while the player drags a ship-sourced item
-    // over the strip. Bumped to 18pt gold for legibility at the new
-    // larger size.
+    // Refund-preview text — right side. Hidden by default;
+    // `update_sell_label` flips it visible with the live `+N SCRAP`
+    // payout while the player drags a ship-sourced item over the
+    // strip.
     spawn_text(
         &mut commands,
-        Vec2::new(sell_pos.x + SELL_PANEL_W * 0.5 - 36.0, sell_pos.y),
+        Vec2::new(sell_pos.x + SELL_PANEL_W * 0.5 - 22.0, sell_pos.y),
         "",
         Color::srgb(1.00, 0.85, 0.30),
-        18.0,
+        11.0,
         SellPricePreview,
     );
     // Drop target hit area — DropTargetKind::Sell triggers the refund
@@ -760,25 +767,26 @@ fn spawn_shop_turret_tile(
         ShopTurretBadgeText { idx },
     );
 
-    // Name label below tile (native res).
+    // Cost label sits IMMEDIATELY below the tile so the player's
+    // eye doesn't have to walk past the name to find the price.
+    // Updater clears it when the slot is sold or being dragged out.
     spawn_text(
         commands,
-        pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 7.0),
-        "---",
-        Color::WHITE,
-        12.0,
-        ShopTurretNameText { idx },
-    );
-
-    // Cost label, just below the name. Gold/scrap accent. Updater
-    // clears it when the slot is sold or being dragged out.
-    spawn_text(
-        commands,
-        pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 14.0),
+        pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 5.0),
         format!("{}", super::drag::SHOP_TURRET_COST),
         Color::srgb(1.0, 0.85, 0.30),
-        10.0,
+        11.0,
         ShopTurretCostText { idx },
+    );
+    // Name label below the cost (still beneath the tile, just one
+    // line further down).
+    spawn_text(
+        commands,
+        pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 13.0),
+        "---",
+        Color::WHITE,
+        11.0,
+        ShopTurretNameText { idx },
     );
 
     // AOE badge — top-right corner of the card. Hidden by default;
@@ -913,22 +921,24 @@ fn spawn_shop_rune_tile(
             ShopRuneVisual { idx },
         ));
     }
+    // Cost label sits right under the rune socket so the player's
+    // eye lands on the price first.
     spawn_text(
         commands,
-        pos + Vec2::new(0.0, -SOCKET * 0.5 - 6.0),
-        "---",
-        Color::WHITE,
-        12.0,
-        ShopRuneNameText { idx },
+        pos + Vec2::new(0.0, -SOCKET * 0.5 - 5.0),
+        format!("{}", super::drag::SHOP_ITEM_COST),
+        Color::srgb(1.0, 0.85, 0.30),
+        11.0,
+        ShopRuneCostText { idx },
     );
-    // Cost label, below the rune name. Gold/scrap accent.
+    // Rune name underneath the cost.
     spawn_text(
         commands,
         pos + Vec2::new(0.0, -SOCKET * 0.5 - 13.0),
-        format!("{}", super::drag::SHOP_ITEM_COST),
-        Color::srgb(1.0, 0.85, 0.30),
-        10.0,
-        ShopRuneCostText { idx },
+        "---",
+        Color::WHITE,
+        11.0,
+        ShopRuneNameText { idx },
     );
 
     // AOE badge — perched above the (smaller) rune socket and skewed

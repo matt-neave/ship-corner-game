@@ -69,7 +69,7 @@ use ally::{
 use customize::{
     complete_drag, handle_close_click, handle_reroll_button, init_customize_shop,
     resize_customize_display, setup_customize_render, setup_customize_ui, start_drag,
-    handle_shop_mod_click, handle_stat_debug_buttons, sync_customize_text, sync_stats_panel,
+    handle_shop_mod_click, handle_stat_debug_buttons, sync_customize_text, sync_stat_debug_visibility, sync_stats_panel,
     toggle_customize_render, track_customize_cursor, update_shop_mod_cards,
     update_customize_ship, update_customize_shop, update_customize_tooltip,
     update_customize_ui, update_drag_ghost, update_sell_label, update_synergy_banner,
@@ -367,6 +367,7 @@ fn main() {
         .insert_resource(main_menu::MainMenuView::default())
         .insert_resource(DebugUiVisible::default())
         .insert_resource(stage_complete::StageCompleteTimer::default())
+        .insert_resource(stage_complete::ScrapEarnedThisStage::default())
         .insert_resource(xp::Xp::default())
         .insert_resource(xp::LevelUpsPending::default())
         .insert_resource(xp::LevelUpReturn::default())
@@ -374,6 +375,7 @@ fn main() {
         .insert_resource(PendingDamageQueue::default())
         .insert_resource(xp::LevelUpChoices::default())
         .insert_resource(hull::SelectedHull::default())
+        .insert_resource(hull::PreviewHull::default())
         .insert_resource(modes::ScreenShake::default())
         .insert_resource(RunTimer::default())
         .init_state::<AppState>()
@@ -489,6 +491,10 @@ fn main() {
         .add_systems(Update, (hull::clamp_hp_to_max, tick_run_timer))
         // Stage-complete buffer: spawn the overlay on entry, despawn
         // on exit, tick the timer while the state is active.
+        .add_systems(
+            OnEnter(AppState::Playing),
+            stage_complete::reset_scrap_earned_on_play,
+        )
         .add_systems(OnEnter(AppState::StageComplete), stage_complete::enter_stage_complete)
         // Refill the next stage's enemy budget at exit so the wave
         // readout shows the just-finished stage during the buffer
@@ -521,11 +527,14 @@ fn main() {
             stats::shield_recharge_system,
             bomber_detonate,
             spawn_enemies,
-            // Synergies recompute first so `sync_turret_config` reads
-            // a fresh Synergies snapshot when applying tag-based
-            // damage/fire-rate multipliers. Same `cfg.is_changed()`
-            // gate, so chained-but-cheap.
-            (synergy::compute_synergies, sync_turret_config).chain(),
+            // `sync_turret_config` reads a fresh Synergies snapshot
+            // when applying tag-based damage/fire-rate multipliers.
+            // (Synergies recompute + discovery banner now run in
+            // their OWN unconditional add_systems below so they
+            // fire while customize is open — equipping 2 of a tag
+            // there should discover the synergy immediately, not
+            // wait for the next wave's combat tick.)
+            sync_turret_config,
             // Beam damage must run AFTER turret_aim_fire so the BeamPending
             // entities it spawns are visible. .chain() inserts the apply-
             // deferred sync point we need to see them this frame.
@@ -739,6 +748,9 @@ fn main() {
             update_customize_tooltip,
             update_synergy_banner,
             sync_stats_panel,
+            // After `sync_customize_text` so the debug-only Hidden
+            // write isn't overwritten by the generic Inherited.
+            sync_stat_debug_visibility.after(sync_customize_text),
             handle_stat_debug_buttons,
             update_shop_mod_cards,
             handle_shop_mod_click,
@@ -752,7 +764,25 @@ fn main() {
         // shape).
         .add_systems(
             Update,
-            (start_drag, update_drag_ghost, complete_drag, update_sell_label).chain(),
+            (start_drag, update_drag_ghost, complete_drag, update_sell_label)
+                .chain()
+                // `sync_customize_text` writes `Visibility::Inherited` to
+                // every CustomizeText entity each frame customize is open
+                // — which would overwrite the Hidden the preview wants.
+                // Forcing this chain after it makes the per-frame
+                // `update_sell_label` the final writer for the preview's
+                // visibility on the strip.
+                .after(sync_customize_text),
+        )
+        // Synergy recompute + discovery: unconditional so dragging a
+        // 2nd Naval/Future/etc. turret into a ship slot in customize
+        // immediately fires the DISCOVERED! banner and refreshes
+        // the tooltip — previously these were inside the
+        // `in_combat_view` block so discovery didn't tick until the
+        // wave actually started.
+        .add_systems(
+            Update,
+            (synergy::compute_synergies, synergy::discover_synergies).chain(),
         )
         .add_systems(Update, (
             // Persistent settings: load once on first frame; persist on
