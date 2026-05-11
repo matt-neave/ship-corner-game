@@ -116,9 +116,29 @@ pub struct MortarShell {
 
 /// Player-set per-slot configuration. UI mutates `slots`; `sync_turret_config`
 /// pushes those changes (plus any pier adjacency buffs) into each `TurretSlot`.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct TurretConfig {
     pub slots: [SlotCfg; 8],
+}
+
+impl Default for TurretConfig {
+    /// Starting loadout: slot 0 (bow) has a Standard 1-barrel turret
+    /// equipped so a fresh-run player isn't dropped into combat with
+    /// nothing to shoot. Every reset path (`reset_run_for_restart`,
+    /// initial `insert_resource`, etc.) routes through this — so the
+    /// starting loadout stays consistent.
+    fn default() -> Self {
+        let mut slots = [SlotCfg::default(); 8];
+        slots[0] = SlotCfg {
+            equipped: true,
+            weapon: WeaponType::Standard,
+            damage: 1,
+            fire_rate: 4.0,
+            barrels: 1,
+            runes: [None; 3],
+        };
+        Self { slots }
+    }
 }
 
 #[derive(Default, Clone, Copy)]

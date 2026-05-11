@@ -387,14 +387,19 @@ pub fn clamp_hp_to_max(
 
 // ---------- Click + input handlers ----------
 
-/// Click a left-column card → set it as the active pick. Don't
-/// transition yet; the player confirms with the PLAY button.
+/// Hover a left-column card → set it as the active pick (preview in
+/// the right detail panel). The PLAY button commits whichever hull
+/// was last hovered. `Interaction::Hovered` fires on cursor-enter,
+/// which also covers click — clicking implies hovering first, so we
+/// don't need a separate `Pressed` branch.
 pub fn handle_card_click(
     interactions: Query<(&Interaction, &HullCard), Changed<Interaction>>,
     mut selected: ResMut<SelectedHull>,
 ) {
     for (interaction, card) in &interactions {
-        if !matches!(*interaction, Interaction::Pressed) { continue; }
+        if !matches!(*interaction, Interaction::Hovered | Interaction::Pressed) {
+            continue;
+        }
         if selected.0 != card.0 {
             selected.0 = card.0;
         }

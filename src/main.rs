@@ -310,25 +310,10 @@ fn tick_run_timer(
 }
 
 fn main() {
-    let mut cfg = TurretConfig::default();
-    cfg.slots[0] = SlotCfg {
-        equipped: true,
-        weapon: WeaponType::Standard,
-        damage: 1,
-        fire_rate: 4.0,
-        barrels: 1,
-        runes: [None; 3],
-    };
-    for i in 1..8 {
-        cfg.slots[i] = SlotCfg {
-            equipped: false,
-            weapon: WeaponType::Standard,
-            damage: 1,
-            fire_rate: 4.0,
-            barrels: 1,
-            runes: [None; 3],
-        };
-    }
+    // Starting loadout lives in `TurretConfig::default()` so every
+    // reset path (MainMenu, GameOver RESTART, etc.) re-derives the
+    // same baseline.
+    let cfg = TurretConfig::default();
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -395,7 +380,6 @@ fn main() {
             init_customize_shop, setup_customize_render, setup_customize_ui,
             setup_pause_menu, main_menu::setup_main_menu, setup_damage_panel,
             setup_wave_indicator, setup_spawn_indicator_assets,
-            xp::setup_xp_bar,
         ).chain())
         // State→resources bridge. Runs first so every other system in
         // the same Update sees the freshly-synced flags.

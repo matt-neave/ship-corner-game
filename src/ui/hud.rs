@@ -224,15 +224,18 @@ pub fn setup_hud(commands: &mut Commands) {
         });
     });
 
-    // Player HP bar + ally bars — anchored inside the play square's
-    // top-left, pushed BELOW the XP bar (which spans the play area's
-    // top edge). Top = `XP_BAR_TOP_INSET + XP_BAR_HEIGHT + gap`.
-    let hp_top = crate::xp::XP_BAR_TOP_INSET + crate::xp::XP_BAR_HEIGHT + 4.0;
+    // Player HUD column — XP track on top, HP track below, ally
+    // bars below that. Each bar owns its own border so
+    // `update_hp_bar_pixel_scale` can scale BOTH to match the
+    // play-area's grey frame at every window size.
+    // `update_hp_bar_pixel_scale` snaps `WaveHpUi` to the play
+    // area's top-left every frame.
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(hp_top),
+            top: Val::Px(0.0),
             left: Val::Px(0.0),
+            width: Val::Px(180.0),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::FlexStart,
             row_gap: Val::Px(3.0),
@@ -242,18 +245,18 @@ pub fn setup_hud(commands: &mut Commands) {
         WaveHpUi,
     ))
     .with_children(|p| {
-        // Main bar — 180×22 track with fill, ticks, right-aligned
-        // readout. `overflow: clip` keeps the shield overlay
-        // bounded inside the track — when shield_max + HP would
-        // overflow the bar, the cyan portion gets cropped at the
-        // border rather than spilling onto the world.
+        // XP track — its own bordered bar, sits on top of the HP
+        // bar in the column stack.
+        crate::xp::spawn_xp_track(p);
+        // HP track — 180×22 with fill, ticks, right-aligned readout.
+        // `overflow: clip` keeps the shield overlay bounded inside
+        // the track — when shield_max + HP would overflow the bar,
+        // the cyan portion gets cropped at the border rather than
+        // spilling onto the world.
         p.spawn((
             Node {
                 width: Val::Px(180.0),
                 height: Val::Px(22.0),
-                // 2 px border — matches the XP bar's outline weight
-                // so both bars read as the same UI family at any
-                // window scale.
                 border: UiRect::all(Val::Px(2.0)),
                 position_type: PositionType::Relative,
                 overflow: Overflow::clip(),
@@ -651,6 +654,7 @@ pub fn update_hp_bar_pixel_scale(
             Without<WaveHpTrack>,
             Without<HpBarSubdivider>,
             Without<AllyHpBar>,
+            Without<crate::xp::XpBarRoot>,
         ),
     >,
     mut track_q: Query<
@@ -660,6 +664,7 @@ pub fn update_hp_bar_pixel_scale(
             Without<WaveHpUi>,
             Without<HpBarSubdivider>,
             Without<AllyHpBar>,
+            Without<crate::xp::XpBarRoot>,
         ),
     >,
     mut subdivider_q: Query<
@@ -669,6 +674,7 @@ pub fn update_hp_bar_pixel_scale(
             Without<WaveHpUi>,
             Without<WaveHpTrack>,
             Without<AllyHpBar>,
+            Without<crate::xp::XpBarRoot>,
         ),
     >,
     mut ally_bar_q: Query<
@@ -678,6 +684,17 @@ pub fn update_hp_bar_pixel_scale(
             Without<WaveHpUi>,
             Without<WaveHpTrack>,
             Without<HpBarSubdivider>,
+            Without<crate::xp::XpBarRoot>,
+        ),
+    >,
+    mut xp_track_q: Query<
+        &mut Node,
+        (
+            With<crate::xp::XpBarRoot>,
+            Without<WaveHpUi>,
+            Without<WaveHpTrack>,
+            Without<HpBarSubdivider>,
+            Without<AllyHpBar>,
         ),
     >,
 ) {
@@ -690,18 +707,21 @@ pub fn update_hp_bar_pixel_scale(
     let border = UiRect::all(px);
 
     let margin = upscale * 4.0;
-    // HP bar sits BELOW the XP bar in the play-area top-left stack.
-    // XP is at `play_top + margin`, height `XP_BAR_HEIGHT`; HP picks
-    // up after that with a 4px gap so the two bars read as a
-    // grouped column rather than overlapping.
+    // `WaveHpUi` is the column root holding both the XP and HP
+    // tracks. Pin it to the play area's top-left; both bars come
+    // along for the ride. Each bar's border is scaled below so they
+    // stay pixel-aligned with the play-area's grey frame.
     let want_left = Val::Px(play_left + margin);
-    let want_top  = Val::Px(play_top + margin + crate::xp::XP_BAR_HEIGHT + 4.0);
+    let want_top  = Val::Px(play_top + margin);
     for mut node in &mut root_q {
         if node.left != want_left { node.left = want_left; }
         if node.top  != want_top  { node.top  = want_top;  }
     }
 
     for mut node in &mut track_q {
+        if node.border != border { node.border = border; }
+    }
+    for mut node in &mut xp_track_q {
         if node.border != border { node.border = border; }
     }
     for mut node in &mut subdivider_q {

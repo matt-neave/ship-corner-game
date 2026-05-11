@@ -14,12 +14,8 @@
 
 use bevy::prelude::*;
 use bevy::text::FontSmoothing;
-use bevy::window::PrimaryWindow;
 use rand::seq::SliceRandom;
 
-use crate::balance::PLAY_INTERNAL;
-use crate::map::ViewMode;
-use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
 use crate::stats::{PlayerStats, StatKind};
 use crate::ui_kit::{self, theme};
 
@@ -176,28 +172,25 @@ pub const XP_BAR_HEIGHT: f32 = 22.0;
 pub const XP_BAR_TOP_INSET: f32 = 6.0;
 const XP_BAR_FILL_COLOR: Color = Color::srgb(1.0, 0.78, 0.20);
 
-pub fn setup_xp_bar(mut commands: Commands) {
-    // Same dimensions + chrome as the HP bar (`WaveHpTrack`): 180×22,
-    // `theme::BORDER_SUBTLE` surface, `theme::BORDER_DARK` border at
-    // 2 px. HUD-camera-relative positioning so `top: 6, left: 0`
-    // lands inside the play area's top-left without any screen-coord
-    // math.
-    commands
+/// Spawn the XP track as a child of `WaveHpUi`. Mirrors the HP
+/// track's chrome exactly — same 180×22 dimensions, 2 px border at
+/// `BORDER_DARK`, `BORDER_SUBTLE` surface — so both rails read as
+/// one UI family. `update_hp_bar_pixel_scale` re-derives the border
+/// width every frame from the play-area upscale, keeping it
+/// pixel-aligned with the play-area's grey frame.
+pub fn spawn_xp_track(parent: &mut ChildSpawnerCommands) {
+    parent
         .spawn((
             Node {
-                position_type: PositionType::Absolute,
-                top: Val::Px(XP_BAR_TOP_INSET),
-                left: Val::Px(0.0),
                 width: Val::Px(XP_BAR_WIDTH),
                 height: Val::Px(XP_BAR_HEIGHT),
                 border: UiRect::all(Val::Px(2.0)),
+                position_type: PositionType::Relative,
                 overflow: Overflow::clip(),
                 ..default()
             },
             BackgroundColor(theme::BORDER_SUBTLE),
             BorderColor(theme::BORDER_DARK),
-            ZIndex(40),
-            Visibility::Hidden,
             XpBarRoot,
         ))
         .with_children(|root| {
@@ -247,51 +240,17 @@ pub fn setup_xp_bar(mut commands: Commands) {
 }
 
 pub fn update_xp_bar(
-    state: Res<State<crate::AppState>>,
-    view: Res<ViewMode>,
     xp: Res<Xp>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    window_mode: Res<WindowMode>,
-    mut roots: Query<(&mut Visibility, &mut Node), With<XpBarRoot>>,
-    mut fills: Query<&mut Node, (With<XpBarFill>, Without<XpBarRoot>)>,
+    mut fills: Query<&mut Node, With<XpBarFill>>,
     mut labels: Query<&mut Text, With<XpBarLabel>>,
 ) {
-    let s = *state.get();
-    let want_vis = if matches!(s, crate::AppState::Playing | crate::AppState::StageComplete)
-        && *view == ViewMode::Combat
-    {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
-
+    // The XP track now lives inside the HP bar's outer frame
+    // (see `setup_hud`), so visibility + positioning are inherited
+    // from the parent `WaveHpUi`. This system only drives the
+    // gold-fill width + "LV N" text — everything else is layout.
     let need = xp_to_next(xp.level).max(1);
     let pct = (xp.current as f32 / need as f32).clamp(0.0, 1.0) * 100.0;
 
-    // Anchor the root to the play area's top-left every frame, the
-    // same way `update_hp_bar_pixel_scale` does — bevy_ui's default
-    // UI camera covers the whole window, so without this the bar
-    // would render in the letterbox above the play area instead of
-    // inside it.
-    let (anchor_left, anchor_top) = windows
-        .single()
-        .ok()
-        .map(|w| {
-            let (left, top, size) =
-                play_area_screen_rect(w.width(), w.height(), effective_ui_width(&window_mode));
-            let upscale = (size / PLAY_INTERNAL as f32).max(1.0);
-            let margin = upscale * 4.0;
-            (left + margin, top + margin)
-        })
-        .unwrap_or((0.0, 0.0));
-
-    for (mut v, mut node) in &mut roots {
-        if *v != want_vis { *v = want_vis; }
-        let want_top = Val::Px(anchor_top);
-        let want_left = Val::Px(anchor_left);
-        if node.top != want_top { node.top = want_top; }
-        if node.left != want_left { node.left = want_left; }
-    }
     for mut node in &mut fills {
         let want = Val::Percent(pct);
         if node.width != want { node.width = want; }
