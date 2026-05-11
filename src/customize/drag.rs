@@ -25,6 +25,7 @@ use bevy::render::view::RenderLayers;
 use bevy::sprite::MeshMaterial2d;
 use bevy::window::PrimaryWindow;
 use rand::seq::SliceRandom;
+use rand::Rng;
 
 use crate::balance::CUSTOMIZE_LAYER;
 use crate::rune::Rune;
@@ -107,22 +108,36 @@ pub struct ShopTurretOffer {
 pub struct ShopMod {
     pub kind: StatKind,
     pub delta: f32,
+    /// Optional trade-off side-effect: a SECOND stat that ALSO
+    /// changes when this mod is picked, typically a nerf paired
+    /// with the primary buff. None for plain mods. The roll table
+    /// in `roll_fresh_stock` mixes pure buffs with these trade-off
+    /// cards so the shop offers genuine choices, not just always-
+    /// good upgrades.
+    pub side: Option<(StatKind, f32)>,
 }
 
 impl ShopMod {
-    /// Card text laid out as TWO lines — the signed value on top,
-    /// the short stat name underneath. Bevy's `Text2d` honours
-    /// embedded newlines, so the card renders the value loud and
-    /// the name compact below it without needing a separate child
-    /// entity. Sign is always shown so stacking direction reads at
-    /// a glance.
+    /// Card text. Pure mods render two lines (value + short name).
+    /// Trade-off mods render FOUR — primary buff on top, side
+    /// nerf below — so the player sees both halves of the deal at
+    /// a glance. The colour pass on the card paints buffs green /
+    /// nerfs red automatically (it sees the sign on each segment).
     pub fn label(self) -> String {
-        let value = if self.delta.fract().abs() < 0.01 {
-            format!("{:+.0}", self.delta)
-        } else {
-            format!("{:+.1}", self.delta)
-        };
-        format!("{}\n{}", value, short_stat_label(self.kind))
+        let main = format!(
+            "{}\n{}",
+            self.kind.format_delta(self.delta),
+            short_stat_label(self.kind),
+        );
+        match self.side {
+            Some((k, d)) => format!(
+                "{}\n{}\n{}",
+                main,
+                k.format_delta(d),
+                short_stat_label(k),
+            ),
+            None => main,
+        }
     }
 }
 
@@ -210,9 +225,35 @@ pub fn roll_fresh_stock() -> CustomizeShop {
     let mut mods = Vec::with_capacity(3);
     for _ in 0..3 {
         let kind = *StatKind::ALL.choose(&mut rng).unwrap();
-        // Reuse the debug step as the shop delta — already tuned per
-        // stat to be a meaningful nudge in that stat's natural unit.
-        mods.push(Some(ShopMod { kind, delta: kind.debug_step() }));
+        // Roughly one in three rolls is a trade-off card: bigger
+        // buff on the primary stat plus a nerf on a DIFFERENT
+        // stat. Forces the player to weigh each mod against their
+        // build instead of clicking everything. Pure-buff mods use
+        // the standard `debug_step` value; trade-off cards bump
+        // the buff to 1.5x and apply a -0.75x nerf to a random
+        // other stat, so the upside outweighs the downside but the
+        // pick still costs you something.
+        let trade_off = rng.gen_bool(0.33);
+        if trade_off {
+            // Pick a side-effect stat that isn't the primary.
+            let side_kind = loop {
+                let k = *StatKind::ALL.choose(&mut rng).unwrap();
+                if k != kind { break k; }
+            };
+            let buff = kind.debug_step() * 1.5;
+            let nerf = -side_kind.debug_step() * 0.75;
+            mods.push(Some(ShopMod {
+                kind,
+                delta: buff,
+                side: Some((side_kind, nerf)),
+            }));
+        } else {
+            mods.push(Some(ShopMod {
+                kind,
+                delta: kind.debug_step(),
+                side: None,
+            }));
+        }
     }
     CustomizeShop { turrets, runes, mods }
 }

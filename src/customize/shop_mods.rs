@@ -26,7 +26,10 @@ use super::CustomizeOpen;
 // keep the shop column anchored far enough left that the sell strip
 // fits cleanly under the ship.
 pub const MOD_CARD_W: f32 = 30.0;
-pub const MOD_CARD_H: f32 = 22.0;
+// Tall enough to fit 4 lines of card text (value + name + side
+// value + side name) on trade-off mods. Pure mods only use the
+// upper half but the consistent sizing keeps the row tidy.
+pub const MOD_CARD_H: f32 = 36.0;
 pub const MOD_CARD_GAP: f32 = 4.0;
 const Z_OUTLINE: f32 = 99.0;
 const Z_FILL: f32 = 99.5;
@@ -183,11 +186,15 @@ pub fn update_shop_mod_cards(
             if text.0 != label { text.0 = label; }
             tf.translation.x = slot.spec_pos.x * s;
             tf.translation.y = slot.spec_pos.y * s;
-            // Tint the delta: green for buffs (+), red for nerfs (-),
-            // grey for no-change. Mirrors the stats-panel colouring
-            // so the same colour rule reads everywhere a stat
-            // change is presented.
-            let want = if m.delta > 0.001 {
+            // Tint logic: pure mods get green (buff) / red (nerf)
+            // by primary-delta sign. Trade-off cards mix both
+            // signs in one label, so a single tint would lie -
+            // they render in neutral body white and rely on the
+            // explicit `+`/`-` characters in each line to signal
+            // direction.
+            let want = if m.side.is_some() {
+                Color::srgb(0.85, 0.88, 0.94)
+            } else if m.delta > 0.001 {
                 Color::srgb(0.55, 0.95, 0.55)
             } else if m.delta < -0.001 {
                 Color::srgb(1.00, 0.55, 0.55)
@@ -241,8 +248,17 @@ pub fn handle_shop_mod_click(
         { continue; }
         let Some(slot_entry) = shop.mods.get_mut(slot.idx) else { return };
         let Some(m) = *slot_entry else { return };
+        // Apply the primary effect.
         let stat = m.kind.stat_mut(&mut stats);
         stat.flat += m.delta;
+        // Trade-off cards also apply a side-effect on a different
+        // stat. Side delta is typically negative (a nerf paired
+        // with the primary buff) but the apply path is identical -
+        // both halves write to `stat.flat`.
+        if let Some((side_kind, side_delta)) = m.side {
+            let s = side_kind.stat_mut(&mut stats);
+            s.flat += side_delta;
+        }
         *slot_entry = None;
         scrap.0 = scrap.0.saturating_sub(super::drag::SHOP_ITEM_COST);
         return;

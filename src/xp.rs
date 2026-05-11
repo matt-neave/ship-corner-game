@@ -92,57 +92,37 @@ pub struct Buff {
 }
 
 impl Buff {
-    /// Card label, e.g. `+20 HP`, `+10% RANGE`.
+    /// Card label, e.g. `+25 HP`, `+10% RANGE`. Routes through
+    /// `StatKind::format_delta` so the value renders in the same
+    /// units as the shop mod cards (and the stats panel readout)
+    /// without a second per-stat formatter.
     pub fn label(&self) -> String {
-        let unit_pct = !self.flat;
-        // Pick a sensible decimal precision per stat.
-        let int_like = matches!(
-            self.kind,
-            StatKind::Hp
-                | StatKind::MoveSpeed
-                | StatKind::TurnSpeed
-                | StatKind::ShieldMax
-                | StatKind::Crit
-                | StatKind::Luck
-                | StatKind::ProcStrength
-                | StatKind::Range
-        );
-        let value = if int_like {
-            format!("{:+.0}", self.delta)
-        } else {
-            format!("{:+.1}", self.delta)
-        };
-        if unit_pct {
-            format!("{}% {}", value, self.kind.label())
-        } else {
-            format!("{} {}", value, self.kind.label())
-        }
+        format!("{} {}", self.kind.format_delta(self.delta), self.kind.label())
     }
 
     pub fn apply(&self, stats: &mut PlayerStats) {
+        // All buffs apply to `stat.flat` so they share the same
+        // application semantics as shop mods. The "flat vs percent"
+        // distinction was a leftover from when level-ups had bigger
+        // values than mods; aligning the two means the same delta
+        // means the same thing whether you got it from a level-up
+        // or a mod card.
         let s = self.kind.stat_mut(stats);
-        if self.flat {
-            s.flat += self.delta;
-        } else {
-            s.percent += self.delta / 100.0;
-        }
+        s.flat += self.delta;
+        let _ = self.flat;
     }
 }
 
-/// Master list of buffs the level-up screen can roll. Mix of flat +
-/// percent on stats that meaningfully scale.
+/// Master list of buffs the level-up screen can roll. Deltas mirror
+/// `StatKind::debug_step` so a level-up pick is exactly equivalent
+/// to a shop mod purchase — no surprise that "+10 RANGE" from a
+/// level-up means the same as "+10 RANGE" from a mod card.
 fn buff_pool() -> Vec<Buff> {
-    vec![
-        Buff { kind: StatKind::Hp,                delta: 20.0, flat: true },
-        Buff { kind: StatKind::MoveSpeed,         delta: 5.0,  flat: true },
-        Buff { kind: StatKind::TurnSpeed,         delta: 1.0,  flat: true },
-        Buff { kind: StatKind::Range,             delta: 10.0, flat: false },
-        Buff { kind: StatKind::ShieldMax,         delta: 25.0, flat: true },
-        Buff { kind: StatKind::Crit,              delta: 5.0,  flat: true },
-        Buff { kind: StatKind::RuneDamage,        delta: 25.0, flat: false },
-        Buff { kind: StatKind::Luck,              delta: 10.0, flat: true },
-        Buff { kind: StatKind::ProcStrength,      delta: 20.0, flat: true },
-    ]
+    StatKind::ALL
+        .iter()
+        .copied()
+        .map(|kind| Buff { kind, delta: kind.debug_step(), flat: true })
+        .collect()
 }
 
 /// Pick `n` distinct buffs from the master pool. Order randomized.

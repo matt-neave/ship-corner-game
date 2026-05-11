@@ -1162,31 +1162,19 @@ fn weapon_rate_line(weapon: WeaponType, barrels: u8) -> Option<String> {
     Some(format!("Cooldown {:.2}s", cooldown))
 }
 
-/// "Range X%" line, with a base + player-stat breakdown when the
-/// final differs from 100%. Same explainable shape as the damage
-/// line: when the weapon's own range isn't 100% AND the player's
-/// Range stat is at default, show "Range 90% from 90% base". With
-/// a non-default Range stat, show all three components so the
-/// player can see where the final came from without doing the
-/// multiplication themselves.
+/// "Range X%" line. Shows the resolved final percentage only.
+/// Hidden when at the 100% baseline (no point telling the player
+/// nothing changed). The Range stat is exposed in the stats panel
+/// so the player can verify the modifier independently.
 fn weapon_extra_line(
     weapon: WeaponType,
     stats: &crate::stats::PlayerStats,
 ) -> Option<String> {
-    let weapon_pct = (weapon.range_mult() * 100.0).round() as i32;
-    let player_pct = (stats.range_mult() * 100.0).round() as i32;
     let final_pct = (weapon.range_mult() * stats.range_mult() * 100.0).round() as i32;
-    let stat_bonus = player_pct - 100;
-    if weapon_pct == 100 && stat_bonus == 0 {
+    if final_pct == 100 {
         None
-    } else if stat_bonus == 0 {
-        Some(format!("Range {}% from {}% base", final_pct, weapon_pct))
     } else {
-        let sign = if stat_bonus > 0 { "+" } else { "" };
-        Some(format!(
-            "Range {}% from {}% base and {}{}% Range stat",
-            final_pct, weapon_pct, sign, stat_bonus,
-        ))
+        Some(format!("Range {}%", final_pct))
     }
 }
 

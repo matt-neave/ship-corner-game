@@ -142,12 +142,10 @@ fn stack_bottom_px(count: usize) -> f32 {
     PANEL_INSET + (count as f32) * (PANEL_H + PANEL_GAP)
 }
 
-/// Spawn the bottom-left "New!" panel for `variant`. Bevy UI Node
-/// based so the text renders at NATIVE screen resolution and stays
-/// readable. Two lines: an accent-yellow "New!" header above a
-/// short plain-language description of what the variant does, so
-/// the player learns the threat in one read rather than seeing a
-/// silhouette + name and having to guess.
+/// Spawn the bottom-left "New!" panel for `variant`. Three lines:
+/// accent-yellow "New!" header, the variant's name in body white,
+/// then a short plain-language behaviour cue underneath so the
+/// player learns the threat in one read.
 pub fn spawn_new_enemy_banner(
     commands: &mut Commands,
     existing_banners: &Query<Entity, With<NotificationLifetime>>,
@@ -159,6 +157,7 @@ pub fn spawn_new_enemy_banner(
         bottom_px,
         theme::ACCENT,
         "New!",
+        Some(variant.label()),
         enemy_short_desc(variant),
         theme::ON_SURFACE,
         NewEnemyBanner,
@@ -166,7 +165,7 @@ pub fn spawn_new_enemy_banner(
 }
 
 /// Spawn the bottom-left "Discovered!" panel announcing a freshly
-/// unlocked synergy. Same footprint + lifecycle as the New! enemy
+/// unlocked synergy. Same three-line layout as the New! enemy
 /// panel — the two share `NotificationLifetime` so they stack via
 /// `stack_bottom_px`. Border + header take the tag's accent color
 /// so each unlock reads distinct at a glance.
@@ -181,28 +180,32 @@ pub fn spawn_synergy_discovered_banner(
         bottom_px,
         tag.color(),
         "Discovered!",
-        format!("New weapon synergy: {}", tag.label()),
+        Some(tag.label()),
+        "New weapon synergy.",
         theme::ON_SURFACE,
         SynergyDiscoveredBanner,
     );
 }
 
-/// Shared two-line "header + description" notification panel. Used
-/// by both `spawn_new_enemy_banner` and `spawn_synergy_discovered_banner`
-/// — they only differ in the colour cue (border + header), the
-/// strings, and the marker component. Layout is a column with
-/// `FlexStart` so the header sits on top and the description text
-/// wraps underneath inside the panel's width.
+/// Shared three-line notification panel used by both
+/// `spawn_new_enemy_banner` and `spawn_synergy_discovered_banner`.
+/// They differ in the accent colour, the strings, and the marker
+/// component. Layout is a column with `FlexStart` so the header
+/// sits on top, optional subtitle (e.g. variant or tag name) sits
+/// below it, and the description wraps inside the panel width
+/// underneath.
 fn spawn_text_banner<M: Component>(
     commands: &mut Commands,
     bottom_px: f32,
     accent: Color,
     header: &str,
+    subtitle: Option<&str>,
     description: impl Into<String>,
     description_color: Color,
     marker: M,
 ) {
     let description = description.into();
+    let subtitle = subtitle.map(|s| s.to_string());
     commands
         .spawn((
             Node {
@@ -235,6 +238,17 @@ fn spawn_text_banner<M: Component>(
                 TextFont { font_size: 18.0, ..default() },
                 TextColor(accent),
             ));
+            // Optional subtitle: the thing being announced
+            // (variant name for enemies, tag name for synergies).
+            // White/body colour so the accent header still
+            // dominates the colour hierarchy.
+            if let Some(sub) = subtitle {
+                root.spawn((
+                    Text::new(sub),
+                    TextFont { font_size: 15.0, ..default() },
+                    TextColor(description_color),
+                ));
+            }
             // Description — wraps inside the panel width.
             root.spawn((
                 Text::new(description),

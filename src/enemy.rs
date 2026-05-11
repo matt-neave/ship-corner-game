@@ -624,6 +624,32 @@ const WAVE_SPAWN_INTERVAL: f32 = 0.15;
 /// a beat to read the directions before enemies start arriving.
 const WAVE_TELEGRAPH_DELAY: f32 = 0.8;
 
+/// If `pos` is past the playable arena edge on either axis, replace
+/// the proposed `motion_dir` with one that pushes back inward.
+/// Used by stand-off enemies (Sniper, Artillery) so their
+/// distance-management AI doesn't accidentally walk them off the
+/// map and out of reach. Returns the original direction when the
+/// enemy is comfortably inside the bounds.
+fn inward_correction(pos: Vec2, motion_dir: Vec2) -> Vec2 {
+    // 5-unit margin so the correction kicks in before the enemy
+    // visually reaches the wall, not after.
+    let margin = 5.0;
+    let half_w = PLAY_WORLD_W * 0.5 - margin;
+    let half_h = PLAY_WORLD_H * 0.5 - margin;
+    let outside_right = pos.x > half_w;
+    let outside_left = pos.x < -half_w;
+    let outside_top = pos.y > half_h;
+    let outside_bot = pos.y < -half_h;
+    if !(outside_right || outside_left || outside_top || outside_bot) {
+        return motion_dir;
+    }
+    // Build a corrective vector that points back toward the centre
+    // along whichever axes are out of bounds.
+    let cx = if outside_right { -1.0 } else if outside_left { 1.0 } else { motion_dir.x };
+    let cy = if outside_top { -1.0 } else if outside_bot { 1.0 } else { motion_dir.y };
+    Vec2::new(cx, cy).normalize_or(motion_dir)
+}
+
 fn random_edge_pos(rng: &mut rand::rngs::ThreadRng) -> Vec2 {
     let half_w = PLAY_WORLD_W * 0.5;
     let half_h = PLAY_WORLD_H * 0.5;
@@ -868,6 +894,11 @@ pub fn enemy_ai(
                 // the sniper drifts sideways.
                 (Vec2::new(-unit_to.y, unit_to.x), 0.25)
             };
+            // Confine to the play area: if the sniper is past the
+            // arena edge, override the desired motion direction
+            // with one pointing back toward the centre. Otherwise
+            // they'd drift offscreen and become unreachable.
+            let motion_dir = inward_correction(pos, motion_dir);
             let desired = (-motion_dir.x).atan2(motion_dir.y);
             heading.0 = approach_angle(heading.0, desired, turn * dt);
             let dir = Vec2::new(-heading.0.sin(), heading.0.cos());
@@ -891,6 +922,11 @@ pub fn enemy_ai(
             } else {
                 (Vec2::new(-unit_to.y, unit_to.x), 0.3)
             };
+            // Same arena confinement as Sniper. Without it artillery
+            // drifts off the playable rect (they prefer keeping
+            // distance) and stops firing because `artillery_fire`
+            // gates on `in_play_area`.
+            let motion_dir = inward_correction(pos, motion_dir);
             let desired = (-motion_dir.x).atan2(motion_dir.y);
             heading.0 = approach_angle(heading.0, desired, turn * dt);
             let dir = Vec2::new(-heading.0.sin(), heading.0.cos());
@@ -1265,17 +1301,25 @@ pub fn sniper_fire(
         let to = target_pos - pos;
         if to.length() > SNIPER_FIRE_RANGE { continue; }
 
-        // Spawn the telegraph: a small reticule (pulsing ring) at
-        // the locked target position. Replaces the previous
-        // sniper-to-target beam line which read as a hairline scar
-        // across the screen — the ring puts the warning AT the
-        // danger spot. `sniper_aim_line_tick` pulses + grows it
-        // over the aim window so the moment of fire is unmissable.
+        // Spawn the telegraph: a constant translucent line spanning
+        // sniper -> locked target. Final-Fantasy-style aim hint that
+        // sits there for the whole window without flicker or pulse.
+        // The translucent material (set in `palette.rs`) keeps it
+        // readable without occluding play under it.
+        let mid = (pos + target_pos) * 0.5;
+        let length = to.length().max(1.0);
+        let angle = (-(to.x)).atan2(to.y);
         let line = commands.spawn((
-            Mesh2d(em.bullet_round_outer.clone()),
+            Mesh2d(em.beam.clone()),
             MeshMaterial2d(pm.sniper_aim.clone()),
-            Transform::from_xyz(target_pos.x, target_pos.y, 3.5)
-                .with_scale(Vec3::splat(0.5)),
+            Transform::from_xyz(mid.x, mid.y, 3.5)
+                .with_rotation(Quat::from_rotation_z(angle))
+                // Beam mesh is `Rectangle::new(1.0, BEAM_LENGTH)` -
+                // scale Y to span the sniper-to-target distance,
+                // X to a chunky-but-not-overpowering thickness so
+                // the dark-amber line reads clearly across the
+                // arena without dominating it.
+                .with_scale(Vec3::new(1.4, length / crate::balance::BEAM_LENGTH, 1.0)),
             SniperAimLine {
                 sniper: entity,
                 target_world: target_pos,
@@ -1309,15 +1353,14 @@ pub fn artillery_fire(
     let dt = time.delta_secs();
     let Ok((ftf, fvel)) = friendly.single() else { return; };
     let fpos = ftf.translation.truncate();
-    // Predicted friendly position. We lead by a fraction of the
-    // shell flight time, not the full thing — leading by 1.5s at
-    // FRIENDLY_SPEED puts the splash ~40 units ahead of the
-    // player's current position which is far too easy to outrun.
-    // Half-second lead lands the reticle inside the player's
-    // current trajectory; turning still dodges, but holding course
-    // catches the splash because the shell tracks where they're
-    // ABOUT to be.
-    const ARTILLERY_LEAD_TIME: f32 = 0.5;
+    // Predicted friendly position. The shell lands where the
+    // player WILL be in `ARTILLERY_LEAD_TIME` seconds at their
+    // current velocity. Tuned so holding course inside the splash
+    // window catches the hit, while turning OR slowing dodges.
+    // Bumped from 0.5s to 0.9s so the splash lands further ahead
+    // and players have to actually break their line, not just
+    // cruise through and trust the half-second prediction error.
+    const ARTILLERY_LEAD_TIME: f32 = 0.9;
     let fpred = fpos + fvel.0 * ARTILLERY_LEAD_TIME;
     let ally_positions: Vec<Vec2> = allies
         .iter()
@@ -1412,12 +1455,17 @@ pub fn artillery_shell_tick(
 
     for (entity, mut shell) in &mut shells {
         shell.elapsed += dt;
-        // Shrink the reticle as time passes so the player sees the
-        // ring tighten on impact. Scale = remaining/initial.
+        // GROW the reticle as time passes so the player sees the
+        // splash zone fill in toward impact - FF-style "warning
+        // expanding" cue rather than the previous "shrinking
+        // crosshair" which read as the danger getting smaller.
+        // Starts small (10%) and grows to full splash radius right
+        // before the shell lands.
         if let Some(r) = shell.reticle {
             if let Ok((mut ret, mut rtf)) = reticles.get_mut(r) {
                 ret.remaining = (ret.initial - shell.elapsed).max(0.0);
-                let frac = (ret.remaining / ret.initial.max(0.0001)).clamp(0.1, 1.0);
+                let progress = (shell.elapsed / shell.time_of_flight.max(0.0001)).clamp(0.0, 1.0);
+                let frac = 0.10 + 0.90 * progress;
                 rtf.scale = Vec3::new(frac, frac, 1.0);
             }
         }
@@ -1521,24 +1569,21 @@ pub fn sniper_aim_line_tick(
         };
         line.remaining = (line.remaining - dt).max(0.0);
         let _ = aim;
-        let _ = sniper_tf; // sniper position no longer drives the
-                           // reticule — it lives at the locked
-                           // target_world, which never moves.
 
-        // Two scale terms compose:
-        //   - `growth`: ring expands from 0.5x to 1.6x over the aim
-        //     window so the danger zone reads as expanding.
-        //   - `pulse`:  small sinusoidal flicker that speeds up as
-        //     fire approaches, making the last ~0.3s look urgent.
-        let progress = 1.0 - (line.remaining / line.aim_total).clamp(0.0, 1.0);
-        let growth = 0.5 + 1.1 * progress;
-        let pulse_speed = 6.0 + 20.0 * progress;
-        let pulse = 1.0 + 0.15 * (line.remaining * pulse_speed).sin();
-        let scale = growth * pulse;
-        tf.translation.x = line.target_world.x;
-        tf.translation.y = line.target_world.y;
-        tf.rotation = Quat::IDENTITY;
-        tf.scale = Vec3::new(scale, scale, 1.0);
+        // Constant-width translucent beam from the sniper to the
+        // locked target. No pulse, no width modulation - the steady
+        // line IS the threat cue, FF-style. Sniper position drives
+        // the recompute each frame so the beam follows the sniper's
+        // body even though the target stays locked.
+        let pos = sniper_tf.translation.truncate();
+        let to = line.target_world - pos;
+        let mid = (pos + line.target_world) * 0.5;
+        let length = to.length().max(1.0);
+        let angle = (-(to.x)).atan2(to.y);
+        tf.translation.x = mid.x;
+        tf.translation.y = mid.y;
+        tf.rotation = Quat::from_rotation_z(angle);
+        tf.scale = Vec3::new(1.4, length / crate::balance::BEAM_LENGTH, 1.0);
     }
 }
 

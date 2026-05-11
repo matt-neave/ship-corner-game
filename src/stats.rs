@@ -129,7 +129,7 @@ pub struct PlayerStats {
 impl Default for PlayerStats {
     fn default() -> Self {
         Self {
-            hp: Stat::new(100.0),
+            hp: Stat::new(75.0),
             move_speed: Stat::new(30.0),
             turn_speed: Stat::new(5.0),
             // Default = the cap (360°/s = 2π rad/s). Bumping T.TURN
@@ -366,7 +366,7 @@ impl StatKind {
     pub fn debug_step(self) -> f32 {
         match self {
             StatKind::Hp => 25.0,
-            StatKind::MoveSpeed => 2.0,
+            StatKind::MoveSpeed => 3.0,
             StatKind::TurnSpeed => 0.5,           // rad/s
             StatKind::TurretTurnSpeed => 0.5,     // rad/s
             StatKind::TurretArcBonus => 10.0,     // degrees
@@ -378,6 +378,35 @@ impl StatKind {
             StatKind::ShieldMax => 10.0,
             StatKind::RuneDamage => 0.5,
             StatKind::TurretDamage => 10.0, // +10 percentage points / step
+        }
+    }
+
+    /// Format a delta value (typically the mod-card upgrade amount)
+    /// in the same units the stats panel renders the live value in.
+    /// Percent stats show `+25%`, multiplier stats like Rune Damage
+    /// re-express the raw 0.5 delta as `+50%`, raw-number stats
+    /// (Hp, MoveSpeed, etc.) show the bare signed number.
+    pub fn format_delta(self, delta: f32) -> String {
+        match self {
+            // 0.5 multiplier delta reads as +50%.
+            StatKind::RuneDamage => format!("{:+.0}%", delta * 100.0),
+            // Stats already stored as percent points - just append %.
+            StatKind::TurretDamage
+            | StatKind::Crit
+            | StatKind::Luck
+            | StatKind::ProcStrength
+            | StatKind::Range
+            | StatKind::Harvest => format!("{:+.0}%", delta),
+            // Everything else - bare signed number, drop the .0
+            // when the value is an integer so it doesn't read as a
+            // float (e.g. "+3" not "+3.0").
+            _ => {
+                if delta.fract().abs() < 0.01 {
+                    format!("{:+.0}", delta)
+                } else {
+                    format!("{:+.1}", delta)
+                }
+            }
         }
     }
     /// Read-only handle on this kind's `Stat` slot. Used by the

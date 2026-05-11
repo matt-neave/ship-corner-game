@@ -25,6 +25,13 @@ pub fn hex(s: &str) -> Color {
     Color::srgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
 }
 
+/// Reapply `c`'s RGB with a custom alpha. Used for telegraph
+/// overlays so the warning fade reads as a hint, not a wall.
+pub fn translucent(c: Color, alpha: f32) -> Color {
+    let s: bevy::color::Srgba = c.into();
+    Color::srgba(s.red, s.green, s.blue, alpha.clamp(0.0, 1.0))
+}
+
 /// Mix `c` toward white by `amount` (0=unchanged, 1=white).
 pub fn lighten(c: Color, amount: f32) -> Color {
     let s: bevy::color::Srgba = c.into();
@@ -113,7 +120,10 @@ pub const ENEMY_RAMMER_HEX:   &str = "#ff7a1f";
 pub const ENEMY_SNIPER_HEX:   &str = "#5d275d";
 /// Sniper aim-line — bright crimson, threading red. Used for the
 /// telegraph beam the sniper draws while charging its 1.5s aim.
-pub const SNIPER_AIM_HEX:     &str = "#ff3344";
+// Dark amber for the sniper aim line and artillery splash reticle.
+// Less aggressive than bright red; reads as a warning without
+// shouting "blood imminent".
+pub const SNIPER_AIM_HEX:     &str = "#c89018";
 /// Time-fused enemy landmine — same dark shell + red dot as the
 /// friendly mine so the player parses the silhouette as "stay clear".
 /// Kept in this section so future fuse-FX (pulsing dot, expanding
@@ -126,7 +136,7 @@ pub const ENEMY_ARTILLERY_HEX: &str = "#5a6a2c";
 /// Artillery landing reticle — bright crimson. The ring telegraphs
 /// where the lobbed shell will hit; warm hot colour reads as "danger
 /// zone" against the cool blue ocean.
-pub const ARTILLERY_RETICLE_HEX: &str = "#ff2244";
+pub const ARTILLERY_RETICLE_HEX: &str = "#c89018";
 
 // ---------- Ship-class hull tints ----------
 //
@@ -450,8 +460,13 @@ impl PaletteMaterials {
             enemy_rammer:          materials.add(hex(ENEMY_RAMMER_HEX)),
             enemy_sniper:          materials.add(hex(ENEMY_SNIPER_HEX)),
             enemy_artillery:       materials.add(hex(ENEMY_ARTILLERY_HEX)),
-            artillery_reticle:     materials.add(hex(ARTILLERY_RETICLE_HEX)),
-            sniper_aim:            materials.add(hex(SNIPER_AIM_HEX)),
+            // Telegraphs are intentionally faded: a Final-Fantasy-style
+            // warning, not a solid colour wall. The sniper line + the
+            // artillery reticle both sit on top of gameplay so a low
+            // alpha keeps them readable as overlays without occluding
+            // what's underneath.
+            artillery_reticle:     materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.40)),
+            sniper_aim:            materials.add(translucent(hex(SNIPER_AIM_HEX), 0.35)),
             enemy_mine_dot:        materials.add(hex(ENEMY_MINE_DOT_HEX)),
             bullet_friendly:       materials.add(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN)),
             bullet_enemy:          materials.add(lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN)),
