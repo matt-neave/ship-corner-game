@@ -88,6 +88,20 @@ pub const BOOSTER_BRIGHT_HEX: &str = "#ffe88a";
 pub const BLADE_HEX:          &str = "#4a4a55";
 pub const BLADE_BRIGHT_HEX:   &str = "#d8e0e8";
 
+/// Octopus cage — dark iron bars on the deck. The cage is a cube of
+/// dim metal so the bright purple octopus inside reads as the main
+/// silhouette.
+pub const CAGE_HEX:           &str = "#3a3a44";
+/// Octopus body — saturated purple, distinct from the friendly
+/// Sniper purple by being warmer / pinker. Reads as a sea creature
+/// against the cool ocean.
+pub const OCTOPUS_BODY_HEX:   &str = "#8a2db8";
+/// Octopus active legs — bright magenta, the colour the player will
+/// associate with "this leg is currently slapping things". Inactive
+/// legs render the same body purple so the dim/bright contrast tells
+/// the player which legs are doing work.
+pub const OCTOPUS_LEG_HEX:    &str = "#ff5cd0";
+
 /// Rammer hull — bright warning orange so the kamikaze role reads at
 /// a glance against the standard red enemy palette. Same warm hue as
 /// the muzzle-flash so it parses as "explosive threat".
@@ -105,6 +119,14 @@ pub const SNIPER_AIM_HEX:     &str = "#ff3344";
 /// Kept in this section so future fuse-FX (pulsing dot, expanding
 /// ring) inherit the same colour family.
 pub const ENEMY_MINE_DOT_HEX: &str = "#ff8a3c";
+/// Artillery hull — dark olive. Reads as "siege engine" against the
+/// red enemy family without blending into the warning-orange Rammer
+/// or the deep-purple Sniper.
+pub const ENEMY_ARTILLERY_HEX: &str = "#5a6a2c";
+/// Artillery landing reticle — bright crimson. The ring telegraphs
+/// where the lobbed shell will hit; warm hot colour reads as "danger
+/// zone" against the cool blue ocean.
+pub const ARTILLERY_RETICLE_HEX: &str = "#ff2244";
 
 // ---------- Ship-class hull tints ----------
 //
@@ -271,6 +293,13 @@ pub struct PaletteMaterials {
     /// Sniper hull material — deep purple. Spawn in `enemy::spawn_enemy`
     /// for the Sniper variant.
     pub enemy_sniper: Handle<ColorMaterial>,
+    /// Artillery hull — dark olive siege piece. Spawn in
+    /// `enemy::spawn_enemy` for the Artillery variant.
+    pub enemy_artillery: Handle<ColorMaterial>,
+    /// Tint for the artillery landing-reticle ring. Bright crimson
+    /// "danger zone" colour painted over the impact point during the
+    /// 1.5s telegraph.
+    pub artillery_reticle: Handle<ColorMaterial>,
     /// Sniper aim-line tint. Used by the trajectory telegraph that
     /// renders during the sniper's 1.5s aim phase.
     pub sniper_aim: Handle<ColorMaterial>,
@@ -320,6 +349,12 @@ pub struct PaletteMaterials {
     /// the spinning edge. See `blade.rs` for the rotating-arm spawn.
     pub turret_blade: Handle<ColorMaterial>,
     pub blade_edge: Handle<ColorMaterial>,
+    /// Autonomous `Cage` — dark iron deck cage + the in-water
+    /// octopus's body / leg materials. `octopus.rs` spawns the
+    /// in-water unit; `turret_cage` is the deck visual.
+    pub turret_cage: Handle<ColorMaterial>,
+    pub octopus_body: Handle<ColorMaterial>,
+    pub octopus_leg: Handle<ColorMaterial>,
     /// Ship-class hull tints — one per `ShipClass`. Looked up via
     /// `ally::PaletteMaterials::hull_for_class`.
     pub pirate_hull: Handle<ColorMaterial>,
@@ -414,6 +449,8 @@ impl PaletteMaterials {
             enemy_scout:           materials.add(lighten(palette.enemy, 0.30)),
             enemy_rammer:          materials.add(hex(ENEMY_RAMMER_HEX)),
             enemy_sniper:          materials.add(hex(ENEMY_SNIPER_HEX)),
+            enemy_artillery:       materials.add(hex(ENEMY_ARTILLERY_HEX)),
+            artillery_reticle:     materials.add(hex(ARTILLERY_RETICLE_HEX)),
             sniper_aim:            materials.add(hex(SNIPER_AIM_HEX)),
             enemy_mine_dot:        materials.add(hex(ENEMY_MINE_DOT_HEX)),
             bullet_friendly:       materials.add(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN)),
@@ -447,6 +484,9 @@ impl PaletteMaterials {
             booster_ring:          materials.add(hex(BOOSTER_BRIGHT_HEX)),
             turret_blade:          materials.add(hex(BLADE_HEX)),
             blade_edge:            materials.add(hex(BLADE_BRIGHT_HEX)),
+            turret_cage:           materials.add(hex(CAGE_HEX)),
+            octopus_body:          materials.add(hex(OCTOPUS_BODY_HEX)),
+            octopus_leg:           materials.add(hex(OCTOPUS_LEG_HEX)),
             bullet_mortar:         materials.add(hex(MORTAR_BRIGHT_HEX)),
             bullet_mortar_outer:   materials.add(mortar),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),

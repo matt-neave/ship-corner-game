@@ -363,6 +363,21 @@ pub fn setup_debug_ui(mut commands: Commands) {
                 ));
             });
         }
+
+        p.spawn(ui_kit::label("SPAWN ENEMY", theme::FONT_SM, theme::ON_SURFACE_DIM));
+        for &variant in crate::enemy::ALL_VARIANTS {
+            p.spawn((
+                ui_kit::button(theme::SURFACE),
+                DebugButton::SpawnEnemy(variant),
+            ))
+            .with_children(|b| {
+                b.spawn(ui_kit::label(
+                    variant.label(),
+                    theme::FONT_SM,
+                    theme::ON_SURFACE,
+                ));
+            });
+        }
     });
 }
 
@@ -420,6 +435,27 @@ pub fn handle_debug_buttons(
                     player_pos + offset,
                     std::f32::consts::FRAC_PI_2,
                     class,
+                );
+            }
+            DebugButton::SpawnEnemy(variant) => {
+                let Some(pm_ref) = pm.as_deref() else { continue; };
+                let Some(em_ref) = em.as_deref() else { continue; };
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                let player_pos = friendly.single()
+                    .map(|t| t.translation.truncate())
+                    .unwrap_or(Vec2::ZERO);
+                // Spawn at the player so the enemy is immediately
+                // visible and engages right away — debug-only, so
+                // standing on the player isn't a concern.
+                let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+                let dist  = rng.gen_range(40.0..70.0);
+                let pos = player_pos + Vec2::new(angle.cos() * dist, angle.sin() * dist);
+                let inward = (player_pos - pos).normalize_or(Vec2::Y);
+                let heading = (-inward.x).atan2(inward.y);
+                crate::enemy::spawn_enemy(
+                    &mut commands, pm_ref, em_ref, &mut meshes,
+                    pos, heading, variant,
                 );
             }
         }

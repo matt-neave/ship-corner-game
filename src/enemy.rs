@@ -61,6 +61,19 @@ pub const SNIPER_BULLET_SPEED: f32 = 140.0;
 /// regular pellets.
 pub const SNIPER_BULLET_SCALE: f32 = 1.6;
 
+/// Distance the Artillery wants to keep from its target. Inside
+/// `desired - 15` it backpedals; outside `desired + 20` it closes
+/// at half speed; in between it orbits perpendicularly.
+pub const ARTILLERY_DESIRED_DIST: f32 = 110.0;
+
+/// Telegraph window (seconds) — the landing reticle is visible for
+/// this long before the shell impacts. Long enough for the player to
+/// dodge with reasonable reaction time.
+pub const ARTILLERY_TELEGRAPH_TIME: f32 = 1.5;
+
+/// World-units radius of the artillery shell's splash AOE.
+pub const ARTILLERY_SPLASH_RADIUS: f32 = 8.0;
+
 /// Time-fuse on the landmine a Rammer drops on death. Long enough
 /// that the player can read the threat and walk away, short enough
 /// that lingering = pain.
@@ -152,6 +165,32 @@ pub struct EnemyLandmine {
     pub blast_radius: f32,
 }
 
+/// Landing reticle drawn at the impact point during the Artillery's
+/// telegraph window. Visual only — `ArtilleryShell::reticle` holds
+/// the back-ref so the shell can despawn it on impact (or sooner if
+/// the artillery dies mid-flight).
+#[derive(Component)]
+pub struct ArtilleryReticle {
+    pub remaining: f32,
+    pub initial: f32,
+}
+
+/// In-flight artillery shell. Mirrors `MortarShell` but enemy-side
+/// — splash damage applies to friendly + allies on landing instead
+/// of enemies. Arcs from `origin` to `target` over
+/// `time_of_flight` with a sin-shaped vertical lift, same as the
+/// player's mortar.
+#[derive(Component)]
+pub struct ArtilleryShell {
+    pub target: Vec2,
+    pub origin: Vec2,
+    pub time_of_flight: f32,
+    pub elapsed: f32,
+    pub damage: i32,
+    pub splash_radius: f32,
+    pub reticle: Option<Entity>,
+}
+
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum EnemyState {
     Wander,
@@ -175,6 +214,11 @@ pub enum EnemyVariant {
     /// trajectory telegraph, then fires a heavy slow shot. Has 360°
     /// fire — body heading and shot direction are decoupled.
     Sniper,
+    /// AOE shell lobber. Keeps `ARTILLERY_DESIRED_DIST` away,
+    /// telegraphs a landing reticle for `ARTILLERY_TELEGRAPH_TIME`s,
+    /// then arcs a shell that explodes for splash damage. The
+    /// telegraph is dodgeable — punishes "stand and shoot".
+    Artillery,
 }
 
 impl EnemyVariant {
@@ -186,6 +230,7 @@ impl EnemyVariant {
             EnemyVariant::Bomber   => 4,
             EnemyVariant::Rammer   => 3,
             EnemyVariant::Sniper   => 8,
+            EnemyVariant::Artillery=> 7,
         }
     }
     pub fn speed(self) -> f32 {
@@ -196,6 +241,7 @@ impl EnemyVariant {
             EnemyVariant::Bomber   => 26.0,
             EnemyVariant::Rammer   => 34.0,
             EnemyVariant::Sniper   => 16.0,
+            EnemyVariant::Artillery=> 6.0,
         }
     }
     pub fn turn_rate(self) -> f32 {
@@ -206,6 +252,7 @@ impl EnemyVariant {
             EnemyVariant::Bomber   => 0.6,
             EnemyVariant::Rammer   => 1.4,
             EnemyVariant::Sniper   => 0.5,
+            EnemyVariant::Artillery=> 0.4,
         }
     }
     /// Visual + collision scale applied via Transform.scale on the parent.
@@ -217,6 +264,7 @@ impl EnemyVariant {
             EnemyVariant::Bomber   => 1.0,
             EnemyVariant::Rammer   => 0.65,
             EnemyVariant::Sniper   => 0.95,
+            EnemyVariant::Artillery=> 1.05,
         }
     }
     pub fn fire_rate(self) -> f32 {
@@ -230,20 +278,81 @@ impl EnemyVariant {
             // aim phase + this cooldown gating when the next aim can
             // start. Tuned to a slow, careful shot.
             EnemyVariant::Sniper   => 0.5,
+            // Artillery: ~3s between shots (1.5s telegraph + 1.5s
+            // recovery). Cooldown gates the next reticle spawn.
+            EnemyVariant::Artillery=> 0.33,
         }
     }
     pub fn fire_damage(self) -> i32 {
         // Most enemy cannons do 1 damage. Sniper hits noticeably
-        // harder to make the long telegraph feel earned.
+        // harder to make the long telegraph feel earned. Artillery
+        // does middling damage but in an area.
         match self {
-            EnemyVariant::Sniper => 4,
+            EnemyVariant::Sniper    => 4,
+            EnemyVariant::Artillery => 4,
             _ => 1,
         }
     }
     pub fn has_gun(self) -> bool {
-        !matches!(self, EnemyVariant::Bomber | EnemyVariant::Rammer)
+        // Bomber + Rammer have no gun; Artillery has a "gun" only
+        // in the loose sense — it has its own bespoke firing path
+        // (`artillery_fire`) so the standard `enemy_fire` bullet
+        // dispatch must skip it.
+        !matches!(
+            self,
+            EnemyVariant::Bomber | EnemyVariant::Rammer | EnemyVariant::Artillery
+        )
+    }
+
+    /// Display name used by the first-encounter banner and any UI
+    /// that names the variant.
+    pub fn label(self) -> &'static str {
+        match self {
+            EnemyVariant::Standard  => "STANDARD",
+            EnemyVariant::Heavy     => "HEAVY",
+            EnemyVariant::Scout     => "SCOUT",
+            EnemyVariant::Bomber    => "BOMBER",
+            EnemyVariant::Rammer    => "RAMMER",
+            EnemyVariant::Sniper    => "SNIPER",
+            EnemyVariant::Artillery => "ARTILLERY",
+        }
+    }
+
+    /// Onboarding gate — minimum `CampaignProgress.battles_cleared`
+    /// before this variant is eligible to spawn. Standard + Scout
+    /// always spawn (the gentle openers); harder variants unlock one
+    /// per cleared stage so players meet new threats one at a time.
+    pub fn unlock_battles(self) -> u32 {
+        match self {
+            EnemyVariant::Standard  => 0,
+            EnemyVariant::Scout     => 0,
+            EnemyVariant::Heavy     => 1,
+            EnemyVariant::Bomber    => 2,
+            EnemyVariant::Rammer    => 3,
+            EnemyVariant::Sniper    => 4,
+            EnemyVariant::Artillery => 5,
+        }
+    }
+
+    /// Returns true when this variant is eligible given how many
+    /// battles the player has cleared so far this run.
+    pub fn unlocked_at(self, battles_cleared: u32) -> bool {
+        battles_cleared >= self.unlock_battles()
     }
 }
+
+/// Every variant in declaration order — used by the onboarding
+/// banner module to enumerate variants without each module
+/// rewriting the list.
+pub const ALL_VARIANTS: &[EnemyVariant] = &[
+    EnemyVariant::Standard,
+    EnemyVariant::Heavy,
+    EnemyVariant::Scout,
+    EnemyVariant::Bomber,
+    EnemyVariant::Rammer,
+    EnemyVariant::Sniper,
+    EnemyVariant::Artillery,
+];
 
 // ---------- Spawn helper ----------
 
@@ -266,6 +375,7 @@ pub fn spawn_enemy(
         EnemyVariant::Bomber   => pm.enemy_accent.clone(),
         EnemyVariant::Rammer   => pm.enemy_rammer.clone(),
         EnemyVariant::Sniper   => pm.enemy_sniper.clone(),
+        EnemyVariant::Artillery=> pm.enemy_artillery.clone(),
     };
     let scale = variant.scale();
     let dir = Vec2::new(-heading.sin(), heading.cos());
@@ -400,6 +510,8 @@ pub fn spawn_enemies(
     pending: Res<crate::xp::LevelUpsPending>,
     mut return_state: ResMut<crate::xp::LevelUpReturn>,
     mut next_state: ResMut<NextState<crate::AppState>>,
+    mut seen: ResMut<crate::onboarding::SeenVariants>,
+    existing_banners: Query<Entity, With<crate::onboarding::NewEnemyBanner>>,
     enemies: Query<Entity, With<Enemy>>,
 ) {
     if *mode != GameMode::Sandbox { return; }
@@ -455,7 +567,20 @@ pub fn spawn_enemies(
             // Indicator served its purpose — remove the visual.
             commands.entity(spawn.indicator).despawn();
 
-            spawn_one_at(&mut commands, &pm, &em, &mut meshes, spawn.pos, combat_ctx.is_boss_wave);
+            let spawned_variant = spawn_one_at(
+                &mut commands, &pm, &em, &mut meshes,
+                spawn.pos, combat_ctx.is_boss_wave,
+                combat_ctx.battles_cleared,
+            );
+            // First-encounter banner: if the player hasn't seen this
+            // variant yet THIS run, mark it + drop the bottom-left
+            // panel so they get a heads-up about the new threat.
+            if !seen.has(spawned_variant) {
+                seen.mark(spawned_variant);
+                crate::onboarding::spawn_new_enemy_banner(
+                    &mut commands, &existing_banners, spawned_variant,
+                );
+            }
             combat_ctx.spawn_tick = WAVE_SPAWN_INTERVAL;
             combat_ctx.wave_remaining = combat_ctx.wave_remaining.saturating_sub(1);
             combat_ctx.enemy_budget = combat_ctx.enemy_budget.saturating_sub(1);
@@ -515,30 +640,55 @@ fn spawn_one_at(
     meshes: &mut Assets<Mesh>,
     pos: Vec2,
     boss_wave: bool,
-) {
+    battles_cleared: u32,
+) -> EnemyVariant {
     let mut rng = rand::thread_rng();
+    // Try the standard weighted roll first. If the rolled variant
+    // hasn't unlocked yet (player early in the campaign), fall back
+    // to the highest-priority unlocked variant — Standard is the
+    // floor since `unlock_battles == 0` for it.
     let variant = if boss_wave {
         match rng.gen_range(0u32..100) {
-            0..30  => EnemyVariant::Heavy,
-            30..55 => EnemyVariant::Bomber,
-            55..70 => EnemyVariant::Rammer,
-            70..85 => EnemyVariant::Sniper,
+            0..25  => EnemyVariant::Heavy,
+            25..45 => EnemyVariant::Bomber,
+            45..60 => EnemyVariant::Rammer,
+            60..75 => EnemyVariant::Sniper,
+            75..90 => EnemyVariant::Artillery,
             _      => EnemyVariant::Standard,
         }
     } else {
         match rng.gen_range(0u32..100) {
-            0..35  => EnemyVariant::Standard,
-            35..55 => EnemyVariant::Scout,
-            55..70 => EnemyVariant::Heavy,
-            70..82 => EnemyVariant::Bomber,
-            82..92 => EnemyVariant::Rammer,
-            _      => EnemyVariant::Sniper,
+            0..30  => EnemyVariant::Standard,
+            30..47 => EnemyVariant::Scout,
+            47..62 => EnemyVariant::Heavy,
+            62..74 => EnemyVariant::Bomber,
+            74..84 => EnemyVariant::Rammer,
+            84..92 => EnemyVariant::Sniper,
+            _      => EnemyVariant::Artillery,
         }
+    };
+    // Onboarding gate — if the rolled variant isn't unlocked yet,
+    // re-roll among the unlocked subset. Keeps stage 1 clean
+    // (Standard / Scout only) and ramps up by `battles_cleared`.
+    let variant = if variant.unlocked_at(battles_cleared) {
+        variant
+    } else {
+        let pool: Vec<EnemyVariant> = ALL_VARIANTS
+            .iter()
+            .copied()
+            .filter(|v| v.unlocked_at(battles_cleared))
+            .collect();
+        // `Standard` is always in the pool (unlock_battles == 0) so
+        // the unwrap fallback is just paranoia for an empty slice.
+        pool.get(rng.gen_range(0..pool.len().max(1)))
+            .copied()
+            .unwrap_or(EnemyVariant::Standard)
     };
 
     let inward = (-pos).normalize_or(Vec2::Y);
     let heading = (-inward.x).atan2(inward.y);
     spawn_enemy(commands, pm, em, meshes, pos, heading, variant);
+    variant
 }
 
 // ---------- Spawn indicators ----------
@@ -708,6 +858,29 @@ pub fn enemy_ai(
                 // Orbit slowly: rotate the to-target vector 90° so
                 // the sniper drifts sideways.
                 (Vec2::new(-unit_to.y, unit_to.x), 0.25)
+            };
+            let desired = (-motion_dir.x).atan2(motion_dir.y);
+            heading.0 = approach_angle(heading.0, desired, turn * dt);
+            let dir = Vec2::new(-heading.0.sin(), heading.0.cos());
+            vel.0 = dir * speed * speed_mult;
+            tf.rotation = Quat::from_rotation_z(heading.0);
+            continue;
+        }
+
+        // Artillery — same distance-management shape as Sniper but
+        // farther back (`ARTILLERY_DESIRED_DIST = 110`). Body faces
+        // the motion direction; the lobbed shell doesn't need the
+        // body to point at the target.
+        if enemy.variant == EnemyVariant::Artillery {
+            let to = target_pos - pos;
+            let dist = to.length();
+            let unit_to = to.normalize_or(Vec2::Y);
+            let (motion_dir, speed_mult) = if dist < ARTILLERY_DESIRED_DIST - 15.0 {
+                (-unit_to, 0.7)
+            } else if dist > ARTILLERY_DESIRED_DIST + 20.0 {
+                (unit_to, 0.5)
+            } else {
+                (Vec2::new(-unit_to.y, unit_to.x), 0.3)
             };
             let desired = (-motion_dir.x).atan2(motion_dir.y);
             heading.0 = approach_angle(heading.0, desired, turn * dt);
@@ -1100,6 +1273,158 @@ pub fn sniper_fire(
             target_world: target_pos,
             line,
         });
+    }
+}
+
+/// Artillery firing pipeline — every `1/fire_rate` seconds, lock a
+/// target world position, spawn the landing reticle, and launch an
+/// arcing `ArtilleryShell` toward that point. The reticle is the
+/// player's dodge cue.
+pub fn artillery_fire(
+    time: Res<Time>,
+    mut commands: Commands,
+    pm: Option<Res<PaletteMaterials>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    friendly: Query<(&Transform, &Velocity), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
+    allies: Query<(&Transform, &Ally), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
+    mut artilleries: Query<(&Transform, &mut Enemy)>,
+) {
+    let Some(pm) = pm else { return; };
+    let dt = time.delta_secs();
+    let Ok((ftf, fvel)) = friendly.single() else { return; };
+    let fpos = ftf.translation.truncate();
+    // Predicted friendly position. We lead by a fraction of the
+    // shell flight time, not the full thing — leading by 1.5s at
+    // FRIENDLY_SPEED puts the splash ~40 units ahead of the
+    // player's current position which is far too easy to outrun.
+    // Half-second lead lands the reticle inside the player's
+    // current trajectory; turning still dodges, but holding course
+    // catches the splash because the shell tracks where they're
+    // ABOUT to be.
+    const ARTILLERY_LEAD_TIME: f32 = 0.5;
+    let fpred = fpos + fvel.0 * ARTILLERY_LEAD_TIME;
+    let ally_positions: Vec<Vec2> = allies
+        .iter()
+        .filter(|(_, a)| !ally_is_submerged(a))
+        .map(|(t, _)| t.translation.truncate())
+        .collect();
+
+    // Lazily build the reticle ring mesh — a thin annulus centred on
+    // the impact point. Reused across every shell that fires this
+    // frame so we're not re-allocating.
+    let mut reticle_mesh: Option<Handle<Mesh>> = None;
+
+    for (tf, mut enemy) in &mut artilleries {
+        if enemy.variant != EnemyVariant::Artillery { continue; }
+        enemy.fire_cd -= dt;
+        if enemy.fire_cd > 0.0 { continue; }
+        let pos = tf.translation.truncate();
+        // Pick nearest of {predicted friendly, current allies}. Using
+        // the predicted position for the friendly means artillery
+        // either misses (player dodged) OR hits (player held course).
+        let target = {
+            let mut best = fpred;
+            let mut best_d2 = pos.distance_squared(fpred);
+            for &ap in &ally_positions {
+                let d2 = pos.distance_squared(ap);
+                if d2 < best_d2 {
+                    best = ap;
+                    best_d2 = d2;
+                }
+            }
+            best
+        };
+        // Spawn reticle at landing zone — bright crimson disc that
+        // shrinks across the telegraph window so the player has a
+        // visible countdown to impact.
+        let mesh = reticle_mesh
+            .get_or_insert_with(|| meshes.add(Circle::new(ARTILLERY_SPLASH_RADIUS)))
+            .clone();
+        let reticle = commands.spawn((
+            Mesh2d(mesh),
+            MeshMaterial2d(pm.artillery_reticle.clone()),
+            Transform::from_xyz(target.x, target.y, 0.4),
+            ArtilleryReticle {
+                remaining: ARTILLERY_TELEGRAPH_TIME,
+                initial: ARTILLERY_TELEGRAPH_TIME,
+            },
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.spawn((
+            ArtilleryShell {
+                target,
+                origin: pos,
+                time_of_flight: ARTILLERY_TELEGRAPH_TIME,
+                elapsed: 0.0,
+                damage: enemy.variant.fire_damage(),
+                splash_radius: ARTILLERY_SPLASH_RADIUS,
+                reticle: Some(reticle),
+            },
+        ));
+        enemy.fire_cd = 1.0 / enemy.variant.fire_rate().max(0.1);
+    }
+}
+
+/// Tick + impact for in-flight artillery shells. Shrinks the
+/// reticle each frame from its initial size down to ~10% so the
+/// player gets a visible "incoming" countdown. On impact: AOE damage
+/// to friendly + non-submerged allies, particle burst, despawn shell
+/// + reticle.
+pub fn artillery_shell_tick(
+    time: Res<Time>,
+    mut commands: Commands,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<EffectMeshes>>,
+    mut shells: Query<(Entity, &mut ArtilleryShell)>,
+    mut reticles: Query<(&mut ArtilleryReticle, &mut Transform), Without<ArtilleryShell>>,
+    mut friendly: Query<
+        (&Transform, &mut Health, &mut HitFx),
+        (With<Friendly>, Without<Ally>, Without<ArtilleryShell>, Without<ArtilleryReticle>),
+    >,
+    mut allies: Query<
+        (&Transform, &Ally, &mut Health, &mut HitFx),
+        (With<Ally>, Without<Friendly>, Without<ArtilleryShell>, Without<ArtilleryReticle>),
+    >,
+) {
+    let Some(pm) = pm else { return; };
+    let Some(em) = em else { return; };
+    let dt = time.delta_secs();
+    let mut rng = rand::thread_rng();
+
+    for (entity, mut shell) in &mut shells {
+        shell.elapsed += dt;
+        // Shrink the reticle as time passes so the player sees the
+        // ring tighten on impact. Scale = remaining/initial.
+        if let Some(r) = shell.reticle {
+            if let Ok((mut ret, mut rtf)) = reticles.get_mut(r) {
+                ret.remaining = (ret.initial - shell.elapsed).max(0.0);
+                let frac = (ret.remaining / ret.initial.max(0.0001)).clamp(0.1, 1.0);
+                rtf.scale = Vec3::new(frac, frac, 1.0);
+            }
+        }
+        if shell.elapsed < shell.time_of_flight { continue; }
+
+        // Impact — AOE damage to friendly + allies in range.
+        let center = shell.target;
+        let r2 = shell.splash_radius * shell.splash_radius;
+        if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
+            if ftf.translation.truncate().distance_squared(center) < r2 {
+                fx.pulse();
+                h.0 = (h.0 - shell.damage).max(0);
+            }
+        }
+        for (atf, ally, mut h, mut fx) in &mut allies {
+            if ally_is_submerged(ally) { continue; }
+            if atf.translation.truncate().distance_squared(center) >= r2 { continue; }
+            fx.pulse();
+            h.0 = (h.0 - shell.damage).max(0);
+        }
+        spawn_hit_particles(&mut commands, &em, &pm.enemy,             center, 18, 100.0, &mut rng);
+        spawn_hit_particles(&mut commands, &em, &pm.artillery_reticle, center, 10, 130.0, &mut rng);
+        if let Some(r) = shell.reticle {
+            commands.entity(r).despawn();
+        }
+        commands.entity(entity).despawn();
     }
 }
 

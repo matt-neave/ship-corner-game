@@ -45,6 +45,13 @@ pub enum WeaponType {
     /// a projectile. See `blade.rs` for the rotating-arm spawn + damage
     /// system.
     Blade,
+    /// Octopus cage — a deck cage holding an octopus that swims out
+    /// into the water around the ship. The octopus has 8 visible
+    /// legs; `slot.barrels` of them (2 / 4 / 6) are "active" and
+    /// slap nearby enemies. See `octopus.rs` for the spawn + AI.
+    /// Tagged Autonomous (it's a deployed unit, like the HeliPad's
+    /// helicopter).
+    Cage,
 }
 
 /// Gameplay-class tag attached to each weapon. Used by the tooltip to
@@ -145,7 +152,8 @@ impl WeaponType {
             WeaponType::HeliPad    => Some(WeaponType::Cannon),
             WeaponType::Cannon     => Some(WeaponType::Booster),
             WeaponType::Booster    => Some(WeaponType::Blade),
-            WeaponType::Blade      => None,
+            WeaponType::Blade      => Some(WeaponType::Cage),
+            WeaponType::Cage       => None,
         }
     }
 
@@ -181,6 +189,11 @@ impl WeaponType {
             // multiple physical blades, each ticking independently —
             // so total dps = damage × fire_rate × barrels.
             WeaponType::Blade      => (5, 6.0),
+            // Cage: the octopus's legs use this damage per slap and
+            // this rate as slap cadence. `barrels` (1/2/3) selects how
+            // many legs are active (2/4/6), so total dps =
+            // damage × fire_rate × active_legs.
+            WeaponType::Cage       => (3, 1.5),
         }
     }
 
@@ -197,6 +210,7 @@ impl WeaponType {
             WeaponType::Cannon     => tr("weapon_cannon"),
             WeaponType::Booster    => tr("weapon_booster"),
             WeaponType::Blade      => tr("weapon_blade"),
+            WeaponType::Cage       => tr("weapon_cage"),
         }
     }
 
@@ -214,6 +228,7 @@ impl WeaponType {
             WeaponType::Cannon     => tr("weapon_cannon_desc"),
             WeaponType::Booster    => tr("weapon_booster_desc"),
             WeaponType::Blade      => tr("weapon_blade_desc"),
+            WeaponType::Cage       => tr("weapon_cage_desc"),
         }
     }
 
@@ -246,6 +261,9 @@ impl WeaponType {
             // for the exhaustive match — the firing pipeline skips both.
             WeaponType::Booster    => 1.0,
             WeaponType::Blade      => 1.0,
+            // Cage: octopus has its own roam radius; the slot itself
+            // doesn't have a "range". 1.0 is a placeholder.
+            WeaponType::Cage       => 1.0,
         }
     }
 
@@ -264,20 +282,27 @@ impl WeaponType {
     }
 
     /// Whether this weapon fires anything from the turret base. False for
-    /// HeliPad (helicopter does the firing), Booster (pure support), and
-    /// Blade (melee aura). The aim/fire system early-returns for these so
-    /// the slot doesn't try to track a target or spawn muzzle flashes.
+    /// HeliPad (helicopter does the firing), Booster (pure support),
+    /// Blade (melee aura), and Cage (octopus does the slapping). The
+    /// aim/fire system early-returns for these so the slot doesn't try
+    /// to track a target or spawn muzzle flashes.
     pub fn fires_from_base(self) -> bool {
-        !matches!(self, WeaponType::HeliPad | WeaponType::Booster | WeaponType::Blade)
+        !matches!(
+            self,
+            WeaponType::HeliPad | WeaponType::Booster | WeaponType::Blade | WeaponType::Cage
+        )
     }
 
     /// Whether this weapon's turret should show the standard barrel
     /// children. False for HeliPad (deck pad only), Booster (support
-    /// platform), and Blade (arm + blade decor instead). `sync_turret_config`
-    /// uses this to hide the barrel meshes when the slot's weapon doesn't
-    /// have any.
+    /// platform), Blade (arm + blade decor instead), Cage (cage decor
+    /// + remote octopus). `sync_turret_config` uses this to hide the
+    /// barrel meshes when the slot's weapon doesn't have any.
     pub fn has_barrels(self) -> bool {
-        !matches!(self, WeaponType::HeliPad | WeaponType::Booster | WeaponType::Blade)
+        !matches!(
+            self,
+            WeaponType::HeliPad | WeaponType::Booster | WeaponType::Blade | WeaponType::Cage
+        )
     }
 
     /// Gameplay-class tag — the chip rendered in the tooltip and the
@@ -294,6 +319,7 @@ impl WeaponType {
             WeaponType::Cannon     => WeaponTag::Pirate,
             WeaponType::Booster    => WeaponTag::Support,
             WeaponType::Blade      => WeaponTag::Melee,
+            WeaponType::Cage       => WeaponTag::Autonomous,
         }
     }
 
@@ -317,6 +343,7 @@ impl PaletteMaterials {
             WeaponType::Cannon     => &self.turret_cannon,
             WeaponType::Booster    => &self.turret_booster,
             WeaponType::Blade      => &self.turret_blade,
+            WeaponType::Cage       => &self.turret_cage,
         }
     }
 
@@ -331,10 +358,11 @@ impl PaletteMaterials {
             // Helicopter bullets reuse the standard friendly bullet look.
             WeaponType::HeliPad    => &self.bullet_friendly_outer,
             WeaponType::Cannon     => &self.bullet_cannon_outer,
-            // Booster + Blade never spawn bullets; fall back to the
-            // friendly material so the exhaustive match compiles.
+            // Booster + Blade + Cage never spawn bullets; fall back
+            // to the friendly material so the exhaustive match compiles.
             WeaponType::Booster    => &self.bullet_friendly_outer,
             WeaponType::Blade      => &self.bullet_friendly_outer,
+            WeaponType::Cage       => &self.bullet_friendly_outer,
         }
     }
 
@@ -350,6 +378,7 @@ impl PaletteMaterials {
             WeaponType::Cannon     => &self.bullet_cannon,
             WeaponType::Booster    => &self.bullet_friendly,
             WeaponType::Blade      => &self.bullet_friendly,
+            WeaponType::Cage       => &self.bullet_friendly,
         }
     }
 }

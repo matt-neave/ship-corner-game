@@ -44,6 +44,8 @@ mod palette;
 mod pause;
 mod rendering;
 mod main_menu;
+mod octopus;
+mod onboarding;
 mod settings;
 mod rune;
 mod ship;
@@ -75,15 +77,15 @@ use customize::{
 };
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
-use bullet::{bullet_collisions, bullet_update};
+use bullet::{bullet_collisions, bullet_update, process_damage_events, PendingDamageQueue};
 use effects::{
     apply_hit_fx_visuals, tick_hit_fx, update_hit_particles, update_muzzle_flashes,
 };
 use enemy::{
-    bomber_detonate, clear_spawn_indicators, enemy_ai, enemy_death_check, enemy_fire,
-    enemy_landmine_tick, setup_enemy_hp_bar_assets, setup_spawn_indicator_assets,
-    sniper_aim_line_tick, sniper_fire, sniper_turret_aim, spawn_enemies,
-    tick_spawn_indicators, track_enemy_damage_for_hp_bars, update_enemy_hp_bars,
+    artillery_fire, artillery_shell_tick, bomber_detonate, clear_spawn_indicators, enemy_ai,
+    enemy_death_check, enemy_fire, enemy_landmine_tick, setup_enemy_hp_bar_assets,
+    setup_spawn_indicator_assets, sniper_aim_line_tick, sniper_fire, sniper_turret_aim,
+    spawn_enemies, tick_spawn_indicators, track_enemy_damage_for_hp_bars, update_enemy_hp_bars,
 };
 use map::{
     advance_map_anim_timeline, apply_view_mode, boss_patrol_movement,
@@ -342,7 +344,13 @@ fn main() {
         // turret-fire dispatcher stays small. Added here near the
         // top so their Startup/Update systems get sequenced with the
         // rest of the schedule below.
-        .add_plugins((cannon::CannonPlugin, booster::BoosterPlugin, blade::BladePlugin))
+        .add_plugins((
+            cannon::CannonPlugin,
+            booster::BoosterPlugin,
+            blade::BladePlugin,
+            octopus::OctopusPlugin,
+            onboarding::OnboardingPlugin,
+        ))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
         .insert_resource(Score(0))
         .insert_resource(CampaignProgress::default())
@@ -363,6 +371,7 @@ fn main() {
         .insert_resource(xp::LevelUpsPending::default())
         .insert_resource(xp::LevelUpReturn::default())
         .insert_resource(synergy::Synergies::default())
+        .insert_resource(PendingDamageQueue::default())
         .insert_resource(xp::LevelUpChoices::default())
         .insert_resource(hull::SelectedHull::default())
         .insert_resource(modes::ScreenShake::default())
@@ -526,7 +535,12 @@ fn main() {
             // `enemy_landmine_tick` ride along too — same pattern.
             // Order doesn't matter here; none depend on each other
             // within the frame.
-            (enemy_fire, sniper_fire, sniper_aim_line_tick, sniper_turret_aim, enemy_landmine_tick),
+            (
+                enemy_fire,
+                sniper_fire, sniper_aim_line_tick, sniper_turret_aim,
+                artillery_fire, artillery_shell_tick,
+                enemy_landmine_tick,
+            ),
             bullet_update,
             mortar_shell_tick,
             // HeliPad slots: sync the "one helicopter per equipped slot"
@@ -538,16 +552,19 @@ fn main() {
             // their owning slot for visibility. `.chain()` inserts the
             // command-flush sync point that makes that hand-off safe.
             (sync_helipad_helicopters, sync_helipad_nose_barrels, helicopter_ai).chain(),
-            // Damage application chain: every source writes Health, then
-            // `enemy_death_check` despawns anything that hit zero. Chained so
-            // sources see consistent HP and only one despawn fires per kill.
-            // `tick_echoes` slots in here because echo events are also a
-            // damage source — its hits need to be visible to the death check.
-            // `tick_on_conduit` / `tick_on_resonate` only decay their status
-            // components — no damage — but live in the chain to keep all
-            // status-related work in one ordered block.
+            // Damage application chain. Producers (`bullet_collisions`,
+            // `tick_echoes`, blade/octopus/mortar/beam systems run earlier
+            // in the schedule) push `DamageEvent`s into
+            // `PendingDamageQueue`; `process_damage_events` drains
+            // them, applies damage, rolls runes, and chains.
+            // `enemy_death_check` despawns anything that hit zero AFTER
+            // the drain so chain damage gets the same death pipeline.
+            // `tick_on_*` decay status components — no damage — but
+            // live in the chain to keep all status-related work in one
+            // ordered block.
             (
                 bullet_collisions, tick_echoes,
+                process_damage_events,
                 tick_on_fire, tick_on_frost,
                 tick_on_conduit, tick_on_resonate,
                 enemy_death_check,

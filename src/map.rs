@@ -176,8 +176,9 @@ pub enum WavePhase {
     Cooldown,
 }
 
-/// Seconds of breathing room between waves.
-pub const BETWEEN_WAVES_DURATION: f32 = 2.0;
+/// Seconds of breathing room between waves. Kept short so cleared
+/// arenas don't feel like a wait — the player wants to keep shooting.
+pub const BETWEEN_WAVES_DURATION: f32 = 0.6;
 
 impl Default for CombatContext {
     fn default() -> Self {
@@ -577,6 +578,7 @@ pub enum DebugButton {
     Phase,
     SpawnAlly(crate::ally::ShipClass),
     SpawnBoss(crate::ally::ShipClass),
+    SpawnEnemy(crate::enemy::EnemyVariant),
     OpenCustomize,
     AddScrap,
 }
@@ -609,7 +611,17 @@ pub fn in_combat_view(
     view: Res<ViewMode>,
     state: Res<State<crate::AppState>>,
 ) -> bool {
-    *view == ViewMode::Combat && *state.get() == crate::AppState::Playing
+    // Combat sim runs in Playing AND during the StageComplete buffer
+    // — the "STAGE COMPLETE" overlay should NOT freeze gameplay so
+    // the player can keep moving the ship + their bullets keep
+    // flying through the buffer instead of stopping mid-shot. The
+    // overlay itself is hosted in its own UI Node above the arena
+    // (`stage_complete::enter_stage_complete`).
+    *view == ViewMode::Combat
+        && matches!(
+            *state.get(),
+            crate::AppState::Playing | crate::AppState::StageComplete
+        )
 }
 
 /// Standard ray-casting point-in-polygon. Works for the wobbled (but

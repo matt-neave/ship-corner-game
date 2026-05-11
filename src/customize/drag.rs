@@ -157,6 +157,7 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         WeaponType::Cannon,
         WeaponType::Booster,
         WeaponType::Blade,
+        WeaponType::Cage,
     ];
     let runes_pool = [
         Rune::Fire,

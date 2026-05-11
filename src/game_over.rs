@@ -100,6 +100,7 @@ pub fn reset_run_for_restart(
     mut damage_stats: ResMut<crate::ui::DamageStats>,
     mut xp: ResMut<crate::xp::Xp>,
     mut pending: ResMut<crate::xp::LevelUpsPending>,
+    mut seen_variants: ResMut<crate::onboarding::SeenVariants>,
     selected_hull: Res<crate::hull::SelectedHull>,
     mut friendly: Query<&mut crate::components::Health, With<crate::components::Friendly>>,
     arena: Query<
@@ -125,6 +126,9 @@ pub fn reset_run_for_restart(
     scrap.0 = 15;
     *campaign = crate::CampaignProgress::default();
     *cfg = crate::turret::TurretConfig::default();
+    // Reset onboarding so a RESTART re-introduces every enemy
+    // variant via the bottom-left "NEW!" banner.
+    seen_variants.reset();
     *damage_stats = crate::ui::DamageStats::default();
     xp.reset();
     pending.0 = 0;

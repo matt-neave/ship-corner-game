@@ -143,58 +143,92 @@ pub fn bullet_update(
     }
 }
 
-/// One unit of pending damage + rune resolution. Pushed onto a queue inside
-/// `bullet_collisions` (initial bullet hits and any subsequent shock
-/// chains). The drain loop processes events one at a time.
-struct DamageEvent {
-    target: Entity,
-    amount: i32,
-    hit_pos: Vec2,
-    weapon: WeaponType,
+/// One unit of pending damage + rune resolution. Producers (bullet
+/// collisions, blade tick, octopus tentacle slap, mortar splash,
+/// beam pierce, …) push onto `PendingDamageQueue`; the
+/// `process_damage_events` system drains the queue, applies damage,
+/// rolls runes, and pushes any chain events (Shock / Cascade) back
+/// onto it for same-frame resolution.
+pub struct DamageEvent {
+    pub target: Entity,
+    pub amount: i32,
+    pub hit_pos: Vec2,
+    pub weapon: WeaponType,
     /// Originating source for `DamageStats` crediting. `None` for chain
     /// hops so the secondary damage doesn't inflate the originating
     /// source's share.
-    source: Option<DamageSource>,
-    /// All runes attached to the source bullet — each one may proc on this
-    /// hit (gated by `procced` + `proc_strength`).
-    runes: Vec<Rune>,
+    pub source: Option<DamageSource>,
+    /// All runes attached to the source — each one may proc on this hit
+    /// (gated by `procced` + `proc_strength`). Slot's `[Option<Rune>; 3]`
+    /// flattened to `Vec<Rune>` so the count matters (3 Fire = stack 3).
+    pub runes: Vec<Rune>,
     /// Runes already triggered upstream in this chain — preventing the same
     /// effect from firing twice within one chain. Risk-of-Rain-style.
-    procced: Vec<Rune>,
-    /// Strength multiplier for proc rolls on this hit. Initial bullet hits
-    /// are `1.0`; secondary hits inherit `parent_strength * rune.coeff`.
-    proc_strength: f32,
+    pub procced: Vec<Rune>,
+    /// Strength multiplier for proc rolls on this hit. Initial hits are
+    /// `1.0`; secondary chain hits inherit `parent_strength * rune.coeff`.
+    pub proc_strength: f32,
+}
+
+/// Shared push-and-drain queue for `DamageEvent`. Every weapon that
+/// applies damage to enemies pushes here; `process_damage_events`
+/// drains. Centralising this means runes work uniformly for ANY
+/// weapon, not just the ones that happen to fire bullets.
+#[derive(Resource, Default)]
+pub struct PendingDamageQueue(pub Vec<DamageEvent>);
+
+impl PendingDamageQueue {
+    /// Convenience helper — flatten a slot's `[Option<Rune>; 3]` into
+    /// a `Vec<Rune>` and push a fresh DamageEvent (proc_strength 1.0,
+    /// no procced yet) onto the queue. Used by every "I just hit an
+    /// enemy" callsite.
+    pub fn push_initial(
+        &mut self,
+        target: Entity,
+        amount: i32,
+        hit_pos: Vec2,
+        weapon: WeaponType,
+        source: Option<DamageSource>,
+        runes: &[Option<Rune>; 3],
+    ) {
+        if amount <= 0 { return; }
+        self.0.push(DamageEvent {
+            target,
+            amount,
+            hit_pos,
+            weapon,
+            source,
+            runes: runes.iter().filter_map(|r| *r).collect(),
+            procced: Vec::new(),
+            proc_strength: 1.0,
+        });
+    }
 }
 
 pub fn bullet_collisions(
     time: Res<Time>,
     mut commands: Commands,
-    mut stats: ResMut<DamageStats>,
     player_stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
+    mut queue: ResMut<PendingDamageQueue>,
     bullets: Query<(Entity, &Transform, &Bullet, &Velocity, Option<&Knockback>), (Without<Enemy>, Without<Friendly>, Without<Ally>)>,
     mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
     mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
-    on_fire: Query<&OnFire>,
-    on_frost: Query<&OnFrost>,
-    on_conduit: Query<&OnConduit>,
-    on_resonate: Query<&OnResonate>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
     let mut rng = rand::thread_rng();
 
-    // Snapshot enemies (entity, position, hit-radius) once. Used both for
-    // bullet hit detection and for shock-chain target picking — keeps the
-    // mutable `enemies` query free until we need `get_mut` during the drain.
+    // Snapshot enemies (entity, position, hit-radius) once for swept-
+    // segment hit-tests below. The drain (`process_damage_events`)
+    // builds its own snapshot from a separate query when it runs.
     let enemy_snap: Vec<(Entity, Vec2, f32)> = enemies
         .iter()
         .map(|(e, tf, en, _, _, _)| (e, tf.translation.truncate(), 3.5 * en.variant.scale()))
         .collect();
 
-    let mut chain: Vec<DamageEvent> = Vec::new();
     let dt = time.delta_secs();
 
     for (be, btf, b, bv, kb) in &bullets {
@@ -238,16 +272,14 @@ pub fn bullet_collisions(
                     } else {
                         1
                     };
-                    chain.push(DamageEvent {
-                        target: ee,
-                        amount: b.damage.saturating_mul(crit_mult),
-                        hit_pos: ep,
-                        weapon: b.weapon,
-                        source: b.source,
-                        runes: b.runes.iter().filter_map(|r| *r).collect(),
-                        procced: Vec::new(),
-                        proc_strength: 1.0,
-                    });
+                    queue.push_initial(
+                        ee,
+                        b.damage.saturating_mul(crit_mult),
+                        ep,
+                        b.weapon,
+                        b.source,
+                        &b.runes,
+                    );
                 }
             }
             FactionKind::Enemy => {
@@ -295,11 +327,53 @@ pub fn bullet_collisions(
         }
     }
 
-    // Drain the proc chain. Bounded — every shock chain consumes a slot in
-    // `procced`, and `runes` is finite, so the queue can't loop forever.
-    while let Some(ev) = chain.pop() {
+    // Drain happens elsewhere — `process_damage_events` runs after
+    // every damage producer (this system, blade tick, mortar splash,
+    // beam pierce, etc.) and processes the queue uniformly so every
+    // weapon's runes get a turn through `process_damage_event`.
+}
+
+/// Drain `PendingDamageQueue` — runs ONCE per frame after every damage
+/// producer (bullet collisions, blade tick, octopus tentacle slap,
+/// mortar splash, beam pierce, ...) so every weapon's runes flow
+/// through the same `process_damage_event` pipeline. Chained events
+/// (Shock / Cascade) get pushed back onto the queue and processed
+/// in the same drain loop, so chains resolve same-frame.
+pub fn process_damage_events(
+    mut commands: Commands,
+    mut queue: ResMut<PendingDamageQueue>,
+    mut stats: ResMut<DamageStats>,
+    player_stats: Res<crate::stats::PlayerStats>,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<EffectMeshes>>,
+    mut enemies: Query<
+        (Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity),
+        (With<Enemy>, Without<Friendly>, Without<Ally>),
+    >,
+    on_fire: Query<&OnFire>,
+    on_frost: Query<&OnFrost>,
+    on_conduit: Query<&OnConduit>,
+    on_resonate: Query<&OnResonate>,
+) {
+    let Some(pm) = pm else { return; };
+    let Some(em) = em else { return; };
+    if queue.0.is_empty() { return; }
+    let mut rng = rand::thread_rng();
+
+    // Snapshot for chain-target picking (Shock / Cascade). Built from
+    // the mutable enemies query's read-only iteration before any
+    // mutation runs.
+    let enemy_snap: Vec<(Entity, Vec2, f32)> = enemies
+        .iter()
+        .map(|(e, tf, en, _, _, _)| (e, tf.translation.truncate(), 3.5 * en.variant.scale()))
+        .collect();
+
+    // Drain. `process_damage_event` may push chain events back onto
+    // `queue.0` (Shock fans out, Cascade fires on lethal). Bounded
+    // by `procced` accumulating per chain hop.
+    while let Some(ev) = queue.0.pop() {
         process_damage_event(
-            ev, &mut chain,
+            ev, &mut queue.0,
             &mut commands, &mut stats, &player_stats, &pm, &em,
             &enemy_snap, &mut enemies, &on_fire, &on_frost,
             &on_conduit, &on_resonate, &mut rng,

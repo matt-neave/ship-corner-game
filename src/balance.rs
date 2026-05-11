@@ -229,18 +229,15 @@ pub const RESONATE_MAX_STACKS:      u8  = 5;
 // designer-facing trigger lives in `is_boss_wave` and currently
 // returns `false` so the path is wired but inert.
 
-/// Total waves in a stage. Sized for ~4 stages of combat (1★→4★ along
-/// the BFS shortest path to the first 5★ boss zone) to fill roughly
-/// ~17 minutes of combat — leaving ~3 minutes for shop / level-up /
-/// map traversal so the first boss fight lands near the 20-minute
-/// mark for a fresh run.
+/// Total waves in a stage. Each star tier adds two waves on top of
+/// the 1★ baseline.
 pub fn waves_for_stars(stars: u8) -> u8 {
     match stars {
-        1 => 10,
-        2 => 14,
-        3 => 18,
-        4 => 22,
-        _ => 26,
+        1 => 4,
+        2 => 6,
+        3 => 8,
+        4 => 10,
+        _ => 12,
     }
 }
 
