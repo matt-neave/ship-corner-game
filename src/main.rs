@@ -27,7 +27,10 @@ use bevy::prelude::*;
 mod ally;
 mod balance;
 mod beam;
+mod blade;
+mod booster;
 mod bullet;
+mod cannon;
 mod components;
 mod customize;
 mod effects;
@@ -325,6 +328,12 @@ fn main() {
             ..default()
         }))
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
+        // Per-weapon plugins for the new tag-flavour weapons. Each
+        // owns its own decoration entities + tick systems so the
+        // turret-fire dispatcher stays small. Added here near the
+        // top so their Startup/Update systems get sequenced with the
+        // rest of the schedule below.
+        .add_plugins((cannon::CannonPlugin, booster::BoosterPlugin, blade::BladePlugin))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
         .insert_resource(Score(0))
         .insert_resource(CampaignProgress::default())

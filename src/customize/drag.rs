@@ -154,6 +154,9 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         WeaponType::Railgun,
         WeaponType::Mortar,
         WeaponType::HeliPad,
+        WeaponType::Cannon,
+        WeaponType::Booster,
+        WeaponType::Blade,
     ];
     let runes_pool = [
         Rune::Fire,

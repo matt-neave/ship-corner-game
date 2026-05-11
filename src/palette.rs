@@ -70,6 +70,23 @@ pub const MORTAR_BRIGHT_HEX:  &str = "#ffb04a";
 // that pad" without inventing a third tint.
 pub const HELIPAD_DECK_HEX:   &str = "#3a7a3c";
 pub const HELIPAD_H_HEX:      &str = "#ffd84a";
+/// Pirate cannon — dark wood-brown carriage, pure-black iron
+/// cannonballs. Reads as a hand-cast iron piece bolted to a timber
+/// slide. The cannonball uses a single black for both inner and outer
+/// (see `bullet_cannon` / `bullet_cannon_outer` in PaletteMaterials)
+/// so the projectile reads as a solid sphere with no two-tone halo.
+pub const CANNON_HEX:         &str = "#5a3520";
+pub const CANNON_BRIGHT_HEX:  &str = "#000000";
+/// Support booster — warm amber deck pad. Distinct from the helipad
+/// green so adjacent slots read at a glance. Ring core is a brighter
+/// gold so the "broadcasting" centre pops against the pad.
+pub const BOOSTER_HEX:        &str = "#8a6a20";
+pub const BOOSTER_BRIGHT_HEX: &str = "#ffe88a";
+/// Melee blade — gun-metal arm + bright steel edge. The two-tone
+/// keeps the slow-rotating arm legible against the bright spinning
+/// edge at the tip.
+pub const BLADE_HEX:          &str = "#4a4a55";
+pub const BLADE_BRIGHT_HEX:   &str = "#d8e0e8";
 
 // ---------- Pier building tints ----------
 pub const BUILDING_MUNITIONS_HEX:  &str = "#ff8a3c";
@@ -261,6 +278,22 @@ pub struct PaletteMaterials {
     /// helicopter's body / nose-turret.
     pub helipad_deck: Handle<ColorMaterial>,
     pub helipad_h: Handle<ColorMaterial>,
+    /// Pirate `Cannon` weapon — dark wood carriage + iron cannonball
+    /// projectile. The bullet outer/inner pair drives the muzzle flash
+    /// and the cannonball mesh in `cannon.rs`.
+    pub turret_cannon: Handle<ColorMaterial>,
+    pub bullet_cannon: Handle<ColorMaterial>,
+    pub bullet_cannon_outer: Handle<ColorMaterial>,
+    /// Support `Booster` — amber deck pad + bright gold pulse ring.
+    /// No bullet material; the booster doesn't fire. The ring is a
+    /// child entity drawn on top of the base in `booster.rs`.
+    pub turret_booster: Handle<ColorMaterial>,
+    pub booster_ring: Handle<ColorMaterial>,
+    /// Melee `Blade` — gun-metal slot base + arm, bright steel blade
+    /// at the tip. Two-tone so the slow arm reads as separate from
+    /// the spinning edge. See `blade.rs` for the rotating-arm spawn.
+    pub turret_blade: Handle<ColorMaterial>,
+    pub blade_edge: Handle<ColorMaterial>,
     /// Ship-class hull tints — one per `ShipClass`. Looked up via
     /// `ally::PaletteMaterials::hull_for_class`.
     pub pirate_hull: Handle<ColorMaterial>,
@@ -374,6 +407,16 @@ impl PaletteMaterials {
             turret_mortar:         materials.add(mortar),
             helipad_deck:          materials.add(hex(HELIPAD_DECK_HEX)),
             helipad_h:             materials.add(hex(HELIPAD_H_HEX)),
+            turret_cannon:         materials.add(hex(CANNON_HEX)),
+            // Pure-black cannonball — both outer and inner use the
+            // same near-black so the projectile reads as one solid
+            // iron sphere rather than a brown ring around a dark core.
+            bullet_cannon:         materials.add(hex(CANNON_BRIGHT_HEX)),
+            bullet_cannon_outer:   materials.add(hex(CANNON_BRIGHT_HEX)),
+            turret_booster:        materials.add(hex(BOOSTER_HEX)),
+            booster_ring:          materials.add(hex(BOOSTER_BRIGHT_HEX)),
+            turret_blade:          materials.add(hex(BLADE_HEX)),
+            blade_edge:            materials.add(hex(BLADE_BRIGHT_HEX)),
             bullet_mortar:         materials.add(hex(MORTAR_BRIGHT_HEX)),
             bullet_mortar_outer:   materials.add(mortar),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),

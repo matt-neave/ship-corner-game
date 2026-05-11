@@ -177,7 +177,7 @@ pub fn sync_turret_config(
     for (mut slot, mut vis, mut mat, children) in &mut q {
         let s = cfg.slots[slot.index];
         slot.damage = s.damage + pier_damage_bonus(&pier, slot.index);
-        slot.fire_rate = s.fire_rate;
+        slot.fire_rate = s.fire_rate * crate::booster::boost_multiplier_for_slot(&cfg, slot.index);
         slot.weapon = s.weapon;
         slot.range_mult = pier_range_mult(&pier, slot.index);
         let new_barrels = s.barrels.clamp(1, 3);
@@ -188,6 +188,7 @@ pub fn sync_turret_config(
         let turret_mat = pm.turret_for(s.weapon).clone();
         if mat.0 != turret_mat { mat.0 = turret_mat.clone(); }
         let is_helipad = matches!(s.weapon, WeaponType::HeliPad);
+        let has_barrels = s.weapon.has_barrels();
         for c in children.iter() {
             // H-decal first — only the HeliPad slot shows it.
             if let Ok(mut dvis) = decals.get_mut(c) {
@@ -200,9 +201,11 @@ pub fn sync_turret_config(
                 continue;
             }
             let Ok((idx, mut bv, mut btf, mut bmat)) = barrels.get_mut(c) else { continue; };
-            // HeliPad slots never show barrels — the helicopter does
-            // the firing, the deck is bare except for the H.
-            if is_helipad {
+            // Non-barrel weapons (HeliPad / Booster / Blade) hide the
+            // standard cannon barrels — those slots use their own
+            // bespoke decoration entities (helicopter / pulse ring /
+            // rotating arm) spawned elsewhere.
+            if !has_barrels {
                 if *bv != Visibility::Hidden { *bv = Visibility::Hidden; }
                 continue;
             }
@@ -268,11 +271,12 @@ pub fn turret_aim_fire(
     for (turret_entity, mut slot, mut tf, vis) in &mut turrets {
         if matches!(*vis, Visibility::Hidden) { continue; }
         if !cfg.slots[slot.index].equipped { continue; }
-        // HeliPad slots never fire bullets from the deck — their orbiting
-        // helicopter does the firing in `helicopter_ai`. Skip the entire
-        // aim/fire path so we don't spawn muzzle flashes from an invisible
-        // pad or pointlessly track barrel angle.
-        if matches!(slot.weapon, WeaponType::HeliPad) { continue; }
+        // Some weapon types never fire bullets from the deck — their
+        // damage comes from elsewhere (HeliPad's helicopter,
+        // Booster's adjacency aura, Blade's melee tick). Skip the
+        // entire aim/fire path so we don't spawn muzzle flashes from
+        // an invisible barrel or pointlessly track an angle.
+        if !slot.weapon.fires_from_base() { continue; }
         slot.fire_cd -= dt;
 
         // World position of turret.
@@ -492,6 +496,21 @@ pub fn turret_aim_fire(
                             muzzle_pos, target_pos, slot.weapon, slot.damage,
                             splash,
                             Some(DamageSource::PlayerSlot(slot.index as u8)),
+                        );
+                    }
+                    WeaponType::Cannon => {
+                        // Heavy cannonball: bigger projectile with a
+                        // velocity-impulse knockback tag so
+                        // `bullet_collisions` shoves the target on hit.
+                        // No spread — the cannon fires straight.
+                        let muzzle_pos = turret_world
+                            + barrel_forward * (effective_tip + FRIENDLY_BULLET_HALF_LEN)
+                            + barrel_right * lateral;
+                        crate::cannon::spawn_cannonball(
+                            &mut commands, &em, &outer_mat, &inner_mat,
+                            muzzle_pos, barrel_forward, slot.weapon, slot.damage,
+                            Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
+                            effective_range, slot.runes, FactionKind::Friendly,
                         );
                     }
                     _ => {

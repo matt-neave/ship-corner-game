@@ -32,6 +32,18 @@ weapon_shotgun_desc,Cone of pellets. 60% range.
 weapon_railgun_desc,Beam pierces every enemy. 160% range.
 weapon_mortar_desc,Lobs shells in a high arc. 300% range; can't hit anything closer than base range.
 weapon_helipad_desc,Spawns a helicopter that orbits the ship and fires using this slot's stats.
+weapon_cannon,CANNON
+weapon_booster,BOOSTER
+weapon_blade,BLADE
+weapon_cannon_desc,Heavy cannonball. Slow fire but knocks enemies back on hit. 90% range.
+weapon_booster_desc,Does not fire. Boosts each adjacent turret's fire rate by +30%.
+weapon_blade_desc,Spinning blade on an extending arm. Damages anything it touches near the ship.
+weapon_tag_naval,NAVAL
+weapon_tag_future,FUTURE
+weapon_tag_autonomous,AUTONOMOUS
+weapon_tag_pirate,PIRATE
+weapon_tag_support,SUPPORT
+weapon_tag_melee,MELEE
 building_munitions,MUNITIONS
 building_watchtower,WATCHTOWER
 building_drydock,DRYDOCK

@@ -15,8 +15,34 @@ pub struct Friendly;
 pub struct Health(pub i32);
 
 /// Per-frame velocity in world units / second. `apply_velocity` integrates.
+/// Set by AI / control systems each frame; `apply_velocity` reads it
+/// (modulated by `OnFrost` slow if present) and translates the entity.
 #[derive(Component)]
 pub struct Velocity(pub Vec2);
+
+/// Movement-impulse layer applied ON TOP of `Velocity` in `apply_velocity`.
+/// Lets effects like cannon knockback shove an entity even though its
+/// AI overwrites `Velocity` every frame — `Velocity` is the AI's intent,
+/// `Knockedback` is the world's reaction to a hit.
+///
+/// Composition rules in `apply_velocity`:
+/// - Natural movement: `Velocity * frost_mult` (frost slows the AI's intent)
+/// - Knockback: `Knockedback.velocity` (NOT slowed by frost — an impulse
+///   should still hit you when you're frozen, otherwise frost trivialises
+///   crowd-control)
+/// - Both contribute to position each frame.
+///
+/// `velocity` is decayed multiplicatively by `decay_per_sec` per second
+/// each frame; the component is removed once the magnitude falls below
+/// a small threshold so it doesn't linger as a no-op forever.
+#[derive(Component)]
+pub struct Knockedback {
+    pub velocity: Vec2,
+    /// Exponential decay rate. With `d = decay_per_sec`, the magnitude
+    /// loses `d * dt` per frame; total displacement before despawn is
+    /// roughly `velocity / d`. e.g. `velocity=75, d=4` → ~19 units.
+    pub decay_per_sec: f32,
+}
 
 /// Heading angle in radians, with 0 = +Y (forward up). Direction vector is
 /// `Vec2::new(-sin(h), cos(h))` — keep this convention everywhere.

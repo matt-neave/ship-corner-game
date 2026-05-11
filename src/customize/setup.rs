@@ -992,6 +992,9 @@ pub fn turret_color_for(weapon: WeaponType) -> Color {
         // HeliPad reads as army-green deck pad — same hue as the
         // helicopter that launches from it.
         WeaponType::HeliPad => hex(crate::palette::HELIPAD_DECK_HEX),
+        WeaponType::Cannon => hex(crate::palette::CANNON_HEX),
+        WeaponType::Booster => hex(crate::palette::BOOSTER_HEX),
+        WeaponType::Blade => hex(crate::palette::BLADE_HEX),
     }
 }
 
@@ -1004,6 +1007,14 @@ pub fn turret_barrel_color_for(weapon: WeaponType) -> Color {
         WeaponType::Railgun => hex("#5cf2e8"),
         WeaponType::Mortar => hex(MORTAR_BRIGHT_HEX),
         WeaponType::HeliPad => hex(crate::palette::HELIPAD_DECK_HEX),
+        // Brass — readable on both the dark shop background AND the
+        // wood-brown cannon base. The bullet's true cannonball colour
+        // (`CANNON_BRIGHT_HEX`, near-black iron) stays for the
+        // projectile itself; this brass colour is purely for the
+        // customize-screen barrel/label rendering.
+        WeaponType::Cannon => hex("#e8b060"),
+        WeaponType::Booster => hex(crate::palette::BOOSTER_BRIGHT_HEX),
+        WeaponType::Blade => hex(crate::palette::BLADE_BRIGHT_HEX),
     }
 }
 

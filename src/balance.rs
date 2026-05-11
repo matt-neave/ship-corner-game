@@ -91,6 +91,39 @@ pub const TURRET_ARC_HALVES: [f32; 8] = [
     PI_F, PI_F, PI_F, PI_F, PI_F, PI_F, PI_F, PI_F,
 ];
 
+/// Adjacency graph between turret slots — each slot lists the indices
+/// of its physically-neighbouring slots on the ship deck. Drives
+/// turret-to-turret synergies (e.g. the `Booster` support turret
+/// multiplies adjacent turrets' fire rate).
+///
+/// Layout, from `TURRET_POSITIONS`:
+///
+/// ```text
+///         0 (bow)
+///        /  \
+///       1 ── 2
+///       │    │
+///       3 ── 4
+///       │    │
+///       5 ── 6
+///        \  /
+///         7 (stern)
+/// ```
+///
+/// Bow + stern connect to both wings on their end. Wings connect
+/// fore-aft along their own side AND port↔starboard at the same
+/// section, so a centreline-Booster reaches both sides at once.
+pub const TURRET_ADJACENCY: [&[usize]; 8] = [
+    &[1, 2],          // 0 bow → fore wings
+    &[0, 2, 3],       // 1 fore port
+    &[0, 1, 4],       // 2 fore stbd
+    &[1, 4, 5],       // 3 mid port
+    &[2, 3, 6],       // 4 mid stbd
+    &[3, 6, 7],       // 5 aft port
+    &[4, 5, 7],       // 6 aft stbd
+    &[5, 6],          // 7 stern → aft wings
+];
+
 /// i18n keys for each turret name (cell index 0..7). Display strings live in
 /// `data/translations.csv`; this array maps slot index → CSV key.
 pub const TURRET_NAME_KEYS: [&str; 8] = [

@@ -14,7 +14,7 @@ use bevy::text::{FontSmoothing, TextBounds};
 use crate::balance::{CUSTOMIZE_INTERNAL_H, CUSTOMIZE_INTERNAL_W, UPSCALE_LAYER};
 use crate::rune::Rune;
 use crate::turret::TurretConfig;
-use crate::weapon::WeaponType;
+use crate::weapon::{WeaponTag, WeaponType};
 
 use super::drag::{
     CustomizeShop, DragSourceKind, DragState,
@@ -272,8 +272,12 @@ pub fn update_customize_tooltip(
     let text_w_native = title_w_native.max(body_wrapped_w);
     let fill_w_native = (text_w_native + 2.0 * TOOLTIP_TEXT_PAD).max(TOOLTIP_MIN_W * s);
     // Line-count estimate: how many `TOOLTIP_BODY_MAX_W` slabs the
-    // unwrapped body needs. `ceil(body_w / max_w)`, min 1.
-    let body_lines = (body_unwrapped_w / TOOLTIP_BODY_MAX_W).ceil().max(1.0);
+    // unwrapped body needs. `ceil(body_w / max_w)`, min 1. Plus the
+    // count of explicit `\n` in the body (e.g. the `[TAG]\n…` chip
+    // line) — those force a break that the width-only calculation
+    // would otherwise miss, leading to truncated short tooltips.
+    let explicit_breaks = body.chars().filter(|&c| c == '\n').count() as f32;
+    let body_lines = (body_unwrapped_w / TOOLTIP_BODY_MAX_W).ceil().max(1.0) + explicit_breaks;
     let body_block_h = body_lines * TOOLTIP_BODY_FONT * TOOLTIP_LINE_HEIGHT_MULT;
     let title_block_h = TOOLTIP_TITLE_FONT * TOOLTIP_LINE_HEIGHT_MULT;
     let fill_h_native = title_block_h + body_block_h + 2.0 * TOOLTIP_TEXT_PAD;
@@ -379,11 +383,33 @@ const TOOLTIP_BODY_COLOR: Color = Color::srgb(0.85, 0.88, 0.94);
 const TOOLTIP_BUFF_COLOR: Color = Color::srgb(0.55, 0.95, 0.55);
 /// Tint for negative numeric tokens (`-50`, `-70%`).
 const TOOLTIP_NERF_COLOR: Color = Color::srgb(1.00, 0.55, 0.55);
+/// Fallback chip colour for any `[XXX]` tag that isn't a known
+/// `WeaponTag` — currently only `[AOE]` (used by mortar / Splash rune).
+/// Picked to read as "informational tag" rather than buff/nerf.
+const TOOLTIP_AOE_TAG_COLOR: Color = Color::srgb(1.00, 0.55, 0.20);
+
+/// Look up the chip colour for a bracketed tag name (the text between
+/// `[ ]`). Iterates `WeaponTag::all()` so adding a new tag in
+/// `weapon.rs` automatically gets a coloured chip with no edits here.
+/// Returns `None` for unknown tag names — caller falls back to the
+/// default body color so unrecognised tags still render as plain text.
+fn tag_chip_color(name: &str) -> Option<Color> {
+    for &tag in WeaponTag::all() {
+        if tag.label() == name {
+            return Some(tag.color());
+        }
+    }
+    if name == "AOE" {
+        return Some(TOOLTIP_AOE_TAG_COLOR);
+    }
+    None
+}
 
 /// Split body text into colored segments. A run starting with `+`
 /// or `-` immediately followed by a digit (optionally with a
 /// trailing `%`) is a buff/nerf token and gets the corresponding
-/// tint; everything else stays the default body color.
+/// tint. A `[NAME]` chip (only at the start of a word) is coloured
+/// per `tag_chip_color`. Everything else stays the default body color.
 fn colorize_bonuses(text: &str) -> Vec<(String, Color)> {
     let mut segments: Vec<(String, Color)> = Vec::new();
     let mut current = String::new();
@@ -394,6 +420,30 @@ fn colorize_bonuses(text: &str) -> Vec<(String, Color)> {
         let is_sign_token = (c == '+' || c == '-')
             && i + 1 < chars.len()
             && chars[i + 1].is_ascii_digit();
+        // `[XXX]` tag chip — only recognised at the very start of the
+        // body or right after whitespace, so a stray bracket inside
+        // sentence text doesn't accidentally get coloured. The chip
+        // text itself includes the brackets so the rendered output
+        // reads e.g. `[NAVAL] Balanced cannon...`.
+        let at_word_start = i == 0 || chars[i - 1].is_whitespace();
+        if c == '[' && at_word_start {
+            if let Some(close_off) = chars[i + 1..].iter().position(|&ch| ch == ']') {
+                let close = i + 1 + close_off;
+                let name: String = chars[i + 1..close].iter().collect();
+                if let Some(color) = tag_chip_color(&name) {
+                    if !current.is_empty() {
+                        segments.push((std::mem::take(&mut current), TOOLTIP_BODY_COLOR));
+                    }
+                    let mut chip = String::new();
+                    chip.push('[');
+                    chip.push_str(&name);
+                    chip.push(']');
+                    segments.push((chip, color));
+                    i = close + 1;
+                    continue;
+                }
+            }
+        }
         if is_sign_token {
             if !current.is_empty() {
                 segments.push((std::mem::take(&mut current), TOOLTIP_BODY_COLOR));
@@ -543,7 +593,11 @@ fn turret_tooltip(weapon: WeaponType, barrels: u8) -> (String, String) {
     } else {
         format!("{} {}B", weapon.label(), barrels)
     };
-    let mut body = String::new();
+    // Body layout: `[TAG]` chip on its own line, then a blank line,
+    // then the description. The colorizer paints the bracketed chip
+    // in the tag's colour. The newline keeps the chip from blending
+    // into the description on narrow tooltips.
+    let mut body = format!("[{}]\n", weapon.tag().label());
     if matches!(weapon, WeaponType::Mortar) {
         body.push_str(AOE_TAG);
     }

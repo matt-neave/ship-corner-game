@@ -37,6 +37,7 @@ use crate::balance::{
     SHOCK_CHAIN_RANGE, SHOCK_VISUAL_LIFE,
 };
 use crate::beam::Beam;
+use crate::cannon::Knockback;
 use crate::components::{FactionKind, Friendly, Health, Velocity};
 use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
 use crate::enemy::Enemy;
@@ -172,8 +173,8 @@ pub fn bullet_collisions(
     player_stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
-    bullets: Query<(Entity, &Transform, &Bullet, &Velocity)>,
-    mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
+    bullets: Query<(Entity, &Transform, &Bullet, &Velocity, Option<&Knockback>), (Without<Enemy>, Without<Friendly>, Without<Ally>)>,
+    mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
     mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
     on_fire: Query<&OnFire>,
@@ -190,13 +191,13 @@ pub fn bullet_collisions(
     // mutable `enemies` query free until we need `get_mut` during the drain.
     let enemy_snap: Vec<(Entity, Vec2, f32)> = enemies
         .iter()
-        .map(|(e, tf, en, _, _)| (e, tf.translation.truncate(), 3.5 * en.variant.scale()))
+        .map(|(e, tf, en, _, _, _)| (e, tf.translation.truncate(), 3.5 * en.variant.scale()))
         .collect();
 
     let mut chain: Vec<DamageEvent> = Vec::new();
     let dt = time.delta_secs();
 
-    for (be, btf, b, bv) in &bullets {
+    for (be, btf, b, bv, kb) in &bullets {
         let bp = btf.translation.truncate();
         // Swept segment for this frame. `apply_velocity` already moved
         // the bullet to `bp` this tick; rewind by `velocity * dt` for
@@ -213,6 +214,21 @@ pub fn bullet_collisions(
                     point_segment_dist_sq(*ep, prev_bp, bp) < *hd * *hd
                 }) {
                     commands.entity(be).despawn();
+                    // Cannonball knockback: insert a `Knockedback`
+                    // component on the struck enemy. `apply_velocity`
+                    // composes this on top of the AI's per-frame
+                    // `Velocity` (which would otherwise overwrite a
+                    // direct velocity nudge every tick), and decays it
+                    // out over time. Mutating `Velocity` directly
+                    // here was the previous approach and didn't work
+                    // — enemy AI re-clamps `Velocity` each frame.
+                    if let Some(kb) = kb {
+                        let dir = bv.0.try_normalize().unwrap_or(Vec2::Y);
+                        commands.entity(ee).insert(crate::components::Knockedback {
+                            velocity: dir * kb.force,
+                            decay_per_sec: crate::cannon::CANNONBALL_KNOCKBACK_DECAY,
+                        });
+                    }
                     // Crits only roll for player-sourced bullets — ally
                     // damage uses its baseline number for share-bar
                     // accounting (and so allies don't piggyback on the
@@ -300,14 +316,14 @@ fn process_damage_event(
     pm: &PaletteMaterials,
     em: &EffectMeshes,
     enemy_snap: &[(Entity, Vec2, f32)],
-    enemies: &mut Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
+    enemies: &mut Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
     on_fire: &Query<&OnFire>,
     on_frost: &Query<&OnFrost>,
     on_conduit: &Query<&OnConduit>,
     on_resonate: &Query<&OnResonate>,
     rng: &mut rand::rngs::ThreadRng,
 ) {
-    let Ok((_, _, _, mut h, mut fx)) = enemies.get_mut(ev.target) else { return; };
+    let Ok((_, _, _, mut h, mut fx, _)) = enemies.get_mut(ev.target) else { return; };
     if h.0 <= 0 { return; } // already dead from an earlier hit this frame
 
     // Resonate damage amplifier — cross-slot debuff that boosts every

@@ -377,19 +377,53 @@ pub fn approach_angle(cur: f32, tgt: f32, max: f32) -> f32 {
     cur + d
 }
 
-/// Tiny shared integrator: `position += velocity * dt` for everything that
-/// has both components. Runs once per frame. Entities with the `OnFrost`
-/// status are slowed by `FROST_SPEED_MULT` — the integrator is the right
-/// place since it's the single point where Velocity becomes movement.
+/// Shared movement integrator — composes every modifier that ends up
+/// translating an entity each frame:
+///   1. **Natural movement** — `Velocity * frost_mult * dt`. AI / control
+///      systems set `Velocity` each frame; `OnFrost` (if present) scales
+///      it down (each stack compounds via `speed_mult`).
+///   2. **Knockback impulse** — `Knockedback.velocity * dt`, NOT scaled by
+///      frost. A frost-slowed enemy still gets fully shoved by a
+///      cannonball; otherwise frost trivialises crowd-control. The
+///      impulse decays per `decay_per_sec` each frame and is removed
+///      once it drops below a noticeable threshold.
+///
+/// Adding a new movement effect (drag, pull, gust, …) is one new
+/// `Option<&Mut>` in this query plus an addition to the per-entity
+/// translation here — keeps the composition rules centralised.
 pub fn apply_velocity(
     time: Res<Time>,
-    mut q: Query<(&mut Transform, &Velocity, Option<&OnFrost>)>,
+    mut commands: Commands,
+    mut q: Query<(
+        Entity,
+        &mut Transform,
+        &Velocity,
+        Option<&OnFrost>,
+        Option<&mut crate::components::Knockedback>,
+    )>,
 ) {
     let dt = time.delta_secs();
-    for (mut tf, v, frost) in &mut q {
+    for (entity, mut tf, v, frost, knock) in &mut q {
         let mult = frost.map(|f| f.speed_mult()).unwrap_or(1.0);
         tf.translation.x += v.0.x * mult * dt;
         tf.translation.y += v.0.y * mult * dt;
+
+        if let Some(mut k) = knock {
+            tf.translation.x += k.velocity.x * dt;
+            tf.translation.y += k.velocity.y * dt;
+            // Multiplicative decay each frame. Clamp the multiplier to
+            // 0 so a high `decay_per_sec` × low frame-rate doesn't flip
+            // the velocity sign.
+            let m = (1.0 - k.decay_per_sec * dt).max(0.0);
+            k.velocity *= m;
+            // Below ~1 unit/sec the impulse is invisible; remove the
+            // component so the rest of the schedule stops paying for
+            // it (and so future impulses get a clean state to insert
+            // into rather than stacking on a dying remnant).
+            if k.velocity.length_squared() < 1.0 {
+                commands.entity(entity).remove::<crate::components::Knockedback>();
+            }
+        }
     }
 }
 
