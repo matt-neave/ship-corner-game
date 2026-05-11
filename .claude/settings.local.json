@@ -10,7 +10,10 @@
       "PowerShell(Get-Process *)",
       "PowerShell(cargo build *)",
       "Bash(cargo clean *)",
-      "Bash(cargo check *)"
+      "Bash(cargo check *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\" -Recurse -Filter \"*.rs\")",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "PowerShell(head *)"
     ]
   }
 }

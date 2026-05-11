@@ -69,6 +69,17 @@ pub fn xp_to_next(level: u32) -> u32 {
 #[derive(Resource, Default, Debug)]
 pub struct LevelUpsPending(pub u32);
 
+/// Where to send the player when the LevelUp screen finishes draining
+/// its queue. `None` = default → `Customize` (the post-stage flow used
+/// by `tick_stage_complete`). `Some(state)` = override, set by
+/// `spawn_enemies` when level-ups are drained mid-stage between waves;
+/// the player rejoins combat instead of being yanked into the shop.
+///
+/// Cleared back to `None` by `handle_level_up_click` once consumed so a
+/// stale override can't leak into the next stage.
+#[derive(Resource, Default, Debug)]
+pub struct LevelUpReturn(pub Option<crate::AppState>);
+
 // ---------- Buff catalog ----------
 
 /// One offerable buff. Mutates a single `Stat` field on `PlayerStats`.
@@ -309,6 +320,7 @@ pub fn handle_level_up_click(
     mut choices: ResMut<LevelUpChoices>,
     mut stats: ResMut<PlayerStats>,
     mut pending: ResMut<LevelUpsPending>,
+    mut return_state: ResMut<LevelUpReturn>,
     xp: Res<Xp>,
     mut next: ResMut<NextState<crate::AppState>>,
     overlay: Query<Entity, With<LevelUpRoot>>,
@@ -326,7 +338,13 @@ pub fn handle_level_up_click(
             choices.buffs = pick_buffs(4);
             spawn_level_up_overlay(&mut commands, &choices, &xp, &stats);
         } else {
-            next.set(crate::AppState::Customize);
+            // Honour the override set by `spawn_enemies` for mid-stage
+            // (between-wave) drains — return the player to combat
+            // instead of routing through the shop. Falls back to
+            // Customize for the post-stage path. Cleared so a stale
+            // override can't leak into the next level-up.
+            let dest = return_state.0.take().unwrap_or(crate::AppState::Customize);
+            next.set(dest);
         }
         return;
     }

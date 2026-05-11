@@ -18,7 +18,7 @@ use super::drag::{
 };
 use super::setup::{
     empty_slot_color, empty_socket_color, rune_color_for, turret_barrel_color_for,
-    turret_color_for, CustomizeScrapText, ShipRuneSocketPart, ShipSlotBadgeText,
+    turret_color_for, CustomizeScrapText, SellPricePreview, ShipRuneSocketPart, ShipSlotBadgeText,
     ShipSlotBase, ShopRerollBg, ShopRerollBtn, ShopRerollCostText, ShopRuneAoeTag,
     ShopRuneAoeTagText, ShopRuneCostText, ShopRuneNameText, ShopRuneVisual,
     ShopTurretAoeTag, ShopTurretAoeTagText, ShopTurretBadgeText, ShopTurretBase,
@@ -419,6 +419,39 @@ pub fn update_customize_shop(
     }
     for (_, _, _, _, mut vis) in &mut shop_aoe_tag_texts {
         if *vis != Visibility::Hidden { *vis = Visibility::Hidden; }
+    }
+}
+
+/// Drive the sell-panel refund preview. The static "SELL" label
+/// stays put; this updater toggles a separate gold "+N" text just
+/// below the panel — visible + showing the live refund while the
+/// player drags a ship-sourced sellable, hidden otherwise.
+/// Shop-sourced drags refund 0 so the preview stays hidden for
+/// those (you can't sell what you don't own yet).
+pub fn update_sell_label(
+    open: Res<CustomizeOpen>,
+    drag: Res<DragState>,
+    cfg: Res<TurretConfig>,
+    mut q: Query<(&mut Text2d, &mut Visibility), With<SellPricePreview>>,
+) {
+    if !open.open { return; }
+    let preview = drag
+        .picked
+        .as_ref()
+        .map(|p| super::drag::sell_refund_for(&p.source, &cfg))
+        .filter(|&r| r > 0);
+
+    for (mut text, mut vis) in &mut q {
+        match preview {
+            Some(refund) => {
+                let s = format!("+{}", refund);
+                if text.0 != s { text.0 = s; }
+                if *vis != Visibility::Inherited { *vis = Visibility::Inherited; }
+            }
+            None => {
+                if *vis != Visibility::Hidden { *vis = Visibility::Hidden; }
+            }
+        }
     }
 }
 

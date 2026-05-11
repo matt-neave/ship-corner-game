@@ -487,16 +487,17 @@ pub fn update_wave_ui(
     let shield_cur = shield.map(|s| s.current).unwrap_or(0.0).max(0.0);
 
     // Bar pool = HP + shield. The bar's full width represents this
-    // combined pool, so HP and shield each get their own dedicated
-    // region whose SIZE is proportional to their max — independent
-    // of how full they currently are. Shield gets the right portion
-    // of the bar, HP the left, with HP region width = max_hp/pool.
+    // combined pool. HP fills from the left; shield stacks ON TOP
+    // of the HP fill (anchored to its right edge), so the cyan
+    // always butts up against the green and slides left as HP
+    // drops. No gap between the two segments at any HP level.
     let total_pool = (max_hp + shield_max).max(1) as f32;
 
     let hp_fill_pct = (h.0 as f32 / total_pool).clamp(0.0, 1.0);
-    let shield_region_left_pct = max_hp as f32 / total_pool;
+    // Shield width is its own contribution to the pool, capped so
+    // the combined fill can never exceed 100%.
     let shield_fill_pct = (shield_cur / total_pool)
-        .clamp(0.0, (1.0 - shield_region_left_pct).max(0.0));
+        .clamp(0.0, (1.0 - hp_fill_pct).max(0.0));
 
     // Readout: "HP+shield / max_hp". With 100 HP + 25 shield this
     // reads "125/100" — the slash is "current effective pool / hp
@@ -511,12 +512,12 @@ pub fn update_wave_ui(
         node.width = Val::Percent(hp_fill_pct * 100.0);
     }
 
-    // Shield fill: positioned so it occupies its dedicated region on
-    // the right side of the bar. Hidden entirely when shield_max
-    // is 0 (no shield bought).
+    // Shield fill: anchored to the right edge of the HP fill so the
+    // cyan always touches the green. Hidden entirely when
+    // `shield_max == 0` (no shield bought).
     let want_vis = if shield_max > 0 { Visibility::Inherited } else { Visibility::Hidden };
     for (mut node, mut vis) in &mut shield_q {
-        let want_left = Val::Percent(shield_region_left_pct * 100.0);
+        let want_left = Val::Percent(hp_fill_pct * 100.0);
         let want_w = Val::Percent(shield_fill_pct * 100.0);
         if node.left != want_left { node.left = want_left; }
         if node.width != want_w { node.width = want_w; }

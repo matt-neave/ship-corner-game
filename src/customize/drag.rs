@@ -537,7 +537,7 @@ pub fn complete_drag(
 ///
 /// Shop-sourced drags return `0` — can't sell something you don't
 /// own yet.
-fn sell_refund_for(source: &DragSourceKind, cfg: &TurretConfig) -> u32 {
+pub fn sell_refund_for(source: &DragSourceKind, cfg: &TurretConfig) -> u32 {
     match *source {
         DragSourceKind::ShipSlot(slot) => {
             let s = cfg.slots[slot];
@@ -636,6 +636,14 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
                 }
                 cfg.slots[target_slot].runes = merged;
                 clear_source_if_ship(picked, cfg);
+                true
+            } else if let DragSourceKind::ShipSlot(src) = picked.source {
+                // Ship-to-ship swap: target is occupied with a
+                // different weapon (or already-maxed barrels of the
+                // same weapon). Exchange the two SlotCfgs wholesale —
+                // stats, barrels, and runes all travel with their
+                // weapon. Both slots stay equipped post-swap.
+                cfg.slots.swap(src, target_slot);
                 true
             } else {
                 false

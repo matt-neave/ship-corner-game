@@ -22,6 +22,13 @@ pub struct EffectMeshes {
     pub particle: Handle<Mesh>,
     pub bullet_friendly_outer: Handle<Mesh>,
     pub bullet_friendly_inner: Handle<Mesh>,
+    /// Round bullet mesh — used by weapons whose projectile reads as a
+    /// solid sphere rather than the default pill (e.g. cannonball).
+    /// Sized so a 1.0× transform is comparable in radius to the
+    /// capsule's wider dimension, so spawn sites can swap the mesh
+    /// without retuning per-weapon scale.
+    pub bullet_round_outer: Handle<Mesh>,
+    pub bullet_round_inner: Handle<Mesh>,
     pub bullet_enemy_outer: Handle<Mesh>,
     pub bullet_enemy_inner: Handle<Mesh>,
     pub enemy_body: Handle<Mesh>,

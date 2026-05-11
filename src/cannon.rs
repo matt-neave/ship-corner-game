@@ -93,7 +93,7 @@ pub fn spawn_cannonball(
     faction: FactionKind,
 ) {
     let bullet = commands.spawn((
-        Mesh2d(em.bullet_friendly_outer.clone()),
+        Mesh2d(em.bullet_round_outer.clone()),
         MeshMaterial2d(outer_mat.clone()),
         Transform {
             translation: Vec3::new(pos.x, pos.y, 4.0),
@@ -113,7 +113,7 @@ pub fn spawn_cannonball(
         RenderLayers::layer(PLAY_LAYER),
     )).id();
     let inner = commands.spawn((
-        Mesh2d(em.bullet_friendly_inner.clone()),
+        Mesh2d(em.bullet_round_inner.clone()),
         MeshMaterial2d(inner_mat.clone()),
         // Inner z-offset is in the parent's local space; the parent's
         // scale already makes it bigger, so no extra scale needed here.

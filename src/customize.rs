@@ -56,7 +56,7 @@ pub use stats_panel::{handle_stat_debug_buttons, sync_stats_panel};
 pub use tooltip::update_customize_tooltip;
 pub use update::{
     handle_close_click, handle_reroll_button, update_customize_ship, update_customize_shop,
-    update_customize_ui,
+    update_customize_ui, update_sell_label,
 };
 
 // ---------- Resources ----------

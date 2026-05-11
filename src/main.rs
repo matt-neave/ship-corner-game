@@ -71,7 +71,7 @@ use customize::{
     handle_shop_mod_click, handle_stat_debug_buttons, sync_customize_text, sync_stats_panel,
     toggle_customize_render, track_customize_cursor, update_shop_mod_cards,
     update_customize_ship, update_customize_shop, update_customize_tooltip,
-    update_customize_ui, update_drag_ghost, CustomizeOpen, DragState,
+    update_customize_ui, update_drag_ghost, update_sell_label, CustomizeOpen, DragState,
 };
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
@@ -352,6 +352,7 @@ fn main() {
         .insert_resource(stage_complete::StageCompleteTimer::default())
         .insert_resource(xp::Xp::default())
         .insert_resource(xp::LevelUpsPending::default())
+        .insert_resource(xp::LevelUpReturn::default())
         .insert_resource(xp::LevelUpChoices::default())
         .insert_resource(hull::SelectedHull::default())
         .insert_resource(modes::ScreenShake::default())
@@ -703,6 +704,7 @@ fn main() {
             update_customize_ship,
             update_customize_shop,
             update_customize_tooltip,
+            update_sell_label,
             sync_stats_panel,
             handle_stat_debug_buttons,
             update_shop_mod_cards,
@@ -721,29 +723,40 @@ fn main() {
             // any change to NIGHT / CRT / VSYNC.
             apply_loaded_settings,
             persist_settings_on_change,
-            // ESC pause overlay. Resume / Quit gated by Changed<Interaction>
-            // so they only fire on the press frame.
+            // ESC pause overlay. Toggle is state-aware (only fires
+            // Playing↔Paused). Visibility sync mirrors the Paused flag.
             toggle_pause_on_esc,
             sync_pause_menu_visibility,
+            main_menu::sync_main_menu_visibility,
+            main_menu::sync_main_menu_view,
+            main_menu::handle_settings_item_click,
+            main_menu::update_settings_labels,
+        ))
+        // Pause-menu click handlers — gated on `Paused`. Bevy UI's
+        // picking still drives `Interaction::Pressed` on hidden Nodes
+        // (full-screen overlay child positions overlap whatever's
+        // underneath), so without this gate a click in the customize
+        // shop that lands on a hidden Resume / Main Menu button
+        // position would silently transition state — the "shop
+        // randomly closes" bug.
+        .add_systems(Update, (
             handle_resume_click,
             handle_pause_main_menu_click,
             handle_quit_click,
-            // Boot-time main menu. PLAY closes it; SETTINGS opens a
-            // sub-page with NIGHT / CRT / VSYNC toggles + BACK.
-            main_menu::sync_main_menu_visibility,
-            main_menu::sync_main_menu_view,
+        ).run_if(in_state(AppState::Paused)))
+        // Main-menu click handlers — same picking-respects-visibility
+        // problem. Gate to MainMenu state only.
+        .add_systems(Update, (
             main_menu::handle_play_click,
             main_menu::handle_settings_click,
-            main_menu::handle_settings_item_click,
-            main_menu::update_settings_labels,
-            // Game-over overlay click handlers. State-driven exit means
-            // the cleanup (reset_run_for_restart) runs from OnExit and
-            // each handler just transitions; nothing here is per-frame
-            // gated since `Changed<Interaction>` keeps them inert until
-            // the player presses a button.
+        ).run_if(in_state(AppState::MainMenu)))
+        // Game-over overlay click handlers — gated to GameOver. Was
+        // previously safe due to its rare/clear visibility, but the
+        // same picking-on-hidden bug applies; gating future-proofs.
+        .add_systems(Update, (
             game_over::handle_restart_click,
             game_over::handle_main_menu_click,
             game_over::handle_quit_click,
-        ))
+        ).run_if(in_state(AppState::GameOver)))
         .run();
 }

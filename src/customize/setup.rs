@@ -403,15 +403,27 @@ pub fn setup_customize_ui(
         RenderLayers::layer(CUSTOMIZE_LAYER),
         ShopSellPanel,
     ));
-    // "SELL" label centred inside the panel so it's unmissable.
-    // High-contrast white on the gray-hash background.
+    // "SELL" label centred inside the panel — static, always visible
+    // so the panel always reads as the sell target.
     spawn_text(
         &mut commands,
         sell_pos,
         "SELL",
         Color::WHITE,
         12.0,
-        ShopHeaderTag,
+        SellPanelLabel,
+    );
+    // Refund-preview text — sits just below the sell panel, hidden
+    // by default. `update_sell_label` flips it visible with the
+    // live `+N` payout while the player drags a ship-sourced item,
+    // so they see the price before committing.
+    spawn_text(
+        &mut commands,
+        Vec2::new(sell_pos.x, sell_pos.y - SELL_PANEL_SIZE * 0.5 - 6.0),
+        "",
+        Color::srgb(1.00, 0.85, 0.30),
+        10.0,
+        SellPricePreview,
     );
     // Drop target hit area — DropTargetKind::Sell triggers the refund
     // path in `complete_drag`.
@@ -455,6 +467,19 @@ pub struct CloseLabelTag;
 pub struct CloseHitTag;
 #[derive(Component)]
 pub struct ShopHeaderTag;
+
+/// Marker on the centred static "SELL" text inside the sell panel.
+/// Currently no consumer — kept as a marker so a future system can
+/// re-style/animate the label without re-grepping.
+#[derive(Component)]
+pub struct SellPanelLabel;
+
+/// Marker on the gold "+N" refund-preview text that sits just below
+/// the sell panel. `update_sell_label` toggles it visible + sets the
+/// number while the player drags a ship-sourced sellable; hidden in
+/// every other state.
+#[derive(Component)]
+pub struct SellPricePreview;
 
 /// Click target for the SHOP "REROLL" button.
 #[derive(Component, Clone, Copy)]

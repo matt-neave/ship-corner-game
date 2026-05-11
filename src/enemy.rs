@@ -249,6 +249,9 @@ pub fn spawn_enemies(
     indicator_assets: Option<Res<SpawnIndicatorAssets>>,
     mode: Res<GameMode>,
     mut combat_ctx: ResMut<crate::map::CombatContext>,
+    pending: Res<crate::xp::LevelUpsPending>,
+    mut return_state: ResMut<crate::xp::LevelUpReturn>,
+    mut next_state: ResMut<NextState<crate::AppState>>,
     enemies: Query<Entity, With<Enemy>>,
 ) {
     if *mode != GameMode::Sandbox { return; }
@@ -317,6 +320,17 @@ pub fn spawn_enemies(
             if enemies.iter().count() == 0 {
                 combat_ctx.wave_phase = crate::map::WavePhase::Cooldown;
                 combat_ctx.wave_cd = crate::map::BETWEEN_WAVES_DURATION;
+                // Drain queued level-ups in the breather between waves
+                // — but ONLY when there's another wave coming. On the
+                // last wave we let the existing StageComplete →
+                // LevelUp → Customize chain handle any remaining
+                // drains, which avoids racing `level_complete_check`
+                // (it can fire on the same frame `enemy_budget` hits 0
+                // and the order of those two systems isn't pinned).
+                if pending.0 > 0 && combat_ctx.wave_idx + 1 < combat_ctx.wave_count {
+                    return_state.0 = Some(crate::AppState::Playing);
+                    next_state.set(crate::AppState::LevelUp);
+                }
             }
         }
         crate::map::WavePhase::Cooldown => {

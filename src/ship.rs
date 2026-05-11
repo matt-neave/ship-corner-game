@@ -219,6 +219,11 @@ pub fn setup_world(
         particle:              meshes.add(Capsule2d::new(0.7, 1.6)),
         bullet_friendly_outer: meshes.add(Capsule2d::new(2.0, 1.5)),
         bullet_friendly_inner: meshes.add(Capsule2d::new(1.3, 1.5)),
+        // Round bullet — radii match the friendly capsule's wide
+        // dimension so the cannonball can swap meshes without
+        // re-tuning the per-weapon scale used in `cannon.rs`.
+        bullet_round_outer:    meshes.add(Circle::new(2.0)),
+        bullet_round_inner:    meshes.add(Circle::new(1.3)),
         bullet_enemy_outer:    meshes.add(Capsule2d::new(1.5, 1.5)),
         bullet_enemy_inner:    meshes.add(Capsule2d::new(0.8, 1.5)),
         enemy_body:            meshes.add(Capsule2d::new(ENEMY_WIDTH / 2.0, ENEMY_LEN - ENEMY_WIDTH)),

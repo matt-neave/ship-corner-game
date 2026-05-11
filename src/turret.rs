@@ -162,7 +162,7 @@ pub fn sync_turret_config(
     cfg: Res<TurretConfig>,
     pier: Res<Pier>,
     pm: Option<Res<PaletteMaterials>>,
-    mut q: Query<(&mut TurretSlot, &mut Visibility, &mut MeshMaterial2d<ColorMaterial>, &Children)>,
+    mut q: Query<(&mut TurretSlot, &mut Visibility, &mut Transform, &mut MeshMaterial2d<ColorMaterial>, &Children)>,
     mut barrels: Query<
         (&BarrelIndex, &mut Visibility, &mut Transform, &mut MeshMaterial2d<ColorMaterial>),
         (With<TurretBarrel>, Without<TurretSlot>, Without<HeliPadDecal>),
@@ -174,11 +174,26 @@ pub fn sync_turret_config(
 ) {
     if !cfg.is_changed() && !pier.is_changed() { return; }
     let Some(pm) = pm else { return; };
-    for (mut slot, mut vis, mut mat, children) in &mut q {
+    for (mut slot, mut vis, mut tf, mut mat, children) in &mut q {
         let s = cfg.slots[slot.index];
         slot.damage = s.damage + pier_damage_bonus(&pier, slot.index);
         slot.fire_rate = s.fire_rate * crate::booster::boost_multiplier_for_slot(&cfg, slot.index);
         slot.weapon = s.weapon;
+        // Non-firing weapons (HeliPad / Booster / Blade) never get
+        // their rotation updated by `turret_aim_fire` (it early-
+        // returns for them). Without an explicit reset here, the
+        // slot's `Transform.rotation` keeps whatever angle the PREVIOUS
+        // weapon left it pointing at — so a Blade arm spawned on a
+        // slot that used to be a Standard tracking some enemy will
+        // point at the stale aim, not the slot's mount direction.
+        // Reset both the stored barrel_angle AND the live transform
+        // so child decor (Blade arm, Booster ring) inherits the
+        // correct mount-angle frame.
+        if !s.weapon.fires_from_base() {
+            let want = Quat::from_rotation_z(slot.mount_angle);
+            if tf.rotation != want { tf.rotation = want; }
+            slot.barrel_angle = slot.mount_angle;
+        }
         slot.range_mult = pier_range_mult(&pier, slot.index);
         let new_barrels = s.barrels.clamp(1, 3);
         if new_barrels != slot.barrels { slot.next_barrel = 0; }

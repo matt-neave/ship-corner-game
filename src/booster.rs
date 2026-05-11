@@ -32,9 +32,17 @@ pub const BOOSTER_FIRE_RATE_MULT: f32 = 1.30;
 /// 3 reads as a continuous trickle without becoming a solid line.
 const BOOSTER_PULSES_PER_CONNECTION: usize = 3;
 
-/// Phase units travelled per second. 1.0 = one full traversal per
-/// second; 1.5 = ~0.67s per pulse from booster to target.
-const BOOSTER_PULSE_SPEED: f32 = 1.5;
+/// Base phase-units-per-second for a T1 (single-barrel) booster. T2/T3
+/// boosters multiply this by `BOOSTER_PULSE_TIER_STEP` per extra
+/// barrel — so a fully-upgraded booster's pulses fly visibly faster
+/// than a baseline one. T1 starts deliberately slow so the upgrade
+/// feels meaningful.
+const BOOSTER_PULSE_BASE_SPEED: f32 = 0.7;
+
+/// Per-extra-barrel speed multiplier on `BOOSTER_PULSE_BASE_SPEED`.
+/// T1 → 0.7, T2 → 1.4, T3 → 2.1 phase units/sec — visibly faster at
+/// each tier without snapping to a single frame's worth of motion.
+const BOOSTER_PULSE_TIER_STEP: f32 = 1.0;
 
 /// Marker for the bright ring child entity rendered on top of a Booster
 /// slot's deck pad. `sync_booster_decor` ensures exactly one of these
@@ -57,6 +65,10 @@ pub struct BoosterPulse {
     /// Phase 0..1, advances each frame; wraps so the dot keeps
     /// flowing along the connection.
     pub phase: f32,
+    /// Phase units travelled per second. Baked at spawn time from
+    /// the booster's barrel tier (T1 = slower, T3 = faster) so the
+    /// tick system stays a constant-time-per-pulse loop.
+    pub speed: f32,
 }
 
 pub struct BoosterPlugin;
@@ -164,6 +176,11 @@ pub fn sync_booster_decor(
         let inv_a = -slot.mount_angle;
         let cos_i = inv_a.cos();
         let sin_i = inv_a.sin();
+        // Pulse speed scales with the booster's barrel tier — T1
+        // pulses are sluggish, T3 pulses zip across. Computed once
+        // per booster and baked into each spawned pulse.
+        let tier = s.barrels.clamp(1, 3) as f32;
+        let pulse_speed = BOOSTER_PULSE_BASE_SPEED * (1.0 + (tier - 1.0) * BOOSTER_PULSE_TIER_STEP);
 
         for &n in neighbours.iter() {
             let Some(ns) = cfg.slots.get(n) else { continue; };
@@ -191,7 +208,7 @@ pub fn sync_booster_decor(
                     Mesh2d(mesh.clone()),
                     MeshMaterial2d(pm.booster_ring.clone()),
                     Transform::from_xyz(0.0, 0.0, 0.04),
-                    BoosterPulse { target_offset, phase },
+                    BoosterPulse { target_offset, phase, speed: pulse_speed },
                     RenderLayers::layer(PLAY_LAYER),
                 )).id();
                 commands.entity(pulse).insert(ChildOf(slot_entity));
@@ -210,7 +227,7 @@ pub fn tick_booster_pulses(
 ) {
     let dt = time.delta_secs();
     for (mut p, mut tf) in &mut pulses {
-        p.phase = (p.phase + dt * BOOSTER_PULSE_SPEED) % 1.0;
+        p.phase = (p.phase + dt * p.speed) % 1.0;
         let pos = p.target_offset * p.phase;
         tf.translation.x = pos.x;
         tf.translation.y = pos.y;

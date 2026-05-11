@@ -419,14 +419,30 @@ fn spawn_step_button(parent: &mut ChildSpawnerCommands, slot: usize, kind: Butto
 
 pub fn update_slot_labels(
     cfg: Res<TurretConfig>,
-    mut q: Query<(&SlotLabel, &mut Text)>,
+    mut q: Query<(&SlotLabel, &mut Text, &mut TextColor)>,
 ) {
     if !cfg.is_changed() { return; }
-    for (lbl, mut t) in &mut q {
+    for (lbl, mut t, mut tc) in &mut q {
         let s = cfg.slots[lbl.slot];
         match lbl.kind {
             LabelKind::Damage  => **t = format!("{}", s.damage),
-            LabelKind::Rate    => **t = format!("{:.1}", s.fire_rate),
+            LabelKind::Rate    => {
+                // Show the LIVE rate the turret actually fires at — base
+                // × adjacent-Booster multiplier — not the raw config
+                // value. Without this the panel always reads the base
+                // rate even when a Booster sits next door, leading the
+                // player to think the boost isn't working. Tint green
+                // when boosted so the buff is unmistakeable.
+                let boost = crate::booster::boost_multiplier_for_slot(&cfg, lbl.slot);
+                let rate = s.fire_rate * boost;
+                **t = format!("{:.1}", rate);
+                let want = if boost > 1.0 {
+                    Color::srgb(0.55, 0.95, 0.55)
+                } else {
+                    UI_TEXT
+                };
+                if tc.0 != want { tc.0 = want; }
+            }
             LabelKind::Barrels => **t = format!("{}", s.barrels),
             LabelKind::Status  => {
                 **t = if s.equipped {
