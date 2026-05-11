@@ -88,11 +88,6 @@ pub const BOOSTER_BRIGHT_HEX: &str = "#ffe88a";
 pub const BLADE_HEX:          &str = "#4a4a55";
 pub const BLADE_BRIGHT_HEX:   &str = "#d8e0e8";
 
-// ---------- Pier building tints ----------
-pub const BUILDING_MUNITIONS_HEX:  &str = "#ff8a3c";
-pub const BUILDING_WATCHTOWER_HEX: &str = "#ffe066";
-pub const BUILDING_DRYDOCK_HEX:    &str = "#5cb8ff";
-
 // ---------- Ship-class hull tints ----------
 //
 // Each `ShipClass` gets its own identity color, looked up via

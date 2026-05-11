@@ -42,7 +42,6 @@ mod map;
 mod modes;
 mod palette;
 mod pause;
-mod pier;
 mod rendering;
 mod main_menu;
 mod settings;
@@ -54,7 +53,6 @@ mod trails;
 mod turret;
 mod ui;
 mod ui_kit;
-mod wave;
 mod weapon;
 mod xp;
 
@@ -111,7 +109,6 @@ use pause::{
     handle_resume_click, setup_pause_menu, sync_pause_menu_visibility,
     toggle_pause_on_esc, Paused,
 };
-use pier::{draft_input, sync_pier_visuals, update_draft_ui, Pier, WaveDraft};
 use rendering::{
     resize_upscale_sprite, setup_render, update_hash_image, update_hud_camera_viewport,
 };
@@ -132,7 +129,6 @@ use ui::{
     update_score_text, update_slot_labels, update_vsync_label, update_wave_indicator,
     update_wave_ui, DamageStats,
 };
-use wave::{wave_orchestrator, WaveState};
 use weapon::WeaponType;
 
 // ---------- Top-level screen state ----------
@@ -240,7 +236,17 @@ fn reset_xp_for_main_menu(
 fn refill_and_clean_for_next_stage(
     stats: Res<stats::PlayerStats>,
     mut friendly: Query<&mut components::Health, With<components::Friendly>>,
-    arena: Query<Entity, wave::ArenaDisposeFilter>,
+    arena: Query<
+        Entity,
+        Or<(
+            With<enemy::Enemy>,
+            With<trails::EnemyTrail>,
+            With<bullet::Bullet>,
+            With<beam::Beam>,
+            With<effects::MuzzleFlash>,
+            With<effects::HitParticle>,
+        )>,
+    >,
     mut commands: Commands,
 ) {
     if let Ok(mut h) = friendly.single_mut() {
@@ -366,9 +372,6 @@ fn main() {
         .insert_resource(VsyncMode::default())
         .insert_resource(GameMode::default())
         .insert_resource(CameraFollow::default())
-        .insert_resource(WaveState::default())
-        .insert_resource(Pier::default())
-        .insert_resource(WaveDraft::default())
         .insert_resource(ViewMode::default())
         .insert_resource(MapState::new())
         .insert_resource(BuildingTimers::default())
@@ -592,14 +595,10 @@ fn main() {
             update_ally_hp_values,
         ))
         .add_systems(Update, (
-            // Wave-mode + ally systems live in their own bundle so we don't
-            // blow past the 20-system tuple limit on the visuals/UI block.
-            // All combat-side; paused with the rest while on the map.
-            wave_orchestrator,
-            sync_pier_visuals,
-            draft_input,
-            update_draft_ui,
-            // Sub-tuple to keep the outer count under Bevy's 20-cap.
+            // Ally systems. Wave/pier orchestration is gone (Sandbox is
+            // the only remaining mode); allies stay in their own bundle
+            // so we don't blow past Bevy's 20-system tuple limit.
+            // Sub-tuple to keep the outer count under the cap.
             (ally_ai, ally_turret_aim_fire, ally_death_check, plane_ai),
             // Missile launcher fires forward; missile track re-aims in
             // flight. Tracking runs *before* `apply_velocity` so the

@@ -21,7 +21,6 @@ use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx, MuzzleFlash};
 use crate::enemy::Enemy;
 use crate::modes::ScreenShake;
 use crate::palette::PaletteMaterials;
-use crate::pier::{pier_damage_bonus, pier_range_mult, Pier};
 use crate::rune::Rune;
 use crate::ship::approach_angle;
 use crate::ui::DamageStats;
@@ -155,12 +154,12 @@ pub struct SlotCfg {
 
 // ---------- Systems ----------
 
-/// Push per-slot config + pier adjacency buffs into each live `TurretSlot`.
-/// Runs whenever `TurretConfig` or `Pier` changes — covers both player-driven
-/// stat tweaks (UI) and upgrade placement (Drafting phase).
+/// Push per-slot config + adjacency buffs into each live `TurretSlot`.
+/// Runs whenever `TurretConfig` changes — covers player-driven stat
+/// tweaks (UI) and shop drag-drop. (Pier adjacency buffs and the
+/// inter-wave drafting flow that fed them are gone.)
 pub fn sync_turret_config(
     cfg: Res<TurretConfig>,
-    pier: Res<Pier>,
     pm: Option<Res<PaletteMaterials>>,
     mut q: Query<(&mut TurretSlot, &mut Visibility, &mut Transform, &mut MeshMaterial2d<ColorMaterial>, &Children)>,
     mut barrels: Query<
@@ -172,11 +171,11 @@ pub fn sync_turret_config(
         (With<HeliPadDecal>, Without<TurretBarrel>, Without<TurretSlot>),
     >,
 ) {
-    if !cfg.is_changed() && !pier.is_changed() { return; }
+    if !cfg.is_changed() { return; }
     let Some(pm) = pm else { return; };
     for (mut slot, mut vis, mut tf, mut mat, children) in &mut q {
         let s = cfg.slots[slot.index];
-        slot.damage = s.damage + pier_damage_bonus(&pier, slot.index);
+        slot.damage = s.damage;
         slot.fire_rate = s.fire_rate * crate::booster::boost_multiplier_for_slot(&cfg, slot.index);
         slot.weapon = s.weapon;
         // Non-firing weapons (HeliPad / Booster / Blade) never get
@@ -194,7 +193,10 @@ pub fn sync_turret_config(
             if tf.rotation != want { tf.rotation = want; }
             slot.barrel_angle = slot.mount_angle;
         }
-        slot.range_mult = pier_range_mult(&pier, slot.index);
+        // Pier-adjacency range buff is gone; live range_mult collapses
+        // to 1.0 (per-weapon and player-stat range still apply via
+        // `weapon.range_mult()` × `stats.range_mult()` in aim_fire).
+        slot.range_mult = 1.0;
         let new_barrels = s.barrels.clamp(1, 3);
         if new_barrels != slot.barrels { slot.next_barrel = 0; }
         slot.barrels = new_barrels;

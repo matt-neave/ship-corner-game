@@ -43,7 +43,6 @@ pub const CUSTOMIZE_INTERNAL_W: u32 = 320;
 pub const CUSTOMIZE_INTERNAL_H: u32 = 200;
 
 // ---------- Friendly ship ----------
-pub const FRIENDLY_SPEED:     f32 = 28.0;
 pub const FRIENDLY_TURN_RATE: f32 = 3.6; // rad/s
 pub const HULL_LEN:           f32 = 22.0;
 pub const HULL_WIDTH:         f32 = 8.0;
@@ -217,21 +216,9 @@ pub const RESONATE_DECAY:           f32 = 2.0;
 pub const RESONATE_DAMAGE_PER_STACK: f32 = 0.20;
 pub const RESONATE_MAX_STACKS:      u8  = 5;
 
-// ---------- Wave mode ----------
-pub const FRIENDLY_HP_WAVE:      i32 = 50;
-pub const WAVE_TRANSITION_DELAY: f32 = 1.4;
-pub const WAVE_FAIL_DELAY:       f32 = 2.5;
-pub const WAVE_INTRO_DELAY:      f32 = 0.6;
-pub const FRIENDLY_DOCK_X:       f32 = -PLAY_WORLD / 2.0 + 24.0;
-pub const ENEMY_WAVE_X:          f32 =  PLAY_WORLD / 2.0 - 22.0;
-pub const FRIENDLY_DOCK_HEADING: f32 = -FRAC_PI_2; // facing +X (right)
-
-// ---------- Pier ----------
-pub const PIER_CELL_X:  f32 = -PLAY_WORLD / 2.0 + 6.0;
-pub const PIER_CELL_W:  f32 = 9.0;
-pub const PIER_CELL_H:  f32 = 21.0;
-pub const PIER_Y_STEP:  f32 = 22.0;
-pub const PIER_Y_START: f32 = -PIER_Y_STEP * 3.5;
+// (Old Wave-mode constants — FRIENDLY_HP_WAVE, WAVE_*_DELAY,
+// FRIENDLY_DOCK_*, ENEMY_WAVE_X, PIER_* — were removed with the
+// retired Wave game mode + pier drafting system.)
 
 // ---------- Wave structure ----------
 //
@@ -257,11 +244,27 @@ pub fn waves_for_stars(stars: u8) -> u8 {
     }
 }
 
-/// Enemy count for a single wave. `wave_idx` is 0-based. Mild ramp
-/// (`+1` every two waves) so later waves feel weightier than the
-/// opener without exploding the cap.
-pub fn wave_size(wave_idx: u8, _stars: u8) -> u32 {
-    4 + (wave_idx as u32) / 2
+/// Enemy count for a single wave. Composed from three terms:
+///
+/// - **Base wave ramp**: `4 + wave_idx / 2` — within a stage, later
+///   waves feel weightier than the opener.
+/// - **Stage progression**: `× (1 + 0.5 × battles_cleared)` — every
+///   stage you clear, the next stage's waves grow by +50% (Stage 1 =
+///   ×1.0, Stage 2 = ×1.5, Stage 3 = ×2.0, …). Compounds quickly so
+///   the campaign keeps escalating.
+/// - **Star density**: `× (1 + 0.2 × (stars - 1))` — higher-star
+///   sections are denser per wave on top of having more waves total
+///   (`waves_for_stars`). 5★ Stage 1 ≈ ×1.8 vs 1★ baseline.
+///
+/// Result is rounded to the nearest integer. Concurrent on-screen cap
+/// is `CombatContext::enemy_cap`; overflow drips in over time as
+/// existing enemies die, so big numbers feel relentless rather than
+/// instantly overwhelming.
+pub fn wave_size(wave_idx: u8, stars: u8, battles_cleared: u32) -> u32 {
+    let base = 4.0 + (wave_idx as u32 / 2) as f32;
+    let progress_mult = 1.0 + 0.5 * battles_cleared as f32;
+    let star_mult = 1.0 + 0.2 * (stars.saturating_sub(1) as f32);
+    (base * progress_mult * star_mult).round().max(1.0) as u32
 }
 
 /// True when this wave should swap to the boss-style variant mix.

@@ -12,19 +12,17 @@ use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::balance::{FRIENDLY_HP_WAVE, PLAY_INTERNAL, UI_WIDTH};
+use crate::balance::PLAY_INTERNAL;
 use crate::ally::Ally;
 use crate::components::{Friendly, Health};
 use crate::i18n::tr;
 use crate::modes::{
     effective_ui_width, play_area_screen_rect,
-    DesktopHint, GameMode, VsyncMode, WindowMode,
+    DesktopHint, VsyncMode, WindowMode,
 };
 use crate::map::ViewMode;
 use crate::palette::{UI_TEXT, UI_TEXT_DIM, UI_VALUE};
-use crate::pier::{spawn_draft_card, DraftPanel, PierVisual};
 use crate::ui_kit::theme;
-use crate::wave::WaveState;
 use crate::Score;
 
 use super::{ButtonKind, SlotButton};
@@ -191,38 +189,6 @@ pub fn setup_hud(commands: &mut Commands) {
         ));
     });
 
-    // Wave-mode draft panel — bottom of screen, hidden unless WavePhase::Drafting.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(14.0),
-            left: Val::Px(UI_WIDTH),
-            right: Val::Px(0.0),
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
-            row_gap: Val::Px(4.0),
-            ..default()
-        },
-        Visibility::Hidden,
-        DraftPanel,
-    ))
-    .with_children(|p| {
-        p.spawn((
-            Text::new(tr("draft_instruction")),
-            TextFont { font_size: 9.0, ..default() },
-            TextColor(UI_TEXT_DIM),
-        ));
-        p.spawn(Node {
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(8.0),
-            ..default()
-        })
-        .with_children(|row| {
-            for i in 0..3u8 {
-                spawn_draft_card(row, i);
-            }
-        });
-    });
 
     // Player HUD column — XP track on top, HP track below, ally
     // bars below that. Each bar owns its own border so
@@ -317,7 +283,9 @@ pub fn setup_hud(commands: &mut Commands) {
             ))
             .with_children(|over| {
                 over.spawn((
-                    Text::new(format!("{}", FRIENDLY_HP_WAVE)),
+                    // Placeholder text — `update_wave_ui` rewrites
+                    // this every frame from the live HP+shield pool.
+                    Text::new("0/0"),
                     TextFont { font_size: 13.0, ..default() },
                     TextColor(theme::ON_SURFACE),
                     // Black drop shadow so the white digits read
@@ -366,16 +334,11 @@ pub fn setup_hud(commands: &mut Commands) {
 
 pub fn update_score_text(
     score: Res<Score>,
-    mode: Res<GameMode>,
-    wave: Res<WaveState>,
     mut q: Query<&mut Text, With<ScoreText>>,
 ) {
-    if !score.is_changed() && !mode.is_changed() && !wave.is_changed() { return; }
+    if !score.is_changed() { return; }
     for mut t in &mut q {
-        **t = match *mode {
-            GameMode::Sandbox => format!("{} {}", tr("score_label"), score.0),
-            GameMode::Wave    => format!("{} {}", tr("wave_label"),  wave.wave.max(1)),
-        };
+        **t = format!("{} {}", tr("score_label"), score.0);
     }
 }
 
@@ -454,22 +417,14 @@ pub fn update_map_button(
 /// numeric readout from the player's current `Health`. Also drives the
 /// shield overlay from `Shield::current / stats.shield_max`.
 pub fn update_wave_ui(
-    mode: Res<GameMode>,
     view: Res<ViewMode>,
     stats: Res<crate::stats::PlayerStats>,
     friendly: Query<(&Health, Option<&crate::stats::Shield>), With<Friendly>>,
-    mut pier_q: Query<&mut Visibility, (With<PierVisual>, Without<WaveHpUi>)>,
-    mut hp_root_q: Query<&mut Visibility, (With<WaveHpUi>, Without<PierVisual>)>,
+    mut hp_root_q: Query<&mut Visibility, With<WaveHpUi>>,
     mut hp_fill_q: Query<&mut Node, (With<WaveHpFill>, Without<ShieldFill>)>,
     mut hp_text_q: Query<&mut Text, With<WaveHpText>>,
-    mut shield_q: Query<(&mut Node, &mut Visibility), (With<ShieldFill>, Without<WaveHpFill>, Without<WaveHpUi>, Without<PierVisual>)>,
+    mut shield_q: Query<(&mut Node, &mut Visibility), (With<ShieldFill>, Without<WaveHpFill>, Without<WaveHpUi>)>,
 ) {
-    if mode.is_changed() {
-        let want_pier = matches!(*mode, GameMode::Wave);
-        let target = if want_pier { Visibility::Inherited } else { Visibility::Hidden };
-        for mut v in &mut pier_q { if *v != target { *v = target; } }
-    }
-
     if view.is_changed() {
         let want = if matches!(*view, ViewMode::Combat) {
             Visibility::Inherited
@@ -482,7 +437,7 @@ pub fn update_wave_ui(
     }
 
     let Ok((h, shield)) = friendly.single() else { return; };
-    let max_hp = current_max_hp(&mode, &stats);
+    let max_hp = stats.max_hp();
     let shield_max = stats.shield_max.effective().max(0.0).round() as i32;
     let shield_cur = shield.map(|s| s.current).unwrap_or(0.0).max(0.0);
 
@@ -526,19 +481,18 @@ pub fn update_wave_ui(
 }
 
 /// Despawn + respawn the bar's vertical tick lines whenever max HP
-/// changes (mode flips OR PlayerStats.hp upgrades).
+/// changes (PlayerStats.hp upgrades).
 pub fn update_hp_subdividers(
-    mode: Res<GameMode>,
     stats: Res<crate::stats::PlayerStats>,
     mut commands: Commands,
     track_q: Query<Entity, With<WaveHpTrack>>,
     subdivider_q: Query<Entity, With<HpBarSubdivider>>,
 ) {
-    if !mode.is_changed() && !stats.is_changed() { return; }
+    if !stats.is_changed() { return; }
     for e in &subdivider_q { commands.entity(e).despawn(); }
     let Ok(track) = track_q.single() else { return; };
 
-    let max_hp = current_max_hp(&mode, &stats);
+    let max_hp = stats.max_hp();
     commands.entity(track).with_children(|t| {
         let step = 50;
         let mut hp = step;
@@ -559,13 +513,6 @@ pub fn update_hp_subdividers(
             hp += step;
         }
     });
-}
-
-fn current_max_hp(mode: &GameMode, stats: &crate::stats::PlayerStats) -> i32 {
-    // Wave mode keeps its hardcoded balance value; Sandbox follows
-    // `PlayerStats::max_hp()` so HP upgrades from the shop / debug
-    // panel actually shift the bar's full-fill mark.
-    if matches!(mode, GameMode::Wave) { FRIENDLY_HP_WAVE } else { stats.max_hp() }
 }
 
 fn spawn_ally_hp_bar(parent: &mut ChildSpawnerCommands, ally: Entity) {

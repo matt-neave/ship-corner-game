@@ -34,7 +34,7 @@ use bevy::render::view::RenderLayers;
 use rand::Rng;
 
 use crate::balance::{
-    FRIENDLY_HP_WAVE, PLAY_LAYER, PLAY_WORLD, TURRET_PIVOT, TURRET_RANGE,
+    PLAY_LAYER, PLAY_WORLD, TURRET_PIVOT, TURRET_RANGE,
 };
 use crate::bullet::Bullet;
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
@@ -2352,11 +2352,12 @@ pub fn tender_heal_beam(
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
 
-    let player_max_hp = if matches!(*game_mode, GameMode::Wave) {
-        FRIENDLY_HP_WAVE
-    } else {
-        100
-    };
+    // Wave mode is gone — Sandbox is the only mode now, so the
+    // tender heals to a fixed 100 HP cap. Was 50 in the old Wave
+    // mode; the larger Sandbox cap means the heal-beam stays useful
+    // through the whole HP range.
+    let player_max_hp = 100;
+    let _ = game_mode;
 
     for (tender_e, tender_tf, mut emitter) in &mut tenders {
         let tender_pos = tender_tf.translation.truncate();

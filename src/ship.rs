@@ -9,15 +9,14 @@ use bevy::window::PrimaryWindow;
 
 use crate::balance::{
     BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH,
-    HULL_HALF_LEN, HULL_LEN, HULL_WIDTH, PIER_CELL_W, PIER_CELL_X, PIER_Y_START, PIER_Y_STEP,
+    HULL_HALF_LEN, HULL_LEN, HULL_WIDTH,
     PLAY_LAYER, PLAY_WORLD, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
 };
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
 use crate::effects::{EffectMeshes, HitFx};
 use crate::enemy::Enemy;
-use crate::modes::{effective_ui_width, play_area_screen_rect, GameMode, WindowMode};
+use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
 use crate::palette::{Palette, PaletteMaterials};
-use crate::pier::PierVisual;
 use crate::rune::{FireExtent, OnFrost};
 use crate::trails::{empty_dynamic_mesh, Trail};
 use crate::turret::{BarrelIndex, HeliPadDecal, TurretBarrel, TurretConfig, TurretSlot};
@@ -89,37 +88,7 @@ pub fn setup_world(
         RenderLayers::layer(PLAY_LAYER),
     )).id();
 
-    // Pier grid — 8 stacked cells along the LHS wall, drawn as thin grid
-    // lines. Doubles as the dock visual and the placement surface for upgrade
-    // buildings. Hidden until Wave mode.
-    let pier_top    = PIER_Y_START - PIER_Y_STEP / 2.0;
-    let pier_bottom = PIER_Y_START + (8.0 - 1.0) * PIER_Y_STEP + PIER_Y_STEP / 2.0;
-    let pier_height = pier_bottom - pier_top;
-    let h_line_mesh = meshes.add(Rectangle::new(PIER_CELL_W, 1.0));
-    let v_line_mesh = meshes.add(Rectangle::new(1.0, pier_height));
-
-    // 9 horizontal lines (top + bottom + 7 separators) + 2 vertical edges.
-    for i in 0..=8 {
-        let y = pier_top + i as f32 * PIER_Y_STEP;
-        commands.spawn((
-            Mesh2d(h_line_mesh.clone()),
-            MeshMaterial2d(pm.border.clone()),
-            Transform::from_xyz(PIER_CELL_X, y, 0.4),
-            Visibility::Hidden,
-            PierVisual,
-            RenderLayers::layer(PLAY_LAYER),
-        ));
-    }
-    for x_off in [-PIER_CELL_W / 2.0, PIER_CELL_W / 2.0] {
-        commands.spawn((
-            Mesh2d(v_line_mesh.clone()),
-            MeshMaterial2d(pm.border.clone()),
-            Transform::from_xyz(PIER_CELL_X + x_off, (pier_top + pier_bottom) / 2.0, 0.4),
-            Visibility::Hidden,
-            PierVisual,
-            RenderLayers::layer(PLAY_LAYER),
-        ));
-    }
+    // (Pier grid + drafting visuals were Wave-mode only — both gone.)
 
     // Friendly turrets. Barrel ≥1.5 wide so it doesn't alias to zero
     // pixels at off-axis rotations — without MSAA, sub-pixel rects vanish
@@ -261,14 +230,13 @@ pub fn setup_world(
 
 // ---------- Movement ----------
 
-/// Sandbox: the friendly ship follows the cursor when it's over the play area;
+/// The friendly ship follows the cursor when it's over the play area;
 /// otherwise it auto-engages the nearest enemy at a comfortable range.
-/// Wave mode: cursor is ignored (true auto-battle).
+/// (Wave mode is gone, so the auto-battle short-circuit went with it.)
 pub fn friendly_movement(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mode: Res<WindowMode>,
-    game_mode: Res<GameMode>,
     stats: Res<crate::stats::PlayerStats>,
     enemies: Query<&Transform, (With<Enemy>, Without<Friendly>)>,
     play_camera: Query<&Transform, (With<crate::palette::PlayCamera>, Without<Friendly>, Without<Enemy>)>,
@@ -290,26 +258,22 @@ pub fn friendly_movement(
         .map(|t| t.translation.truncate())
         .unwrap_or(Vec2::ZERO);
 
-    // Wave mode is fully auto-battle — ignore the cursor entirely so the
-    // enemy-seeking branch below takes over regardless of mouse position.
-    let target_world: Option<Vec2> = if matches!(*game_mode, GameMode::Wave) {
-        None
-    } else {
-        cursor.and_then(|c| {
-            if c.x >= play_left && c.x <= play_left + play_screen
-                && c.y >= play_top && c.y <= play_top + play_screen
-            {
-                let nx = (c.x - play_left) / play_screen;
-                let ny = (c.y - play_top) / play_screen;
-                Some(Vec2::new(
-                    (nx - 0.5) * PLAY_WORLD + cam_off.x,
-                    (0.5 - ny) * PLAY_WORLD + cam_off.y,
-                ))
-            } else {
-                None
-            }
-        })
-    };
+    // Cursor over the play area pulls the ship toward it; outside
+    // the play area falls through to the auto-engage branch below.
+    let target_world: Option<Vec2> = cursor.and_then(|c| {
+        if c.x >= play_left && c.x <= play_left + play_screen
+            && c.y >= play_top && c.y <= play_top + play_screen
+        {
+            let nx = (c.x - play_left) / play_screen;
+            let ny = (c.y - play_top) / play_screen;
+            Some(Vec2::new(
+                (nx - 0.5) * PLAY_WORLD + cam_off.x,
+                (0.5 - ny) * PLAY_WORLD + cam_off.y,
+            ))
+        } else {
+            None
+        }
+    });
 
     for (mut tf, mut vel, mut heading) in &mut q {
         let pos = tf.translation.truncate();

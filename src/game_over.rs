@@ -102,7 +102,17 @@ pub fn reset_run_for_restart(
     mut pending: ResMut<crate::xp::LevelUpsPending>,
     selected_hull: Res<crate::hull::SelectedHull>,
     mut friendly: Query<&mut crate::components::Health, With<crate::components::Friendly>>,
-    arena: Query<Entity, crate::wave::ArenaDisposeFilter>,
+    arena: Query<
+        Entity,
+        Or<(
+            With<crate::enemy::Enemy>,
+            With<crate::trails::EnemyTrail>,
+            With<crate::bullet::Bullet>,
+            With<crate::beam::Beam>,
+            With<crate::effects::MuzzleFlash>,
+            With<crate::effects::HitParticle>,
+        )>,
+    >,
     mut boat: Query<&mut Transform, With<MapBoat>>,
     mut commands: Commands,
 ) {

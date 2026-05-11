@@ -151,6 +151,13 @@ pub struct CombatContext {
     /// `spawn_boss`, and clears it back to `None` so it doesn't
     /// re-fire each frame.
     pub boss_pending: Option<crate::ally::ShipClass>,
+    /// Snapshot of `CampaignProgress.battles_cleared` taken at stage
+    /// start. Drives the stage-progression difficulty multiplier in
+    /// `balance::wave_size` + the on-screen cap in `enemy_cap`. Held
+    /// here (not read live each frame) so the difficulty is fixed for
+    /// the whole stage rather than jumping when the player completes
+    /// a battle mid-stage.
+    pub battles_cleared: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -187,6 +194,7 @@ impl Default for CombatContext {
             is_boss_wave: false,
             pending_spawns: Vec::new(),
             boss_pending: None,
+            battles_cleared: 0,
         };
         c.reset_for(1, 0);
         c
@@ -194,25 +202,33 @@ impl Default for CombatContext {
 }
 
 impl CombatContext {
-    /// On-screen enemy cap for sandbox-style drip spawning. Linear in stars
-    /// at 6 per tier so 5★ = 30, 1★ = 6.
+    /// On-screen enemy cap for sandbox-style drip spawning. Base is
+    /// `6 × stars` (5★ → 30, 1★ → 6). Climbs by `+2` per battle
+    /// cleared so late-campaign stages can keep more concurrent
+    /// pressure on, hard-capped at 60 to keep the arena legible.
     pub fn enemy_cap(&self) -> usize {
-        (6 * self.stars.max(1) as usize).min(30)
+        let base = 6 * self.stars.max(1) as usize;
+        let progress = (self.battles_cleared as usize) * 2;
+        (base + progress).min(60)
     }
 
     /// Initialise this context for a fresh stage at the given star
     /// tier. Call from every combat-start site (entering combat from
     /// the map, queueing the next round in `level_complete_check`,
-    /// etc.) so wave + budget state stays consistent.
-    pub fn reset_for(&mut self, stars: u8, _battles_cleared: u32) {
+    /// etc.) so wave + budget state stays consistent. `battles_cleared`
+    /// is snapshotted from `CampaignProgress` so all wave sizes for
+    /// THIS stage use the same multiplier even if a battle clears
+    /// mid-stage somehow.
+    pub fn reset_for(&mut self, stars: u8, battles_cleared: u32) {
         let wave_count = crate::balance::waves_for_stars(stars);
         let total: u32 = (0..wave_count)
-            .map(|i| crate::balance::wave_size(i, stars))
+            .map(|i| crate::balance::wave_size(i, stars, battles_cleared))
             .sum();
         self.stars = stars;
+        self.battles_cleared = battles_cleared;
         self.wave_count = wave_count;
         self.wave_idx = 0;
-        self.wave_remaining = crate::balance::wave_size(0, stars);
+        self.wave_remaining = crate::balance::wave_size(0, stars, battles_cleared);
         self.wave_phase = WavePhase::Spawning;
         self.wave_cd = 0.0;
         self.spawn_tick = 0.0;
@@ -232,7 +248,7 @@ impl CombatContext {
     /// calling).
     pub fn advance_wave(&mut self) {
         self.wave_idx = self.wave_idx.saturating_add(1);
-        self.wave_remaining = crate::balance::wave_size(self.wave_idx, self.stars);
+        self.wave_remaining = crate::balance::wave_size(self.wave_idx, self.stars, self.battles_cleared);
         self.wave_phase = WavePhase::Spawning;
         self.wave_cd = 0.0;
         self.spawn_tick = 0.0;

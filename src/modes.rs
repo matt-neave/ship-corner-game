@@ -19,14 +19,16 @@ use crate::ui::{ScoreText, UiPanel};
 
 // ---------- Resources ----------
 
-/// Top-level game-mode toggle. `Sandbox` = the original free-form mode
-/// (mouse-controlled friendly, endless trickle of enemies, invincible ship).
-/// `Wave` = scripted auto-battle with HP, wave count, dock spawn.
+/// Top-level game-mode resource. Only one variant survives — the
+/// previous `Wave` mode (scripted auto-battle, dock spawn, pier
+/// drafting) was retired in favour of Sandbox's own sub-wave system
+/// inside `CombatContext`. The enum is kept as a single-variant
+/// resource so future modes can be added without re-wiring resource
+/// insertion / `Default` derives elsewhere.
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GameMode {
     #[default]
     Sandbox,
-    Wave,
 }
 
 /// Toggled by the DESKTOP button. `desktop = true` hides the LHS UI panel,

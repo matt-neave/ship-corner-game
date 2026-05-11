@@ -31,11 +31,10 @@ use crate::balance::{
     RESONATE_DAMAGE_PER_STACK,
 };
 use crate::bullet::apply_damage;
-use crate::components::{Friendly, Health, Velocity};
+use crate::components::{Health, Velocity};
 use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx, HitParticle};
 use crate::enemy::Enemy;
 use crate::i18n::tr;
-use crate::modes::GameMode;
 use crate::palette::PaletteMaterials;
 use crate::ui::DamageStats;
 use crate::weapon::WeaponType;
@@ -470,15 +469,15 @@ impl OnFrost {
 /// point, so target HitFx flashes on each tick and any future damage
 /// modifiers compound automatically.
 ///
-/// Skips damage on a `Friendly` (player) entity in Sandbox mode — the player
-/// is invincible there and fire shouldn't override that. Visual particles
-/// still play so the on-fire state is visible.
+/// Burns the target every `FIRE_DAMAGE_TICK_INTERVAL`s while `OnFire` is
+/// alive. The friendly invincibility branch is gone — Wave mode is no
+/// longer a thing and Sandbox lets the player be damaged like any other
+/// target. Visual particles continue to play either way.
 pub fn tick_on_fire(
     time: Res<Time>,
     mut commands: Commands,
     em: Option<Res<EffectMeshes>>,
     pm: Option<Res<PaletteMaterials>>,
-    game_mode: Res<GameMode>,
     player_stats: Res<crate::stats::PlayerStats>,
     mut q: Query<(
         Entity,
@@ -487,7 +486,6 @@ pub fn tick_on_fire(
         &mut OnFire,
         &mut Health,
         &mut HitFx,
-        Option<&Friendly>,
     )>,
 ) {
     let Some(em) = em else { return; };
@@ -495,7 +493,7 @@ pub fn tick_on_fire(
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
 
-    for (entity, tf, extent, mut fire, mut hp, mut fx, friendly) in &mut q {
+    for (entity, tf, extent, mut fire, mut hp, mut fx) in &mut q {
         fire.remaining -= dt;
         if fire.remaining <= 0.0 {
             commands.entity(entity).remove::<OnFire>();
@@ -508,18 +506,14 @@ pub fn tick_on_fire(
         fire.damage_tick -= dt;
         if fire.damage_tick <= 0.0 {
             fire.damage_tick = FIRE_DAMAGE_TICK_INTERVAL;
-            let invincible_player =
-                friendly.is_some() && !matches!(*game_mode, GameMode::Wave);
-            if !invincible_player {
-                // Damage scales linearly with stacks — a triple-Fire
-                // socket burns 3× as fast as a single. Multiplied
-                // through the rune-damage stat afterwards.
-                let scaled = (FIRE_DAMAGE_PER_TICK as f32
-                    * fire.stacks as f32
-                    * player_stats.rune_damage_mult())
-                    .round() as i32;
-                apply_damage(&mut hp, &mut fx, scaled.max(1));
-            }
+            // Damage scales linearly with stacks — a triple-Fire
+            // socket burns 3× as fast as a single. Multiplied
+            // through the rune-damage stat afterwards.
+            let scaled = (FIRE_DAMAGE_PER_TICK as f32
+                * fire.stacks as f32
+                * player_stats.rune_damage_mult())
+                .round() as i32;
+            apply_damage(&mut hp, &mut fx, scaled.max(1));
         }
 
         // Particle tick — flame motes scattered across the body, drifting up.

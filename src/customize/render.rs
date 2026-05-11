@@ -155,7 +155,6 @@ type GameplayChromeFilter = Or<(
     With<crate::ui::CameraFollowButton>,
     With<crate::ui::WaveHpUi>,
     With<crate::ui::AllyHpRow>,
-    With<crate::pier::DraftPanel>,
     With<crate::map::LevelStatusUi>,
 )>;
 
