@@ -136,6 +136,85 @@ pub enum TargetPriority {
     LowestHp,
 }
 
+/// Unified target picker shared by player turrets AND autonomous
+/// units. Returns ONE target position chosen by the slot's
+/// targeting rune (or nearest-to-fallback if no rune). The caller
+/// pre-filters the candidate slice — turrets gate by arc + range,
+/// autonomous units typically pass everything in their roam radius.
+///
+/// Picker rules:
+/// - Targeting rune present → pick the best candidate by the rune's
+///   priority, measured relative to `anchor` (the SHIP for autonomous
+///   units, the TURRET for player turrets).
+/// - No rune → pick nearest to `fallback` (the calling unit's
+///   position for autonomous, the turret for player turrets).
+///
+/// `candidates` is a slice of `(world_pos, hp)` snapshots taken
+/// from the enemy query. Returns `None` only when the slice is
+/// empty. The autonomous caller adds `offset_for_slot` on top of
+/// the return value to spread multiple same-kind units; player
+/// turrets don't need that since their arcs already separate them.
+pub fn pick_target(
+    candidates: &[(bevy::math::Vec2, i32)],
+    anchor: bevy::math::Vec2,
+    fallback: bevy::math::Vec2,
+    runes: &[Option<crate::rune::Rune>; 3],
+) -> Option<bevy::math::Vec2> {
+    if candidates.is_empty() { return None; }
+    let priority = runes
+        .iter()
+        .find_map(|r| r.and_then(|r| r.target_priority()));
+    let best = if let Some(p) = priority {
+        candidates
+            .iter()
+            .min_by(|a, b| {
+                score_for(**a, p, anchor)
+                    .partial_cmp(&score_for(**b, p, anchor))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    } else {
+        candidates
+            .iter()
+            .min_by(|a, b| {
+                a.0.distance_squared(fallback)
+                    .partial_cmp(&b.0.distance_squared(fallback))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    };
+    best.map(|(pos, _)| *pos)
+}
+
+/// Deterministic per-slot world-space offset for autonomous units
+/// to add on top of `pick_target`'s result so multiple same-kind
+/// units approach a shared target from different angles. Returns
+/// 0 for slot 0 so the first unit aims dead-on; subsequent slots
+/// rotate around an 8-step compass at a small fixed radius. Not
+/// applied for player turrets (their arcs already separate them).
+pub fn offset_for_slot(slot_idx: usize) -> bevy::math::Vec2 {
+    if slot_idx == 0 {
+        return bevy::math::Vec2::ZERO;
+    }
+    let angle = (slot_idx as f32) * std::f32::consts::TAU / 8.0;
+    let radius = 6.0;
+    bevy::math::Vec2::new(angle.cos() * radius, angle.sin() * radius)
+}
+
+/// Score helper for `pick_target`. Smaller score == higher priority
+/// for the picker. Distance-based priorities measure from `anchor`,
+/// which the caller chooses (ship for autonomous, turret for player).
+fn score_for(
+    (pos, hp): (bevy::math::Vec2, i32),
+    p: TargetPriority,
+    anchor: bevy::math::Vec2,
+) -> f32 {
+    match p {
+        TargetPriority::Closest   =>  pos.distance_squared(anchor),
+        TargetPriority::Furthest  => -pos.distance_squared(anchor),
+        TargetPriority::HighestHp => -(hp as f32),
+        TargetPriority::LowestHp  =>  hp as f32,
+    }
+}
+
 impl WeaponType {
     /// Forward-cycle through equipped types (for the EQUIP button). `None`
     /// represents wrapping back to "unequipped". New tag-flavour weapons

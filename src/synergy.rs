@@ -11,8 +11,8 @@
 //! | Tag | T1 (2) | T2 (4) | T3 (6) | T4 (8) |
 //! |---|---|---|---|---|
 //! | Naval | +10% global dmg | +20% | +30% | +40% |
-//! | Future | +15% fire rate to Future | +30% | +45% | +60% |
-//! | Autonomous | +20% fire rate to Autonomous | +40% | +60% | +80% |
+//! | Future | 0.1s stun on hit | 0.2s | 0.3s | 0.4s |
+//! | Autonomous | +10% rate + +10% speed | +20% / +20% | +30% / +30% | +40% / +40% |
 //! | Pirate | +50% scrap drops | +100% | +150% | +200% |
 //! | Support | non-Support +10% rate | +20% rate, +10% dmg | +30% / +20% | +40% / +25% |
 //! | Melee | +1 HP heal per Melee kill | +2 | +3 | +4 |
@@ -59,16 +59,25 @@ impl Synergies {
         1.0 + 0.10 * self.naval as f32
     }
 
-    /// Future fire-rate multiplier — only applied to Future-tagged
-    /// turrets. +15% per tier.
-    pub fn future_fire_rate_mult(&self) -> f32 {
-        1.0 + 0.15 * self.future as f32
+    /// Seconds of stun applied to enemies hit by a Future-tagged
+    /// weapon. 0.1s per tier — read by `process_damage_events`,
+    /// applied as a `Stunned` component on the target.
+    pub fn future_stun_duration(&self) -> f32 {
+        0.10 * self.future as f32
     }
 
-    /// Autonomous fire-rate multiplier — only applied to
-    /// Autonomous-tagged turrets. +20% per tier.
+    /// Autonomous fire-rate multiplier — applied to Autonomous-tagged
+    /// turrets. +10% per tier (paired with the speed mult below).
     pub fn autonomous_fire_rate_mult(&self) -> f32 {
-        1.0 + 0.20 * self.autonomous as f32
+        1.0 + 0.10 * self.autonomous as f32
+    }
+
+    /// Autonomous unit movement multiplier — applied to helicopter
+    /// orbit speed and octopus swim speed. +10% per tier. Lets the
+    /// drones keep up with the higher fire cadence the synergy
+    /// pushes them toward.
+    pub fn autonomous_speed_mult(&self) -> f32 {
+        1.0 + 0.10 * self.autonomous as f32
     }
 
     /// Scrap-drop multiplier from Pirate, applied in
@@ -113,11 +122,12 @@ impl Synergies {
     }
 
     /// Combined fire-rate multiplier applied to a slot whose weapon
-    /// carries `tag`. Bakes Future / Autonomous tag-specific buffs
-    /// AND Support's broad buff (Support opts out for itself).
+    /// carries `tag`. Bakes Autonomous's tag-specific buff AND
+    /// Support's broad buff (Support opts out for itself). Future
+    /// no longer buffs fire rate — its synergy is the on-hit stun
+    /// applied in `process_damage_events`.
     pub fn fire_rate_mult_for(&self, tag: WeaponTag) -> f32 {
         let tag_specific = match tag {
-            WeaponTag::Future => self.future_fire_rate_mult(),
             WeaponTag::Autonomous => self.autonomous_fire_rate_mult(),
             _ => 1.0,
         };

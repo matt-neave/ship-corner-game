@@ -72,7 +72,7 @@ use customize::{
     handle_shop_mod_click, handle_stat_debug_buttons, sync_customize_text, sync_stats_panel,
     toggle_customize_render, track_customize_cursor, update_shop_mod_cards,
     update_customize_ship, update_customize_shop, update_customize_tooltip,
-    update_customize_ui, update_drag_ghost, update_sell_label, update_synergy_panel,
+    update_customize_ui, update_drag_ghost, update_sell_label, update_synergy_banner,
     CustomizeOpen, DragState,
 };
 use balance::{WINDOW_H, WINDOW_W};
@@ -119,7 +119,7 @@ use rendering::{
 };
 use settings::{apply_loaded_settings, persist_settings_on_change};
 use rune::{tick_echoes, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_resonate};
-use ship::{apply_velocity, friendly_movement, friendly_ram_damage, setup_world};
+use ship::{apply_velocity, friendly_movement, friendly_ram_damage, setup_world, tick_stunned};
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{
     helicopter_ai, mortar_shell_tick, sync_helipad_helicopters, sync_helipad_nose_barrels,
@@ -394,6 +394,7 @@ fn main() {
         .add_event::<TriggerMapPhase>()
         .insert_resource(CustomizeOpen::default())
         .insert_resource(DragState::default())
+        .insert_resource(customize::TooltipLayout::default())
         .insert_resource(Paused::default())
         .add_systems(Startup, (
             setup_render, setup_world, setup_ui, setup_map,
@@ -514,6 +515,7 @@ fn main() {
             // Combat sim — paused while on the map view.
             friendly_movement,
             enemy_ai,
+            tick_stunned,
             apply_velocity,
             friendly_ram_damage,
             stats::shield_recharge_system,
@@ -735,8 +737,7 @@ fn main() {
             update_customize_ship,
             update_customize_shop,
             update_customize_tooltip,
-            update_sell_label,
-            update_synergy_panel,
+            update_synergy_banner,
             sync_stats_panel,
             handle_stat_debug_buttons,
             update_shop_mod_cards,
@@ -749,7 +750,10 @@ fn main() {
         // block above stays a flat 14-item tuple (Bevy's trait impl
         // gets unhappy with nested chained tuples past a certain
         // shape).
-        .add_systems(Update, (start_drag, update_drag_ghost, complete_drag).chain())
+        .add_systems(
+            Update,
+            (start_drag, update_drag_ghost, complete_drag, update_sell_label).chain(),
+        )
         .add_systems(Update, (
             // Persistent settings: load once on first frame; persist on
             // any change to NIGHT / CRT / VSYNC.

@@ -647,10 +647,10 @@ pub fn update_hp_bar_pixel_scale(
     >,
 ) {
     let Ok(win) = windows.single() else { return; };
-    let (play_left, play_top, size) = play_area_screen_rect(
+    let (play_left, play_top, _play_w, play_h) = play_area_screen_rect(
         win.width(), win.height(), effective_ui_width(&window_mode),
     );
-    let upscale = (size / PLAY_INTERNAL as f32).max(1.0);
+    let upscale = (play_h / PLAY_INTERNAL as f32).max(1.0);
     let px = Val::Px(upscale);
     let border = UiRect::all(px);
 

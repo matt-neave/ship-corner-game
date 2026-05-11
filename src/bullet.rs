@@ -344,6 +344,7 @@ pub fn process_damage_events(
     mut queue: ResMut<PendingDamageQueue>,
     mut stats: ResMut<DamageStats>,
     player_stats: Res<crate::stats::PlayerStats>,
+    synergies: Res<crate::synergy::Synergies>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mut enemies: Query<
@@ -359,6 +360,10 @@ pub fn process_damage_events(
     let Some(em) = em else { return; };
     if queue.0.is_empty() { return; }
     let mut rng = rand::thread_rng();
+    // Future synergy: weapons carrying `WeaponTag::Future` stun their
+    // target for this many seconds per hit. 0 when no Future tiers
+    // are active so the per-event check below is a free branch.
+    let future_stun = synergies.future_stun_duration();
 
     // Snapshot for chain-target picking (Shock / Cascade). Built from
     // the mutable enemies query's read-only iteration before any
@@ -375,6 +380,7 @@ pub fn process_damage_events(
         process_damage_event(
             ev, &mut queue.0,
             &mut commands, &mut stats, &player_stats, &pm, &em,
+            future_stun,
             &enemy_snap, &mut enemies, &on_fire, &on_frost,
             &on_conduit, &on_resonate, &mut rng,
         );
@@ -389,6 +395,7 @@ fn process_damage_event(
     player_stats: &crate::stats::PlayerStats,
     pm: &PaletteMaterials,
     em: &EffectMeshes,
+    future_stun: f32,
     enemy_snap: &[(Entity, Vec2, f32)],
     enemies: &mut Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
     on_fire: &Query<&OnFire>,
@@ -399,6 +406,17 @@ fn process_damage_event(
 ) {
     let Ok((_, _, _, mut h, mut fx, _)) = enemies.get_mut(ev.target) else { return; };
     if h.0 <= 0 { return; } // already dead from an earlier hit this frame
+
+    // Future synergy stun — apply BEFORE damage so a lethal hit still
+    // briefly freezes a corpse that's about to despawn (cheap; the
+    // entity is removed next frame regardless). Only Future-tagged
+    // weapons proc the stun, and only when at least one Future
+    // synergy tier is active (`future_stun > 0`).
+    if future_stun > 0.0 && matches!(ev.weapon.tag(), crate::weapon::WeaponTag::Future) {
+        commands
+            .entity(ev.target)
+            .insert(crate::components::Stunned { remaining: future_stun });
+    }
 
     // Resonate damage amplifier — cross-slot debuff that boosts every
     // damage source on this target. Read once per event so all damage

@@ -111,13 +111,37 @@ pub struct ShopMod {
 
 impl ShopMod {
     /// Card text, e.g. "+25 CRIT" or "+0.5 RUNE". Sign is always
-    /// included so stacking direction reads at a glance.
+    /// included so stacking direction reads at a glance. Uses a
+    /// SHORT stat label so the string fits inside the card at low
+    /// display scales — the full `StatKind::label` (e.g. "PROC
+    /// STRENGTH") is reserved for the stats panel where there's
+    /// room to display it.
     pub fn label(self) -> String {
         if self.delta.fract().abs() < 0.01 {
-            format!("{:+.0} {}", self.delta, self.kind.label())
+            format!("{:+.0} {}", self.delta, short_stat_label(self.kind))
         } else {
-            format!("{:+.1} {}", self.delta, self.kind.label())
+            format!("{:+.1} {}", self.delta, short_stat_label(self.kind))
         }
+    }
+}
+
+/// Compact card-friendly label for a stat. The stats panel uses
+/// `StatKind::label` for the full form; this trims the longer
+/// names down so the mod card text stays one line.
+fn short_stat_label(kind: StatKind) -> &'static str {
+    match kind {
+        StatKind::Hp                => "HP",
+        StatKind::ShieldMax         => "SHIELD",
+        StatKind::MoveSpeed         => "SPEED",
+        StatKind::TurnSpeed         => "TURN",
+        StatKind::TurretTurnSpeed   => "T.TURN",
+        StatKind::TurretArcBonus    => "T.ARC",
+        StatKind::Range             => "RANGE",
+        StatKind::Crit              => "CRIT",
+        StatKind::Luck              => "LUCK",
+        StatKind::ProcStrength      => "PROC",
+        StatKind::Harvest           => "HARVEST",
+        StatKind::RuneDamage        => "RUNE DMG",
     }
 }
 
@@ -416,15 +440,52 @@ fn spawn_ghost_rune(
     rune: Rune,
     cursor: Vec2,
 ) -> Entity {
+    // Mirror the in-socket rune visual — a rounded-square built from
+    // 4 corner circles + a horizontal rect + a vertical rect, all the
+    // same colour. The previous ghost drew a flat 8×8 square, which
+    // looked nothing like the actual rune mid-drag. We spawn an empty
+    // root entity at the cursor, then parent each shape part under it
+    // with local offsets — `update_drag_ghost` moves only the root,
+    // and the children follow via Bevy's transform propagation.
+    const SOCKET: f32 = 8.0;
+    const SOCKET_RADIUS: f32 = 3.0;
     let mat = materials.add(rune_color_for(rune));
-    let m = meshes.add(Rectangle::new(8.0, 8.0));
-    commands.spawn((
-        Mesh2d(m),
-        MeshMaterial2d(mat),
+    let circle = meshes.add(Circle::new(SOCKET_RADIUS));
+    let h_rect = meshes.add(Rectangle::new(SOCKET, SOCKET - 2.0 * SOCKET_RADIUS));
+    let v_rect = meshes.add(Rectangle::new(SOCKET - 2.0 * SOCKET_RADIUS, SOCKET));
+    let root = commands.spawn((
         Transform::from_translation(cursor.extend(9.0)),
+        Visibility::default(),
         RenderLayers::layer(CUSTOMIZE_LAYER),
         DragGhost,
-    )).id()
+    )).id();
+    // Body rects (cross shape) — local (0,0) relative to root.
+    for mesh in [Mesh2d(h_rect), Mesh2d(v_rect)] {
+        let part = commands.spawn((
+            mesh,
+            MeshMaterial2d(mat.clone()),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            RenderLayers::layer(CUSTOMIZE_LAYER),
+        )).id();
+        commands.entity(part).insert(ChildOf(root));
+    }
+    // Corner circles — offset diagonally to round the cross's corners.
+    let half = (SOCKET - 2.0 * SOCKET_RADIUS) * 0.5;
+    for offset in [
+        Vec2::new(-half, -half),
+        Vec2::new( half, -half),
+        Vec2::new(-half,  half),
+        Vec2::new( half,  half),
+    ] {
+        let part = commands.spawn((
+            Mesh2d(circle.clone()),
+            MeshMaterial2d(mat.clone()),
+            Transform::from_xyz(offset.x, offset.y, 0.0),
+            RenderLayers::layer(CUSTOMIZE_LAYER),
+        )).id();
+        commands.entity(part).insert(ChildOf(root));
+    }
+    root
 }
 
 pub fn update_drag_ghost(

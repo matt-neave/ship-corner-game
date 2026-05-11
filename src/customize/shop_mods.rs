@@ -20,10 +20,14 @@ use super::setup::HitArea;
 use super::CustomizeOpen;
 
 // Spec-pixel layout. Three cards in a row; the spawn helper centres
-// the row on its `centre_x` argument.
-pub const MOD_CARD_W: f32 = 22.0;
-pub const MOD_CARD_H: f32 = 12.0;
-pub const MOD_CARD_GAP: f32 = 2.0;
+// the row on its `centre_x` argument. Sized to fit `+NN SHORT` style
+// labels (see `ShopMod::label`) without overflowing at typical
+// window scales. Width tightened relative to the previous 38 so
+// the whole shop column anchors further left and leaves room for
+// the sell strip to clear the reroll button below.
+pub const MOD_CARD_W: f32 = 28.0;
+pub const MOD_CARD_H: f32 = 16.0;
+pub const MOD_CARD_GAP: f32 = 4.0;
 const Z_OUTLINE: f32 = 99.0;
 const Z_FILL: f32 = 99.5;
 const Z_TEXT: f32 = 100.0;

@@ -13,6 +13,7 @@ use bevy::text::{FontSmoothing, TextBounds};
 
 use crate::balance::{CUSTOMIZE_INTERNAL_H, CUSTOMIZE_INTERNAL_W, UPSCALE_LAYER};
 use crate::rune::Rune;
+use crate::synergy::Synergies;
 use crate::turret::TurretConfig;
 use crate::weapon::{WeaponTag, WeaponType};
 
@@ -41,6 +42,43 @@ pub struct CustomizeTooltipBody;
 #[derive(Component)]
 pub struct CustomizeTooltipBodySpan;
 
+/// Compact synergy banner — stacks ABOVE the main turret tooltip
+/// when the hovered source has a `WeaponTag`. Shows the tag's
+/// 4-tier value ladder (e.g. `10%/20%/30%/40%`) with the active
+/// tier value brightened. Hidden whenever the main tooltip is
+/// hidden OR the hovered source is a rune / stat row (no tag).
+#[derive(Component, Clone, Copy)]
+pub struct SynergyBannerFill;
+#[derive(Component, Clone, Copy)]
+pub struct SynergyBannerOutline;
+#[derive(Component)]
+pub struct SynergyBannerText;
+/// Marker on each colored `TextSpan` child of the synergy banner —
+/// the updater despawns these before rebuilding when the tag (or
+/// active tier) changes.
+#[derive(Component)]
+pub struct SynergyBannerSpan;
+
+/// Layout snapshot for the main tooltip. Written by
+/// `update_customize_tooltip` whenever it positions the box;
+/// read by `update_synergy_banner` to stack the banner above
+/// (or below, when the canvas top would clip it). Cleared to
+/// `None` whenever the tooltip is hidden so the banner system
+/// hides in lockstep.
+#[derive(Resource, Default)]
+pub struct TooltipLayout {
+    pub state: Option<TooltipLayoutState>,
+}
+
+#[derive(Clone, Copy)]
+pub struct TooltipLayoutState {
+    pub pos_spec: Vec2,
+    pub size_spec: Vec2,
+    /// `Some(tag)` only when the hovered source is a turret. The
+    /// banner system uses this to look up the ladder + active tier.
+    pub tag: Option<WeaponTag>,
+}
+
 /// Minimum tooltip box dims in spec pixels — the box grows beyond this
 /// when the body/title text needs more space. Multiplied by
 /// `display_scale` to get the native-pixel size each frame.
@@ -68,6 +106,23 @@ const TOOLTIP_CHAR_W: f32 = 0.55;
 /// `body_font * lines` into the total body block height.
 const TOOLTIP_LINE_HEIGHT_MULT: f32 = 1.25;
 
+/// Native-pixel font size for the synergy banner text.
+const SYNERGY_FONT: f32 = 13.0;
+/// Native-pixel padding around the banner text (left/right) — tight,
+/// since the banner is a single line.
+const SYNERGY_TEXT_PAD_X: f32 = 10.0;
+/// Native-pixel padding above/below the banner text.
+const SYNERGY_TEXT_PAD_Y: f32 = 6.0;
+/// Spec-pixel gap between the main tooltip's top edge and the
+/// banner's bottom edge.
+const SYNERGY_GAP: f32 = 2.0;
+/// Dim colour for inactive-tier values in the banner.
+const SYNERGY_INACTIVE_COLOR: Color = Color::srgb(0.45, 0.48, 0.55);
+/// Bright colour for the active-tier value.
+const SYNERGY_ACTIVE_COLOR: Color = Color::srgb(1.00, 0.95, 0.55);
+/// Colour for the trailing descriptor (`dmg`, `rate Future`, etc.).
+const SYNERGY_DESC_COLOR: Color = Color::srgb(0.85, 0.88, 0.94);
+
 // Z layering. Other customize UI text sits at z=100 on UPSCALE_LAYER, so
 // the tooltip needs to be above that to avoid being clipped.
 const Z_TOOLTIP_OUTLINE: f32 = 110.0;
@@ -82,6 +137,47 @@ fn tooltip_bg_color() -> Color {
 }
 
 pub fn spawn_customize_tooltip(commands: &mut Commands) {
+    // ---------- Synergy banner (stacked above the main tooltip) ----------
+    // Same outline+fill+text layout as the main tooltip, just compact
+    // (single text line). Sizes are placeholders — `update_customize_tooltip`
+    // rewrites them every frame from the active banner string.
+    commands.spawn((
+        Sprite {
+            color: Color::WHITE,
+            custom_size: Some(Vec2::new(TOOLTIP_MIN_W, TOOLTIP_H)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_OUTLINE),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        SynergyBannerOutline,
+    ));
+    commands.spawn((
+        Sprite {
+            color: tooltip_bg_color(),
+            custom_size: Some(Vec2::new(TOOLTIP_MIN_W, TOOLTIP_H)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_FILL),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        SynergyBannerFill,
+    ));
+    commands.spawn((
+        Text2d::new(""),
+        TextFont {
+            font_size: SYNERGY_FONT,
+            font_smoothing: FontSmoothing::None,
+            ..default()
+        },
+        TextColor(SYNERGY_DESC_COLOR),
+        Anchor::Center,
+        Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_TEXT),
+        Visibility::Hidden,
+        RenderLayers::layer(UPSCALE_LAYER),
+        SynergyBannerText,
+    ));
+
     // Initial sizes are placeholders — the update system rewrites both
     // each frame from the title/body text width.
     commands.spawn((
@@ -151,6 +247,7 @@ pub fn update_customize_tooltip(
     cfg: Res<TurretConfig>,
     shop: Option<Res<CustomizeShop>>,
     viewport: Res<CustomizeViewport>,
+    mut layout: ResMut<TooltipLayout>,
     mut body_cache: Local<String>,
     body_entity_q: Query<Entity, With<CustomizeTooltipBody>>,
     existing_body_spans: Query<Entity, With<CustomizeTooltipBodySpan>>,
@@ -204,12 +301,18 @@ pub fn update_customize_tooltip(
     let hide = !open.open || drag.picked.is_some() || drag.spec_cursor.is_none();
     if hide {
         hide_all(&mut outline_q, &mut fill_q, &mut title_q, &mut body_q);
+        layout.state = None;
         return;
     }
     let cursor = drag.spec_cursor.unwrap();
     let shop_ref = shop.as_deref();
 
+    // `info` tracks the hovered target's (title, body, centre, half-extent);
+    // `info_tag` tracks the WEAPON TAG when the hovered source is a turret
+    // (shop slot or ship slot). Runes and stat rows leave it None, which
+    // hides the synergy banner.
     let mut info: Option<(String, String, Vec2, Vec2)> = None;
+    let mut info_tag: Option<WeaponTag> = None;
     let mut best_area = f32::INFINITY;
     for (tf, hit, marker) in &sources {
         let centre = tf.translation.truncate();
@@ -227,6 +330,7 @@ pub fn update_customize_tooltip(
         }
         if let Some((title, body)) = describe_source(marker.0, &cfg, shop_ref) {
             info = Some((title, body, centre, half));
+            info_tag = turret_tag_for_source(marker.0, &cfg, shop_ref);
             best_area = area;
         }
     }
@@ -252,11 +356,14 @@ pub fn update_customize_tooltip(
             centre,
             half,
         ));
+        // Stat rows never get a synergy banner — they're stats, not turrets.
+        info_tag = None;
         best_area = area;
     }
 
     let Some((title, body, source_centre, source_half)) = info else {
         hide_all(&mut outline_q, &mut fill_q, &mut title_q, &mut body_q);
+        layout.state = None;
         return;
     };
 
@@ -374,6 +481,223 @@ pub fn update_customize_tooltip(
                 }
             });
         }
+    }
+
+    // Publish the layout so `update_synergy_banner` can stack
+    // its banner above (or below) the main tooltip without
+    // duplicating any of the sizing/positioning math.
+    layout.state = Some(TooltipLayoutState {
+        pos_spec: pos,
+        size_spec: Vec2::new(tooltip_w_spec, tooltip_h_spec),
+        tag: info_tag,
+    });
+}
+
+/// Reads the latest main-tooltip layout from `TooltipLayout` and
+/// renders the synergy banner stacked above it (or below, if there's
+/// no room above). Hidden whenever `layout.state` is None or the
+/// hovered source carries no `WeaponTag` (runes, stat rows). Split
+/// out of `update_customize_tooltip` because the combined system
+/// would have exceeded Bevy's max-param count for `IntoSystem`.
+pub fn update_synergy_banner(
+    mut commands: Commands,
+    layout: Res<TooltipLayout>,
+    viewport: Res<CustomizeViewport>,
+    synergies: Res<Synergies>,
+    mut banner_cache: Local<String>,
+    banner_entity_q: Query<Entity, With<SynergyBannerText>>,
+    existing_banner_spans: Query<Entity, With<SynergyBannerSpan>>,
+    mut outline_q: Query<
+        (&mut Visibility, &mut Transform, &mut Sprite),
+        (
+            With<SynergyBannerOutline>,
+            Without<SynergyBannerFill>,
+            Without<SynergyBannerText>,
+        ),
+    >,
+    mut fill_q: Query<
+        (&mut Visibility, &mut Transform, &mut Sprite),
+        (
+            With<SynergyBannerFill>,
+            Without<SynergyBannerOutline>,
+            Without<SynergyBannerText>,
+        ),
+    >,
+    mut text_q: Query<
+        (&mut Visibility, &mut Transform, &mut Text2d),
+        (
+            With<SynergyBannerText>,
+            Without<SynergyBannerOutline>,
+            Without<SynergyBannerFill>,
+        ),
+    >,
+) {
+    let hide = |outline_q: &mut Query<
+        (&mut Visibility, &mut Transform, &mut Sprite),
+        (
+            With<SynergyBannerOutline>,
+            Without<SynergyBannerFill>,
+            Without<SynergyBannerText>,
+        ),
+    >,
+        fill_q: &mut Query<
+            (&mut Visibility, &mut Transform, &mut Sprite),
+            (
+                With<SynergyBannerFill>,
+                Without<SynergyBannerOutline>,
+                Without<SynergyBannerText>,
+            ),
+        >,
+        text_q: &mut Query<
+            (&mut Visibility, &mut Transform, &mut Text2d),
+            (
+                With<SynergyBannerText>,
+                Without<SynergyBannerOutline>,
+                Without<SynergyBannerFill>,
+            ),
+        >| {
+        if let Ok((mut v, _, _)) = outline_q.single_mut() {
+            if *v != Visibility::Hidden { *v = Visibility::Hidden; }
+        }
+        if let Ok((mut v, _, _)) = fill_q.single_mut() {
+            if *v != Visibility::Hidden { *v = Visibility::Hidden; }
+        }
+        if let Ok((mut v, _, _)) = text_q.single_mut() {
+            if *v != Visibility::Hidden { *v = Visibility::Hidden; }
+        }
+    };
+
+    let Some(state) = layout.state else {
+        hide(&mut outline_q, &mut fill_q, &mut text_q);
+        return;
+    };
+    let Some(tag) = state.tag else {
+        hide(&mut outline_q, &mut fill_q, &mut text_q);
+        return;
+    };
+    let (values, descriptor) = synergy_ladder(tag);
+    let tier = active_tier(tag, &synergies);
+    let banner_text_plain = format!(
+        "[{}] {}/{}/{}/{} {}",
+        tag.label(), values[0], values[1], values[2], values[3], descriptor,
+    );
+    let s = viewport.display_scale;
+    let banner_text_w = estimate_text_native_width(&banner_text_plain, SYNERGY_FONT);
+    let banner_fill_w_native = banner_text_w + 2.0 * SYNERGY_TEXT_PAD_X;
+    let banner_fill_h_native = SYNERGY_FONT * TOOLTIP_LINE_HEIGHT_MULT + 2.0 * SYNERGY_TEXT_PAD_Y;
+    let banner_w_spec = banner_fill_w_native / s;
+    let banner_h_spec = banner_fill_h_native / s;
+
+    let canvas_half_w = CUSTOMIZE_INTERNAL_W as f32 * 0.5;
+    let canvas_half_h = CUSTOMIZE_INTERNAL_H as f32 * 0.5;
+    let mut banner_pos = Vec2::new(
+        state.pos_spec.x,
+        state.pos_spec.y + state.size_spec.y * 0.5 + SYNERGY_GAP + banner_h_spec * 0.5,
+    );
+    // Flip below if the top of the canvas would clip.
+    if banner_pos.y + banner_h_spec * 0.5 > canvas_half_h {
+        banner_pos.y = state.pos_spec.y - state.size_spec.y * 0.5 - SYNERGY_GAP - banner_h_spec * 0.5;
+    }
+    banner_pos.x = banner_pos.x.clamp(
+        -canvas_half_w + banner_w_spec * 0.5,
+        canvas_half_w - banner_w_spec * 0.5,
+    );
+    banner_pos.y = banner_pos.y.clamp(
+        -canvas_half_h + banner_h_spec * 0.5,
+        canvas_half_h - banner_h_spec * 0.5,
+    );
+    let banner_native_centre = Vec2::new(banner_pos.x * s, banner_pos.y * s);
+    let banner_fill_native = Vec2::new(banner_fill_w_native, banner_fill_h_native);
+    let banner_outline_native = banner_fill_native + Vec2::splat(2.0 * TOOLTIP_BORDER_PX);
+
+    if let Ok((mut v, mut tf, mut sprite)) = outline_q.single_mut() {
+        if *v != Visibility::Inherited { *v = Visibility::Inherited; }
+        tf.translation.x = banner_native_centre.x;
+        tf.translation.y = banner_native_centre.y;
+        if sprite.custom_size != Some(banner_outline_native) {
+            sprite.custom_size = Some(banner_outline_native);
+        }
+    }
+    if let Ok((mut v, mut tf, mut sprite)) = fill_q.single_mut() {
+        if *v != Visibility::Inherited { *v = Visibility::Inherited; }
+        tf.translation.x = banner_native_centre.x;
+        tf.translation.y = banner_native_centre.y;
+        if sprite.custom_size != Some(banner_fill_native) {
+            sprite.custom_size = Some(banner_fill_native);
+        }
+    }
+    if let Ok((mut v, mut tf, mut text)) = text_q.single_mut() {
+        if *v != Visibility::Inherited { *v = Visibility::Inherited; }
+        tf.translation.x = banner_native_centre.x;
+        tf.translation.y = banner_native_centre.y;
+        if !text.0.is_empty() { text.0 = String::new(); }
+    }
+
+    // Rebuild spans when tag, tier, or text changes. Cache key
+    // combines all three so a hover-switch between two same-tag
+    // turrets with identical synergy state is a no-op.
+    let banner_key = format!("{}|{}|{}", tag.label(), tier, banner_text_plain);
+    if *banner_cache != banner_key {
+        *banner_cache = banner_key;
+        for span in existing_banner_spans.iter() {
+            commands.entity(span).despawn();
+        }
+        if let Ok(banner_entity) = banner_entity_q.single() {
+            commands.entity(banner_entity).with_children(|p| {
+                p.spawn((
+                    TextSpan::new(format!("[{}] ", tag.label())),
+                    TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                    TextColor(tag.color()),
+                    SynergyBannerSpan,
+                ));
+                for (i, v) in values.iter().enumerate() {
+                    let active = (tier as usize) == i + 1;
+                    let color = if active { SYNERGY_ACTIVE_COLOR } else { SYNERGY_INACTIVE_COLOR };
+                    p.spawn((
+                        TextSpan::new((*v).to_string()),
+                        TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                        TextColor(color),
+                        SynergyBannerSpan,
+                    ));
+                    if i < values.len() - 1 {
+                        p.spawn((
+                            TextSpan::new("/".to_string()),
+                            TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                            TextColor(SYNERGY_INACTIVE_COLOR),
+                            SynergyBannerSpan,
+                        ));
+                    }
+                }
+                p.spawn((
+                    TextSpan::new(format!(" {}", descriptor)),
+                    TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                    TextColor(SYNERGY_DESC_COLOR),
+                    SynergyBannerSpan,
+                ));
+            });
+        }
+    }
+}
+
+/// Resolve a drag-source to its weapon tag — Some only for turrets
+/// (ship or shop). Runes and stat rows return None, so the synergy
+/// banner stays hidden over them.
+fn turret_tag_for_source(
+    source: DragSourceKind,
+    cfg: &TurretConfig,
+    shop: Option<&CustomizeShop>,
+) -> Option<WeaponTag> {
+    match source {
+        DragSourceKind::ShipSlot(slot) => {
+            let s = cfg.slots[slot];
+            if !s.equipped { return None; }
+            Some(s.weapon.tag())
+        }
+        DragSourceKind::ShopTurret(idx) => shop
+            .and_then(|s| s.turrets.get(idx))
+            .and_then(|o| o.as_ref())
+            .map(|o| o.weapon.tag()),
+        DragSourceKind::ShipRune { .. } | DragSourceKind::ShopRune(_) => None,
     }
 }
 
@@ -585,14 +909,38 @@ fn estimate_text_native_width(text: &str, font_size: f32) -> f32 {
 /// the in-game splash particles.
 const AOE_TAG: &str = "[AOE] ";
 
-fn turret_tooltip(weapon: WeaponType, barrels: u8) -> (String, String) {
-    // 1-barrel suffix omitted (it's the default — redundant noise on
-    // every popover). 2/3-barrel still surfaces the upgrade.
-    let title = if barrels <= 1 {
-        weapon.label().to_string()
-    } else {
-        format!("{} {}B", weapon.label(), barrels)
-    };
+/// Compact 4-tier ladder values + trailing descriptor for a tag.
+/// Used by the synergy banner to render `V1/V2/V3/V4 desc` with
+/// the active tier highlighted. Mirrors `synergy.rs`'s ladder
+/// table — keep in sync when bonus numbers move.
+fn synergy_ladder(tag: WeaponTag) -> ([&'static str; 4], &'static str) {
+    match tag {
+        WeaponTag::Naval      => (["10%", "20%", "30%", "40%"], "global dmg"),
+        WeaponTag::Future     => (["0.1s", "0.2s", "0.3s", "0.4s"], "stun on hit"),
+        WeaponTag::Autonomous => (["10%", "20%", "30%", "40%"], "Auto rate + speed"),
+        WeaponTag::Pirate     => (["50%", "100%", "150%", "200%"], "scrap"),
+        WeaponTag::Support    => (["10%", "20%", "30%", "40%"], "rate others"),
+        WeaponTag::Melee      => (["1", "2", "3", "4"], "HP / Melee kill"),
+    }
+}
+
+/// Per-tag active tier (0..=4) from the live `Synergies` resource.
+fn active_tier(tag: WeaponTag, syn: &Synergies) -> u8 {
+    match tag {
+        WeaponTag::Naval      => syn.naval,
+        WeaponTag::Future     => syn.future,
+        WeaponTag::Autonomous => syn.autonomous,
+        WeaponTag::Pirate     => syn.pirate,
+        WeaponTag::Support    => syn.support,
+        WeaponTag::Melee      => syn.melee,
+    }
+}
+
+fn turret_tooltip(weapon: WeaponType, _barrels: u8) -> (String, String) {
+    // Title is just the weapon name — barrel count is conveyed by
+    // the slot's visual on the ship and the `BARRELS` row in the
+    // LHS panel, so the tooltip doesn't need to repeat it.
+    let title = weapon.label().to_string();
     // Body layout: `[TAG]` chip on its own line, then a blank line,
     // then the description. The colorizer paints the bracketed chip
     // in the tag's colour. The newline keeps the chip from blending

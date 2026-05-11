@@ -24,15 +24,16 @@ use crate::stats::{PlayerStats, StatKind};
 
 use super::setup::{CustomizeText, CustomizeTextSpec, HitArea};
 
-/// Native-pixel font sizes for the panel. Bumped a touch over the
-/// rest of the customize chrome so the live stat readout is the
-/// thing the eye lands on.
-const LABEL_FONT: f32 = 13.0;
-const VALUE_FONT: f32 = 13.0;
-/// Spec-pixel vertical step between rows.
-const ROW_STEP: f32 = 9.0;
+/// Native-pixel font sizes for the panel. Bigger than the rest of
+/// the customize chrome so the live stat readout is the thing the
+/// eye lands on and rows are comfortably readable.
+const LABEL_FONT: f32 = 16.0;
+const VALUE_FONT: f32 = 16.0;
+/// Spec-pixel vertical step between rows. Tall enough that the
+/// 16pt fonts above don't visually crowd one another.
+const ROW_STEP: f32 = 11.0;
 /// Spec-pixel horizontal extent of one row from `label_x` to `value_x`.
-const ROW_WIDTH: f32 = 50.0;
+const ROW_WIDTH: f32 = 64.0;
 
 /// Marker carrying the `StatKind` whose value this text node displays.
 /// `sync_stats_panel` queries this to update text per frame.

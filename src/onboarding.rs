@@ -81,22 +81,22 @@ pub fn tick_new_enemy_banner(
     }
 }
 
-/// Spawn the bottom-left "NEW!" panel for `variant`. Called from
-/// `enemy::spawn_enemies` the first time a variant appears in a run.
-/// Stacks ABOVE existing banners — they don't replace each other,
-/// so a wave that introduces multiple new variants in quick
-/// succession shows them all in a column.
+/// Spawn the bottom-left "NEW!" panel for `variant`. Bevy UI Node
+/// based so the text renders at NATIVE screen resolution and stays
+/// readable — the PLAY_LAYER experiment looked like-in-game but
+/// text was illegible. Sprite is a capsule-shaped colour block
+/// (rounded corners on the short axis) standing in for the actual
+/// enemy silhouette. Stacks ABOVE existing banners.
 pub fn spawn_new_enemy_banner(
     commands: &mut Commands,
     existing_banners: &Query<Entity, With<NewEnemyBanner>>,
     variant: EnemyVariant,
 ) {
     let body_color = display_color_for(variant);
-    let panel_size: f32 = 110.0;
-    // Stack vertically: each new banner sits one panel-height
-    // (+ small gap) above the next-newest one.
+    let panel_w: f32 = 120.0;
+    let panel_h: f32 = 120.0;
     let stack_index = existing_banners.iter().count() as f32;
-    let bottom_px = 12.0 + stack_index * (panel_size + 6.0);
+    let bottom_px = 12.0 + stack_index * (panel_h + 6.0);
 
     commands
         .spawn((
@@ -104,8 +104,8 @@ pub fn spawn_new_enemy_banner(
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(bottom_px),
                 left: Val::Px(12.0),
-                width: Val::Px(panel_size),
-                height: Val::Px(panel_size),
+                width: Val::Px(panel_w),
+                height: Val::Px(panel_h),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::SpaceBetween,
@@ -119,48 +119,61 @@ pub fn spawn_new_enemy_banner(
             NewEnemyBanner { remaining: BANNER_DURATION },
         ))
         .with_children(|root| {
-            // "NEW!" header — bright accent, stands out against the
-            // dark panel.
+            // "NEW!" header — accent yellow, large enough to read.
             root.spawn((
                 Text::new("NEW!"),
-                TextFont { font_size: 14.0, ..default() },
+                TextFont { font_size: 16.0, ..default() },
                 TextColor(theme::ACCENT),
             ));
 
-            // Sprite stand-in — a colored capsule-ish block in the
-            // variant's body color. Rounded corners approximate the
-            // capsule silhouette of the actual enemy mesh.
+            // Sprite stand-in — capsule-shaped colour block in the
+            // variant's body hue. Rounded ends on the short axis
+            // approximate the in-game capsule silhouette. Black
+            // outline frames it against the dark panel; a small
+            // dark chip near the top reads as the bow / warhead
+            // marker the real enemy mesh would have.
             root.spawn((
                 Node {
-                    width: Val::Px(28.0),
-                    height: Val::Px(46.0),
-                    border: UiRect::all(Val::Px(1.0)),
+                    width: Val::Px(36.0),
+                    height: Val::Px(56.0),
+                    border: UiRect::all(Val::Px(2.0)),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::FlexStart,
+                    padding: UiRect::all(Val::Px(0.0)),
                     ..default()
                 },
                 BackgroundColor(body_color),
-                BorderColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
-                BorderRadius::all(Val::Px(14.0)),
-            ));
+                BorderColor(Color::srgb(0.0, 0.0, 0.0)),
+                BorderRadius::all(Val::Px(18.0)),
+            ))
+            .with_children(|sprite| {
+                sprite.spawn((
+                    Node {
+                        width: Val::Px(14.0),
+                        height: Val::Px(8.0),
+                        margin: UiRect { top: Val::Px(6.0), ..default() },
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+                    BorderRadius::all(Val::Px(3.0)),
+                ));
+            });
 
-            // Variant name — white, bottom-aligned by SpaceBetween.
+            // Variant name — white, full-size.
             root.spawn((
                 Text::new(variant.label()),
-                TextFont { font_size: 12.0, ..default() },
+                TextFont { font_size: 14.0, ..default() },
                 TextColor(theme::ON_SURFACE),
             ));
         });
 }
 
 /// Sprite-stand-in colour for each variant — matches the body
-/// material the enemy actually renders with so the player learns the
-/// "X colour means Y threat" association.
+/// material the enemy actually renders with so the player learns
+/// the colour-to-threat association from the banner.
 fn display_color_for(v: EnemyVariant) -> Color {
     match v {
-        // Standard / Scout / Heavy / Bomber use the active palette's
-        // enemy hue (palette-driven, not a fixed hex). Hardcoded to
-        // the AAP-64 naval defaults from `Palette::aap64_naval` so
-        // the banner reads correctly even if the palette swaps later
-        // (we'd update this match in the same pass).
         EnemyVariant::Standard  => hex("#b13e53"),
         EnemyVariant::Scout     => hex("#c87a8e"),
         EnemyVariant::Heavy     => hex("#5e2230"),

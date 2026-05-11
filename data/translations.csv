@@ -39,7 +39,7 @@ weapon_cage,CAGE
 weapon_cannon_desc,Heavy cannonball. Slow fire but knocks enemies back on hit. 90% range.
 weapon_booster_desc,Does not fire. Boosts each adjacent turret's fire rate by +30%.
 weapon_blade_desc,Spinning blade on an extending arm. Damages anything it touches near the ship.
-weapon_cage_desc,Releases an octopus that swims around the ship. Slot barrels enable extra slap legs.
+weapon_cage_desc,Releases an octopus that hunts enemies in the water and slaps them with tentacles.
 weapon_tag_naval,NAVAL
 weapon_tag_future,FUTURE
 weapon_tag_autonomous,AUTONOMOUS
@@ -87,16 +87,16 @@ stat_hp_desc,Maximum hull health.
 stat_move_speed_desc,Ship movement speed.
 stat_turn_speed_desc,How fast the ship turns toward the cursor.
 stat_turret_turn_speed_desc,How fast turrets rotate to aim.
-stat_turret_arc_bonus_desc,Extra firing arc per turret in degrees. Caps at 360.
-stat_luck_desc,Chance to reroll a failed rune proc. 100% guarantees one reroll.
-stat_proc_strength_desc,Bonus to proc roll strength. Makes chain effects fire more often.
-stat_crit_desc,Critical-hit chance. 100% is always 2x damage; 200% is always 3x; in-between values roll the higher tier.
-stat_range_desc,Multiplier on turret firing range.
-stat_harvest_desc,Chance for bonus scrap on kills. 100% is always +1 scrap.
-stat_shield_max_desc,Recharging buffer that absorbs damage before HP.
-stat_shield_rate_desc,Shield recharge rate as percent of max per second.
-stat_shield_delay_desc,Seconds after taking damage before shield starts recharging.
-stat_rune_damage_desc,Damage multiplier for rune effects.
+stat_turret_arc_bonus_desc,Extra degrees each turret can rotate. 0 keeps the default arc; bigger values let turrets cover more sky.
+stat_luck_desc,If a rune fails to proc, this is the chance it gets a free re-roll. 100% guarantees one re-roll per attempt.
+stat_proc_strength_desc,Bonus to how often runes proc on hit. Higher = more procs per shot.
+stat_crit_desc,Chance to crit on hit. 100% always crits for 2x damage; 200% always for 3x.
+stat_range_desc,Bonus to turret firing range.
+stat_harvest_desc,Bonus scrap per kill. 100% guarantees +1 scrap on every kill.
+stat_shield_max_desc,Recharging shield that absorbs damage before HP takes any.
+stat_shield_rate_desc,How fast the shield refills after a delay.
+stat_shield_delay_desc,Pause after a hit before the shield starts refilling.
+stat_rune_damage_desc,Damage multiplier on rune effects (Fire/Frost/Detonate/etc.).
 map_popup_build,BUILD
 map_building_weaponry,WEAPONRY
 map_building_weaponry_desc,Customize turret loadout in this section.

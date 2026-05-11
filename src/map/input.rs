@@ -50,11 +50,16 @@ pub fn map_click_input(
     let Ok(win) = windows.single() else { return; };
     let Some(c) = win.cursor_position() else { return; };
 
-    let (left, top, size) =
+    let (left, top, play_w, play_h) =
         play_area_screen_rect(win.width(), win.height(), effective_ui_width(&window_mode));
-    if c.x < left || c.x > left + size || c.y < top || c.y > top + size { return; }
-    let nx = (c.x - left) / size;
-    let ny = (c.y - top) / size;
+    // Map sits in a square centered in the play screen rect — pad
+    // horizontally in wide_play mode so cursor math stays correct.
+    let map_size = play_w.min(play_h);
+    let map_left = left + (play_w - map_size) * 0.5;
+    let map_top  = top  + (play_h - map_size) * 0.5;
+    if c.x < map_left || c.x > map_left + map_size || c.y < map_top || c.y > map_top + map_size { return; }
+    let nx = (c.x - map_left) / map_size;
+    let ny = (c.y - map_top) / map_size;
     let world = Vec2::new((nx - 0.5) * PLAY_WORLD, (0.5 - ny) * PLAY_WORLD);
 
     if claim_mode.active {
@@ -142,6 +147,9 @@ pub fn map_boat_movement(
             heading.0 = new_h;
             let dir = Vec2::new(-new_h.sin(), new_h.cos());
             let new_pos = pos + dir * stats.move_speed.effective() * dt;
+            // Map's bounds are the authored 200×200 square regardless
+            // of the combat play-area shape — keep clamp on PLAY_WORLD
+            // (which aliases PLAY_WORLD_H = 200).
             let half = PLAY_WORLD / 2.0;
             tf.translation.x = new_pos.x.clamp(-half, half);
             tf.translation.y = new_pos.y.clamp(-half, half);

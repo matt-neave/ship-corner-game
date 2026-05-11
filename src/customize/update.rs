@@ -422,29 +422,44 @@ pub fn update_customize_shop(
     }
 }
 
-/// Drive the sell-panel refund preview. The static "SELL" label
-/// stays put; this updater toggles a separate gold "+N" text just
-/// below the panel — visible + showing the live refund while the
-/// player drags a ship-sourced sellable, hidden otherwise.
-/// Shop-sourced drags refund 0 so the preview stays hidden for
-/// those (you can't sell what you don't own yet).
+/// Drive the sell-strip refund preview. The static "SELL" label is
+/// always visible on the strip's left; this updater fills in the
+/// gold "+N SCRAP" on the right while the player is BOTH dragging
+/// a ship-sourced sellable AND hovering the strip. Hover-gating
+/// makes the preview feel "live" — it pops on as the cursor crosses
+/// the strip and vanishes the instant the cursor leaves OR the
+/// drag releases. Shop-sourced drags refund 0 so the preview stays
+/// hidden for those (you can't sell what you don't own yet).
 pub fn update_sell_label(
     open: Res<CustomizeOpen>,
     drag: Res<DragState>,
     cfg: Res<TurretConfig>,
+    sell_panel: Query<(&Transform, &super::setup::HitArea), With<super::setup::ShopSellPanel>>,
     mut q: Query<(&mut Text2d, &mut Visibility), With<SellPricePreview>>,
 ) {
     if !open.open { return; }
+    let hovering = drag.spec_cursor.and_then(|cursor| {
+        sell_panel.iter().find_map(|(tf, hit)| {
+            let centre = tf.translation.truncate();
+            let half = hit.size * 0.5;
+            let inside = cursor.x >= centre.x - half.x
+                && cursor.x <= centre.x + half.x
+                && cursor.y >= centre.y - half.y
+                && cursor.y <= centre.y + half.y;
+            if inside { Some(()) } else { None }
+        })
+    }).is_some();
     let preview = drag
         .picked
         .as_ref()
+        .filter(|_| hovering)
         .map(|p| super::drag::sell_refund_for(&p.source, &cfg))
         .filter(|&r| r > 0);
 
     for (mut text, mut vis) in &mut q {
         match preview {
             Some(refund) => {
-                let s = format!("+{}", refund);
+                let s = format!("+{} SCRAP", refund);
                 if text.0 != s { text.0 = s; }
                 if *vis != Visibility::Inherited { *vis = Visibility::Inherited; }
             }

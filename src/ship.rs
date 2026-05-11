@@ -10,7 +10,7 @@ use bevy::window::PrimaryWindow;
 use crate::balance::{
     BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH,
     HULL_HALF_LEN, HULL_LEN, HULL_WIDTH,
-    PLAY_LAYER, PLAY_WORLD, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
+    PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
 };
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
 use crate::effects::{EffectMeshes, HitFx};
@@ -39,15 +39,17 @@ pub fn setup_world(
     let pm = PaletteMaterials::build(&palette, &mut materials);
 
     // 1px play-area border, drawn inside the play world (z=6 so it always
-    // frames the action).
-    let border_h = meshes.add(Rectangle::new(PLAY_WORLD, 1.0));
-    let border_v = meshes.add(Rectangle::new(1.0, PLAY_WORLD));
-    let half_w = PLAY_WORLD / 2.0 - 0.5;
+    // frames the action). Horizontals span the full WIDTH; verticals span
+    // the full HEIGHT — they meet at the corners.
+    let border_h = meshes.add(Rectangle::new(PLAY_WORLD_W, 1.0));
+    let border_v = meshes.add(Rectangle::new(1.0, PLAY_WORLD_H));
+    let half_x = PLAY_WORLD_W * 0.5 - 0.5;
+    let half_y = PLAY_WORLD_H * 0.5 - 0.5;
     for (m, x, y) in [
-        (border_h.clone(), 0.0,  half_w),
-        (border_h.clone(), 0.0, -half_w),
-        (border_v.clone(),  half_w, 0.0),
-        (border_v.clone(), -half_w, 0.0),
+        (border_h.clone(), 0.0,  half_y),
+        (border_h.clone(), 0.0, -half_y),
+        (border_v.clone(),  half_x, 0.0),
+        (border_v.clone(), -half_x, 0.0),
     ] {
         commands.spawn((
             Mesh2d(m),
@@ -246,7 +248,7 @@ pub fn friendly_movement(
     let Ok(win) = windows.single() else { return; };
     let cursor = win.cursor_position();
 
-    let (play_left, play_top, play_screen) =
+    let (play_left, play_top, play_screen_w, play_screen_h) =
         play_area_screen_rect(win.width(), win.height(), effective_ui_width(&mode));
 
     // Camera offset — when follow-mode shifts the play camera off the
@@ -261,14 +263,14 @@ pub fn friendly_movement(
     // Cursor over the play area pulls the ship toward it; outside
     // the play area falls through to the auto-engage branch below.
     let target_world: Option<Vec2> = cursor.and_then(|c| {
-        if c.x >= play_left && c.x <= play_left + play_screen
-            && c.y >= play_top && c.y <= play_top + play_screen
+        if c.x >= play_left && c.x <= play_left + play_screen_w
+            && c.y >= play_top && c.y <= play_top + play_screen_h
         {
-            let nx = (c.x - play_left) / play_screen;
-            let ny = (c.y - play_top) / play_screen;
+            let nx = (c.x - play_left) / play_screen_w;
+            let ny = (c.y - play_top) / play_screen_h;
             Some(Vec2::new(
-                (nx - 0.5) * PLAY_WORLD + cam_off.x,
-                (0.5 - ny) * PLAY_WORLD + cam_off.y,
+                (nx - 0.5) * PLAY_WORLD_W + cam_off.x,
+                (0.5 - ny) * PLAY_WORLD_H + cam_off.y,
             ))
         } else {
             None
@@ -322,8 +324,9 @@ pub fn friendly_movement(
 
         // Keep target inside the playable area so we don't crash the wall.
         let margin = HULL_HALF_LEN + 2.0;
-        let bound = PLAY_WORLD / 2.0 - margin;
-        let target = Vec2::new(target.x.clamp(-bound, bound), target.y.clamp(-bound, bound));
+        let bound_x = PLAY_WORLD_W * 0.5 - margin;
+        let bound_y = PLAY_WORLD_H * 0.5 - margin;
+        let target = Vec2::new(target.x.clamp(-bound_x, bound_x), target.y.clamp(-bound_y, bound_y));
 
         let to = target - pos;
         if to.length_squared() > 1.0 {
@@ -368,14 +371,21 @@ pub fn apply_velocity(
         &mut Transform,
         &Velocity,
         Option<&OnFrost>,
+        Option<&crate::components::Stunned>,
         Option<&mut crate::components::Knockedback>,
     )>,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut tf, v, frost, knock) in &mut q {
+    for (entity, mut tf, v, frost, stunned, knock) in &mut q {
         let mult = frost.map(|f| f.speed_mult()).unwrap_or(1.0);
-        tf.translation.x += v.0.x * mult * dt;
-        tf.translation.y += v.0.y * mult * dt;
+        // Stunned entities don't translate under their own steam, but
+        // knockback impulses still apply (an impulse landed while
+        // frozen should still shove you — same philosophy as Frost
+        // not eating knockback).
+        if stunned.is_none() {
+            tf.translation.x += v.0.x * mult * dt;
+            tf.translation.y += v.0.y * mult * dt;
+        }
 
         if let Some(mut k) = knock {
             tf.translation.x += k.velocity.x * dt;
@@ -392,6 +402,25 @@ pub fn apply_velocity(
             if k.velocity.length_squared() < 1.0 {
                 commands.entity(entity).remove::<crate::components::Knockedback>();
             }
+        }
+    }
+}
+
+/// Decrement every `Stunned`'s remaining time and remove the
+/// component once it goes non-positive. Pairs with the
+/// `apply_velocity` early-out and the `Without<Stunned>` filters
+/// on enemy AI/firing so the effect lifts cleanly the moment the
+/// timer runs out.
+pub fn tick_stunned(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut crate::components::Stunned)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut s) in &mut q {
+        s.remaining -= dt;
+        if s.remaining <= 0.0 {
+            commands.entity(entity).remove::<crate::components::Stunned>();
         }
     }
 }

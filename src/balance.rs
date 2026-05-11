@@ -12,10 +12,43 @@ pub const WINDOW_W: f32 = 1280.0;
 pub const WINDOW_H: f32 = 800.0;
 pub const UI_WIDTH: f32 = 280.0;
 
-/// Internal render resolution of the play area. Upscaled to the on-screen
-/// rect with nearest-neighbor sampling — the chunky-pixel look depends on it.
-pub const PLAY_INTERNAL: u32 = 200;
-pub const PLAY_WORLD:    f32 = 200.0;
+// ---------- Play area dimensions ----------
+//
+// The play arena is a centred axis-aligned rectangle. The default
+// build keeps it square at 200×200; building with the `wide_play`
+// Cargo feature swaps to 360×200 for AB-testing wider stages.
+// `_W` / `_H` are authoritative; the unqualified `PLAY_INTERNAL` /
+// `PLAY_WORLD` aliases point at the HEIGHT axis (kept for sites
+// that genuinely don't care about which axis — e.g. HUD layout
+// helpers that target the vertical extent).
+
+#[cfg(feature = "wide_play")]
+pub const PLAY_INTERNAL_W: u32 = 360;
+#[cfg(not(feature = "wide_play"))]
+pub const PLAY_INTERNAL_W: u32 = 200;
+pub const PLAY_INTERNAL_H: u32 = 200;
+
+#[cfg(feature = "wide_play")]
+pub const PLAY_WORLD_W: f32 = 360.0;
+#[cfg(not(feature = "wide_play"))]
+pub const PLAY_WORLD_W: f32 = 200.0;
+pub const PLAY_WORLD_H: f32 = 200.0;
+
+/// Legacy aliases — kept so call sites that don't distinguish axes
+/// still compile. New code should prefer the `_W` / `_H` pair.
+pub const PLAY_INTERNAL: u32 = PLAY_INTERNAL_H;
+pub const PLAY_WORLD: f32 = PLAY_WORLD_H;
+
+/// Is this world-space position inside the play arena (a centred
+/// `PLAY_WORLD_W × PLAY_WORLD_H` rectangle)? Used by enemy firing
+/// systems to avoid taking pot-shots from outside the visible play
+/// field — off-screen enemies should drift back IN before they shoot.
+#[inline]
+pub fn in_play_area(p: bevy::math::Vec2) -> bool {
+    let hw = PLAY_WORLD_W * 0.5;
+    let hh = PLAY_WORLD_H * 0.5;
+    p.x.abs() < hw && p.y.abs() < hh
+}
 
 pub const PLAY_LAYER:    usize = 1;
 pub const UPSCALE_LAYER: usize = 2;
@@ -245,21 +278,22 @@ pub fn waves_for_stars(stars: u8) -> u8 {
 ///
 /// - **Base wave ramp**: `4 + wave_idx / 2` — within a stage, later
 ///   waves feel weightier than the opener.
-/// - **Stage progression**: `× (1 + 0.5 × battles_cleared)` — every
-///   stage you clear, the next stage's waves grow by +50% (Stage 1 =
-///   ×1.0, Stage 2 = ×1.5, Stage 3 = ×2.0, …). Compounds quickly so
-///   the campaign keeps escalating.
+/// - **Stage progression**: `× (1 + 0.25 × min(battles_cleared, 6))` —
+///   gentler ramp than before AND capped, so a long campaign can't
+///   compound the multiplier into chaos. Stage 1 = ×1.0, Stage 2 =
+///   ×1.25, …, Stage 7+ caps at ×2.5.
 /// - **Star density**: `× (1 + 0.2 × (stars - 1))` — higher-star
 ///   sections are denser per wave on top of having more waves total
-///   (`waves_for_stars`). 5★ Stage 1 ≈ ×1.8 vs 1★ baseline.
+///   (`waves_for_stars`). 5★ ≈ ×1.8 vs 1★ baseline.
 ///
-/// Result is rounded to the nearest integer. Concurrent on-screen cap
-/// is `CombatContext::enemy_cap`; overflow drips in over time as
-/// existing enemies die, so big numbers feel relentless rather than
-/// instantly overwhelming.
+/// Maximum theoretical wave size with everything maxed: last wave of
+/// a 5★ stage 7+ ≈ `(4+5) × 2.5 × 1.8 ≈ 40`. Concurrent on-screen cap
+/// (`CombatContext::enemy_cap`) drips overflow in as existing enemies
+/// die so the arena stays legible.
 pub fn wave_size(wave_idx: u8, stars: u8, battles_cleared: u32) -> u32 {
     let base = 4.0 + (wave_idx as u32 / 2) as f32;
-    let progress_mult = 1.0 + 0.5 * battles_cleared as f32;
+    let capped_cleared = battles_cleared.min(6) as f32;
+    let progress_mult = 1.0 + 0.25 * capped_cleared;
     let star_mult = 1.0 + 0.2 * (stars.saturating_sub(1) as f32);
     (base * progress_mult * star_mult).round().max(1.0) as u32
 }

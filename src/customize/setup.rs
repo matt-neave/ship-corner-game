@@ -371,68 +371,8 @@ pub fn setup_customize_ui(
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
 
-    // ---------- Sell panel ----------
-    // Sits to the right of the reroll button at the same y. Square,
-    // 22×22 spec px, gray-hash background (same diagonal-stripe style
-    // as the blue window backdrop but in dim gray). Drag a ship-slot
-    // turret/rune onto it to refund `SHOP_SELL_FRACTION` of the
-    // original cost.
-    const SELL_PANEL_SIZE: f32 = 22.0;
-    let sell_pos = Vec2::new(
-        // Right edge of reroll + small gap + half the sell panel.
-        reroll_pos.x + 48.0 * 0.5 + 4.0 + SELL_PANEL_SIZE * 0.5,
-        reroll_pos.y,
-    );
-    let sell_hash_img = images.add(crate::rendering::make_hash_image_with_tile(
-        Color::srgb(0.30, 0.32, 0.36), // light gray
-        Color::srgb(0.16, 0.17, 0.20), // dark gray
-        8,                             // 8-px tile → small diagonal stripes
-    ));
-    commands.spawn((
-        Sprite {
-            image: sell_hash_img,
-            custom_size: Some(Vec2::splat(SELL_PANEL_SIZE)),
-            image_mode: bevy::sprite::SpriteImageMode::Tiled {
-                tile_x: true,
-                tile_y: true,
-                stretch_value: 1.0,
-            },
-            ..default()
-        },
-        Transform::from_translation(sell_pos.extend(Z_TILE_BG)),
-        RenderLayers::layer(CUSTOMIZE_LAYER),
-        ShopSellPanel,
-    ));
-    // "SELL" label centred inside the panel — static, always visible
-    // so the panel always reads as the sell target.
-    spawn_text(
-        &mut commands,
-        sell_pos,
-        "SELL",
-        Color::WHITE,
-        12.0,
-        SellPanelLabel,
-    );
-    // Refund-preview text — sits just below the sell panel, hidden
-    // by default. `update_sell_label` flips it visible with the
-    // live `+N` payout while the player drags a ship-sourced item,
-    // so they see the price before committing.
-    spawn_text(
-        &mut commands,
-        Vec2::new(sell_pos.x, sell_pos.y - SELL_PANEL_SIZE * 0.5 - 6.0),
-        "",
-        Color::srgb(1.00, 0.85, 0.30),
-        10.0,
-        SellPricePreview,
-    );
-    // Drop target hit area — DropTargetKind::Sell triggers the refund
-    // path in `complete_drag`.
-    commands.spawn((
-        Transform::from_translation(sell_pos.extend(Z_TILE_BG)),
-        HitArea { size: Vec2::splat(SELL_PANEL_SIZE) },
-        DropTargetMarker(DropTargetKind::Sell),
-        RenderLayers::layer(CUSTOMIZE_LAYER),
-    ));
+    // (Sell panel is spawned BELOW the ship — see further down, after
+    // the ship + slot spawn block. The shop column no longer hosts it.)
 
     // ---------- Centre ship + slots + sockets ----------
     // Ship sits left of canvas centre so the RHS stats column has room
@@ -456,12 +396,69 @@ pub fn setup_customize_ui(
     let stats_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 28.0;
     super::stats_panel::spawn_stats_panel(&mut commands, stats_right_edge, stats_top_y);
 
-    // Tag-synergy readout — six rows below the ship showing the
-    // active tier per tag. Updated by `update_synergy_panel` on every
-    // `Synergies` mutation (which itself is driven by `TurretConfig`
-    // changes), so the player sees set bonuses appear/disappear as
-    // they drag turrets in/out.
-    super::synergy_panel::spawn_synergy_panel(&mut commands);
+    // ---------- Sell strip ----------
+    // Long horizontal rectangle below the ship — drag a ship-sourced
+    // turret/rune onto it to refund `SHOP_SELL_FRACTION` of the
+    // original cost. Sized wide so it reads as an obvious "drop
+    // zone" without crowding the shop column. Static "SELL" label
+    // on the left; gold "+N SCRAP" preview pops on the right while
+    // the player drags a sellable.
+    const SELL_PANEL_W: f32 = 220.0;
+    const SELL_PANEL_H: f32 = 26.0;
+    let sell_pos = Vec2::new(ship_centre.x, -78.0);
+    let sell_hash_img = images.add(crate::rendering::make_hash_image_with_tile(
+        Color::srgb(0.30, 0.32, 0.36), // light gray
+        Color::srgb(0.16, 0.17, 0.20), // dark gray
+        8,                             // 8-px tile → small diagonal stripes
+    ));
+    commands.spawn((
+        Sprite {
+            image: sell_hash_img,
+            custom_size: Some(Vec2::new(SELL_PANEL_W, SELL_PANEL_H)),
+            image_mode: bevy::sprite::SpriteImageMode::Tiled {
+                tile_x: true,
+                tile_y: true,
+                stretch_value: 1.0,
+            },
+            ..default()
+        },
+        Transform::from_translation(sell_pos.extend(Z_TILE_BG)),
+        RenderLayers::layer(CUSTOMIZE_LAYER),
+        ShopSellPanel,
+    ));
+    // Static "SELL" label — left-anchored inside the strip so the
+    // gold "+N SCRAP" preview has room to sit on the right without
+    // overlapping. Large, readable font (the old 12pt centred label
+    // got lost in the tile pattern).
+    spawn_text(
+        &mut commands,
+        Vec2::new(sell_pos.x - SELL_PANEL_W * 0.5 + 22.0, sell_pos.y),
+        "SELL",
+        Color::WHITE,
+        16.0,
+        SellPanelLabel,
+    );
+    // Refund-preview text — right side of the strip. Hidden by
+    // default; `update_sell_label` flips it visible with the live
+    // `+N SCRAP` payout while the player drags a ship-sourced item
+    // over the strip. Bumped to 18pt gold for legibility at the new
+    // larger size.
+    spawn_text(
+        &mut commands,
+        Vec2::new(sell_pos.x + SELL_PANEL_W * 0.5 - 36.0, sell_pos.y),
+        "",
+        Color::srgb(1.00, 0.85, 0.30),
+        18.0,
+        SellPricePreview,
+    );
+    // Drop target hit area — DropTargetKind::Sell triggers the refund
+    // path in `complete_drag`. Matches the strip footprint exactly.
+    commands.spawn((
+        Transform::from_translation(sell_pos.extend(Z_TILE_BG)),
+        HitArea { size: Vec2::new(SELL_PANEL_W, SELL_PANEL_H) },
+        DropTargetMarker(DropTargetKind::Sell),
+        RenderLayers::layer(CUSTOMIZE_LAYER),
+    ));
 
     super::tooltip::spawn_customize_tooltip(&mut commands);
 }

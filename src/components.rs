@@ -49,6 +49,22 @@ pub struct Knockedback {
 #[derive(Component)]
 pub struct Heading(pub f32);
 
+/// Short-lived "frozen in place" status applied to enemies hit by
+/// Future-tagged weapons (when the Future synergy is active). While
+/// `remaining > 0`, the enemy's movement AI and firing routines
+/// early-return — they hold position and can't shoot. Ticked down
+/// in `tick_stunned`; entity loses the component the first frame
+/// it would go non-positive.
+///
+/// Stun duration is set by `Synergies::future_stun_duration` (0.1s
+/// per tier). Re-hitting a stunned enemy refreshes the timer to the
+/// MAX of the existing remaining and the new duration — multiple
+/// rapid hits never shorten the effect.
+#[derive(Component)]
+pub struct Stunned {
+    pub remaining: f32,
+}
+
 /// Side allegiance. Drives bullet target selection + collision routing.
 #[derive(Component)]
 pub struct Faction(pub FactionKind);

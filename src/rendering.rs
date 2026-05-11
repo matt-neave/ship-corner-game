@@ -18,7 +18,8 @@ use bevy::sprite::SpriteImageMode;
 use bevy::window::PrimaryWindow;
 
 use crate::balance::{
-    HUD_LAYER, PLAY_INTERNAL, PLAY_LAYER, PLAY_WORLD, UI_WIDTH, UPSCALE_LAYER, WINDOW_H, WINDOW_W,
+    HUD_LAYER, PLAY_INTERNAL_H, PLAY_INTERNAL_W, PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W,
+    UI_WIDTH, UPSCALE_LAYER, WINDOW_H, WINDOW_W,
 };
 use crate::map::MAP_LAYER;
 use crate::modes::{
@@ -52,8 +53,8 @@ pub struct PlayRenderImage(#[allow(dead_code)] pub Handle<Image>);
 /// internal resolution so when nearest-neighbor upscaled, each band lands on
 /// exactly one internal pixel of screen height.
 pub fn make_scanline_image() -> Image {
-    let w = PLAY_INTERNAL;
-    let h = PLAY_INTERNAL;
+    let w = PLAY_INTERNAL_W;
+    let h = PLAY_INTERNAL_H;
     // ~12% black on darkened rows. Half the rows × 12% alpha works out to
     // ~6% average darkening — enough that scanlines read at a glance
     // without dimming the whole scene the way a 38% overlay did.
@@ -111,6 +112,74 @@ pub fn make_hash_image_with_tile(light: Color, dark: Color, tile: u32) -> Image 
     img
 }
 
+/// Horizontal wood-plank tile for the dockyard UI background.
+/// Generates a `width × (plank_h × plank_count)` BGRA image with
+/// alternating plank shades, dark gap lines between each plank, and
+/// a per-plank vertical "knot" streak for visual variety. Sampled
+/// with nearest so the planks stay chunky.
+pub fn make_plank_image(
+    width: u32,
+    plank_h: u32,
+    plank_count: u32,
+    light: Color,
+    dark: Color,
+    gap: Color,
+) -> Image {
+    let h = plank_h * plank_count;
+    let to_bgra = |c: Color| {
+        let s: bevy::color::Srgba = c.into();
+        [
+            (s.blue  * 255.0).round() as u8,
+            (s.green * 255.0).round() as u8,
+            (s.red   * 255.0).round() as u8,
+            255u8,
+        ]
+    };
+    let lb = to_bgra(light);
+    let db = to_bgra(dark);
+    let gb = to_bgra(gap);
+    // Small lerp helper for the knot streak — interpolates each
+    // channel in sRGB byte-space, which is acceptable for a stylised
+    // pixel-art look.
+    let lerp = |a: [u8; 4], b: [u8; 4], t: f32| -> [u8; 4] {
+        let m = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
+        [m(a[0], b[0]), m(a[1], b[1]), m(a[2], b[2]), 255]
+    };
+    let mut data = Vec::with_capacity((width * h * 4) as usize);
+    for y in 0..h {
+        let plank_idx = y / plank_h;
+        let local_y = y % plank_h;
+        // Dark gap on the top + bottom row of each plank — reads as
+        // the seam between adjacent boards.
+        let is_gap = local_y == 0 || local_y == plank_h.saturating_sub(1);
+        // Alternate base shade so consecutive planks read distinct.
+        let base = if plank_idx % 2 == 0 { lb } else { db };
+        // Knot streak: per-plank deterministic x position from the
+        // plank index. Streak is two pixels wide, blends toward the
+        // gap colour to read as a darker wood vein.
+        let knot_x = (plank_idx.wrapping_mul(37) ^ 0x9E37) % width;
+        for x in 0..width {
+            let bgra = if is_gap {
+                gb
+            } else if x == knot_x || x == (knot_x + 1) % width {
+                lerp(base, gb, 0.45)
+            } else {
+                base
+            };
+            data.extend_from_slice(&bgra);
+        }
+    }
+    let mut img = Image::new(
+        Extent3d { width, height: h, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Bgra8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    img.sampler = ImageSampler::nearest();
+    img
+}
+
 /// 192×192 tile — what the BG backdrop uses (wide stripes for the
 /// big window-fill quad).
 pub fn make_hash_image(light: Color, dark: Color) -> Image {
@@ -124,7 +193,7 @@ pub fn setup_render(
     mut images: ResMut<Assets<Image>>,
     palette: Res<Palette>,
 ) {
-    let size = Extent3d { width: PLAY_INTERNAL, height: PLAY_INTERNAL, depth_or_array_layers: 1 };
+    let size = Extent3d { width: PLAY_INTERNAL_W, height: PLAY_INTERNAL_H, depth_or_array_layers: 1 };
     let mut img = Image::new_fill(
         size,
         TextureDimension::D2,
@@ -148,8 +217,8 @@ pub fn setup_render(
     // primitive edge, killing the chunky-pixel look.
     let proj = || Projection::Orthographic(OrthographicProjection {
         scaling_mode: bevy::render::camera::ScalingMode::Fixed {
-            width: PLAY_WORLD,
-            height: PLAY_WORLD,
+            width: PLAY_WORLD_W,
+            height: PLAY_WORLD_H,
         },
         ..OrthographicProjection::default_2d()
     });
@@ -244,12 +313,12 @@ pub fn setup_render(
     // Sprite that displays the play render target, on UPSCALE_LAYER, positioned
     // in screen space. Initial size/position for frame 0; `resize_upscale_sprite`
     // refines it every frame using the actual window size.
-    let (left0, _top0, size0) = play_area_screen_rect(WINDOW_W, WINDOW_H, UI_WIDTH);
-    let world_x0 = left0 + size0 / 2.0 - WINDOW_W / 2.0;
+    let (left0, _top0, w0, h0) = play_area_screen_rect(WINDOW_W, WINDOW_H, UI_WIDTH);
+    let world_x0 = left0 + w0 / 2.0 - WINDOW_W / 2.0;
     commands.spawn((
         Sprite {
             image: handle,
-            custom_size: Some(Vec2::splat(size0)),
+            custom_size: Some(Vec2::new(w0, h0)),
             ..default()
         },
         Transform::from_xyz(world_x0, 0.0, 0.0),
@@ -263,7 +332,7 @@ pub fn setup_render(
     commands.spawn((
         Sprite {
             image: scanline_handle,
-            custom_size: Some(Vec2::splat(size0)),
+            custom_size: Some(Vec2::new(w0, h0)),
             ..default()
         },
         Transform::from_xyz(world_x0, 0.0, 1.0),
@@ -319,11 +388,11 @@ pub fn resize_upscale_sprite(
     let Ok(window) = windows.single() else { return; };
     let logical_w = window.width();
     let logical_h = window.height();
-    let (left, _top, size) =
+    let (left, _top, play_w, play_h) =
         play_area_screen_rect(logical_w, logical_h, effective_ui_width(&mode));
     // Play sprite — centred in the available area to the right of the UI.
-    let world_x = left + size / 2.0 - logical_w / 2.0;
-    let target = Vec2::splat(size);
+    let world_x = left + play_w / 2.0 - logical_w / 2.0;
+    let target = Vec2::new(play_w, play_h);
     for (mut s, mut tf) in &mut play_sprites {
         if s.custom_size != Some(target) { s.custom_size = Some(target); }
         if (tf.translation.x - world_x).abs() > 0.001 { tf.translation.x = world_x; }
@@ -355,7 +424,7 @@ pub fn update_hud_camera_viewport(
     let logical_w = window.width();
     let logical_h = window.height();
     let scale = window.scale_factor();
-    let (left, top, size) =
+    let (left, top, play_w, play_h) =
         play_area_screen_rect(logical_w, logical_h, effective_ui_width(&mode));
 
     let phys_pos = UVec2::new(
@@ -363,8 +432,8 @@ pub fn update_hud_camera_viewport(
         (top  * scale).round() as u32,
     );
     let phys_size = UVec2::new(
-        (size * scale).round() as u32,
-        (size * scale).round() as u32,
+        (play_w * scale).round() as u32,
+        (play_h * scale).round() as u32,
     );
 
     // Viewport doesn't impl PartialEq, so compare its fields manually

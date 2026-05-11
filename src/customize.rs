@@ -38,7 +38,6 @@ mod setup;
 mod drag;
 mod shop_mods;
 mod stats_panel;
-mod synergy_panel;
 mod tooltip;
 mod update;
 
@@ -54,8 +53,7 @@ pub use drag::{
 };
 pub use shop_mods::{handle_shop_mod_click, update_shop_mod_cards};
 pub use stats_panel::{handle_stat_debug_buttons, sync_stats_panel};
-pub use synergy_panel::update_synergy_panel;
-pub use tooltip::update_customize_tooltip;
+pub use tooltip::{update_customize_tooltip, update_synergy_banner, TooltipLayout};
 pub use update::{
     handle_close_click, handle_reroll_button, update_customize_ship, update_customize_shop,
     update_customize_ui, update_sell_label,

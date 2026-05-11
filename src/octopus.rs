@@ -20,14 +20,13 @@ use rand::Rng;
 use std::collections::VecDeque;
 
 use crate::balance::PLAY_LAYER;
-use crate::bullet::{apply_damage, credit_damage, DamageSource};
-use crate::components::{Friendly, Health};
-use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
+use crate::bullet::{DamageSource, PendingDamageQueue};
+use crate::components::Friendly;
+use crate::effects::{spawn_hit_particles, EffectMeshes};
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
 use crate::trails::{empty_dynamic_mesh, rebuild_ribbon_mesh};
 use crate::turret::{TurretConfig, TurretSlot};
-use crate::ui::DamageStats;
 use crate::weapon::WeaponType;
 
 /// Visual radius of the octopus body blob.
@@ -41,17 +40,37 @@ const OCTOPUS_HUNT_SPEED: f32 = 32.0;
 /// Body has to be within this distance of an enemy to spawn a
 /// tentacle. The tentacle itself emerges from the WATER at the
 /// enemy (not from the body) — the body's proximity is purely a
-/// gameplay gate, not a visual reach. Tuned so the octopus has to
-/// hunt before it can slap, but doesn't have to be on top of the
-/// target.
-const OCTOPUS_ENGAGE_RANGE: f32 = 18.0;
+/// gameplay gate, not a visual reach. Scaled per `slot.barrels` by
+/// `engage_range_for` so upgrading the Cage materially extends
+/// the octopus's reach, not just its tentacle count.
+const OCTOPUS_ENGAGE_RANGE_BASE: f32 = 30.0;
+/// Standoff ring — `octopus_ai` stops closing this far from the
+/// target instead of sitting on top of it. The tentacle-spawn loop
+/// still gates engagement on the per-barrel engage range, so
+/// standoff must comfortably fit inside the smallest (B1) ring.
+const OCTOPUS_STANDOFF: f32 = 18.0;
+
+/// Per-barrel engage range. B1 / B2 / B3 → base / +25% / +50%.
+/// More-barrel cages reach further AND deploy more tentacles, so
+/// the upgrade is a clear bite-radius bump on top of the dps gain.
+fn engage_range_for(barrels: u8) -> f32 {
+    let mult = match barrels.clamp(1, 3) {
+        1 => 1.00,
+        2 => 1.25,
+        _ => 1.50,
+    };
+    OCTOPUS_ENGAGE_RANGE_BASE * mult
+}
 
 /// Cap mapping — `slot.barrels` to max simultaneous tentacles.
+/// Stepped 3 / 6 / 9 (was 2 / 4 / 6) so each barrel upgrade adds
+/// three concurrent tentacles instead of two — a more legible
+/// per-tier gain plus a stronger ceiling at max barrels.
 fn max_tentacles(barrels: u8) -> usize {
     match barrels.clamp(1, 3) {
-        1 => 2,
-        2 => 4,
-        _ => 6,
+        1 => 3,
+        2 => 6,
+        _ => 9,
     }
 }
 
@@ -97,6 +116,10 @@ pub struct OctopusTentacle {
     /// Set the moment the slap-phase damage hits — guards against a
     /// second damage application across phase transitions.
     pub damage_dealt: bool,
+    /// Slot rune sockets snapshotted at spawn time so the tentacle
+    /// keeps its rune loadout even if the source slot's weapon is
+    /// swapped during the 0.6s lifecycle.
+    pub runes: [Option<crate::rune::Rune>; 3],
 }
 
 /// Marker on the deck-side cage decoration child. `sync_cage_decor`
@@ -275,31 +298,55 @@ pub fn update_octopus_trail(
     }
 }
 
-/// Hunt-the-nearest-enemy AI for the body. Glides toward the closest
-/// enemy at `OCTOPUS_HUNT_SPEED`; idle when none alive.
+/// Hunt-an-enemy AI for the body. Target selection goes through the
+/// autonomous-unit picker — honours the slot's targeting runes
+/// (relative to the SHIP) and applies modulo slot-spread so
+/// multiple cages chase DIFFERENT enemies instead of dogpiling the
+/// closest. Default (no rune) = nearest-to-this-octopus.
 pub fn octopus_ai(
     time: Res<Time>,
-    enemies: Query<&Transform, (With<Enemy>, Without<Octopus>)>,
-    mut octopuses: Query<&mut Transform, With<Octopus>>,
+    cfg: Res<TurretConfig>,
+    synergies: Res<crate::synergy::Synergies>,
+    ship_q: Query<&Transform, (With<Friendly>, Without<Octopus>, Without<Enemy>)>,
+    enemies: Query<(&Transform, &crate::components::Health), (With<Enemy>, Without<Octopus>)>,
+    mut octopuses: Query<(&mut Transform, &Octopus)>,
 ) {
     let dt = time.delta_secs();
-    for mut tf in &mut octopuses {
+    let ship_pos = ship_q.single().map(|t| t.translation.truncate()).unwrap_or(Vec2::ZERO);
+    let speed_mult = synergies.autonomous_speed_mult();
+    let snapshot: Vec<(Vec2, i32)> = enemies
+        .iter()
+        .map(|(t, h)| (t.translation.truncate(), h.0))
+        .collect();
+    for (mut tf, oct) in &mut octopuses {
         let pos = tf.translation.truncate();
-        let nearest = enemies
-            .iter()
-            .map(|t| t.translation.truncate())
-            .min_by(|a, b| {
-                a.distance_squared(pos)
-                    .partial_cmp(&b.distance_squared(pos))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-        let Some(target) = nearest else { continue; };
+        let runes = cfg.slots.get(oct.owner_slot)
+            .map(|s| s.runes)
+            .unwrap_or([None; 3]);
+        let Some(target) = crate::weapon::pick_target(
+            &snapshot, ship_pos, pos, &runes,
+        )
+        .map(|t| t + crate::weapon::offset_for_slot(oct.owner_slot))
+        else { continue; };
         let to = target - pos;
         let dist = to.length();
         if dist < 0.1 { continue; }
+        // Standoff: don't sit directly on top of the target. The
+        // tentacles emerge AT the enemy, so the body itself wants
+        // to hover a few units away (looks better, doesn't crowd
+        // the enemy sprite). Once inside the standoff ring we stop
+        // closing — actual engagement is the tentacle spawn loop's
+        // job, gated on OCTOPUS_ENGAGE_RANGE.
+        if dist <= OCTOPUS_STANDOFF { continue; }
         let dir = to / dist;
-        let max_step = OCTOPUS_HUNT_SPEED * dt;
-        let step = if dist > max_step { dir * max_step } else { to };
+        // Autonomous synergy multiplies swim speed — octopuses
+        // close the gap to their target faster with more equipped
+        // Autonomous-tagged turrets.
+        let max_step = OCTOPUS_HUNT_SPEED * speed_mult * dt;
+        // Stop at the standoff ring, not at the enemy itself.
+        let close_to = (dist - OCTOPUS_STANDOFF).max(0.0);
+        let step_len = close_to.min(max_step);
+        let step = dir * step_len;
         tf.translation.x += step.x;
         tf.translation.y += step.y;
     }
@@ -316,7 +363,8 @@ pub fn octopus_spawn_tentacles(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    enemies: Query<&Transform, (With<Enemy>, Without<Octopus>)>,
+    ship_q: Query<&Transform, (With<Friendly>, Without<Octopus>, Without<Enemy>)>,
+    enemies: Query<(&Transform, &crate::components::Health), (With<Enemy>, Without<Octopus>)>,
     tentacles: Query<&OctopusTentacle>,
     mut octopuses: Query<(Entity, &Transform, &mut Octopus)>,
 ) {
@@ -325,6 +373,9 @@ pub fn octopus_spawn_tentacles(
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
     let tentacle_mesh = meshes.add(Rectangle::new(TENTACLE_WIDTH, TENTACLE_LENGTH));
+    let ship_pos = ship_q.single()
+        .map(|t| t.translation.truncate())
+        .unwrap_or(Vec2::ZERO);
 
     for (oct_entity, tf, mut oct) in &mut octopuses {
         oct.spawn_cd -= dt;
@@ -336,18 +387,25 @@ pub fn octopus_spawn_tentacles(
         if oct.spawn_cd > 0.0 { continue; }
 
         let body_pos = tf.translation.truncate();
-        // Find nearest enemy in engage range — gameplay gate only,
-        // the visual tentacle isn't drawn from the body.
-        let target = enemies
+        // Filter to enemies within engage range first, then run the
+        // autonomous-unit picker (which honours the slot's
+        // targeting runes relative to the SHIP). This keeps the
+        // "I have to be close to slap" gate while letting
+        // Furthest/HighestHp/LowestHp runes choose WHICH in-range
+        // enemy to hit.
+        let engage = engage_range_for(s.barrels);
+        let in_range: Vec<(Vec2, i32)> = enemies
             .iter()
-            .map(|t| t.translation.truncate())
-            .filter(|p| p.distance_squared(body_pos) < OCTOPUS_ENGAGE_RANGE * OCTOPUS_ENGAGE_RANGE)
-            .min_by(|a, b| {
-                a.distance_squared(body_pos)
-                    .partial_cmp(&b.distance_squared(body_pos))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-        let Some(target_pos) = target else { continue; };
+            .filter(|(t, _)| {
+                t.translation.truncate().distance_squared(body_pos) < engage * engage
+            })
+            .map(|(t, h)| (t.translation.truncate(), h.0))
+            .collect();
+        let Some(target_pos) = crate::weapon::pick_target(
+            &in_range, ship_pos, body_pos, &s.runes,
+        )
+        .map(|t| t + crate::weapon::offset_for_slot(oct.owner_slot))
+        else { continue; };
 
         // Tentacle EMERGES FROM THE WATER right next to the enemy
         // — no visual line back to the body. Random tilt for
@@ -373,6 +431,7 @@ pub fn octopus_spawn_tentacles(
                 timer: TENTACLE_EMERGE_TIME,
                 damage: s.damage.max(1),
                 damage_dealt: false,
+                runes: s.runes,
             },
             RenderLayers::layer(PLAY_LAYER),
         ));
@@ -397,11 +456,11 @@ pub fn octopus_spawn_tentacles(
 pub fn tentacle_tick(
     time: Res<Time>,
     mut commands: Commands,
-    mut stats: ResMut<DamageStats>,
+    mut queue: ResMut<PendingDamageQueue>,
     octopus_q: Query<&Octopus, Without<OctopusTentacle>>,
     mut tentacles: Query<(Entity, &mut Transform, &mut OctopusTentacle), Without<Enemy>>,
-    mut enemies: Query<
-        (&Transform, &Enemy, &mut Health, &mut HitFx),
+    enemies: Query<
+        (Entity, &Transform, &Enemy, &crate::components::Health),
         (With<Enemy>, Without<OctopusTentacle>, Without<Octopus>),
     >,
 ) {
@@ -426,23 +485,21 @@ pub fn tentacle_tick(
                     tent.phase = TentaclePhase::Slap;
                     tent.timer = TENTACLE_SLAP_TIME;
                     if !tent.damage_dealt {
-                        // Source octopus may have despawned mid-flight
-                        // (Cage swapped during the 0.6s lifecycle).
-                        // Crediting fails silently in that case; the
-                        // damage still lands.
                         let source = octopus_q
                             .get(tent.source)
                             .ok()
                             .map(|o| DamageSource::PlayerSlot(o.owner_slot as u8));
                         let slap_pos = tf.translation.truncate();
-                        for (etf, en, mut h, mut fx) in &mut enemies {
+                        for (e, etf, en, h) in &enemies {
                             if h.0 <= 0 { continue; }
                             let ep = etf.translation.truncate();
                             let er = 3.5 * en.variant.scale();
                             let reach = TENTACLE_SLAP_RADIUS + er;
                             if ep.distance_squared(slap_pos) > reach * reach { continue; }
-                            let dealt = apply_damage(&mut h, &mut fx, tent.damage);
-                            credit_damage(&mut stats, source, dealt);
+                            queue.push_initial(
+                                e, tent.damage, slap_pos,
+                                WeaponType::Cage, source, &tent.runes,
+                            );
                             tent.damage_dealt = true;
                             break;
                         }

@@ -22,13 +22,11 @@ use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
 
 use crate::balance::PLAY_LAYER;
-use crate::bullet::{apply_damage, credit_damage, DamageSource};
+use crate::bullet::{DamageSource, PendingDamageQueue};
 use crate::components::Health;
-use crate::effects::HitFx;
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
 use crate::turret::{TurretConfig, TurretSlot};
-use crate::ui::DamageStats;
 use crate::weapon::WeaponType;
 
 /// Length (world units) of the rectangular arm extending outward from
@@ -196,12 +194,12 @@ pub fn sync_blade_decor(
 /// Melee tiers). Multiple kills in the same tick stack.
 pub fn blade_tick(
     time: Res<Time>,
-    mut stats: ResMut<DamageStats>,
     synergies: Res<crate::synergy::Synergies>,
     player_stats: Res<crate::stats::PlayerStats>,
+    mut queue: ResMut<PendingDamageQueue>,
     mut blades: Query<(&mut Transform, &GlobalTransform, &mut BladeEdge, &Visibility)>,
     slot_q: Query<&TurretSlot>,
-    mut enemies: Query<(&Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<BladeEdge>, Without<crate::components::Friendly>)>,
+    enemies: Query<(Entity, &Transform, &Enemy, &Health), (With<Enemy>, Without<BladeEdge>, Without<crate::components::Friendly>)>,
     mut friendly: Query<&mut crate::components::Health, (With<crate::components::Friendly>, Without<Enemy>, Without<BladeEdge>)>,
 ) {
     let dt = time.delta_secs();
@@ -244,29 +242,34 @@ pub fn blade_tick(
         let blade_world = gtf.translation().truncate();
         let source = Some(DamageSource::PlayerSlot(slot.index as u8));
 
+        // Push DamageEvents into the shared queue so the runes on
+        // this slot get a turn through `process_damage_events` (Fire
+        // / Frost / Shock / Detonate / Echo / Cascade / Conduit /
+        // Resonate). Pre-tick HP < threshold check is informational
+        // only — the actual kill detection (and Melee heal) happens
+        // post-drain via the lethal branch in process_damage_event,
+        // so we approximate here by counting enemies whose CURRENT
+        // HP is ≤ damage. This is a 1-frame-stale heuristic but
+        // good enough for the heal counter; perfect kill detection
+        // would require a separate "DamageDealt" event from the
+        // drain back to systems.
+        // Multi-target: blade hits EVERY enemy in reach on a tick
+        // (preserved from the original direct-damage version).
+        // Heal counter is a 1-frame-stale heuristic — we count
+        // enemies whose pre-event HP is ≤ damage, which doesn't
+        // perfectly match what `process_damage_event` will actually
+        // kill (Resonate amp / Detonate burst can overkill, Echo
+        // delays a hit), but is close enough for the on-kill heal.
         let mut kills_this_tick: i32 = 0;
-        for (etf, en, mut h, mut fx) in &mut enemies {
+        for (e, etf, en, h) in &enemies {
             if h.0 <= 0 { continue; }
             let ep = etf.translation.truncate();
-            // Hit-disc check mirrors the mortar splash: enemy is "in
-            // reach" if its center is within `BLADE_REACH +
-            // enemy_hit_radius` of the blade's world position. Enemy
-            // hit radius (3.5 × variant scale) matches the bullet /
-            // mortar collision rule.
             let er = 3.5 * en.variant.scale();
             let reach = BLADE_REACH + er;
             if ep.distance_squared(blade_world) > reach * reach { continue; }
-            let dealt = apply_damage(&mut h, &mut fx, damage);
-            credit_damage(&mut stats, source, dealt);
-            // Brought to 0 by THIS tick → eligible for the Melee
-            // heal-on-kill synergy. Don't double-count enemies that
-            // were already dead at the start of the loop (the
-            // `h.0 <= 0` continue above gates that out).
-            if h.0 <= 0 { kills_this_tick += 1; }
+            queue.push_initial(e, damage, ep, WeaponType::Blade, source, &slot.runes);
+            if h.0 <= damage { kills_this_tick += 1; }
         }
-        // Apply Melee synergy heal at the end of the tick so multiple
-        // kills compound. `heal_per_kill == 0` (no Melee synergy
-        // active) short-circuits the friendly write entirely.
         if heal_per_kill > 0 && kills_this_tick > 0 {
             if let Ok(mut hp) = friendly.single_mut() {
                 hp.0 = (hp.0 + heal_per_kill * kills_this_tick).min(max_hp);

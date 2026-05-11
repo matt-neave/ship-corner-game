@@ -1,0 +1,7 @@
+# Use rust-lld (LLVM's linker, ships with the Rust toolchain) for
+# Windows MSVC builds. Significantly faster incremental linking than
+# the default MSVC linker — stacks with the `dev` Cargo feature that
+# enables `bevy/dynamic_linking` for the biggest iteration-speed win.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

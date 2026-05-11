@@ -252,9 +252,14 @@ pub fn update_map_slot_labels(
     mut q: Query<(&MapSlotLabel, &mut Node, &mut Text, &mut Visibility)>,
 ) {
     let Ok(win) = windows.single() else { return; };
-    let (left, top, size) = play_area_screen_rect(
+    let (play_left, play_top, play_w, play_h) = play_area_screen_rect(
         win.width(), win.height(), effective_ui_width(&window_mode),
     );
+    // Map sits as a square in the play-area screen rect; pad sides
+    // when the play area is wider than tall (wide_play mode).
+    let size = play_w.min(play_h);
+    let left = play_left + (play_w - size) * 0.5;
+    let top  = play_top  + (play_h - size) * 0.5;
     let upscale = size / PLAY_WORLD;
     let in_map = *view == ViewMode::Map;
 

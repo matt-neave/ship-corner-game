@@ -15,16 +15,15 @@ use crate::balance::{
     TURRET_ARC_HALVES, TURRET_RANGE,
 };
 use crate::beam::{Beam, BeamHit, BeamPending};
-use crate::bullet::{apply_damage, credit_damage, Bullet, DamageSource};
+use crate::bullet::{Bullet, DamageSource};
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
-use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx, MuzzleFlash};
+use crate::effects::{spawn_hit_particles, EffectMeshes, MuzzleFlash};
 use crate::enemy::Enemy;
 use crate::modes::ScreenShake;
 use crate::palette::PaletteMaterials;
 use crate::rune::Rune;
 use crate::ship::approach_angle;
-use crate::ui::DamageStats;
-use crate::weapon::{TargetPriority, WeaponType};
+use crate::weapon::WeaponType;
 
 // ---------- Mortar tunables ----------
 
@@ -106,6 +105,11 @@ pub struct MortarShell {
     pub splash_radius: f32,
     pub source: Option<DamageSource>,
     pub weapon: WeaponType,
+    /// Slot rune sockets snapshotted at fire time. The shell pushes a
+    /// `DamageEvent` per enemy in splash, each carrying these runes
+    /// so Fire / Frost / Shock / etc. proc on the AoE the same way
+    /// they do on a direct bullet hit.
+    pub runes: [Option<Rune>; 3],
     /// Companion entity drawn at `target` for the entire flight so the
     /// player can read the landing spot. Despawned with the shell at
     /// impact. `None` if the shadow couldn't be spawned (shouldn't
@@ -333,50 +337,39 @@ pub fn turret_aim_fire(
             * stats.range_mult();
         let half_arc = stats.effective_turret_half_arc(TURRET_ARC_HALVES[slot.index]);
 
-        // Find best target in this turret's arc.
-        //
-        // Default is `Closest`. A targeting rune slotted on this turret
-        // overrides — `Rune::TargetFurthest` / `TargetHighestHp` /
-        // `TargetLowestHp` swap the score function. The first targeting
-        // rune found by socket order wins (multiple are unusual but
-        // possible — keeps behaviour deterministic without forbidding it).
-        let priority = slot.runes.iter()
-            .find_map(|r| r.and_then(|r| r.target_priority()))
-            .unwrap_or(TargetPriority::Closest);
-        let mut best: Option<(f32, Vec2)> = None;
-        // `best_score` always uses "min wins" semantics so the loop
-        // body has a single comparator regardless of priority. The
-        // `score()` helper below negates as needed.
-        let mut best_score: Option<f32> = None;
-        for (etf, fac, hp) in &enemies {
-            if fac.0 != FactionKind::Enemy { continue; }
-            let ep = etf.translation.truncate();
-            let to = ep - turret_world;
-            let d = to.length();
-            if d > effective_range { continue; }
-            // Mortar can't shoot anything inside its inner dead-zone.
-            if d < effective_min { continue; }
-            let world_angle = (-to.x).atan2(to.y);
-            let mut local_angle = world_angle - hull_forward_world;
-            local_angle = (local_angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-                - std::f32::consts::PI;
-            let mut off = local_angle - slot.mount_angle;
-            off = (off + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-                - std::f32::consts::PI;
-            if off.abs() > half_arc { continue; }
-            let score = match priority {
-                TargetPriority::Closest   =>  d,
-                TargetPriority::Furthest  => -d,
-                TargetPriority::HighestHp => -(hp.0 as f32),
-                TargetPriority::LowestHp  =>  hp.0 as f32,
-            };
-            if best_score.map_or(true, |bs| score < bs) {
-                best_score = Some(score);
-                best = Some((d, ep));
-            }
-        }
+        // Build the in-arc / in-range candidate list, then defer the
+        // priority pick to `weapon::pick_target`. Single source of
+        // truth for targeting-rune semantics — same picker player
+        // turrets and autonomous units (helis, octopuses) use.
+        // Anchor + fallback are both the turret itself: rune-priority
+        // distance measures from the turret, and no-rune nearest-to
+        // also resolves to the turret.
+        let candidates: Vec<(Vec2, i32)> = enemies
+            .iter()
+            .filter_map(|(etf, fac, hp)| {
+                if fac.0 != FactionKind::Enemy { return None; }
+                let ep = etf.translation.truncate();
+                let to = ep - turret_world;
+                let d = to.length();
+                if d > effective_range { return None; }
+                // Mortar can't shoot anything inside its inner dead-zone.
+                if d < effective_min { return None; }
+                let world_angle = (-to.x).atan2(to.y);
+                let mut local_angle = world_angle - hull_forward_world;
+                local_angle = (local_angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+                    - std::f32::consts::PI;
+                let mut off = local_angle - slot.mount_angle;
+                off = (off + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+                    - std::f32::consts::PI;
+                if off.abs() > half_arc { return None; }
+                Some((ep, hp.0))
+            })
+            .collect();
+        let best = crate::weapon::pick_target(
+            &candidates, turret_world, turret_world, &slot.runes,
+        );
 
-        let desired_local = if let Some((_, ep)) = best {
+        let desired_local = if let Some(ep) = best {
             let to = ep - turret_world;
             let world_angle = (-to.x).atan2(to.y);
             let mut la = world_angle - hull_forward_world;
@@ -477,6 +470,7 @@ pub fn turret_aim_fire(
                                 damage: slot.damage,
                                 slot: slot.index as u8,
                                 weapon: slot.weapon,
+                                runes: slot.runes,
                             },
                             BeamPending,
                             RenderLayers::layer(PLAY_LAYER),
@@ -509,7 +503,7 @@ pub fn turret_aim_fire(
                         let muzzle_pos = turret_world
                             + barrel_forward * (effective_tip + FRIENDLY_BULLET_HALF_LEN)
                             + barrel_right * lateral;
-                        let target_pos = best.map(|(_, p)| p).unwrap_or(muzzle_pos);
+                        let target_pos = best.unwrap_or(muzzle_pos);
                         // Each `Splash` rune slotted on this turret
                         // adds +50% to the AoE radius (additive — 2
                         // runes = 200%, 3 = 250%).
@@ -522,6 +516,7 @@ pub fn turret_aim_fire(
                             muzzle_pos, target_pos, slot.weapon, slot.damage,
                             splash,
                             Some(DamageSource::PlayerSlot(slot.index as u8)),
+                            slot.runes,
                         );
                     }
                     WeaponType::Cannon => {
@@ -635,6 +630,7 @@ pub fn spawn_mortar_shell(
     damage: i32,
     splash_radius: f32,
     source: Option<DamageSource>,
+    runes: [Option<Rune>; 3],
 ) {
     // Landing-indicator removed — the player reads the lobbed arc + a
     // visible elongated shell, no shadow circle needed at the target.
@@ -662,6 +658,7 @@ pub fn spawn_mortar_shell(
             splash_radius,
             source,
             weapon,
+            runes,
             shadow: None,
         },
         RenderLayers::layer(PLAY_LAYER),
@@ -688,13 +685,13 @@ pub fn spawn_mortar_shell(
 pub fn mortar_shell_tick(
     time: Res<Time>,
     mut commands: Commands,
-    mut stats: ResMut<DamageStats>,
     player_stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mut shake: ResMut<ScreenShake>,
+    mut queue: ResMut<crate::bullet::PendingDamageQueue>,
     mut shells: Query<(Entity, &mut Transform, &mut MortarShell)>,
-    mut enemies: Query<(&Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<MortarShell>)>,
+    enemies: Query<(Entity, &Transform, &Enemy, &Health), (With<Enemy>, Without<MortarShell>)>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
@@ -736,17 +733,13 @@ pub fn mortar_shell_tick(
         let amount = shell.damage.saturating_mul(crit_mult);
         let target = shell.target;
 
-        for (etf, en, mut h, mut fx) in &mut enemies {
+        for (e, etf, en, h) in &enemies {
+            if h.0 <= 0 { continue; }
             let ep = etf.translation.truncate();
-            // Hit-disc check: enemy is "in splash" if its center is
-            // within `splash_radius + enemy_hit_radius` of `target`.
-            // Mirrors `bullet_collisions`' enemy radius (3.5 × scale).
             let er = 3.5 * en.variant.scale();
             let reach = shell.splash_radius + er;
             if ep.distance_squared(target) > reach * reach { continue; }
-            if h.0 <= 0 { continue; }
-            let dealt = apply_damage(&mut h, &mut fx, amount);
-            credit_damage(&mut stats, shell.source, dealt);
+            queue.push_initial(e, amount, ep, shell.weapon, shell.source, &shell.runes);
         }
 
         // Particle burst at the impact point — weapon-color inner spark
@@ -1046,8 +1039,9 @@ pub fn helicopter_ai(
     em: Option<Res<EffectMeshes>>,
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
+    synergies: Res<crate::synergy::Synergies>,
     ship_q: Query<&Transform, (With<Friendly>, Without<Helicopter>, Without<Enemy>)>,
-    enemies: Query<(&Transform, &Faction), (With<Enemy>, Without<Helicopter>)>,
+    enemies: Query<(&Transform, &Faction, &Health), (With<Enemy>, Without<Helicopter>)>,
     mut helis: Query<(&mut Transform, &mut Helicopter), Without<HeliRotor>>,
     mut rotors: Query<&mut Transform, (With<HeliRotor>, Without<Helicopter>, Without<Enemy>, Without<Friendly>)>,
 ) {
@@ -1062,6 +1056,14 @@ pub fn helicopter_ai(
         rotf.rotate_z(8.0 * dt);
     }
 
+    // Snapshot enemies (pos, hp) once for the autonomous-target
+    // picker. Cheaper than re-iterating + sorting per heli.
+    let enemy_snap: Vec<(Vec2, i32)> = enemies
+        .iter()
+        .filter(|(_, fac, _)| fac.0 == FactionKind::Enemy)
+        .map(|(etf, _, hp)| (etf.translation.truncate(), hp.0))
+        .collect();
+
     for (mut tf, mut heli) in &mut helis {
         let slot_cfg = cfg.slots.get(heli.owner_slot).copied().unwrap_or_default();
         // sync_helipad_helicopters despawns orphans, but be defensive:
@@ -1073,19 +1075,16 @@ pub fn helicopter_ai(
         let cur = tf.translation.truncate();
         let effective_range = TURRET_RANGE * stats.range_mult();
 
-        // Acquire the nearest enemy ANYWHERE on the map — no
-        // detection radius, no leash to the boat. The heli will
-        // chase across the whole arena, only stopping at the orbit
-        // standoff when it gets close enough to fire.
-        let mut best: Option<(f32, Vec2)> = None;
-        for (etf, fac) in &enemies {
-            if fac.0 != FactionKind::Enemy { continue; }
-            let ep = etf.translation.truncate();
-            let d = ep.distance(cur);
-            if best.map_or(true, |(bd, _)| d < bd) {
-                best = Some((d, ep));
-            }
-        }
+        // Acquire a target via the shared picker. Rune priority is
+        // measured relative to the SHIP (so Furthest = furthest from
+        // ship, not from this helicopter); no rune = nearest-to-this-
+        // helicopter. Per-slot offset added on top keeps multiple
+        // helis from converging on the exact same spot.
+        let best_pos = crate::weapon::pick_target(
+            &enemy_snap, ship_pos, cur, &slot_cfg.runes,
+        )
+        .map(|p| p + crate::weapon::offset_for_slot(heli.owner_slot));
+        let best: Option<(f32, Vec2)> = best_pos.map(|p| (p.distance(cur), p));
 
         // Pick what we're orbiting around: the enemy we're chasing,
         // or the ship if there's nothing to fight. Standoff distance
@@ -1153,7 +1152,11 @@ pub fn helicopter_ai(
             (-move_dir.x).atan2(move_dir.y)
         };
         heli.heading = approach_angle(heli.heading, desired_heading, HELI_TURN_RATE * dt);
-        let new_pos = cur + move_dir * HELI_SPEED * dt;
+        // Autonomous synergy multiplies orbit speed — helis with
+        // more equipped Autonomous-tagged turrets fly noticeably
+        // faster around the ship.
+        let speed = HELI_SPEED * synergies.autonomous_speed_mult();
+        let new_pos = cur + move_dir * speed * dt;
         tf.translation.x = new_pos.x;
         tf.translation.y = new_pos.y;
         tf.rotation = Quat::from_rotation_z(heli.heading);

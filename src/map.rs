@@ -204,13 +204,15 @@ impl Default for CombatContext {
 
 impl CombatContext {
     /// On-screen enemy cap for sandbox-style drip spawning. Base is
-    /// `6 × stars` (5★ → 30, 1★ → 6). Climbs by `+2` per battle
-    /// cleared so late-campaign stages can keep more concurrent
-    /// pressure on, hard-capped at 60 to keep the arena legible.
+    /// `6 × stars` (5★ → 30, 1★ → 6). Climbs by `+3` per battle
+    /// cleared up to the 10th stage so late-campaign arenas can run
+    /// hot — the wave-SIZE multiplier in `balance::wave_size` is
+    /// what gates the per-wave total, not this. Hard cap 80 keeps a
+    /// pathological 5★ stage 50 from melting the renderer.
     pub fn enemy_cap(&self) -> usize {
         let base = 6 * self.stars.max(1) as usize;
-        let progress = (self.battles_cleared as usize) * 2;
-        (base + progress).min(60)
+        let progress = (self.battles_cleared.min(10) as usize) * 3;
+        (base + progress).min(80)
     }
 
     /// Initialise this context for a fresh stage at the given star

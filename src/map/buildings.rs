@@ -146,14 +146,19 @@ pub fn update_building_hover_tooltip(
         if !popups.is_empty() { return None; }
         let win = windows.single().ok()?;
         let c = win.cursor_position()?;
-        let (left, top, size) = play_area_screen_rect(
+        let (left, top, play_w, play_h) = play_area_screen_rect(
             win.width(), win.height(), effective_ui_width(&window_mode),
         );
-        if c.x < left || c.x > left + size || c.y < top || c.y > top + size {
+        // Map view is rendered as a square centered in the (possibly
+        // wider) play area, sized to the shorter screen axis.
+        let map_size = play_w.min(play_h);
+        let map_left = left + (play_w - map_size) * 0.5;
+        let map_top  = top  + (play_h - map_size) * 0.5;
+        if c.x < map_left || c.x > map_left + map_size || c.y < map_top || c.y > map_top + map_size {
             return None;
         }
-        let nx = (c.x - left) / size;
-        let ny = (c.y - top) / size;
+        let nx = (c.x - map_left) / map_size;
+        let ny = (c.y - map_top) / map_size;
         let world = Vec2::new((nx - 0.5) * PLAY_WORLD, (0.5 - ny) * PLAY_WORLD);
 
         for section in &state.sections {

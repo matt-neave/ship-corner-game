@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use crate::ally::{ally_is_submerged, Ally};
 use crate::balance::{
     BOMBER_DETONATE_DIST, BULLET_SPEED, ENEMY_BARREL_TIP, ENEMY_BULLET_HALF_LEN, ENEMY_LEN,
-    ENEMY_RANGE, ENEMY_WIDTH, HUD_LAYER, PLAY_LAYER, PLAY_WORLD,
+    ENEMY_RANGE, ENEMY_WIDTH, HUD_LAYER, PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W,
 };
 use crate::bullet::Bullet;
 use bevy::sprite::MeshMaterial2d;
@@ -623,13 +623,14 @@ const WAVE_SPAWN_INTERVAL: f32 = 0.15;
 const WAVE_TELEGRAPH_DELAY: f32 = 0.8;
 
 fn random_edge_pos(rng: &mut rand::rngs::ThreadRng) -> Vec2 {
-    let half = PLAY_WORLD / 2.0;
+    let half_w = PLAY_WORLD_W * 0.5;
+    let half_h = PLAY_WORLD_H * 0.5;
     let edge = rng.gen_range(0..4);
     match edge {
-        0 => Vec2::new(rng.gen_range(-half..half), half + 20.0),
-        1 => Vec2::new(rng.gen_range(-half..half), -half - 20.0),
-        2 => Vec2::new(half + 20.0, rng.gen_range(-half..half)),
-        _ => Vec2::new(-half - 20.0, rng.gen_range(-half..half)),
+        0 => Vec2::new(rng.gen_range(-half_w..half_w), half_h + 20.0),
+        1 => Vec2::new(rng.gen_range(-half_w..half_w), -half_h - 20.0),
+        2 => Vec2::new(half_w + 20.0, rng.gen_range(-half_h..half_h)),
+        _ => Vec2::new(-half_w - 20.0, rng.gen_range(-half_h..half_h)),
     }
 }
 
@@ -737,12 +738,12 @@ fn spawn_indicator(
     assets: &SpawnIndicatorAssets,
     spawn_pos: Vec2,
 ) -> Entity {
-    let half = PLAY_WORLD / 2.0;
     let inset = 5.0;
-    let inner = half - inset;
+    let inner_x = PLAY_WORLD_W * 0.5 - inset;
+    let inner_y = PLAY_WORLD_H * 0.5 - inset;
     let pos = Vec2::new(
-        spawn_pos.x.clamp(-inner, inner),
-        spawn_pos.y.clamp(-inner, inner),
+        spawn_pos.x.clamp(-inner_x, inner_x),
+        spawn_pos.y.clamp(-inner_y, inner_y),
     );
     let outward = (spawn_pos - pos).normalize_or(Vec2::Y);
     let angle = (-outward.x).atan2(outward.y);
@@ -794,7 +795,13 @@ pub fn enemy_ai(
     time: Res<Time>,
     friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     allies: Query<(&Transform, &Ally), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
-    mut q: Query<(&mut Transform, &mut Velocity, &mut Heading, &mut Enemy)>,
+    // Stunned enemies skip the AI entirely — their Velocity stays at
+    // whatever it was last frame, but `apply_velocity` early-outs
+    // for Stunned so they hold position regardless.
+    mut q: Query<
+        (&mut Transform, &mut Velocity, &mut Heading, &mut Enemy),
+        Without<crate::components::Stunned>,
+    >,
 ) {
     let dt = time.delta_secs();
     let Ok(ftf) = friendly.single() else { return; };
@@ -951,7 +958,11 @@ pub fn enemy_fire(
     em: Option<Res<EffectMeshes>>,
     friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     allies: Query<(&Transform, &Ally), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
-    mut enemies: Query<(Entity, &Transform, &Heading, &mut Enemy)>,
+    // Stunned enemies hold fire — same gate as movement.
+    mut enemies: Query<
+        (Entity, &Transform, &Heading, &mut Enemy),
+        Without<crate::components::Stunned>,
+    >,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
@@ -976,6 +987,10 @@ pub fn enemy_fire(
         if enemy.variant == EnemyVariant::Sniper { continue; }
         enemy.fire_cd -= dt;
         let pos = tf.translation.truncate();
+        // Off-screen enemies don't shoot — they need to drift back
+        // into the arena before opening fire. Avoids the "invisible
+        // sniper plinking from past the edge" feel.
+        if !crate::balance::in_play_area(pos) { continue; }
         // Aim at the closest of {friendly, allies}.
         let target_pos = nearest_target(pos, fpos, &ally_positions);
         let to = target_pos - pos;
@@ -1192,6 +1207,9 @@ pub fn sniper_fire(
         if enemy.variant != EnemyVariant::Sniper { continue; }
         let pos = tf.translation.truncate();
         enemy.fire_cd -= dt;
+        // Off-screen snipers don't aim or fire — they have to come
+        // inside the arena to engage.
+        if aim.is_none() && !crate::balance::in_play_area(pos) { continue; }
 
         if let Some(mut aim) = aim {
             // Aiming — tick down. On expiry, fire along the locked
@@ -1319,6 +1337,9 @@ pub fn artillery_fire(
         enemy.fire_cd -= dt;
         if enemy.fire_cd > 0.0 { continue; }
         let pos = tf.translation.truncate();
+        // Off-screen artillery doesn't fire — keeps the dodge cue
+        // (the reticle) inside the visible arena.
+        if !crate::balance::in_play_area(pos) { continue; }
         // Pick nearest of {predicted friendly, current allies}. Using
         // the predicted position for the friendly means artillery
         // either misses (player dodged) OR hits (player held course).

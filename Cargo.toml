@@ -19,3 +19,18 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Optional dev-only feature that flips Bevy into dynamic-linking
+# mode. Use `cargo run --features dev` for fast iteration — Bevy
+# compiles into a `.dll` once and each rebuild only relinks against
+# it (typical 30-60s → 3-8s incremental). Release builds
+# (`cargo build --release`) ignore this feature, so shipping
+# binaries stay self-contained.
+[features]
+dev = ["bevy/dynamic_linking"]
+# AB-test the rectangular (360x200) play area against the default
+# square (200x200). Build with `cargo run --features wide_play` to
+# render and play on the wider stage; default build stays square.
+# Affects PLAY_WORLD_W / PLAY_INTERNAL_W and every spawn-bounds,
+# despawn, camera, and HUD layout that reads them.
+wide_play = []

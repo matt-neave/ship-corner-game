@@ -75,14 +75,14 @@ pub fn update_wave_indicator(
         .single()
         .ok()
         .map(|w| {
-            let (left, top, size) = play_area_screen_rect(
+            let (left, top, play_w, _play_h) = play_area_screen_rect(
                 w.width(),
                 w.height(),
                 effective_ui_width(&window_mode),
             );
             // Distance from the window's right edge to the play area's
             // right edge.
-            let right_inset = (w.width() - (left + size)).max(0.0);
+            let right_inset = (w.width() - (left + play_w)).max(0.0);
             // Sit BELOW the XP bar that runs across the play-area top.
             // Inset (6 px) + XP bar height (22 px) + small gap (4 px).
             let below_xp = crate::xp::XP_BAR_TOP_INSET + crate::xp::XP_BAR_HEIGHT + 4.0;

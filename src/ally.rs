@@ -34,7 +34,7 @@ use bevy::render::view::RenderLayers;
 use rand::Rng;
 
 use crate::balance::{
-    PLAY_LAYER, PLAY_WORLD, TURRET_PIVOT, TURRET_RANGE,
+    PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W, TURRET_PIVOT, TURRET_RANGE,
 };
 use crate::bullet::Bullet;
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
@@ -1349,8 +1349,8 @@ pub fn ally_ai(
             if ally.waypoint_timer <= 0.0 {
                 ally.waypoint_timer = rng.gen_range(2.5..5.5);
                 ally.waypoint = Vec2::new(
-                    rng.gen_range(-PLAY_WORLD * 0.35..PLAY_WORLD * 0.35),
-                    rng.gen_range(-PLAY_WORLD * 0.35..PLAY_WORLD * 0.35),
+                    rng.gen_range(-PLAY_WORLD_W * 0.35..PLAY_WORLD_W * 0.35),
+                    rng.gen_range(-PLAY_WORLD_H * 0.35..PLAY_WORLD_H * 0.35),
                 );
             }
             ally.waypoint
@@ -1403,8 +1403,9 @@ pub fn ally_ai(
 
         // Keep target inside the play area so we don't crash the wall.
         let margin = 10.0;
-        let bound = PLAY_WORLD / 2.0 - margin;
-        let target = Vec2::new(target.x.clamp(-bound, bound), target.y.clamp(-bound, bound));
+        let bound_x = PLAY_WORLD_W * 0.5 - margin;
+        let bound_y = PLAY_WORLD_H * 0.5 - margin;
+        let target = Vec2::new(target.x.clamp(-bound_x, bound_x), target.y.clamp(-bound_y, bound_y));
 
         let to = target - pos;
         if to.length_squared() > 1.0 {

@@ -13,7 +13,7 @@ use bevy::window::{PresentMode, PrimaryWindow};
 use bevy::winit::WinitWindows;
 use winit::window::ResizeDirection;
 
-use crate::balance::{PLAY_INTERNAL, WINDOW_H, WINDOW_W};
+use crate::balance::{PLAY_INTERNAL_H, PLAY_INTERNAL_W, WINDOW_H, WINDOW_W};
 use crate::palette::{hex, Palette};
 use crate::ui::{ScoreText, UiPanel};
 
@@ -103,15 +103,18 @@ pub struct DesktopHint;
 /// Authoritative play-area screen rect for the current window size. Both the
 /// upscale sprite placement and cursor→world mapping use this so they can't
 /// drift out of sync as the window resizes. `ui_width` is 0 in desktop mode.
-pub fn play_area_screen_rect(logical_w: f32, logical_h: f32, ui_width: f32) -> (f32, f32, f32) {
+/// Returns `(left, top, width, height)` — the rect is no longer square when
+/// the `wide_play` Cargo feature flips `PLAY_INTERNAL_W` to 360.
+pub fn play_area_screen_rect(logical_w: f32, logical_h: f32, ui_width: f32) -> (f32, f32, f32, f32) {
     let avail_w = (logical_w - ui_width).max(0.0);
-    let scale_x = (avail_w / PLAY_INTERNAL as f32).floor();
-    let scale_y = (logical_h / PLAY_INTERNAL as f32).floor();
+    let scale_x = (avail_w / PLAY_INTERNAL_W as f32).floor();
+    let scale_y = (logical_h / PLAY_INTERNAL_H as f32).floor();
     let scale = scale_x.min(scale_y).max(1.0);
-    let size = PLAY_INTERNAL as f32 * scale;
-    let left = ui_width + (avail_w - size) / 2.0;
-    let top = (logical_h - size) / 2.0;
-    (left, top, size)
+    let w = PLAY_INTERNAL_W as f32 * scale;
+    let h = PLAY_INTERNAL_H as f32 * scale;
+    let left = ui_width + (avail_w - w) / 2.0;
+    let top = (logical_h - h) / 2.0;
+    (left, top, w, h)
 }
 
 pub fn effective_ui_width(_mode: &WindowMode) -> f32 {
@@ -242,15 +245,18 @@ pub fn apply_window_mode(
         for mut v in &mut score  { *v = Visibility::Hidden; }
         for mut v in &mut hint   { *v = Visibility::Inherited; }
 
-        // Square window at the largest integer multiple of PLAY_INTERNAL ≤ ~480 px.
+        // Borderless desktop window sized to fit the largest integer
+        // multiple of PLAY_INTERNAL_H (the shorter axis) ≤ ~480 px,
+        // then widened proportionally for the wide-play feature flag.
         let target_logical: u32 = 480;
-        let scale_int = (target_logical as f32 / PLAY_INTERNAL as f32).floor().max(1.0) as u32;
-        let logical_size = (PLAY_INTERNAL * scale_int) as f32;
+        let scale_int = (target_logical as f32 / PLAY_INTERNAL_H as f32).floor().max(1.0) as u32;
+        let logical_h = (PLAY_INTERNAL_H * scale_int) as f32;
+        let logical_w = (PLAY_INTERNAL_W * scale_int) as f32;
 
         // Drop decorations FIRST so the size we set is the actual content
         // size — otherwise winit shrinks the content to fit a phantom title bar.
         window.decorations = false;
-        window.resolution.set(logical_size, logical_size);
+        window.resolution.set(logical_w, logical_h);
         window.window_level = bevy::window::WindowLevel::AlwaysOnTop;
         window.resizable = true;
 
@@ -264,8 +270,8 @@ pub fn apply_window_mode(
                 let mon_pos  = monitor.position();
                 let mon_size = monitor.size();
                 let scale_f  = winit_win.scale_factor() as f32;
-                let phys_w   = (logical_size * scale_f).round() as i32;
-                let phys_h   = (logical_size * scale_f).round() as i32;
+                let phys_w   = (logical_w * scale_f).round() as i32;
+                let phys_h   = (logical_h * scale_f).round() as i32;
                 const MARGIN: i32 = 16;
                 let x = mon_pos.x + mon_size.width  as i32 - phys_w - MARGIN;
                 let y = mon_pos.y + mon_size.height as i32 - phys_h - MARGIN;

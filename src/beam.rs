@@ -6,10 +6,9 @@ use bevy::prelude::*;
 
 use crate::balance::{BEAM_HIT_RADIUS, BEAM_MAX_WIDTH};
 use crate::components::Health;
-use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
+use crate::effects::{spawn_hit_particles, EffectMeshes};
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
-use crate::ui::DamageStats;
 use crate::weapon::WeaponType;
 
 /// Beam visual. Width is animated via `Transform.scale.x` — it grows fast
@@ -31,6 +30,11 @@ pub struct BeamHit {
     pub damage: i32,
     pub slot: u8,
     pub weapon: WeaponType,
+    /// Slot rune sockets snapshotted at fire time. The beam pushes a
+    /// `DamageEvent` per pierced enemy carrying these runes so Fire/
+    /// Frost/Shock/etc. proc on beam hits the same way they do on a
+    /// regular bullet hit.
+    pub runes: [Option<crate::rune::Rune>; 3],
 }
 
 /// Marker present until the beam's damage has been resolved exactly once.
@@ -70,49 +74,44 @@ pub fn update_beams(
 /// effects from `bullet_collisions` so beam kills feel the same.
 pub fn beam_apply_damage(
     mut commands: Commands,
-    mut stats: ResMut<DamageStats>,
     player_stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
+    mut queue: ResMut<crate::bullet::PendingDamageQueue>,
     beams: Query<(Entity, &BeamHit), With<BeamPending>>,
-    mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx), With<Enemy>>,
+    enemies: Query<(Entity, &Transform, &Enemy, &Health), With<Enemy>>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
     let mut rng = rand::thread_rng();
     for (beam_e, hit) in &beams {
-        for (_ee, etf, enemy, mut h, mut fx) in &mut enemies {
+        for (ee, etf, enemy, h) in &enemies {
             let ep = etf.translation.truncate();
             let to = ep - hit.origin;
             let proj = to.dot(hit.dir);
             if proj < 0.0 || proj > hit.length { continue; }
             let perp_v = to - hit.dir * proj;
             if perp_v.length() > BEAM_HIT_RADIUS * enemy.variant.scale() { continue; }
+            if h.0 <= 0 { continue; }
 
             // Crit per enemy hit — beam pierces, so each is its own
-            // damage instance per the player's "crit applies to all
-            // ship damage" rule.
+            // damage instance per the "crit applies to all ship
+            // damage" rule. Push a DamageEvent so runes proc
+            // uniformly with bullet hits.
             let crit_mult = player_stats.roll_crit_mult(&mut rng) as i32;
             let damage = hit.damage.saturating_mul(crit_mult);
-            let pre_hp = h.0;
-            h.0 -= damage;
-            let dealt = damage.min(pre_hp).max(0);
-            crate::bullet::credit_damage(
-                &mut stats,
+            queue.push_initial(
+                ee, damage, ep, hit.weapon,
                 Some(crate::bullet::DamageSource::PlayerSlot(hit.slot)),
-                dealt,
+                &hit.runes,
             );
 
-            // Source-specific weapon-color spark per hit. Lethal hits get
-            // a denser/faster burst; despawn + score + scrap (with harvest)
-            // are owned by `enemy_death_check`, which runs after this in
-            // the same frame.
+            // Per-hit spark; lethal hits get a denser burst applied
+            // by `process_damage_events` via the same particle
+            // pipeline used for bullet hits. We still spawn a small
+            // hit spark here as the beam's "I pierced you" cue.
             let spark_mat = pm.bullet_inner_for(hit.weapon);
-            let lethal = h.0 <= 0;
-            let count = if lethal { 6 } else { 4 };
-            let speed = if lethal { 75.0 } else { 45.0 };
-            if !lethal { fx.pulse(); }
-            spawn_hit_particles(&mut commands, &em, spark_mat, ep, count, speed, &mut rng);
+            spawn_hit_particles(&mut commands, &em, spark_mat, ep, 3, 35.0, &mut rng);
         }
         // Done with this beam — drop the marker so we never re-process it.
         commands.entity(beam_e).remove::<BeamPending>();
