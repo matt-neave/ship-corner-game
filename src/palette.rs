@@ -88,6 +88,24 @@ pub const BOOSTER_BRIGHT_HEX: &str = "#ffe88a";
 pub const BLADE_HEX:          &str = "#4a4a55";
 pub const BLADE_BRIGHT_HEX:   &str = "#d8e0e8";
 
+/// Rammer hull — bright warning orange so the kamikaze role reads at
+/// a glance against the standard red enemy palette. Same warm hue as
+/// the muzzle-flash so it parses as "explosive threat".
+pub const ENEMY_RAMMER_HEX:   &str = "#ff7a1f";
+/// Sniper hull — deep purple. Distinct silhouette colour vs the red
+/// enemy family so the player can pick out who's the long-range
+/// threat at a glance. Borrows the friendly-Sniper hue for the
+/// "precision weapon" association.
+pub const ENEMY_SNIPER_HEX:   &str = "#5d275d";
+/// Sniper aim-line — bright crimson, threading red. Used for the
+/// telegraph beam the sniper draws while charging its 1.5s aim.
+pub const SNIPER_AIM_HEX:     &str = "#ff3344";
+/// Time-fused enemy landmine — same dark shell + red dot as the
+/// friendly mine so the player parses the silhouette as "stay clear".
+/// Kept in this section so future fuse-FX (pulsing dot, expanding
+/// ring) inherit the same colour family.
+pub const ENEMY_MINE_DOT_HEX: &str = "#ff8a3c";
+
 // ---------- Ship-class hull tints ----------
 //
 // Each `ShipClass` gets its own identity color, looked up via
@@ -247,6 +265,19 @@ pub struct PaletteMaterials {
     pub enemy_accent: Handle<ColorMaterial>,
     pub enemy_heavy: Handle<ColorMaterial>,
     pub enemy_scout: Handle<ColorMaterial>,
+    /// Rammer (kamikaze) hull material — warning orange. Spawn in
+    /// `enemy::spawn_enemy` for the Rammer variant.
+    pub enemy_rammer: Handle<ColorMaterial>,
+    /// Sniper hull material — deep purple. Spawn in `enemy::spawn_enemy`
+    /// for the Sniper variant.
+    pub enemy_sniper: Handle<ColorMaterial>,
+    /// Sniper aim-line tint. Used by the trajectory telegraph that
+    /// renders during the sniper's 1.5s aim phase.
+    pub sniper_aim: Handle<ColorMaterial>,
+    /// Bright dot painted on the time-fused enemy landmine the Rammer
+    /// drops on death. Distinguishes it from the friendly proximity
+    /// mine's dot (`mine_inner`).
+    pub enemy_mine_dot: Handle<ColorMaterial>,
     pub bullet_friendly: Handle<ColorMaterial>,
     pub bullet_enemy: Handle<ColorMaterial>,
     pub bullet_friendly_outer: Handle<ColorMaterial>,
@@ -381,6 +412,10 @@ impl PaletteMaterials {
             enemy_accent:          materials.add(palette.enemy_accent),
             enemy_heavy:           materials.add(darken(palette.enemy, 0.55)),
             enemy_scout:           materials.add(lighten(palette.enemy, 0.30)),
+            enemy_rammer:          materials.add(hex(ENEMY_RAMMER_HEX)),
+            enemy_sniper:          materials.add(hex(ENEMY_SNIPER_HEX)),
+            sniper_aim:            materials.add(hex(SNIPER_AIM_HEX)),
+            enemy_mine_dot:        materials.add(hex(ENEMY_MINE_DOT_HEX)),
             bullet_friendly:       materials.add(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN)),
             bullet_enemy:          materials.add(lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN)),
             bullet_friendly_outer: materials.add(palette.bullet_friendly),

@@ -154,12 +154,12 @@ pub struct SlotCfg {
 
 // ---------- Systems ----------
 
-/// Push per-slot config + adjacency buffs into each live `TurretSlot`.
-/// Runs whenever `TurretConfig` changes — covers player-driven stat
-/// tweaks (UI) and shop drag-drop. (Pier adjacency buffs and the
-/// inter-wave drafting flow that fed them are gone.)
+/// Push per-slot config + adjacency buffs + tag synergies into each
+/// live `TurretSlot`. Runs whenever `TurretConfig` changes — chained
+/// after `compute_synergies` so the synergy snapshot is fresh.
 pub fn sync_turret_config(
     cfg: Res<TurretConfig>,
+    synergies: Res<crate::synergy::Synergies>,
     pm: Option<Res<PaletteMaterials>>,
     mut q: Query<(&mut TurretSlot, &mut Visibility, &mut Transform, &mut MeshMaterial2d<ColorMaterial>, &Children)>,
     mut barrels: Query<
@@ -175,8 +175,17 @@ pub fn sync_turret_config(
     let Some(pm) = pm else { return; };
     for (mut slot, mut vis, mut tf, mut mat, children) in &mut q {
         let s = cfg.slots[slot.index];
-        slot.damage = s.damage;
-        slot.fire_rate = s.fire_rate * crate::booster::boost_multiplier_for_slot(&cfg, slot.index);
+        let tag = s.weapon.tag();
+        // Synergy multipliers — Naval is global damage, Future /
+        // Autonomous boost their own fire rate, Support boosts every
+        // non-Support turret. See `synergy::Synergies` for the full
+        // ladder.
+        let damage_mult = synergies.damage_mult_for(tag);
+        let synergy_rate_mult = synergies.fire_rate_mult_for(tag);
+        slot.damage = (s.damage as f32 * damage_mult).round() as i32;
+        slot.fire_rate = s.fire_rate
+            * crate::booster::boost_multiplier_for_slot(&cfg, slot.index)
+            * synergy_rate_mult;
         slot.weapon = s.weapon;
         // Non-firing weapons (HeliPad / Booster / Blade) never get
         // their rotation updated by `turret_aim_fire` (it early-

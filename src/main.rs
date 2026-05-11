@@ -49,6 +49,7 @@ mod rune;
 mod ship;
 mod stage_complete;
 mod stats;
+mod synergy;
 mod trails;
 mod turret;
 mod ui;
@@ -69,7 +70,8 @@ use customize::{
     handle_shop_mod_click, handle_stat_debug_buttons, sync_customize_text, sync_stats_panel,
     toggle_customize_render, track_customize_cursor, update_shop_mod_cards,
     update_customize_ship, update_customize_shop, update_customize_tooltip,
-    update_customize_ui, update_drag_ghost, update_sell_label, CustomizeOpen, DragState,
+    update_customize_ui, update_drag_ghost, update_sell_label, update_synergy_panel,
+    CustomizeOpen, DragState,
 };
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
@@ -79,7 +81,8 @@ use effects::{
 };
 use enemy::{
     bomber_detonate, clear_spawn_indicators, enemy_ai, enemy_death_check, enemy_fire,
-    setup_enemy_hp_bar_assets, setup_spawn_indicator_assets, spawn_enemies,
+    enemy_landmine_tick, setup_enemy_hp_bar_assets, setup_spawn_indicator_assets,
+    sniper_aim_line_tick, sniper_fire, sniper_turret_aim, spawn_enemies,
     tick_spawn_indicators, track_enemy_damage_for_hp_bars, update_enemy_hp_bars,
 };
 use map::{
@@ -359,6 +362,7 @@ fn main() {
         .insert_resource(xp::Xp::default())
         .insert_resource(xp::LevelUpsPending::default())
         .insert_resource(xp::LevelUpReturn::default())
+        .insert_resource(synergy::Synergies::default())
         .insert_resource(xp::LevelUpChoices::default())
         .insert_resource(hull::SelectedHull::default())
         .insert_resource(modes::ScreenShake::default())
@@ -506,12 +510,23 @@ fn main() {
             stats::shield_recharge_system,
             bomber_detonate,
             spawn_enemies,
-            sync_turret_config,
+            // Synergies recompute first so `sync_turret_config` reads
+            // a fresh Synergies snapshot when applying tag-based
+            // damage/fire-rate multipliers. Same `cfg.is_changed()`
+            // gate, so chained-but-cheap.
+            (synergy::compute_synergies, sync_turret_config).chain(),
             // Beam damage must run AFTER turret_aim_fire so the BeamPending
             // entities it spawns are visible. .chain() inserts the apply-
             // deferred sync point we need to see them this frame.
             (turret_aim_fire, beam_apply_damage).chain(),
-            enemy_fire,
+            // Sniper firing pipeline (aim → telegraph → heavy shot)
+            // and `enemy_fire` are chained as a tuple so they only
+            // count as one slot toward Bevy's 20-system tuple limit.
+            // `sniper_aim_line_tick` + `sniper_turret_aim` +
+            // `enemy_landmine_tick` ride along too — same pattern.
+            // Order doesn't matter here; none depend on each other
+            // within the frame.
+            (enemy_fire, sniper_fire, sniper_aim_line_tick, sniper_turret_aim, enemy_landmine_tick),
             bullet_update,
             mortar_shell_tick,
             // HeliPad slots: sync the "one helicopter per equipped slot"
@@ -704,6 +719,7 @@ fn main() {
             update_customize_shop,
             update_customize_tooltip,
             update_sell_label,
+            update_synergy_panel,
             sync_stats_panel,
             handle_stat_debug_buttons,
             update_shop_mod_cards,

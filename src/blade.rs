@@ -190,14 +190,23 @@ pub fn sync_blade_decor(
 /// World position comes from the blade's `GlobalTransform`, which Bevy
 /// already composes from the ship → turret-base → blade parent chain.
 /// No manual ship-rotation maths needed.
+///
+/// Heal-on-kill: when a blade tick brings an enemy to 0 HP, heals the
+/// player by `Synergies::melee_heal_per_kill()` (1/2/3/4 at the four
+/// Melee tiers). Multiple kills in the same tick stack.
 pub fn blade_tick(
     time: Res<Time>,
     mut stats: ResMut<DamageStats>,
+    synergies: Res<crate::synergy::Synergies>,
+    player_stats: Res<crate::stats::PlayerStats>,
     mut blades: Query<(&mut Transform, &GlobalTransform, &mut BladeEdge, &Visibility)>,
     slot_q: Query<&TurretSlot>,
-    mut enemies: Query<(&Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<BladeEdge>)>,
+    mut enemies: Query<(&Transform, &Enemy, &mut Health, &mut HitFx), (With<Enemy>, Without<BladeEdge>, Without<crate::components::Friendly>)>,
+    mut friendly: Query<&mut crate::components::Health, (With<crate::components::Friendly>, Without<Enemy>, Without<BladeEdge>)>,
 ) {
     let dt = time.delta_secs();
+    let heal_per_kill = synergies.melee_heal_per_kill();
+    let max_hp = player_stats.max_hp();
     for (mut tf, gtf, mut edge, vis) in &mut blades {
         // Inherited visibility — when the parent slot is hidden
         // (unequipped), we still update transform/cooldown? Skip the
@@ -235,6 +244,7 @@ pub fn blade_tick(
         let blade_world = gtf.translation().truncate();
         let source = Some(DamageSource::PlayerSlot(slot.index as u8));
 
+        let mut kills_this_tick: i32 = 0;
         for (etf, en, mut h, mut fx) in &mut enemies {
             if h.0 <= 0 { continue; }
             let ep = etf.translation.truncate();
@@ -248,6 +258,19 @@ pub fn blade_tick(
             if ep.distance_squared(blade_world) > reach * reach { continue; }
             let dealt = apply_damage(&mut h, &mut fx, damage);
             credit_damage(&mut stats, source, dealt);
+            // Brought to 0 by THIS tick → eligible for the Melee
+            // heal-on-kill synergy. Don't double-count enemies that
+            // were already dead at the start of the loop (the
+            // `h.0 <= 0` continue above gates that out).
+            if h.0 <= 0 { kills_this_tick += 1; }
+        }
+        // Apply Melee synergy heal at the end of the tick so multiple
+        // kills compound. `heal_per_kill == 0` (no Melee synergy
+        // active) short-circuits the friendly write entirely.
+        if heal_per_kill > 0 && kills_this_tick > 0 {
+            if let Ok(mut hp) = friendly.single_mut() {
+                hp.0 = (hp.0 + heal_per_kill * kills_this_tick).min(max_hp);
+            }
         }
     }
 }

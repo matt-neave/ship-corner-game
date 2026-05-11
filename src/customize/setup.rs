@@ -456,6 +456,13 @@ pub fn setup_customize_ui(
     let stats_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 28.0;
     super::stats_panel::spawn_stats_panel(&mut commands, stats_right_edge, stats_top_y);
 
+    // Tag-synergy readout — six rows below the ship showing the
+    // active tier per tag. Updated by `update_synergy_panel` on every
+    // `Synergies` mutation (which itself is driven by `TurretConfig`
+    // changes), so the player sees set bonuses appear/disappear as
+    // they drag turrets in/out.
+    super::synergy_panel::spawn_synergy_panel(&mut commands);
+
     super::tooltip::spawn_customize_tooltip(&mut commands);
 }
 

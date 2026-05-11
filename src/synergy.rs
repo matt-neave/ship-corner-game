@@ -1,0 +1,157 @@
+//! Tag-based set bonuses ("synergies") for the player's turret loadout.
+//!
+//! Each `WeaponTag` (Naval, Future, Autonomous, Pirate, Support, Melee)
+//! has a 4-tier ladder triggered by having 2 / 4 / 6 / 8 equipped
+//! turrets sharing that tag. The active tier per tag lives in the
+//! `Synergies` resource, recomputed by `compute_synergies` whenever
+//! `TurretConfig` changes.
+//!
+//! Tier ladders:
+//!
+//! | Tag | T1 (2) | T2 (4) | T3 (6) | T4 (8) |
+//! |---|---|---|---|---|
+//! | Naval | +10% global dmg | +20% | +30% | +40% |
+//! | Future | +15% fire rate to Future | +30% | +45% | +60% |
+//! | Autonomous | +20% fire rate to Autonomous | +40% | +60% | +80% |
+//! | Pirate | +50% scrap drops | +100% | +150% | +200% |
+//! | Support | non-Support +10% rate | +20% rate, +10% dmg | +30% / +20% | +40% / +25% |
+//! | Melee | +1 HP heal per Melee kill | +2 | +3 | +4 |
+//!
+//! Consumers:
+//! - `turret::sync_turret_config` reads `damage_mult_for` / `fire_rate_mult_for`
+//!   each frame and bakes them into the live `TurretSlot` stats.
+//! - `enemy::enemy_death_check` reads `pirate_harvest_mult()` to scale
+//!   scrap drops.
+//! - `blade::blade_tick` reads `melee_heal_per_kill()` to heal the
+//!   player on Blade kills.
+
+use bevy::prelude::*;
+
+use crate::turret::TurretConfig;
+use crate::weapon::WeaponTag;
+
+/// Per-tag active synergy tier. 0 = none, 1..=4 = T1..=T4.
+/// Recomputed each frame `TurretConfig` changes by `compute_synergies`.
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct Synergies {
+    pub naval: u8,
+    pub future: u8,
+    pub autonomous: u8,
+    pub pirate: u8,
+    pub support: u8,
+    pub melee: u8,
+}
+
+/// Convert an equipped-count for a tag into the active synergy tier.
+/// 2/4/6/8 → 1/2/3/4. Below 2 → 0 (no synergy active).
+fn tier_for(count: u8) -> u8 {
+    if count >= 8 { 4 }
+    else if count >= 6 { 3 }
+    else if count >= 4 { 2 }
+    else if count >= 2 { 1 }
+    else { 0 }
+}
+
+impl Synergies {
+    /// Global damage multiplier from Naval. Naval gives +10% damage to
+    /// EVERY equipped turret (not just Naval-tagged ones) per tier.
+    pub fn naval_damage_mult(&self) -> f32 {
+        1.0 + 0.10 * self.naval as f32
+    }
+
+    /// Future fire-rate multiplier — only applied to Future-tagged
+    /// turrets. +15% per tier.
+    pub fn future_fire_rate_mult(&self) -> f32 {
+        1.0 + 0.15 * self.future as f32
+    }
+
+    /// Autonomous fire-rate multiplier — only applied to
+    /// Autonomous-tagged turrets. +20% per tier.
+    pub fn autonomous_fire_rate_mult(&self) -> f32 {
+        1.0 + 0.20 * self.autonomous as f32
+    }
+
+    /// Scrap-drop multiplier from Pirate, applied in
+    /// `enemy_death_check`. T1=1.50 (+50%) up to T4=3.00 (+200%).
+    pub fn pirate_harvest_mult(&self) -> f32 {
+        1.0 + 0.50 * self.pirate as f32
+    }
+
+    /// Fire-rate multiplier from Support — applied to every
+    /// non-Support turret. +10% per tier.
+    pub fn support_fire_rate_mult(&self) -> f32 {
+        1.0 + 0.10 * self.support as f32
+    }
+
+    /// Damage multiplier from Support — applied to non-Support
+    /// turrets, but only kicks in at T2 and up. Stacks multiplicatively
+    /// with `naval_damage_mult`.
+    pub fn support_damage_mult(&self) -> f32 {
+        match self.support {
+            0 | 1 => 1.0,
+            2 => 1.10,
+            3 => 1.20,
+            _ => 1.25,
+        }
+    }
+
+    /// HP healed per Melee-tagged kill. Read by `blade_tick` (the only
+    /// current Melee damage source); +1 per tier.
+    pub fn melee_heal_per_kill(&self) -> i32 {
+        self.melee as i32
+    }
+
+    /// Combined damage multiplier applied to a slot whose weapon
+    /// carries `tag`. Bakes Naval (global) and Support (non-Support
+    /// only) together; Support slots opt out of their own buff.
+    pub fn damage_mult_for(&self, tag: WeaponTag) -> f32 {
+        let mut m = self.naval_damage_mult();
+        if !matches!(tag, WeaponTag::Support) {
+            m *= self.support_damage_mult();
+        }
+        m
+    }
+
+    /// Combined fire-rate multiplier applied to a slot whose weapon
+    /// carries `tag`. Bakes Future / Autonomous tag-specific buffs
+    /// AND Support's broad buff (Support opts out for itself).
+    pub fn fire_rate_mult_for(&self, tag: WeaponTag) -> f32 {
+        let tag_specific = match tag {
+            WeaponTag::Future => self.future_fire_rate_mult(),
+            WeaponTag::Autonomous => self.autonomous_fire_rate_mult(),
+            _ => 1.0,
+        };
+        let support_buff = if matches!(tag, WeaponTag::Support) {
+            1.0
+        } else {
+            self.support_fire_rate_mult()
+        };
+        tag_specific * support_buff
+    }
+}
+
+/// Recompute `Synergies` whenever `TurretConfig` mutates (shop drag,
+/// equip cycle, etc.). Cheap — single pass over 8 slots.
+pub fn compute_synergies(cfg: Res<TurretConfig>, mut syn: ResMut<Synergies>) {
+    if !cfg.is_changed() { return; }
+    let mut counts = [0u8; 6];
+    for slot in cfg.slots.iter().filter(|s| s.equipped) {
+        let i = match slot.weapon.tag() {
+            WeaponTag::Naval      => 0,
+            WeaponTag::Future     => 1,
+            WeaponTag::Autonomous => 2,
+            WeaponTag::Pirate     => 3,
+            WeaponTag::Support    => 4,
+            WeaponTag::Melee      => 5,
+        };
+        counts[i] += 1;
+    }
+    *syn = Synergies {
+        naval:      tier_for(counts[0]),
+        future:     tier_for(counts[1]),
+        autonomous: tier_for(counts[2]),
+        pirate:     tier_for(counts[3]),
+        support:    tier_for(counts[4]),
+        melee:      tier_for(counts[5]),
+    };
+}
