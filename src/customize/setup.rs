@@ -333,19 +333,26 @@ pub fn setup_customize_ui(
     // pos) for overlap with the next row's header.
     spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y - 52.0), "RUNES", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
     for idx in 0..2usize {
-        let x = shop_x + (idx as f32 - 0.5) * (SOCKET + 6.0);
+        // Wider gap between the two rune sockets so the larger
+        // name labels under them have room to breathe.
+        let x = shop_x + (idx as f32 - 0.5) * (SOCKET + 22.0);
         let y = shop_top_y - 68.0;
         spawn_shop_rune_tile(&mut commands, &mut meshes, &mut materials, idx, Vec2::new(x, y));
     }
 
     // Stat-modifier cards — 3 click-to-buy options below the runes.
-    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y - 98.0), "MODS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
-    super::shop_mods::spawn_mod_cards(&mut commands, shop_x, shop_top_y - 114.0);
+    // Header sits well above the card-row top so the taller mod
+    // cards (now 36 spec px tall to fit trade-off labels) don't
+    // creep up over the "MODS" text.
+    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y - 92.0), "MODS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
+    super::shop_mods::spawn_mod_cards(&mut commands, shop_x, shop_top_y - 122.0);
 
     // Reroll button — sits at the bottom of the shop column. Costs
     // `SHOP_REROLL_COST` scrap (`drag::SHOP_REROLL_COST`); refills every
-    // sold slot with fresh offerings.
-    let reroll_pos = Vec2::new(shop_x, shop_top_y - 144.0);
+    // sold slot with fresh offerings. Pushed further down so the
+    // taller mod cards (centre at -122, half-height 18 → bottom at
+    // -140) clear the reroll container.
+    let reroll_pos = Vec2::new(shop_x, shop_top_y - 156.0);
     spawn_container(
         &mut commands,
         &mut meshes,
@@ -434,25 +441,22 @@ pub fn setup_customize_ui(
         RenderLayers::layer(CUSTOMIZE_LAYER),
         ShopSellPanel,
     ));
-    // Static "SELL" label — left side of the (now slim) strip.
-    // Panel is 0.4x its old height so the two texts have to sit
-    // side-by-side rather than stacked. Compact font keeps both
-    // legible inside the 13-tall band.
+    // Static "SELL" label - centred on the strip. The "+N SCRAP"
+    // preview spawns at the SAME position; `update_sell_label`
+    // toggles their visibilities so only one is showing at a time
+    // (SELL when idle, +N SCRAP while dragging a sellable over
+    // the strip).
     spawn_text(
         &mut commands,
-        Vec2::new(sell_pos.x - SELL_PANEL_W * 0.5 + 14.0, sell_pos.y),
+        sell_pos,
         "SELL",
         Color::WHITE,
-        10.0,
+        11.0,
         SellPanelLabel,
     );
-    // Refund-preview text — right side. Hidden by default;
-    // `update_sell_label` flips it visible with the live `+N SCRAP`
-    // payout while the player drags a ship-sourced item over the
-    // strip.
     spawn_text(
         &mut commands,
-        Vec2::new(sell_pos.x + SELL_PANEL_W * 0.5 - 22.0, sell_pos.y),
+        sell_pos,
         "",
         Color::srgb(1.00, 0.85, 0.30),
         11.0,
@@ -772,20 +776,20 @@ fn spawn_shop_turret_tile(
     // Updater clears it when the slot is sold or being dragged out.
     spawn_text(
         commands,
-        pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 5.0),
+        pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 6.0),
         format!("{}", super::drag::SHOP_TURRET_COST),
         Color::srgb(1.0, 0.85, 0.30),
-        11.0,
+        13.0,
         ShopTurretCostText { idx },
     );
     // Name label below the cost (still beneath the tile, just one
     // line further down).
     spawn_text(
         commands,
-        pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 13.0),
+        pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 16.0),
         "---",
         Color::WHITE,
-        11.0,
+        13.0,
         ShopTurretNameText { idx },
     );
 
@@ -921,24 +925,26 @@ fn spawn_shop_rune_tile(
             ShopRuneVisual { idx },
         ));
     }
-    // Cost label sits right under the rune socket so the player's
-    // eye lands on the price first.
+    // Rune NAME sits immediately below the socket - the player
+    // reads the rune kind first, the cost second. Bigger font so
+    // the name reads at a glance now that there's more horizontal
+    // breathing room between sockets.
     spawn_text(
         commands,
-        pos + Vec2::new(0.0, -SOCKET * 0.5 - 5.0),
-        format!("{}", super::drag::SHOP_ITEM_COST),
-        Color::srgb(1.0, 0.85, 0.30),
-        11.0,
-        ShopRuneCostText { idx },
-    );
-    // Rune name underneath the cost.
-    spawn_text(
-        commands,
-        pos + Vec2::new(0.0, -SOCKET * 0.5 - 13.0),
+        pos + Vec2::new(0.0, -SOCKET * 0.5 - 7.0),
         "---",
         Color::WHITE,
-        11.0,
+        15.0,
         ShopRuneNameText { idx },
+    );
+    // Cost label below the name. Gold accent.
+    spawn_text(
+        commands,
+        pos + Vec2::new(0.0, -SOCKET * 0.5 - 18.0),
+        format!("{}", super::drag::SHOP_ITEM_COST),
+        Color::srgb(1.0, 0.85, 0.30),
+        12.0,
+        ShopRuneCostText { idx },
     );
 
     // AOE badge — perched above the (smaller) rune socket and skewed

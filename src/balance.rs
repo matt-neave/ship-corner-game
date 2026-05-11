@@ -5,7 +5,7 @@
 //! (`weapon::WeaponType::defaults` / `enemy::EnemyVariant::*`) — those are
 //! still data tables, just colocated with the type.
 
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_4, PI};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
 // ---------- Window / layout ----------
 pub const WINDOW_W: f32 = 1280.0;
@@ -76,7 +76,6 @@ pub const CUSTOMIZE_INTERNAL_W: u32 = 320;
 pub const CUSTOMIZE_INTERNAL_H: u32 = 200;
 
 // ---------- Friendly ship ----------
-pub const FRIENDLY_TURN_RATE: f32 = 3.6; // rad/s
 pub const HULL_LEN:           f32 = 22.0;
 pub const HULL_WIDTH:         f32 = 8.0;
 pub const HULL_HALF_LEN:      f32 = HULL_LEN / 2.0;
@@ -86,7 +85,6 @@ pub const TURRET_RANGE: f32 = 60.0;
 pub const TURRET_PIVOT: f32 = 145.0 * PI / 180.0; // 145°/s
 
 pub const PI_2: f32 = FRAC_PI_2;
-pub const PI_3: f32 = FRAC_PI_3;
 pub const PI_4: f32 = FRAC_PI_4;
 pub const PI_F: f32 = PI;
 

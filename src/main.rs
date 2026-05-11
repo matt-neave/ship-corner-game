@@ -123,7 +123,7 @@ use ship::{apply_velocity, friendly_movement, friendly_ram_damage, setup_world, 
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{
     helicopter_ai, mortar_shell_tick, sync_helipad_helicopters, sync_helipad_nose_barrels,
-    sync_turret_config, turret_aim_fire, SlotCfg, TurretConfig,
+    sync_turret_config, turret_aim_fire, TurretConfig,
 };
 use ui::{
     force_hide_ui_panel, reset_damage_stats, setup_damage_panel, setup_ui,
@@ -134,7 +134,6 @@ use ui::{
     update_score_text, update_slot_labels, update_vsync_label, update_wave_indicator,
     update_wave_ui, DamageStats,
 };
-use weapon::WeaponType;
 
 // ---------- Top-level screen state ----------
 //

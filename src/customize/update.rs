@@ -435,7 +435,14 @@ pub fn update_sell_label(
     drag: Res<DragState>,
     cfg: Res<TurretConfig>,
     sell_panel: Query<(&Transform, &super::setup::HitArea), With<super::setup::ShopSellPanel>>,
-    mut q: Query<(&mut Text2d, &mut Visibility), With<SellPricePreview>>,
+    mut preview_q: Query<
+        (&mut Text2d, &mut Visibility),
+        (With<SellPricePreview>, Without<super::setup::SellPanelLabel>),
+    >,
+    mut sell_q: Query<
+        &mut Visibility,
+        (With<super::setup::SellPanelLabel>, Without<SellPricePreview>),
+    >,
 ) {
     if !open.open { return; }
     let hovering = drag.spec_cursor.and_then(|cursor| {
@@ -456,17 +463,21 @@ pub fn update_sell_label(
         .map(|p| super::drag::sell_refund_for(&p.source, &cfg))
         .filter(|&r| r > 0);
 
-    for (mut text, mut vis) in &mut q {
-        match preview {
-            Some(refund) => {
-                let s = format!("+{} SCRAP", refund);
-                if text.0 != s { text.0 = s; }
-                if *vis != Visibility::Inherited { *vis = Visibility::Inherited; }
-            }
-            None => {
-                if *vis != Visibility::Hidden { *vis = Visibility::Hidden; }
-            }
+    // Both texts share the same centred position; we swap which one
+    // is visible based on whether a preview is active.
+    let (preview_vis, sell_vis) = match preview {
+        Some(_) => (Visibility::Inherited, Visibility::Hidden),
+        None    => (Visibility::Hidden, Visibility::Inherited),
+    };
+    for (mut text, mut vis) in &mut preview_q {
+        if let Some(refund) = preview {
+            let s = format!("+{} SCRAP", refund);
+            if text.0 != s { text.0 = s; }
         }
+        if *vis != preview_vis { *vis = preview_vis; }
+    }
+    for mut vis in &mut sell_q {
+        if *vis != sell_vis { *vis = sell_vis; }
     }
 }
 

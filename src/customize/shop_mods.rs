@@ -55,6 +55,13 @@ pub struct ShopModFill { pub idx: usize, pub spec_pos: Vec2 }
 #[derive(Component, Clone, Copy)]
 pub struct ShopModText { pub idx: usize, pub spec_pos: Vec2 }
 
+/// Marker on each per-line `TextSpan` child of a card's `ShopModText`
+/// root. The update system despawns these whenever the card's label
+/// content changes and respawns a fresh set with per-line colours
+/// (green for `+...` lines, red for `-...`, neutral for names).
+#[derive(Component)]
+pub struct ShopModTextSpan { pub idx: usize }
+
 /// Cost label below the card. Same owned-visibility lifecycle as
 /// `ShopModText`: shown while the slot is occupied, hidden when empty.
 #[derive(Component, Clone, Copy)]
@@ -136,9 +143,13 @@ fn spawn_card(commands: &mut Commands, idx: usize, spec_pos: Vec2) {
 
 /// Per-frame layout + visibility + content sync.
 pub fn update_shop_mod_cards(
+    mut commands: Commands,
     open: Res<CustomizeOpen>,
     viewport: Res<CustomizeViewport>,
     shop: Option<Res<CustomizeShop>>,
+    mut text_cache: Local<[Option<String>; 3]>,
+    existing_spans: Query<(Entity, &ShopModTextSpan)>,
+    text_entities: Query<(Entity, &ShopModText)>,
     mut outlines: Query<(&ShopModOutline, &mut Visibility, &mut Transform, &mut Sprite),
         (Without<ShopModFill>, Without<ShopModText>, Without<ShopModCostText>)>,
     mut fills: Query<(&ShopModFill, &mut Visibility, &mut Transform, &mut Sprite),
@@ -183,25 +194,75 @@ pub fn update_shop_mod_cards(
         set_vis(&mut vis, if occupied { Visibility::Inherited } else { Visibility::Hidden });
         if let Some(m) = m {
             let label = m.label();
-            if text.0 != label { text.0 = label; }
             tf.translation.x = slot.spec_pos.x * s;
             tf.translation.y = slot.spec_pos.y * s;
-            // Tint logic: pure mods get green (buff) / red (nerf)
-            // by primary-delta sign. Trade-off cards mix both
-            // signs in one label, so a single tint would lie -
-            // they render in neutral body white and rely on the
-            // explicit `+`/`-` characters in each line to signal
-            // direction.
-            let want = if m.side.is_some() {
-                Color::srgb(0.85, 0.88, 0.94)
-            } else if m.delta > 0.001 {
-                Color::srgb(0.55, 0.95, 0.55)
-            } else if m.delta < -0.001 {
-                Color::srgb(1.00, 0.55, 0.55)
-            } else {
-                Color::srgb(0.70, 0.72, 0.78)
-            };
-            if color.0 != want { color.0 = want; }
+            // Root text stays empty - per-line colour comes from
+            // the TextSpan children rebuilt below.
+            if !text.0.is_empty() { text.0 = String::new(); }
+            // Root colour is irrelevant since the text is empty,
+            // but reset to neutral for consistency.
+            let neutral = Color::srgb(0.85, 0.88, 0.94);
+            if color.0 != neutral { color.0 = neutral; }
+            // Rebuild span children only when the label string
+            // changes (cheap cache key per slot).
+            let cached = &mut text_cache[slot.idx];
+            if cached.as_deref() != Some(label.as_str()) {
+                *cached = Some(label.clone());
+                // Despawn this slot's existing spans.
+                for (e, span) in &existing_spans {
+                    if span.idx == slot.idx { commands.entity(e).despawn(); }
+                }
+                // Find the parent text entity for this slot.
+                let parent = text_entities
+                    .iter()
+                    .find(|(_, t)| t.idx == slot.idx)
+                    .map(|(e, _)| e);
+                if let Some(parent) = parent {
+                    commands.entity(parent).with_children(|p| {
+                        let lines: Vec<&str> = label.split('\n').collect();
+                        for (li, line) in lines.iter().enumerate() {
+                            // Per-line tint: green for `+`, red
+                            // for `-`, neutral for everything
+                            // else (the stat-name lines).
+                            let line_color = if line.starts_with('+') {
+                                Color::srgb(0.55, 0.95, 0.55)
+                            } else if line.starts_with('-') {
+                                Color::srgb(1.00, 0.55, 0.55)
+                            } else {
+                                Color::srgb(0.85, 0.88, 0.94)
+                            };
+                            // Bevy's Text2d treats a `\n` inside a
+                            // span as a hard break, so we glue
+                            // the newline to the preceding span
+                            // and don't need separator-only spans.
+                            let txt = if li + 1 < lines.len() {
+                                format!("{}\n", line)
+                            } else {
+                                line.to_string()
+                            };
+                            p.spawn((
+                                TextSpan::new(txt),
+                                TextFont {
+                                    font_size: 14.0,
+                                    font_smoothing: FontSmoothing::None,
+                                    ..default()
+                                },
+                                TextColor(line_color),
+                                ShopModTextSpan { idx: slot.idx },
+                            ));
+                        }
+                    });
+                }
+            }
+        } else {
+            // Slot empty: clear the cache + drop any leftover spans.
+            if text_cache[slot.idx].is_some() {
+                text_cache[slot.idx] = None;
+                for (e, span) in &existing_spans {
+                    if span.idx == slot.idx { commands.entity(e).despawn(); }
+                }
+                if !text.0.is_empty() { text.0 = String::new(); }
+            }
         }
     }
     let cost_label = super::drag::SHOP_ITEM_COST.to_string();

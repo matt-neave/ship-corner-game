@@ -139,9 +139,6 @@ pub struct SniperAim {
 pub struct SniperAimLine {
     pub sniper: Entity,
     pub target_world: Vec2,
-    /// Total aim duration this line was spawned with — used to
-    /// drive the width pulse over the aim period.
-    pub aim_total: f32,
     /// Seconds until fire, mirrored from `SniperAim.remaining`.
     pub remaining: f32,
 }
@@ -183,7 +180,6 @@ pub struct ArtilleryReticle {
 #[derive(Component)]
 pub struct ArtilleryShell {
     pub target: Vec2,
-    pub origin: Vec2,
     pub time_of_flight: f32,
     pub elapsed: f32,
     pub damage: i32,
@@ -193,6 +189,9 @@ pub struct ArtilleryShell {
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum EnemyState {
+    /// Default idle state; reserved for future "no current target"
+    /// AI without removing the variant when nothing constructs it.
+    #[allow(dead_code)]
     Wander,
     Approach,
     Attack,
@@ -1323,7 +1322,6 @@ pub fn sniper_fire(
             SniperAimLine {
                 sniper: entity,
                 target_world: target_pos,
-                aim_total: SNIPER_AIM_TIME,
                 remaining: SNIPER_AIM_TIME,
             },
             RenderLayers::layer(PLAY_LAYER),
@@ -1415,7 +1413,6 @@ pub fn artillery_fire(
         commands.spawn((
             ArtilleryShell {
                 target,
-                origin: pos,
                 time_of_flight: ARTILLERY_TELEGRAPH_TIME,
                 elapsed: 0.0,
                 damage: enemy.variant.fire_damage(),

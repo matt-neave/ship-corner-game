@@ -370,11 +370,14 @@ fn spawn_level_up_overlay(
 
             // Main row: buff cards on the left, current-stats panel
             // on the right. Two-column layout so the player can see
-            // their current numbers while choosing the buff.
+            // their current numbers while choosing the buff. Centre
+            // alignment so the 3 buff cards float vertically in the
+            // taller stats panel's height instead of pinning to its
+            // top edge.
             root.spawn((
                 Node {
                     flex_direction: FlexDirection::Row,
-                    align_items: AlignItems::FlexStart,
+                    align_items: AlignItems::Center,
                     column_gap: Val::Px(theme::GAP_LG * 1.5),
                     ..default()
                 },
@@ -420,12 +423,15 @@ fn spawn_level_up_overlay(
                 });
 
                 // ---- RIGHT: current-stats panel ----
+                // Wider + bigger font than before so the 13-row list
+                // doesn't compress into an unreadable column. Panel
+                // height grows naturally to fit the rows.
                 cols.spawn((
                     Node {
-                        width: Val::Px(180.0),
-                        padding: UiRect::all(Val::Px(theme::PAD_MD)),
+                        width: Val::Px(260.0),
+                        padding: UiRect::all(Val::Px(theme::PAD_LG)),
                         flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(theme::GAP_SM),
+                        row_gap: Val::Px(theme::GAP_SM + 2.0),
                         ..default()
                     },
                     BackgroundColor(theme::SURFACE_RAISED),
@@ -434,7 +440,7 @@ fn spawn_level_up_overlay(
                 .with_children(|panel| {
                     panel.spawn(ui_kit::label(
                         "CURRENT STATS",
-                        theme::FONT_MD,
+                        theme::FONT_LG,
                         theme::ACCENT,
                     ));
                     for kind in crate::stats::StatKind::ALL {
@@ -451,12 +457,12 @@ fn spawn_level_up_overlay(
                             .with_children(|stat_row| {
                                 stat_row.spawn(ui_kit::label(
                                     kind.label(),
-                                    theme::FONT_SM,
+                                    theme::FONT_MD,
                                     theme::ON_SURFACE_DIM,
                                 ));
                                 stat_row.spawn(ui_kit::label(
                                     kind.format_value(stats),
-                                    theme::FONT_SM,
+                                    theme::FONT_MD,
                                     theme::ON_SURFACE,
                                 ));
                             });

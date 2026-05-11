@@ -127,8 +127,10 @@ const TOOLTIP_CHAR_W: f32 = 0.55;
 /// `body_font * lines` into the total body block height.
 const TOOLTIP_LINE_HEIGHT_MULT: f32 = 1.25;
 
-/// Native-pixel font size for the synergy banner text.
-const SYNERGY_FONT: f32 = 13.0;
+/// Native-pixel font size for the synergy banner text. Matched to
+/// `TOOLTIP_BODY_FONT` so the banner reads as a natural sibling
+/// of the main weapon tooltip rather than a smaller annotation.
+const SYNERGY_FONT: f32 = TOOLTIP_BODY_FONT;
 /// Native-pixel padding around the banner text (left/right) — tight,
 /// since the banner is a single line.
 const SYNERGY_TEXT_PAD_X: f32 = 10.0;
@@ -137,11 +139,11 @@ const SYNERGY_TEXT_PAD_Y: f32 = 6.0;
 /// Spec-pixel gap between the main tooltip's top edge and the
 /// banner's bottom edge.
 const SYNERGY_GAP: f32 = 2.0;
-/// Native-pixel cap on banner text width. Sized to fit a 2-line
-/// full-sentence synergy description at body font (each line ≈ 50
-/// characters wide), so the player gets the *why* of each tag
-/// rather than the cryptic short-form descriptor.
-const SYNERGY_TEXT_MAX_W: f32 = 380.0;
+/// Native-pixel cap on banner text width. Wide enough that the
+/// "Nx" milestone-prefixed ladder line fits on a single row even
+/// for the longer Pirate descriptor, and a 2-line description
+/// breathes without aggressive wrapping.
+const SYNERGY_TEXT_MAX_W: f32 = 460.0;
 /// Dim colour for inactive-tier values in the banner.
 const SYNERGY_INACTIVE_COLOR: Color = Color::srgb(0.45, 0.48, 0.55);
 /// Bright colour for the active-tier value.
@@ -620,31 +622,41 @@ pub fn update_synergy_banner(
     let (values, descriptor) = synergy_ladder(tag);
     let tier = active_tier(tag, &synergies);
     let description = synergy_description(tag);
-    // Two visible sections, joined with a newline:
-    //  1. Tag chip + full-sentence description (wraps freely).
-    //  2. Value ladder (`V / V / V / V <unit>`) on its own line.
-    // Width estimate uses each section's UNWRAPPED width so the box
-    // accounts for the wider of the two when ladder + chip overflow
-    // the cap by themselves.
+    // Auto-battler layout:
+    //   [TAG] description
+    //   (2) value descriptor
+    //   (4) value descriptor   <- active row glows
+    //   (6) value descriptor
+    //   (8) value descriptor
+    // The description establishes WHAT is being buffed; each ladder
+    // row shows the count threshold + the value at that tier.
     let header_plain = format!("[{}] {}", tag.label(), description);
-    let ladder_plain = format!(
-        "{} / {} / {} / {} {}",
-        values[0], values[1], values[2], values[3], descriptor,
+    // Plain-text mirror of what the spans render, used only for the
+    // wrap/width estimate. Each row is its own line so the widest
+    // row drives the box width.
+    let ladder_rows_plain: Vec<String> = values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| format!("({}) {} {}", (i + 1) * 2, v, descriptor))
+        .collect();
+    let banner_text_plain = format!(
+        "{}\n{}",
+        header_plain,
+        ladder_rows_plain.join("\n"),
     );
-    let banner_text_plain = format!("{}\n{}", header_plain, ladder_plain);
     let s = viewport.display_scale;
     let header_w_unwrapped = estimate_text_native_width(&header_plain, SYNERGY_FONT);
-    let ladder_w_unwrapped = estimate_text_native_width(&ladder_plain, SYNERGY_FONT);
-    // Wrapped box width caps at SYNERGY_TEXT_MAX_W but hugs tightly
-    // when both sections fit under the cap.
-    let widest_unwrapped = header_w_unwrapped.max(ladder_w_unwrapped);
+    let widest_ladder_row = ladder_rows_plain
+        .iter()
+        .map(|r| estimate_text_native_width(r, SYNERGY_FONT))
+        .fold(0.0_f32, f32::max);
+    let widest_unwrapped = header_w_unwrapped.max(widest_ladder_row);
     let banner_text_w = widest_unwrapped.min(SYNERGY_TEXT_MAX_W);
     let banner_fill_w_native = banner_text_w + 2.0 * SYNERGY_TEXT_PAD_X;
-    // Line count: header wraps at the cap (could be 1-3 lines for a
-    // long description); ladder is normally 1 line. Add them.
+    // Line count: header still wraps at the cap (1-2 lines typical),
+    // plus 4 fixed ladder rows underneath.
     let header_lines = (header_w_unwrapped / SYNERGY_TEXT_MAX_W).ceil().max(1.0);
-    let ladder_lines = (ladder_w_unwrapped / SYNERGY_TEXT_MAX_W).ceil().max(1.0);
-    let total_lines = header_lines + ladder_lines;
+    let total_lines = header_lines + 4.0;
     let banner_fill_h_native =
         total_lines * SYNERGY_FONT * TOOLTIP_LINE_HEIGHT_MULT + 2.0 * SYNERGY_TEXT_PAD_Y;
     let banner_w_spec = banner_fill_w_native / s;
@@ -652,13 +664,18 @@ pub fn update_synergy_banner(
 
     let canvas_half_w = CUSTOMIZE_INTERNAL_W as f32 * 0.5;
     let canvas_half_h = CUSTOMIZE_INTERNAL_H as f32 * 0.5;
+    // Stack the banner BELOW the weapon tooltip by default (info
+    // is supplementary, sits underneath). Auto-flip ABOVE if the
+    // bottom edge would clip the canvas. Horizontally centred on
+    // the weapon tooltip - never to the side, so it can never run
+    // off the canvas's right edge on a tooltip already pushed to
+    // the right of the source.
     let mut banner_pos = Vec2::new(
         state.pos_spec.x,
-        state.pos_spec.y + state.size_spec.y * 0.5 + SYNERGY_GAP + banner_h_spec * 0.5,
+        state.pos_spec.y - state.size_spec.y * 0.5 - SYNERGY_GAP - banner_h_spec * 0.5,
     );
-    // Flip below if the top of the canvas would clip.
-    if banner_pos.y + banner_h_spec * 0.5 > canvas_half_h {
-        banner_pos.y = state.pos_spec.y - state.size_spec.y * 0.5 - SYNERGY_GAP - banner_h_spec * 0.5;
+    if banner_pos.y - banner_h_spec * 0.5 < -canvas_half_h {
+        banner_pos.y = state.pos_spec.y + state.size_spec.y * 0.5 + SYNERGY_GAP + banner_h_spec * 0.5;
     }
     banner_pos.x = banner_pos.x.clamp(
         -canvas_half_w + banner_w_spec * 0.5,
@@ -726,31 +743,45 @@ pub fn update_synergy_banner(
                     TextColor(SYNERGY_DESC_COLOR),
                     SynergyBannerSpan,
                 ));
-                // ---- Ladder line: V / V / V / V <unit> ----
+                // ---- Vertical ladder: one row per tier ----
+                // `(N) value descriptor`. Auto-battler convention -
+                // the count threshold is on the left, the value and
+                // unit follow, and the active tier's whole row reads
+                // bright while the rest stay dim. Each row gets its
+                // own newline so they stack vertically.
                 for (i, v) in values.iter().enumerate() {
                     let active = (tier as usize) == i + 1;
-                    let color = if active { SYNERGY_ACTIVE_COLOR } else { SYNERGY_INACTIVE_COLOR };
+                    let count_color = if active { SYNERGY_ACTIVE_COLOR } else { SYNERGY_INACTIVE_COLOR };
+                    let value_color = if active { SYNERGY_ACTIVE_COLOR } else { SYNERGY_INACTIVE_COLOR };
+                    let desc_color = if active { SYNERGY_DESC_COLOR } else { SYNERGY_INACTIVE_COLOR };
+                    let count = (i as u32 + 1) * 2;
                     p.spawn((
-                        TextSpan::new((*v).to_string()),
+                        TextSpan::new(format!("({}) ", count)),
                         TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
-                        TextColor(color),
+                        TextColor(count_color),
+                        SynergyBannerSpan,
+                    ));
+                    p.spawn((
+                        TextSpan::new(format!("{} ", v)),
+                        TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                        TextColor(value_color),
+                        SynergyBannerSpan,
+                    ));
+                    p.spawn((
+                        TextSpan::new(descriptor.to_string()),
+                        TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                        TextColor(desc_color),
                         SynergyBannerSpan,
                     ));
                     if i < values.len() - 1 {
                         p.spawn((
-                            TextSpan::new(" / ".to_string()),
+                            TextSpan::new("\n".to_string()),
                             TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
-                            TextColor(SYNERGY_INACTIVE_COLOR),
+                            TextColor(SYNERGY_DESC_COLOR),
                             SynergyBannerSpan,
                         ));
                     }
                 }
-                p.spawn((
-                    TextSpan::new(format!(" {}", descriptor)),
-                    TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
-                    TextColor(SYNERGY_DESC_COLOR),
-                    SynergyBannerSpan,
-                ));
             });
         }
     }

@@ -213,7 +213,7 @@ pub fn bullet_collisions(
     em: Option<Res<EffectMeshes>>,
     mut queue: ResMut<PendingDamageQueue>,
     bullets: Query<(Entity, &Transform, &Bullet, &Velocity, Option<&Knockback>), (Without<Enemy>, Without<Friendly>, Without<Ally>)>,
-    mut enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
+    enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
     mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
 ) {

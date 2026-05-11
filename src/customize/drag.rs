@@ -173,9 +173,6 @@ pub const SHOP_RUNE_COST: u32 = 10;
 /// turret refunds 4 (15 × 0.33 = 4.95 → 4); a 10-scrap rune refunds
 /// 3 (10 × 0.33 = 3.3 → 3).
 pub const SHOP_SELL_FRACTION: f32 = 0.33;
-/// Scrap cost for a stat-mod card purchase (currently flat — mods
-/// are smaller upgrades than turrets).
-pub const SHOP_MOD_COST: u32 = 5;
 /// Backwards-compatibility alias: existing callers that don't yet
 /// distinguish turret/rune/mod still reference `SHOP_ITEM_COST`.
 /// Pointed at `SHOP_TURRET_COST` so the most expensive baseline wins

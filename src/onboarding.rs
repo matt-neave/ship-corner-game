@@ -124,13 +124,14 @@ pub fn tick_notifications(
 }
 
 /// Spec for the bottom-left panel — shared sizing so both banner
-/// kinds line up in the stack at identical bounds. Tall enough to
-/// fit a header + a wrapped two-line description without clipping;
+/// kinds line up in the stack at identical bounds. Wide enough to
+/// fit the longest variant / tag name on the subtitle line and a
+/// wrapped two-line description below it without clipping;
 /// `min_height` on the Node lets it grow further on the rare long
 /// string, with `stack_bottom_px` using the conservative `PANEL_H`
 /// so even an over-grown banner doesn't crash into its neighbour.
-const PANEL_W: f32 = 260.0;
-const PANEL_H: f32 = 92.0;
+const PANEL_W: f32 = 300.0;
+const PANEL_H: f32 = 110.0;
 const PANEL_INSET: f32 = 12.0;
 const PANEL_GAP: f32 = 6.0;
 

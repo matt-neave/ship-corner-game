@@ -130,6 +130,11 @@ impl WeaponTag {
 /// in `rune.rs`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TargetPriority {
+    /// Implicit default when no targeting rune is socketed - the
+    /// picker uses nearest-to-fallback semantics directly without
+    /// reading the enum. Kept as a named variant for completeness
+    /// and so a future "TargetClosest" rune can reuse the slot.
+    #[allow(dead_code)]
     Closest,
     Furthest,
     HighestHp,
