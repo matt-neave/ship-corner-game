@@ -1160,22 +1160,22 @@ fn rune_tooltip(rune: Rune, stats: &crate::stats::PlayerStats) -> (String, Strin
     (rune.label().to_string(), body)
 }
 
-/// "Damage X" line, expanded with a base + stat breakdown when the
-/// player's Turret Damage stat isn't at default. Single value at
-/// default keeps the tooltip lean; with a buff/nerf the player can
-/// see what the weapon WOULD do raw and where the bonus came from
-/// without doing the math themselves.
+/// "Damage X.X" line, expanded with a base + stat breakdown when
+/// the player's Turret Damage stat isn't at default. One decimal
+/// place so a fractional final (e.g. 4 base x 33% = 5.32 -> 5.3)
+/// reads accurately instead of rounding to the same integer as a
+/// neighbouring weapon. Base is integer-typed so it shows whole.
 fn weapon_damage_line(weapon: WeaponType, stats: &crate::stats::PlayerStats) -> String {
     let (base_dmg, _rate) = weapon.defaults();
     let mult = stats.turret_damage_mult();
-    let final_dmg = (base_dmg as f32 * mult).round() as i32;
+    let final_dmg = base_dmg as f32 * mult;
     let pct_bonus = ((mult - 1.0) * 100.0).round() as i32;
     if pct_bonus == 0 {
-        format!("Damage {}", final_dmg)
+        format!("Damage {:.1}", final_dmg)
     } else {
         let sign = if pct_bonus > 0 { "+" } else { "" };
         format!(
-            "Damage {} from {} base and {}{}% Turret Damage",
+            "Damage {:.1} from {} base and {}{}% Turret Damage",
             final_dmg, base_dmg, sign, pct_bonus,
         )
     }
