@@ -25,6 +25,39 @@ use crate::ally::{Ally, ShipClass};
 use crate::stats::{PlayerStats, StatKind};
 use crate::ui_kit::{self, theme};
 use crate::xp::Buff;
+use crate::AppState;
+
+/// Owns the boss-reward screen + the supporting persistent roster.
+/// The cross-state hooks (`respawn_allies_for_stage` on `OnExit(Map)`,
+/// `reset_boss_reward_state` on `OnEnter(MainMenu)` /
+/// `OnExit(GameOver)`) live here too because they read or clear
+/// resources owned by this plugin.
+pub struct BossRewardPlugin;
+
+impl Plugin for BossRewardPlugin {
+    fn build(&self, app: &mut App) {
+        app
+            .insert_resource(BossRewardPending::default())
+            .insert_resource(RecruitedAllies::default())
+            .insert_resource(BossRewardOffer::default())
+            // Per-section roster refresh — respawn the recruited fleet
+            // at full HP whenever the player commits to a new combat.
+            .add_systems(OnExit(AppState::Map), respawn_allies_for_stage)
+            // Wipe the roster + clear any in-flight reward offer when
+            // the run resets, so a fresh MainMenu / restart starts
+            // clean.
+            .add_systems(OnEnter(AppState::MainMenu), reset_boss_reward_state)
+            .add_systems(OnExit(AppState::GameOver), reset_boss_reward_state)
+            // The screen itself.
+            .add_systems(OnEnter(AppState::BossReward), enter_boss_reward)
+            .add_systems(OnExit(AppState::BossReward), exit_boss_reward)
+            .add_systems(
+                Update,
+                (handle_boss_reward_click, update_boss_reward_stat_tooltip)
+                    .run_if(in_state(AppState::BossReward)),
+            );
+    }
+}
 
 // ---------- Resources ----------
 

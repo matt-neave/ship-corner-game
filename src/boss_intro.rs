@@ -20,6 +20,26 @@ use bevy::text::FontSmoothing;
 use crate::ally::ShipClass;
 use crate::effects::EffectMeshes;
 use crate::palette::PaletteMaterials;
+use crate::AppState;
+
+/// Owns everything the boss-intro screen needs: its two resources, the
+/// OnEnter/OnExit spawn-and-teardown hooks, and the tick system that
+/// drives the streak animation + state hand-off back to `Playing`.
+pub struct BossIntroPlugin;
+
+impl Plugin for BossIntroPlugin {
+    fn build(&self, app: &mut App) {
+        app
+            .insert_resource(BossIntroTimer::default())
+            .insert_resource(BossIntroPending::default())
+            .add_systems(OnEnter(AppState::BossIntro), enter_boss_intro)
+            .add_systems(OnExit(AppState::BossIntro), exit_boss_intro)
+            .add_systems(
+                Update,
+                tick_boss_intro.run_if(in_state(AppState::BossIntro)),
+            );
+    }
+}
 
 /// Total intro length, in seconds. Long enough for the player to read
 /// the class name; short enough to keep the campaign moving.

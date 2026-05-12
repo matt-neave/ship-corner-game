@@ -19,6 +19,33 @@ use bevy::prelude::*;
 use bevy::text::FontSmoothing;
 
 use crate::ui_kit::theme;
+use crate::AppState;
+
+/// Owns the "STAGE COMPLETE" buffer: the elapsed-time + scrap-earned
+/// resources, the per-stage scrap reset on `OnEnter(Playing)`, the
+/// overlay spawn/despawn on the state itself, and the gated tick
+/// systems that animate the title + advance to the next screen.
+pub struct StageCompletePlugin;
+
+impl Plugin for StageCompletePlugin {
+    fn build(&self, app: &mut App) {
+        app
+            .insert_resource(StageCompleteTimer::default())
+            .insert_resource(ScrapEarnedThisStage::default())
+            .add_systems(OnEnter(AppState::Playing), reset_scrap_earned_on_play)
+            .add_systems(OnEnter(AppState::StageComplete), enter_stage_complete)
+            // Stage advances on EXIT so the in-buffer readout still
+            // shows the just-finished stage, not the next stage's
+            // "WAVE 1/N". `queue_next_stage_combat` lives in `map`,
+            // not here, so it's registered alongside in main.
+            .add_systems(OnExit(AppState::StageComplete), exit_stage_complete)
+            .add_systems(
+                Update,
+                (tick_stage_complete, tick_stage_complete_wave)
+                    .run_if(in_state(AppState::StageComplete)),
+            );
+    }
+}
 
 /// Total buffer length in seconds.
 pub const DURATION: f32 = 5.0;

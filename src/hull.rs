@@ -18,6 +18,86 @@ use bevy::prelude::*;
 
 use crate::stats::PlayerStats;
 use crate::ui_kit::{self, theme};
+use crate::AppState;
+
+/// Owns the hull-select / dockyard screen: the two pick-state
+/// resources, the persistent dockyard render-target plumbing (set up
+/// once at startup), the spawn/despawn lifecycle for the pixel scene
+/// + UI overlay, every state-gated input handler for both the cards
+/// and the pixel-scene berths, and the always-on `clamp_hp_to_max`
+/// guard (which runs everywhere — a stat downgrade outside this
+/// screen still shouldn't leave a stale HP readout).
+pub struct HullSelectPlugin;
+
+impl Plugin for HullSelectPlugin {
+    fn build(&self, app: &mut App) {
+        app
+            .insert_resource(SelectedHull::default())
+            .insert_resource(PreviewHull::default())
+            // Render-target plumbing for the dockyard pixel scene
+            // (camera + image + backdrop + display sprite) is created
+            // once at startup and kept warm. The scene contents are
+            // spawned/despawned in the OnEnter/OnExit hooks below.
+            .add_systems(Startup, crate::dockyard_view::setup_dockyard_render)
+            .add_systems(
+                OnEnter(AppState::HullSelect),
+                (
+                    enter_hull_select,
+                    crate::reset_run_timer,
+                    crate::dockyard_view::spawn_dockyard_scene,
+                    crate::dockyard_view::spawn_dockyard_labels,
+                ),
+            )
+            // OnExit(HullSelect) chain: tear down the dockyard UI,
+            // regenerate the map with the player's chosen `MapSize`,
+            // then re-run the map-view setup so the new topology has
+            // its visuals. Chained so the new `MapState` is in place
+            // before `setup_map` reads it.
+            .add_systems(
+                OnExit(AppState::HullSelect),
+                (
+                    exit_hull_select,
+                    crate::dockyard_view::despawn_dockyard_scene,
+                    crate::map::regenerate_map,
+                    crate::map::setup_map,
+                    crate::map::spawn_boss_patrols,
+                ).chain(),
+            )
+            .add_systems(
+                Update,
+                (
+                    handle_card_click,
+                    handle_map_size_click,
+                    handle_play_click,
+                    handle_back_click,
+                    handle_back_on_esc,
+                    sync_hull_select_on_change,
+                    sync_hull_apply,
+                    // Dockyard pixel-scene driving — hover preview,
+                    // click commit, per-frame highlight + label
+                    // positioning.
+                    crate::dockyard_view::handle_dockyard_hover,
+                    crate::dockyard_view::handle_dockyard_click,
+                    crate::dockyard_view::update_dockyard_highlight,
+                    crate::dockyard_view::update_dockyard_labels,
+                ).run_if(in_state(AppState::HullSelect)),
+            )
+            // Always-on: clamp HP to max each frame so a stat change
+            // never leaves a "100/50" readout. Lives with hull-select
+            // because the hull is what defines max HP, but applies
+            // everywhere.
+            .add_systems(Update, clamp_hp_to_max)
+            // Dockyard render-target activation + display-sprite
+            // sizing — both self-gate, so cheap to leave always-on.
+            .add_systems(
+                Update,
+                (
+                    crate::dockyard_view::toggle_dockyard_render,
+                    crate::dockyard_view::resize_dockyard_display,
+                ),
+            );
+    }
+}
 
 /// Which hull the player is running. Acts as both the highlighted
 /// card on `HullSelect` and the locked-in pick after PLAY. Committed

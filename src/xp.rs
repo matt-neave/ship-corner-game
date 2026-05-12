@@ -18,6 +18,31 @@ use rand::seq::SliceRandom;
 
 use crate::stats::{PlayerStats, StatKind};
 use crate::ui_kit::{self, theme};
+use crate::AppState;
+
+/// Owns the XP + level-up overlay: its four resources, the
+/// state-gated click handler, and the spawn/despawn pair on
+/// `LevelUp` enter/exit. The persistent XP bar update
+/// (`update_xp_bar`) lives in the map UI bucket and is left to
+/// main's wiring because it shares the same Update tuple as other
+/// map-frame HUD systems.
+pub struct LevelUpPlugin;
+
+impl Plugin for LevelUpPlugin {
+    fn build(&self, app: &mut App) {
+        app
+            .insert_resource(Xp::default())
+            .insert_resource(LevelUpsPending::default())
+            .insert_resource(LevelUpReturn::default())
+            .insert_resource(LevelUpChoices::default())
+            .add_systems(OnEnter(AppState::LevelUp), enter_level_up)
+            .add_systems(OnExit(AppState::LevelUp), exit_level_up)
+            .add_systems(
+                Update,
+                handle_level_up_click.run_if(in_state(AppState::LevelUp)),
+            );
+    }
+}
 
 // ---------- Resources ----------
 

@@ -563,6 +563,15 @@ pub fn tick_buildings(
 /// hands off to Customize (shop) → Map → Playing, where the next
 /// section's combat budget is queued as the boat crosses into it
 /// (`map_boat_movement`).
+/// "We just left Playing because the arena cleared." A transition
+/// detector — must only run in `Playing`, not in the `StageComplete`
+/// buffer, because the precondition (`budget==0 && no enemies`)
+/// remains satisfied throughout the buffer. If it re-fires there it
+/// would over-increment `battles_cleared` and race
+/// `tick_stage_complete`'s advance to LevelUp / Customize. Registered
+/// in main.rs with `.run_if(in_state(AppState::Playing))` so this
+/// invariant is enforced at the schedule level, not by defensive
+/// in-function checks.
 pub fn level_complete_check(
     view: Res<ViewMode>,
     mut state: ResMut<MapState>,

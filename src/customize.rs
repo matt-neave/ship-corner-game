@@ -33,6 +33,8 @@
 
 use bevy::prelude::*;
 
+use crate::AppState;
+
 mod render;
 mod setup;
 mod drag;
@@ -40,6 +42,73 @@ mod shop_mods;
 mod stats_panel;
 mod tooltip;
 mod update;
+
+/// Owns the customize / shop overlay: its three resources, the
+/// one-time startup spawn (render target + ship + shop UI), the
+/// enter/exit cleanup hooks, and the dense per-frame Update block
+/// that drives every customize sub-system. Most of these self-gate
+/// on `CustomizeOpen` so they're cheap to leave always-on.
+pub struct CustomizePlugin;
+
+impl Plugin for CustomizePlugin {
+    fn build(&self, app: &mut App) {
+        app
+            .insert_resource(CustomizeOpen::default())
+            .insert_resource(DragState::default())
+            .insert_resource(TooltipLayout::default())
+            .add_systems(
+                Startup,
+                (init_customize_shop, setup_customize_render, setup_customize_ui).chain(),
+            )
+            .add_systems(
+                OnEnter(AppState::Customize),
+                (init_customize_shop, crate::enemy::clear_spawn_indicators),
+            )
+            .add_systems(OnExit(AppState::Customize), crate::ui::reset_damage_stats)
+            .add_systems(
+                Update,
+                (
+                    // Every customize system self-gates on `CustomizeOpen`.
+                    toggle_customize_render,
+                    resize_customize_display,
+                    track_customize_cursor,
+                    sync_customize_text,
+                    update_customize_ui,
+                    update_customize_ship,
+                    update_customize_shop,
+                    update_customize_tooltip,
+                    update_synergy_banner,
+                    sync_stats_panel,
+                    // After sync_customize_text so the debug-only Hidden
+                    // write isn't overwritten by the generic Inherited.
+                    sync_stat_debug_visibility.after(sync_customize_text),
+                    handle_stat_debug_buttons,
+                    update_shop_mod_cards,
+                    handle_shop_mod_click,
+                    handle_close_click,
+                    handle_reroll_button,
+                ),
+            )
+            // Drag chain in its own add_systems — chained tuples
+            // nested inside the block above hit a Bevy trait-impl
+            // limit. `.after(sync_customize_text)` makes
+            // `update_sell_label` the final writer for the preview's
+            // visibility on the strip.
+            .add_systems(
+                Update,
+                (start_drag, update_drag_ghost, complete_drag, update_sell_label)
+                    .chain()
+                    .after(sync_customize_text),
+            )
+            // Unconditional synergy chain — discovery must fire while
+            // customize is open so equipping a 2nd tagged turret pops
+            // the banner immediately.
+            .add_systems(
+                Update,
+                (crate::synergy::compute_synergies, crate::synergy::discover_synergies).chain(),
+            );
+    }
+}
 
 pub use render::{
     resize_customize_display, setup_customize_render, toggle_customize_render,

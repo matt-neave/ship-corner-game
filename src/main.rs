@@ -51,15 +51,6 @@ use ally::{
     tender_heal_beam, update_ally_positions_cache, update_boarding_ropes,
     viking_ram_damage, AllyPositionsCache,
 };
-use customize::{
-    complete_drag, handle_close_click, handle_reroll_button, init_customize_shop,
-    resize_customize_display, setup_customize_render, setup_customize_ui, start_drag,
-    handle_shop_mod_click, handle_stat_debug_buttons, sync_customize_text, sync_stat_debug_visibility, sync_stats_panel,
-    toggle_customize_render, track_customize_cursor, update_shop_mod_cards,
-    update_customize_ship, update_customize_shop, update_customize_tooltip,
-    update_customize_ui, update_drag_ghost, update_sell_label, update_synergy_banner,
-    CustomizeOpen, DragState,
-};
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
 use bullet::{bullet_collisions, bullet_update, process_damage_events, PendingDamageQueue};
@@ -68,7 +59,7 @@ use effects::{
 };
 use enemy::{
     artillery_fire, artillery_shell_tick, bomber_detonate, boss_chaos_spawn,
-    clear_spawn_indicators, enemy_ai,
+    enemy_ai,
     enemy_death_check, enemy_fire, enemy_landmine_tick, setup_enemy_hp_bar_assets,
     setup_spawn_indicator_assets, sniper_aim_line_tick, sniper_fire, sniper_turret_aim,
     spawn_enemies, tick_spawn_indicators, track_enemy_damage_for_hp_bars, update_enemy_hp_bars,
@@ -96,11 +87,6 @@ use modes::{
     CameraFollow, CrtMode, GameMode, NightMode, VsyncMode, WindowMode,
 };
 use palette::{apply_palette, Palette};
-use pause::{
-    handle_main_menu_click as handle_pause_main_menu_click, handle_quit_click,
-    handle_resume_click, setup_pause_menu, sync_pause_menu_visibility,
-    toggle_pause_on_esc, Paused,
-};
 use rendering::{
     resize_upscale_sprite, setup_render, update_hash_image, update_hud_camera_viewport,
 };
@@ -113,7 +99,7 @@ use turret::{
     sync_turret_config, turret_aim_fire, TurretConfig,
 };
 use ui::{
-    force_hide_ui_panel, reset_damage_stats, setup_damage_panel, setup_ui,
+    force_hide_ui_panel, setup_damage_panel, setup_ui,
     setup_wave_indicator, sync_ally_hp_bars, sync_damage_panel_visibility,
     ui_button_system, update_ally_hp_values, update_damage_bars, update_damage_panel,
     update_damage_row_icons, update_fps_text, update_hp_bar_pixel_scale,
@@ -180,14 +166,6 @@ fn enter_combat_view(mut view: ResMut<map::ViewMode>) {
 /// Reset XP + queued level-ups on returning to the main menu so a fresh
 /// PLAY starts at LV 1 / 0 XP. RESTART from game-over takes a separate
 /// path through `reset_run_for_restart`.
-fn reset_xp_for_main_menu(
-    mut xp: ResMut<xp::Xp>,
-    mut pending: ResMut<xp::LevelUpsPending>,
-) {
-    xp.reset();
-    pending.0 = 0;
-}
-
 /// Stage-start hook on Map→Playing: refill the friendly hull and despawn
 /// arena debris from the previous stage. Doesn't fire on Paused→Playing
 /// or GameOver→Playing — those paths don't pass through `Map`.
@@ -250,7 +228,7 @@ pub struct SpawnTimer { pub t: f32, pub elapsed: f32 }
 #[derive(Resource, Default)]
 pub struct RunTimer { pub secs: f32 }
 
-fn reset_run_timer(mut timer: ResMut<RunTimer>) {
+pub(crate) fn reset_run_timer(mut timer: ResMut<RunTimer>) {
     timer.secs = 0.0;
 }
 
@@ -294,6 +272,15 @@ fn main() {
             octopus::OctopusPlugin,
             harpoon::HarpoonPlugin,
             onboarding::OnboardingPlugin,
+            boss_intro::BossIntroPlugin,
+            stage_complete::StageCompletePlugin,
+            boss_reward::BossRewardPlugin,
+            xp::LevelUpPlugin,
+            pause::PausePlugin,
+            game_over::GameOverPlugin,
+            main_menu::MainMenuPlugin,
+            customize::CustomizePlugin,
+            hull::HullSelectPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
         .insert_resource(Score(0))
@@ -307,21 +294,9 @@ fn main() {
         .insert_resource(cfg)
         .insert_resource(DamageStats::default())
         .insert_resource(stats::PlayerStats::default())
-        .insert_resource(main_menu::MainMenuOpen::default())
-        .insert_resource(main_menu::MainMenuView::default())
         .insert_resource(DebugUiVisible::default())
-        .insert_resource(stage_complete::StageCompleteTimer::default())
-        .insert_resource(stage_complete::ScrapEarnedThisStage::default())
-        .insert_resource(boss_intro::BossIntroTimer::default())
-        .insert_resource(boss_intro::BossIntroPending::default())
-        .insert_resource(xp::Xp::default())
-        .insert_resource(xp::LevelUpsPending::default())
-        .insert_resource(xp::LevelUpReturn::default())
         .insert_resource(synergy::Synergies::default())
         .insert_resource(PendingDamageQueue::default())
-        .insert_resource(xp::LevelUpChoices::default())
-        .insert_resource(hull::SelectedHull::default())
-        .insert_resource(hull::PreviewHull::default())
         .insert_resource(modes::ScreenShake::default())
         .insert_resource(RunTimer::default())
         .init_state::<AppState>()
@@ -341,161 +316,33 @@ fn main() {
         .insert_resource(CombatContext::default())
         .insert_resource(DebugClaimMode::default())
         .add_event::<TriggerMapPhase>()
-        .insert_resource(CustomizeOpen::default())
-        .insert_resource(DragState::default())
-        .insert_resource(customize::TooltipLayout::default())
-        .insert_resource(Paused::default())
         .insert_resource(AllyPositionsCache::default())
-        .insert_resource(boss_reward::BossRewardPending::default())
-        .insert_resource(boss_reward::RecruitedAllies::default())
-        .insert_resource(boss_reward::BossRewardOffer::default())
         .add_systems(Startup, (
             setup_render, setup_world, setup_ui, setup_map,
             // After setup_map so 5★ polygons exist for reject-sampling.
             spawn_boss_patrols,
             setup_debug_ui, setup_currency_ui, setup_progress_assets,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
-            init_customize_shop, setup_customize_render, setup_customize_ui,
-            setup_pause_menu, main_menu::setup_main_menu, setup_damage_panel,
+            setup_damage_panel,
             setup_wave_indicator, setup_spawn_indicator_assets,
         ).chain())
-        // Dockyard pipeline — its own Startup block to stay under
-        // Bevy's 20-system tuple limit. No external ordering needed
-        // (the existing Startup chain doesn't depend on dockyard
-        // entities), and within this block render-setup must run
-        // before the scene spawn so the camera/target exist.
-        // Render-target plumbing (camera + image + backdrop + display
-        // sprite) is created once at startup and kept warm. The scene
-        // *contents* (walkways, finger piers, ships, labels) live in a
-        // per-visit lifecycle — spawned OnEnter(HullSelect), despawned
-        // OnExit(HullSelect) — so the dockyard and the game share zero
-        // entities.
-        .add_systems(Startup, dockyard_view::setup_dockyard_render)
-        .add_systems(
-            OnEnter(AppState::HullSelect),
-            (
-                dockyard_view::spawn_dockyard_scene,
-                dockyard_view::spawn_dockyard_labels,
-            ),
-        )
         // Bridge runs first so the rest of Update sees synced flags.
         .add_systems(Update, sync_state_to_open_resources)
-        .add_systems(OnEnter(AppState::Customize), init_customize_shop)
-        .add_systems(OnExit(AppState::MainMenu), (reset_damage_stats, clear_spawn_indicators))
-        .add_systems(OnEnter(AppState::MainMenu), main_menu::clear_arena_on_main_menu)
-        .add_systems(OnExit(AppState::Customize), reset_damage_stats)
-        .add_systems(OnEnter(AppState::Customize), clear_spawn_indicators)
         .add_systems(OnEnter(AppState::Map), enter_map_view)
         .add_systems(OnEnter(AppState::Playing), enter_combat_view)
-        // Map→Playing is the canonical stage-start hook: refill HP,
-        // wipe arena debris from last stage, and respawn the
-        // permanent ally roster at full HP.
-        .add_systems(
-            OnExit(AppState::Map),
-            (refill_and_clean_for_next_stage, boss_reward::respawn_allies_for_stage),
-        )
-        .add_systems(OnEnter(AppState::HullSelect), (hull::enter_hull_select, reset_run_timer))
-        // OnExit(HullSelect) chain: tear down the dockyard UI, regenerate
-        // the map with the player's chosen `MapSize`, then re-run the
-        // map-view setup so the new topology has its visuals. Chained so
-        // the new MapState is in place before setup_map reads it.
-        .add_systems(
-            OnExit(AppState::HullSelect),
-            (
-                hull::exit_hull_select,
-                dockyard_view::despawn_dockyard_scene,
-                map::regenerate_map,
-                setup_map,
-                spawn_boss_patrols,
-            ).chain(),
-        )
-        .add_systems(OnEnter(AppState::GameOver), game_over::enter_game_over)
-        .add_systems(
-            OnExit(AppState::GameOver),
-            (
-                game_over::exit_game_over,
-                game_over::reset_run_for_restart,
-                boss_reward::reset_boss_reward_state,
-            ),
-        )
-        .add_systems(OnEnter(AppState::LevelUp), xp::enter_level_up)
-        .add_systems(OnExit(AppState::LevelUp), xp::exit_level_up)
-        .add_systems(
-            Update,
-            xp::handle_level_up_click.run_if(in_state(AppState::LevelUp)),
-        )
-        .add_systems(
-            Update,
-            (
-                hull::handle_card_click,
-                hull::handle_map_size_click,
-                hull::handle_play_click,
-                hull::handle_back_click,
-                hull::handle_back_on_esc,
-                hull::sync_hull_select_on_change,
-                hull::sync_hull_apply,
-                // Dockyard pixel-scene driving — hover preview, click
-                // commit, per-frame highlight + label positioning.
-                dockyard_view::handle_dockyard_hover,
-                dockyard_view::handle_dockyard_click,
-                dockyard_view::update_dockyard_highlight,
-                dockyard_view::update_dockyard_labels,
-            ).run_if(in_state(AppState::HullSelect)),
-        )
-        .add_systems(
-            OnEnter(AppState::MainMenu),
-            (
-                reset_xp_for_main_menu,
-                game_over::reset_run_for_restart,
-                boss_reward::reset_boss_reward_state,
-            ),
-        )
-        // Clamp HP to max each frame so stat changes never leave a
-        // "100/50" readout when max HP dropped below current HP.
-        .add_systems(Update, (hull::clamp_hp_to_max, tick_run_timer))
-        .add_systems(
-            OnEnter(AppState::Playing),
-            stage_complete::reset_scrap_earned_on_play,
-        )
-        .add_systems(OnEnter(AppState::StageComplete), stage_complete::enter_stage_complete)
-        // Stage advances on EXIT so the in-buffer readout still shows
-        // the just-finished stage, not the next stage's "WAVE 1/N".
-        .add_systems(
-            OnExit(AppState::StageComplete),
-            (stage_complete::exit_stage_complete, map::queue_next_stage_combat),
-        )
-        .add_systems(
-            Update,
-            (
-                stage_complete::tick_stage_complete,
-                stage_complete::tick_stage_complete_wave,
-            )
-                .run_if(in_state(AppState::StageComplete)),
-        )
-        // Boss-reward pick screen — sits between StageComplete and
-        // LevelUp when `BossRewardPending` is `Some`. The click
-        // handler advances onward (LevelUp if any pending, else
-        // Customize), matching the gate in `tick_stage_complete`.
-        .add_systems(OnEnter(AppState::BossReward), boss_reward::enter_boss_reward)
-        .add_systems(OnExit(AppState::BossReward), boss_reward::exit_boss_reward)
-        .add_systems(
-            Update,
-            boss_reward::handle_boss_reward_click.run_if(in_state(AppState::BossReward)),
-        )
-        .add_systems(
-            Update,
-            boss_reward::update_boss_reward_stat_tooltip
-                .run_if(in_state(AppState::BossReward)),
-        )
-        // Boss intro overlay — Borderlands-style streaks + class name.
-        // Combat is frozen while this state is active because it isn't
-        // in `in_combat_view`'s allow-list.
-        .add_systems(OnEnter(AppState::BossIntro), boss_intro::enter_boss_intro)
-        .add_systems(OnExit(AppState::BossIntro), boss_intro::exit_boss_intro)
-        .add_systems(
-            Update,
-            boss_intro::tick_boss_intro.run_if(in_state(AppState::BossIntro)),
-        )
+        // Map→Playing is the canonical stage-start hook: refill HP +
+        // wipe arena debris from last stage. (Permanent ally roster
+        // respawn is owned by `BossRewardPlugin`, which also hooks
+        // OnExit(Map).)
+        .add_systems(OnExit(AppState::Map), refill_and_clean_for_next_stage)
+        // Run-timer tick — counts wall-clock seconds since the run
+        // started, paused on MainMenu/HullSelect.
+        .add_systems(Update, tick_run_timer)
+        // The map-side half of the StageComplete handoff — the plugin
+        // owns the timer + UI; `queue_next_stage_combat` lives in
+        // `map` so it stays alongside the rest of `CombatContext`
+        // setup.
+        .add_systems(OnExit(AppState::StageComplete), map::queue_next_stage_combat)
         .add_systems(Update, (
             // night_mode → palette must order so a toggle propagates
             // to the camera in the same frame.
@@ -552,19 +399,26 @@ fn main() {
                 tick_on_conduit, tick_on_resonate,
                 enemy_death_check,
             ).chain(),
-            // Once the section's enemy budget is drained AND every
-            // remaining enemy is dead, claim the section + flip back
-            // to map view. Order vs `enemy_death_check` is best-effort —
-            // worst case is a 1-frame delay before the transition.
-            level_complete_check,
-            // Mirror system for the failure side: friendly HP at 0 →
-            // wipe arena, restore HP, back to map (no claim).
-            level_fail_check,
             // Track damage frame-to-frame to spawn / refresh enemy
             // HP bars; visual updater positions + scales them.
             track_enemy_damage_for_hp_bars,
             update_enemy_hp_bars,
         ).run_if(in_combat_view))
+        // Transition detectors — "we just left Playing". Gated on
+        // `in_state(Playing)` rather than the broader `in_combat_view`
+        // (which includes `StageComplete`) because the conditions they
+        // detect (budget==0 + no enemies, or friendly HP at 0) remain
+        // satisfied across the state transition. Running them during
+        // `StageComplete` would re-fire `NextState=StageComplete` every
+        // frame, racing `tick_stage_complete`'s advance to LevelUp /
+        // Customize. Sim-side work (motion, bullets, collisions) still
+        // ticks during the buffer; only the detectors are scoped to
+        // Playing.
+        .add_systems(
+            Update,
+            (level_complete_check, level_fail_check)
+                .run_if(in_state(AppState::Playing)),
+        )
         .add_systems(Update, (
             // Visuals / FX / UI. Split from the sim block so we don't blow
             // past Bevy's 20-system tuple limit.
@@ -664,74 +518,13 @@ fn main() {
             update_building_progress_bars,
         ))
         .add_systems(Update, (
-            // Every customize system self-gates on `CustomizeOpen`.
-            toggle_customize_render,
-            resize_customize_display,
-            track_customize_cursor,
-            sync_customize_text,
-            update_customize_ui,
-            update_customize_ship,
-            update_customize_shop,
-            update_customize_tooltip,
-            update_synergy_banner,
-            sync_stats_panel,
-            // After sync_customize_text so the debug-only Hidden write
-            // isn't overwritten by the generic Inherited.
-            sync_stat_debug_visibility.after(sync_customize_text),
-            handle_stat_debug_buttons,
-            update_shop_mod_cards,
-            handle_shop_mod_click,
-            handle_close_click,
-            handle_reroll_button,
-        ))
-        // Drag chain in its own add_systems — chained tuples nested
-        // inside the block above hit a Bevy trait-impl limit.
-        // `.after(sync_customize_text)` makes `update_sell_label` the
-        // final writer for the preview's visibility on the strip.
-        .add_systems(
-            Update,
-            (start_drag, update_drag_ghost, complete_drag, update_sell_label)
-                .chain()
-                .after(sync_customize_text),
-        )
-        // Unconditional: discovery must fire while customize is open
-        // so equipping a 2nd tagged turret pops the banner immediately.
-        .add_systems(
-            Update,
-            (synergy::compute_synergies, synergy::discover_synergies).chain(),
-        )
-        .add_systems(Update, (
-            // Dockyard render-target activation + display-sprite
-            // sizing — both self-gate, so cheap to leave always-on.
-            dockyard_view::toggle_dockyard_render,
-            dockyard_view::resize_dockyard_display,
             apply_loaded_settings,
             persist_settings_on_change,
-            // ESC toggle only fires Playing↔Paused.
-            toggle_pause_on_esc,
-            sync_pause_menu_visibility,
-            main_menu::sync_main_menu_visibility,
-            main_menu::sync_main_menu_view,
-            main_menu::handle_settings_item_click,
-            main_menu::update_settings_labels,
         ))
-        // Click handlers are gated to their owning state because Bevy
-        // UI picking fires `Interaction::Pressed` on hidden Nodes
+        // Note: Click handlers are gated to their owning state because
+        // Bevy UI picking fires `Interaction::Pressed` on hidden Nodes
         // (overlapping full-screen overlays), so a click on one screen
         // would otherwise silently trigger a transition on another.
-        .add_systems(Update, (
-            handle_resume_click,
-            handle_pause_main_menu_click,
-            handle_quit_click,
-        ).run_if(in_state(AppState::Paused)))
-        .add_systems(Update, (
-            main_menu::handle_play_click,
-            main_menu::handle_settings_click,
-        ).run_if(in_state(AppState::MainMenu)))
-        .add_systems(Update, (
-            game_over::handle_restart_click,
-            game_over::handle_main_menu_click,
-            game_over::handle_quit_click,
-        ).run_if(in_state(AppState::GameOver)))
+        // Per-screen plugins handle that wiring themselves.
         .run();
 }

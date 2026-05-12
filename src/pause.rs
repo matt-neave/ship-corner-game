@@ -10,6 +10,27 @@ use bevy::prelude::*;
 
 use crate::modes::WindowMode;
 use crate::ui_kit::{self, theme};
+use crate::AppState;
+
+/// Owns the pause overlay: the `Paused` resource, the one-time menu
+/// spawn at startup, the ESC toggle + visibility sync that run
+/// unconditionally each frame, and the three click handlers gated on
+/// `AppState::Paused`.
+pub struct PausePlugin;
+
+impl Plugin for PausePlugin {
+    fn build(&self, app: &mut App) {
+        app
+            .insert_resource(Paused::default())
+            .add_systems(Startup, setup_pause_menu)
+            .add_systems(Update, (toggle_pause_on_esc, sync_pause_menu_visibility))
+            .add_systems(
+                Update,
+                (handle_resume_click, handle_main_menu_click, handle_quit_click)
+                    .run_if(in_state(AppState::Paused)),
+            );
+    }
+}
 
 /// True while the pause menu is up. Read by `in_combat_view` (in `map`)
 /// so combat-side systems freeze for the duration.

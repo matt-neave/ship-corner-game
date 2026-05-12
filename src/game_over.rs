@@ -18,6 +18,28 @@ use bevy::prelude::*;
 
 use crate::map::{CombatContext, MapBoat, MapState};
 use crate::ui_kit::{self, theme};
+use crate::AppState;
+
+/// Owns the game-over overlay: enter/exit spawn-and-teardown plus
+/// the fresh-run reset on exit, and the three click handlers gated
+/// on `AppState::GameOver`.
+pub struct GameOverPlugin;
+
+impl Plugin for GameOverPlugin {
+    fn build(&self, app: &mut App) {
+        app
+            .add_systems(OnEnter(AppState::GameOver), enter_game_over)
+            .add_systems(
+                OnExit(AppState::GameOver),
+                (exit_game_over, reset_run_for_restart),
+            )
+            .add_systems(
+                Update,
+                (handle_restart_click, handle_main_menu_click, handle_quit_click)
+                    .run_if(in_state(AppState::GameOver)),
+            );
+    }
+}
 
 #[derive(Component)]
 pub struct GameOverRoot;

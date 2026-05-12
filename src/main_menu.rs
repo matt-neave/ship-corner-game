@@ -12,6 +12,63 @@ use bevy::prelude::*;
 
 use crate::modes::{CrtMode, NightMode, VsyncMode};
 use crate::ui_kit::theme;
+use crate::AppState;
+
+/// Owns the main-menu screen: its two resources, one-time Startup
+/// spawn, the reset hooks fired on `OnEnter(MainMenu)`, the cleanup
+/// hook on `OnExit(MainMenu)`, the always-on sync systems, and the
+/// PLAY / SETTINGS click handlers gated on the state.
+///
+/// Reset-on-enter calls into sibling modules (`xp`, `game_over`) for
+/// fresh-run wipes — those modules own the resources, this plugin
+/// just owns the timing.
+pub struct MainMenuPlugin;
+
+impl Plugin for MainMenuPlugin {
+    fn build(&self, app: &mut App) {
+        app
+            .insert_resource(MainMenuOpen::default())
+            .insert_resource(MainMenuView::default())
+            .add_systems(Startup, setup_main_menu)
+            .add_systems(
+                OnEnter(AppState::MainMenu),
+                (
+                    clear_arena_on_main_menu,
+                    reset_xp_on_main_menu,
+                    crate::game_over::reset_run_for_restart,
+                ),
+            )
+            .add_systems(
+                OnExit(AppState::MainMenu),
+                (crate::ui::reset_damage_stats, crate::enemy::clear_spawn_indicators),
+            )
+            .add_systems(
+                Update,
+                (
+                    sync_main_menu_visibility,
+                    sync_main_menu_view,
+                    handle_settings_item_click,
+                    update_settings_labels,
+                ),
+            )
+            .add_systems(
+                Update,
+                (handle_play_click, handle_settings_click)
+                    .run_if(in_state(AppState::MainMenu)),
+            );
+    }
+}
+
+/// Wipe queued XP + level-ups on every return to the menu so a new
+/// run starts clean. Lives here rather than in `xp` because it's
+/// timing tied to MainMenu, not XP-internal.
+fn reset_xp_on_main_menu(
+    mut xp: ResMut<crate::xp::Xp>,
+    mut pending: ResMut<crate::xp::LevelUpsPending>,
+) {
+    xp.reset();
+    pending.0 = 0;
+}
 
 /// Clean the arena when the player returns to the main menu mid-run.
 /// Despawns every enemy + bullet + ally so PLAY-from-menu starts on

@@ -39,14 +39,21 @@ pub fn setup_enemy_hp_bar_assets(
 /// Detect HP drops and spawn / refresh the floating bar. Runs in the
 /// damage-application chain so it sees the new HP for the same frame
 /// the hit landed.
+///
+/// Newly-spawned bars are positioned and scaled to their final values
+/// *at spawn time* — not deferred to `update_enemy_hp_bars` on the
+/// next frame. Deferring caused a one-shot-kill glitch: the enemy
+/// despawned the same frame the bar was born, so the bar's first
+/// (and only) render used the placeholder transform — a full-scale
+/// red rectangle at world origin.
 pub fn track_enemy_damage_for_hp_bars(
     mut commands: Commands,
     assets: Option<Res<EnemyHpBarAssets>>,
-    mut enemies: Query<(Entity, &Health, &mut PreviousHp), With<Enemy>>,
+    mut enemies: Query<(Entity, &Transform, &Health, &Enemy, &mut PreviousHp), With<Enemy>>,
     mut bars: Query<&mut EnemyHpBar>,
 ) {
     let Some(assets) = assets else { return; };
-    for (e, h, mut prev) in &mut enemies {
+    for (e, e_tf, h, enemy, mut prev) in &mut enemies {
         if h.0 < prev.0 {
             let mut found = false;
             for mut bar in &mut bars {
@@ -57,13 +64,22 @@ pub fn track_enemy_damage_for_hp_bars(
                 }
             }
             if !found {
+                let max = enemy.max_hp.max(1) as f32;
+                let ratio = (h.0 as f32 / max).clamp(0.0, 1.0);
+                let world = e_tf.translation.truncate();
+                let mut bar_tf = Transform::from_xyz(
+                    world.x + HP_BAR_W * (ratio - 1.0) * 0.5,
+                    world.y + HP_BAR_Y_OFFSET,
+                    5.5,
+                );
+                bar_tf.scale = Vec3::new(ratio, 1.0, 1.0);
                 commands.spawn((
                     Mesh2d(assets.mesh.clone()),
                     MeshMaterial2d(assets.fill.clone()),
                     // HUD_LAYER so the HudCamera renders this bar at
                     // native resolution — the chunky-pixel filter
                     // doesn't apply, keeping it crisp.
-                    Transform::from_xyz(0.0, 0.0, 5.5),
+                    bar_tf,
                     EnemyHpBar { enemy: e, remaining: HP_BAR_SHOW_TIME },
                     RenderLayers::layer(HUD_LAYER),
                 ));
