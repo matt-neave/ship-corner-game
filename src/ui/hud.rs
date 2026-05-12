@@ -546,15 +546,31 @@ fn spawn_ally_hp_bar(parent: &mut ChildSpawnerCommands, ally: Entity) {
 }
 
 /// Reconcile the ally HP-bar set with the live `Ally` entities each
-/// frame: spawn for new allies, despawn bars whose ally is gone.
+/// frame: spawn for new allies, despawn bars whose ally is gone OR
+/// whose HP has hit zero (so the bar disappears at the same frame the
+/// ally falls, not a frame later after `ally_death_check` despawns
+/// the entity).
 pub fn sync_ally_hp_bars(
     mut commands: Commands,
     container_q: Query<Entity, With<AllyHpRow>>,
-    allies: Query<Entity, With<Ally>>,
+    // `Without<Enemy>` excludes bosses — they carry both `Ally` (for
+    // class-aware AI) and `Enemy` (for routing). The ally HP row is
+    // the *player's fleet* readout, not "every Ally-tagged entity".
+    allies: Query<
+        (Entity, &crate::components::Health),
+        (With<Ally>, Without<crate::enemy::Enemy>),
+    >,
     bars: Query<(Entity, &AllyHpBar)>,
 ) {
     use std::collections::HashSet;
-    let live: HashSet<Entity> = allies.iter().collect();
+    // Treat 0-HP allies as already-defeated for visibility purposes —
+    // the entity may still exist for one more frame until
+    // `ally_death_check` runs, but the bar should be gone immediately.
+    let live: HashSet<Entity> = allies
+        .iter()
+        .filter(|(_, h)| h.0 > 0)
+        .map(|(e, _)| e)
+        .collect();
     let bar_targets: HashSet<Entity> = bars.iter().map(|(_, b)| b.ally).collect();
 
     for (bar_e, bar) in &bars {
@@ -566,7 +582,8 @@ pub fn sync_ally_hp_bars(
     let Ok(container) = container_q.single() else { return; };
     let new_allies: Vec<Entity> = allies
         .iter()
-        .filter(|e| !bar_targets.contains(e))
+        .filter(|(e, h)| h.0 > 0 && !bar_targets.contains(e))
+        .map(|(e, _)| e)
         .collect();
     if new_allies.is_empty() { return; }
     commands.entity(container).with_children(|c| {

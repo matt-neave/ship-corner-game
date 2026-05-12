@@ -52,6 +52,12 @@ pub enum WeaponType {
     /// Tagged Autonomous (it's a deployed unit, like the HeliPad's
     /// helicopter).
     Cage,
+    /// Long-range melee. Fires a single harpoon out to 150% range
+    /// for 1 damage, then reels the target back to the hull along
+    /// a visible chain — the impaled enemy is dragged into contact
+    /// with the friendly ship where `friendly_ram_damage` finishes
+    /// the job. See `harpoon.rs` for the projectile + pull system.
+    Harpoon,
 }
 
 /// Gameplay-class tag attached to each weapon. Used by the tooltip to
@@ -237,7 +243,8 @@ impl WeaponType {
             WeaponType::Cannon     => Some(WeaponType::Booster),
             WeaponType::Booster    => Some(WeaponType::Blade),
             WeaponType::Blade      => Some(WeaponType::Cage),
-            WeaponType::Cage       => None,
+            WeaponType::Cage       => Some(WeaponType::Harpoon),
+            WeaponType::Harpoon    => None,
         }
     }
 
@@ -278,6 +285,12 @@ impl WeaponType {
             // many legs are active (2/4/6), so total dps =
             // damage × fire_rate × active_legs.
             WeaponType::Cage       => (3, 1.5),
+            // Harpoon: low direct damage (1) on the spear itself —
+            // the reel-in onto the hull is where the actual hurt
+            // happens via `friendly_ram_damage`. Slow cadence so the
+            // ship isn't a meat-grinder; one harpoon at a time keeps
+            // the chain visual readable.
+            WeaponType::Harpoon    => (1, 0.7),
         }
     }
 
@@ -295,6 +308,7 @@ impl WeaponType {
             WeaponType::Booster    => tr("weapon_booster"),
             WeaponType::Blade      => tr("weapon_blade"),
             WeaponType::Cage       => tr("weapon_cage"),
+            WeaponType::Harpoon    => tr("weapon_harpoon"),
         }
     }
 
@@ -313,6 +327,7 @@ impl WeaponType {
             WeaponType::Booster    => tr("weapon_booster_desc"),
             WeaponType::Blade      => tr("weapon_blade_desc"),
             WeaponType::Cage       => tr("weapon_cage_desc"),
+            WeaponType::Harpoon    => tr("weapon_harpoon_desc"),
         }
     }
 
@@ -348,6 +363,9 @@ impl WeaponType {
             // Cage: octopus has its own roam radius; the slot itself
             // doesn't have a "range". 1.0 is a placeholder.
             WeaponType::Cage       => 1.0,
+            // Harpoon: long reach — the whole point is to spear an
+            // enemy at standoff and reel them in.
+            WeaponType::Harpoon    => 1.5,
         }
     }
 
@@ -404,6 +422,7 @@ impl WeaponType {
             WeaponType::Booster    => WeaponTag::Support,
             WeaponType::Blade      => WeaponTag::Melee,
             WeaponType::Cage       => WeaponTag::Autonomous,
+            WeaponType::Harpoon    => WeaponTag::Melee,
         }
     }
 
@@ -428,6 +447,7 @@ impl PaletteMaterials {
             WeaponType::Booster    => &self.turret_booster,
             WeaponType::Blade      => &self.turret_blade,
             WeaponType::Cage       => &self.turret_cage,
+            WeaponType::Harpoon    => &self.turret_harpoon,
         }
     }
 
@@ -447,6 +467,8 @@ impl PaletteMaterials {
             WeaponType::Booster    => &self.bullet_friendly_outer,
             WeaponType::Blade      => &self.bullet_friendly_outer,
             WeaponType::Cage       => &self.bullet_friendly_outer,
+            // Harpoon spear uses the bronze launcher tone for the shaft.
+            WeaponType::Harpoon    => &self.turret_harpoon,
         }
     }
 
@@ -463,6 +485,8 @@ impl PaletteMaterials {
             WeaponType::Booster    => &self.bullet_friendly,
             WeaponType::Blade      => &self.bullet_friendly,
             WeaponType::Cage       => &self.bullet_friendly,
+            // Bright tip on the spear head.
+            WeaponType::Harpoon    => &self.harpoon_head,
         }
     }
 }

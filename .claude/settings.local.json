@@ -14,7 +14,15 @@
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\" -Recurse -Filter \"*.rs\")",
       "Bash(Select-Object -ExpandProperty FullName)",
       "PowerShell(head *)",
-      "Bash(Get-Content *)"
+      "Bash(Get-Content *)",
+      "Bash(cmd /c dir \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\" /b)",
+      "PowerShell(cargo check --features dev 2>&1)",
+      "PowerShell(New-Item -ItemType Directory -Path \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\ally\" -Force)",
+      "PowerShell(Move-Item \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\ally.rs\" \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\ally\\\\mod.rs\")",
+      "PowerShell($path = \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\ally\\\\mod.rs\"; $content = Get-Content $path -Raw; $startMarker = \"// ---------- Planes ----------\"; $endMarker = \"// ---------- Oil tankers ----------\"; $start = $content.IndexOf\\($startMarker\\); $end = $content.IndexOf\\($endMarker\\); if \\($start -lt 0 -or $end -lt 0 -or $end -lt $start\\) { Write-Host \"MARKERS NOT FOUND start=$start end=$end\" } else { $new = $content.Substring\\(0, $start\\) + $content.Substring\\($end\\); [System.IO.File]::WriteAllText\\($path, $new\\); Write-Host \"Removed plane section: $\\($end - $start\\) chars\" })",
+      "PowerShell(New-Item -ItemType Directory -Path \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\enemy\" -Force)",
+      "PowerShell(Move-Item \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\enemy.rs\" \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\enemy\\\\mod.rs\")",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\" -Recurse -Filter \"*.rs\")"
     ]
   }
 }

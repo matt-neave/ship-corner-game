@@ -32,10 +32,11 @@ mod build;
 mod buildings;
 mod hud;
 mod input;
+mod procgen;
 mod setup;
 
 pub use anim::{advance_map_anim_timeline, map_begin_phase, update_anim_beams, update_anim_pulses};
-pub use boss_patrol::{boss_patrol_movement, spawn_boss_patrols};
+pub use boss_patrol::{boss_patrol_movement, spawn_boss_patrols, BossPatrol};
 pub use build::{apply_view_mode, refresh_map_fill};
 pub use buildings::{
     close_popup_on_view_change, handle_building_choice_clicks, level_complete_check,
@@ -158,6 +159,11 @@ pub struct CombatContext {
     /// the whole stage rather than jumping when the player completes
     /// a battle mid-stage.
     pub battles_cleared: u32,
+    /// Cooldown timer for the "chaos drip" that runs only while a boss
+    /// is alive in the arena. Keeps the fight from devolving into a
+    /// 1-v-1 chase, and is especially important for the Tender boss
+    /// which has no offensive abilities. Driven by `boss_chaos_spawn`.
+    pub boss_chaos_cd: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -196,6 +202,7 @@ impl Default for CombatContext {
             pending_spawns: Vec::new(),
             boss_pending: None,
             battles_cleared: 0,
+            boss_chaos_cd: 0.0,
         };
         c.reset_for(1, 0);
         c
@@ -203,16 +210,14 @@ impl Default for CombatContext {
 }
 
 impl CombatContext {
-    /// On-screen enemy cap for sandbox-style drip spawning. Base is
-    /// `6 × stars` (5★ → 30, 1★ → 6). Climbs by `+3` per battle
-    /// cleared up to the 10th stage so late-campaign arenas can run
-    /// hot — the wave-SIZE multiplier in `balance::wave_size` is
-    /// what gates the per-wave total, not this. Hard cap 80 keeps a
-    /// pathological 5★ stage 50 from melting the renderer.
+    /// On-screen enemy cap for drip spawning. Base `6 × stars`, plus
+    /// `+4` per battle cleared up to the 12th stage. Late campaign
+    /// 5★ stages run hot (~78 concurrent) so the swarm reads as a
+    /// swarm, not a polite queue. Hard cap keeps the renderer safe.
     pub fn enemy_cap(&self) -> usize {
         let base = 6 * self.stars.max(1) as usize;
-        let progress = (self.battles_cleared.min(10) as usize) * 3;
-        (base + progress).min(80)
+        let progress = (self.battles_cleared.min(12) as usize) * 4;
+        (base + progress).min(100)
     }
 
     /// Initialise this context for a fresh stage at the given star
@@ -238,6 +243,7 @@ impl CombatContext {
         self.is_boss_wave = crate::balance::is_boss_wave(0, wave_count);
         self.enemy_budget = total;
         self.enemy_total = total;
+        self.boss_chaos_cd = 0.0;
         // Pending list is owned by `spawn_enemies`. Caller is
         // responsible for despawning any orphan indicator entities
         // before reset (the OnEnter(Customize) cleanup hook covers
@@ -350,12 +356,56 @@ pub struct MapState {
     pub boat_target: Option<Vec2>,
 }
 
+/// Player-selectable map topology size. Chosen in the dockyard
+/// (hull-select screen) before a run starts; consumed by
+/// `MapState::new` to pick the section count.
+#[derive(Resource, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MapSize {
+    /// 10 sections — tight map, fast runs.
+    Small,
+    #[default]
+    /// 15 sections — middle of the road.
+    Medium,
+    /// 20 sections — sprawling campaign with more route choices.
+    Large,
+}
+
+impl MapSize {
+    pub fn sections(self) -> usize {
+        match self {
+            MapSize::Small => 10,
+            MapSize::Medium => 15,
+            MapSize::Large => 20,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            MapSize::Small => "SMALL",
+            MapSize::Medium => "MEDIUM",
+            MapSize::Large => "LARGE",
+        }
+    }
+    pub fn detail(self) -> &'static str {
+        match self {
+            MapSize::Small => "10 sections — tight campaign.",
+            MapSize::Medium => "15 sections — balanced.",
+            MapSize::Large => "20 sections — long voyage.",
+        }
+    }
+    pub const ALL: &'static [MapSize] = &[
+        MapSize::Small,
+        MapSize::Medium,
+        MapSize::Large,
+    ];
+}
+
 impl MapState {
-    pub fn new() -> Self {
-        let mut sections = build::build_default_map();
-        let stars = compute_stars(&sections, 0);
+    pub fn new(target_sections: usize) -> Self {
         let mut rng = rand::thread_rng();
         use rand::seq::SliceRandom;
+        use rand::Rng;
+        let mut sections = procgen::build_random_map(&mut rng, target_sections);
+        let stars = compute_stars(&sections, 0);
         let boss_pool = [
             crate::ally::ShipClass::PirateShip,
             crate::ally::ShipClass::Carrier,
@@ -369,10 +419,17 @@ impl MapState {
         for (i, s) in sections.iter_mut().enumerate() {
             s.stars = stars[i];
             s.slots = vec![None; 1];
-            // 5★ sections get a random boss; every other tier stays
-            // boss-less. Picking from `boss_pool` rather than indexing
-            // by hand keeps the list of eligible classes obvious.
-            s.boss_class = if s.stars == 5 {
+            // Boss assignment by star tier — 5★ always, 4★ commonly,
+            // 3★ occasionally. The sprinkled patrols on lower tiers
+            // make the map feel populated with telegraphed threats
+            // rather than two fixed end-zone bosses.
+            let boss_chance: f32 = match s.stars {
+                5 => 1.0,
+                4 => 0.55,
+                3 => 0.30,
+                _ => 0.0,
+            };
+            s.boss_class = if rng.gen::<f32>() < boss_chance {
                 boss_pool.choose(&mut rng).copied()
             } else {
                 None
@@ -404,6 +461,41 @@ impl MapState {
                 .filter_map(move |slot| slot.map(|b| (nid, b)))
         })
     }
+}
+
+/// Tear down every map-view entity and rebuild `MapState` at the
+/// player-chosen `MapSize`. Runs on `OnExit(HullSelect)` so the
+/// freshly-picked topology is in place by the time the camera
+/// switches to the play view.
+///
+/// Order in the OnExit chain: this fires FIRST, then `setup_map` +
+/// `spawn_boss_patrols` rebuild visuals from the regenerated state.
+/// `BuildingTimers` are cleared too — `(section_id, slot)` keys
+/// would otherwise carry stale references to a map that no longer
+/// exists.
+pub fn regenerate_map(
+    mut commands: Commands,
+    map_size: Res<MapSize>,
+    mut state: ResMut<MapState>,
+    mut building_timers: ResMut<BuildingTimers>,
+    despawn_q: Query<
+        Entity,
+        Or<(
+            With<MapFillSprite>,
+            With<MapSectionBoundary>,
+            With<MapSlotBox>,
+            With<MapSlotLabel>,
+            With<MapSlotStar>,
+            With<MapBoat>,
+            With<BossPatrol>,
+        )>,
+    >,
+) {
+    for e in &despawn_q {
+        commands.entity(e).despawn();
+    }
+    building_timers.state.clear();
+    *state = MapState::new(map_size.sections());
 }
 
 /// BFS distance from the starting section, then `+1` and clamped to 5,

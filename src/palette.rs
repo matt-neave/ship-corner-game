@@ -94,6 +94,12 @@ pub const BOOSTER_BRIGHT_HEX: &str = "#ffe88a";
 /// edge at the tip.
 pub const BLADE_HEX:          &str = "#4a4a55";
 pub const BLADE_BRIGHT_HEX:   &str = "#d8e0e8";
+/// Harpoon turret — bronze launcher base with a thick rope/chain
+/// line trailing back to the impaled target. The launcher reads as
+/// heavy mechanical, the chain as a taut industrial cable.
+pub const HARPOON_HEX:        &str = "#9a6a32";
+pub const HARPOON_BRIGHT_HEX: &str = "#e0b878";
+pub const HARPOON_CHAIN_HEX:  &str = "#4a3a2a";
 
 /// Octopus cage — dark iron bars on the deck. The cage is a cube of
 /// dim metal so the bright purple octopus inside reads as the main
@@ -310,6 +316,10 @@ pub struct PaletteMaterials {
     /// "danger zone" colour painted over the impact point during the
     /// 1.5s telegraph.
     pub artillery_reticle: Handle<ColorMaterial>,
+    /// Harsh, near-opaque outline drawn as an annulus around the
+    /// translucent inner reticle so the splash radius reads clearly
+    /// at a glance even on busy backgrounds.
+    pub artillery_reticle_outline: Handle<ColorMaterial>,
     /// Sniper aim-line tint. Used by the trajectory telegraph that
     /// renders during the sniper's 1.5s aim phase.
     pub sniper_aim: Handle<ColorMaterial>,
@@ -365,6 +375,12 @@ pub struct PaletteMaterials {
     pub turret_cage: Handle<ColorMaterial>,
     pub octopus_body: Handle<ColorMaterial>,
     pub octopus_leg: Handle<ColorMaterial>,
+    /// Melee `Harpoon` — bronze launcher base + matching projectile +
+    /// dark-rope chain rendered behind the in-flight harpoon and
+    /// across the tether to the impaled target.
+    pub turret_harpoon: Handle<ColorMaterial>,
+    pub harpoon_head: Handle<ColorMaterial>,
+    pub harpoon_chain: Handle<ColorMaterial>,
     /// Ship-class hull tints — one per `ShipClass`. Looked up via
     /// `ally::PaletteMaterials::hull_for_class`.
     pub pirate_hull: Handle<ColorMaterial>,
@@ -466,6 +482,7 @@ impl PaletteMaterials {
             // alpha keeps them readable as overlays without occluding
             // what's underneath.
             artillery_reticle:     materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.40)),
+            artillery_reticle_outline: materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.95)),
             sniper_aim:            materials.add(translucent(hex(SNIPER_AIM_HEX), 0.35)),
             enemy_mine_dot:        materials.add(hex(ENEMY_MINE_DOT_HEX)),
             bullet_friendly:       materials.add(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN)),
@@ -502,6 +519,9 @@ impl PaletteMaterials {
             turret_cage:           materials.add(hex(CAGE_HEX)),
             octopus_body:          materials.add(hex(OCTOPUS_BODY_HEX)),
             octopus_leg:           materials.add(hex(OCTOPUS_LEG_HEX)),
+            turret_harpoon:        materials.add(hex(HARPOON_HEX)),
+            harpoon_head:          materials.add(hex(HARPOON_BRIGHT_HEX)),
+            harpoon_chain:         materials.add(hex(HARPOON_CHAIN_HEX)),
             bullet_mortar:         materials.add(hex(MORTAR_BRIGHT_HEX)),
             bullet_mortar_outer:   materials.add(mortar),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),

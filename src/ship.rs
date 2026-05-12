@@ -8,7 +8,7 @@ use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
 
 use crate::balance::{
-    BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH,
+    ARENA_H, ARENA_W, BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH,
     HULL_HALF_LEN, HULL_LEN, HULL_WIDTH,
     PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
 };
@@ -38,13 +38,14 @@ pub fn setup_world(
     // references one of these — runtime palette swaps update them all.
     let pm = PaletteMaterials::build(&palette, &mut materials);
 
-    // 1px play-area border, drawn inside the play world (z=6 so it always
-    // frames the action). Horizontals span the full WIDTH; verticals span
-    // the full HEIGHT — they meet at the corners.
-    let border_h = meshes.add(Rectangle::new(PLAY_WORLD_W, 1.0));
-    let border_v = meshes.add(Rectangle::new(1.0, PLAY_WORLD_H));
-    let half_x = PLAY_WORLD_W * 0.5 - 0.5;
-    let half_y = PLAY_WORLD_H * 0.5 - 0.5;
+    // 1px play-area border drawn around the *arena* (z=6 so it always
+    // frames the action). With `big_arena` the border tracks the
+    // larger bounds rather than the viewport — the camera reveals
+    // the walls as the player approaches them.
+    let border_h = meshes.add(Rectangle::new(ARENA_W, 1.0));
+    let border_v = meshes.add(Rectangle::new(1.0, ARENA_H));
+    let half_x = ARENA_W * 0.5 - 0.5;
+    let half_y = ARENA_H * 0.5 - 0.5;
     for (m, x, y) in [
         (border_h.clone(), 0.0,  half_y),
         (border_h.clone(), 0.0, -half_y),
@@ -323,9 +324,10 @@ pub fn friendly_movement(
         };
 
         // Keep target inside the playable area so we don't crash the wall.
+        // Uses ARENA bounds (which equals viewport unless `big_arena`).
         let margin = HULL_HALF_LEN + 2.0;
-        let bound_x = PLAY_WORLD_W * 0.5 - margin;
-        let bound_y = PLAY_WORLD_H * 0.5 - margin;
+        let bound_x = ARENA_W * 0.5 - margin;
+        let bound_y = ARENA_H * 0.5 - margin;
         let target = Vec2::new(target.x.clamp(-bound_x, bound_x), target.y.clamp(-bound_y, bound_y));
 
         let to = target - pos;

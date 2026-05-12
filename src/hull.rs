@@ -218,28 +218,12 @@ impl Hull {
     }
 }
 
-/// Iteration order of hulls in the dockyard grid. Tier-1 (vanilla,
-/// pure stat-swap variants) come first; the more-flavoured options
-/// come after. Layout wraps to a 2-column grid in `spawn_overlay`.
-const HULL_ORDER: [Hull; 8] = [
-    Hull::Default,
-    Hull::GlassCannon,
-    Hull::Rammer,
-    Hull::Dreadnought,
-    Hull::Privateer,
-    Hull::Corsair,
-    Hull::Harpooner,
-    Hull::Revenant,
-];
-
 // ---------- Font sizing ----------
 //
 // The hull-select overlay's text was reading as cramped; bumped
 // across the board. `_FONT` constants kept local because they're
-// only used by this overlay's two layout functions and should
-// scale together if we want to retune.
-const CARD_TITLE_FONT: f32 = theme::FONT_LG * 1.2;       // ~17 pt
-const CARD_TAGLINE_FONT: f32 = theme::FONT_LG;           // 14 pt
+// only used by this overlay's layout functions and should scale
+// together if we want to retune.
 const DETAIL_TITLE_FONT: f32 = theme::FONT_LG * 2.0;     // ~28 pt
 const DETAIL_TAGLINE_FONT: f32 = theme::FONT_LG * 1.2;   // ~17 pt
 const DETAIL_BULLET_FONT: f32 = theme::FONT_LG;          // 14 pt
@@ -248,6 +232,13 @@ const DETAIL_BULLET_FONT: f32 = theme::FONT_LG;          // 14 pt
 
 #[derive(Component)]
 pub struct HullSelectRoot;
+
+/// Marker on each map-size button — `MapSize` is part of the dockyard
+/// pick alongside the hull. Read by `handle_map_size_click` to update
+/// the `MapSize` resource; the overlay rebuilds on the resource
+/// change to re-tint the selected pill.
+#[derive(Component, Clone, Copy)]
+pub struct MapSizeButton(pub crate::map::MapSize);
 
 #[derive(Component)]
 pub struct HullDetailPanel;
@@ -276,9 +267,6 @@ const WOOD_LIGHT: Color = Color::srgb(0.55, 0.36, 0.20);
 const WOOD_DARK: Color = Color::srgb(0.40, 0.24, 0.13);
 /// Plank-seam line / wood vein colour.
 const WOOD_GAP: Color = Color::srgb(0.16, 0.09, 0.05);
-/// Harbour water behind / around the dock — desaturated dusk teal so
-/// the planks pop without fighting the in-game ocean colour.
-const HARBOUR_WATER: Color = Color::srgb(0.10, 0.18, 0.26);
 /// Mooring rope — used for the selected card's border and the dock-
 /// edge trim.
 const ROPE: Color = Color::srgb(0.86, 0.70, 0.42);
@@ -292,27 +280,21 @@ pub fn enter_hull_select(
     commands: Commands,
     selected: Res<SelectedHull>,
     preview: Res<PreviewHull>,
-    images: ResMut<Assets<Image>>,
+    map_size: Res<crate::map::MapSize>,
 ) {
-    // Detail panel reflects the hover preview when present, else the
-    // committed selection. Card highlights always track the
-    // committed selection so the player sees which berth they've
-    // chosen even while their cursor is hovering elsewhere.
+    // Manifest panel reflects the hover preview when present, else the
+    // committed selection. Berth ship tinting (in the pixel scene) is
+    // driven separately by `dockyard_view::update_dockyard_highlight`
+    // and reads `SelectedHull` directly.
     let panel_hull = preview.0.unwrap_or(selected.0);
-    spawn_overlay(commands, selected.0, panel_hull, images);
+    spawn_overlay(commands, panel_hull, *map_size);
 }
 
 fn spawn_overlay(
     mut commands: Commands,
-    selected: Hull,
     panel_hull: Hull,
-    mut images: ResMut<Assets<Image>>,
+    map_size: crate::map::MapSize,
 ) {
-    // Plank tile — narrow vertical extent (3 planks × 12 px) repeats
-    // up/down to fill the dock floor without obvious seams.
-    let plank_tile = images.add(crate::rendering::make_plank_image(
-        96, 12, 3, WOOD_LIGHT, WOOD_DARK, WOOD_GAP,
-    ));
     commands
         .spawn((
             Node {
@@ -321,83 +303,70 @@ fn spawn_overlay(
                 left: Val::Px(0.0),
                 right: Val::Px(0.0),
                 bottom: Val::Px(0.0),
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                row_gap: Val::Px(theme::GAP_LG),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Stretch,
                 ..default()
             },
-            BackgroundColor(HARBOUR_WATER),
+            // Transparent — the pixel-art dockyard scene rendered by
+            // `dockyard_view` shows through behind this overlay.
+            BackgroundColor(Color::NONE),
             ZIndex(150),
             Visibility::Inherited,
             HullSelectRoot,
-            // Absorb clicks behind any future world overlay.
-            Button,
         ))
         .with_children(|root| {
-            root.spawn(ui_kit::label(
-                "DOCKYARD",
-                theme::FONT_LG * 2.6,
-                ROPE,
-            ));
-            root.spawn((
-                Text::new("Pick a vessel from the berths"),
-                TextFont {
-                    font_size: theme::FONT_LG,
-                    font_smoothing: bevy::text::FontSmoothing::None,
-                    ..default()
-                },
-                TextColor(PARCHMENT),
-            ));
-
-            // The "dock floor" — a single big wooden plank rectangle
-            // hosting the berth grid + detail manifest. Rope-coloured
-            // border reads as the timber edge of the wharf.
+            // ---- LEFT: flex spacer that lets the pixel dockyard
+            //      render show through. Holds the big DOCKYARD
+            //      header pinned to the top-left so it overlays the
+            //      water + ships behind it.
             root.spawn((
                 Node {
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(theme::GAP_LG * 2.0),
-                    align_items: AlignItems::Stretch,
-                    padding: UiRect::all(Val::Px(theme::PAD_LG * 1.5)),
-                    border: UiRect::all(Val::Px(theme::BORDER_W * 3.0)),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::FlexStart,
+                    justify_content: JustifyContent::FlexStart,
+                    padding: UiRect::all(Val::Px(theme::PAD_LG * 2.0)),
+                    row_gap: Val::Px(theme::GAP_SM),
                     ..default()
                 },
-                ImageNode {
-                    image: plank_tile.clone(),
-                    image_mode: bevy::ui::widget::NodeImageMode::Tiled {
-                        tile_x: true,
-                        tile_y: true,
-                        stretch_value: 2.0,
-                    },
-                    ..default()
-                },
-                BorderColor(ROPE),
+                BackgroundColor(Color::NONE),
             ))
-            .with_children(|cols| {
-                // ---- LEFT: berth grid ----
-                // Row + flex_wrap so each row holds two cards, wrapping
-                // to the next on overflow. Width fits exactly 2 × CARD_W
-                // plus the inter-card gap.
-                const CARD_W: f32 = 200.0;
-                let grid_w = CARD_W * 2.0 + theme::GAP_LG;
-                cols.spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    flex_wrap: FlexWrap::Wrap,
-                    column_gap: Val::Px(theme::GAP_LG),
-                    row_gap: Val::Px(theme::GAP_LG),
-                    width: Val::Px(grid_w),
-                    ..default()
-                })
-                .with_children(|list| {
-                    for hull in HULL_ORDER {
-                        spawn_card(list, hull, hull == selected, CARD_W);
-                    }
-                });
+            .with_children(|left| {
+                left.spawn(ui_kit::label(
+                    "DOCKYARD",
+                    theme::FONT_LG * 2.4,
+                    ROPE,
+                ));
+                left.spawn((
+                    Text::new("Click a vessel to inspect, then PLAY."),
+                    TextFont {
+                        font_size: theme::FONT_MD,
+                        font_smoothing: bevy::text::FontSmoothing::None,
+                        ..default()
+                    },
+                    TextColor(PARCHMENT),
+                ));
+            });
 
-                // ---- RIGHT: ship manifest (parchment on planks) ----
-                cols.spawn((
+            // ---- RIGHT: minimal column — parchment manifest +
+            //      voyage selector + BACK, no decking background.
+            //      Sits transparent so the pixel dockyard scene
+            //      shows through behind it.
+            root.spawn((
+                Node {
+                    width: Val::Px(440.0),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Stretch,
+                    justify_content: JustifyContent::Center,
+                    padding: UiRect::all(Val::Px(theme::PAD_LG)),
+                    row_gap: Val::Px(theme::GAP_LG),
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+            ))
+            .with_children(|panel_col| {
+                panel_col.spawn((
                     Node {
-                        width: Val::Px(420.0),
                         min_height: Val::Px(420.0),
                         padding: UiRect::all(Val::Px(theme::PAD_LG * 2.0)),
                         border: UiRect::all(Val::Px(theme::BORDER_W * 2.5)),
@@ -413,101 +382,101 @@ fn spawn_overlay(
                 .with_children(|panel| {
                     spawn_detail_content(panel, panel_hull);
                 });
-            });
 
-            // ---- BACK button under the dock ----
-            root.spawn((ui_kit::button(WOOD_DARK), HullBackButton))
-                .with_children(|b| {
-                    b.spawn(ui_kit::label("BACK", theme::FONT_MD, PARCHMENT));
+                // ---- Voyage size selector ----
+                // Stacked vertically (one pill per row) so the names +
+                // section counts fit comfortably without overflowing
+                // the column, even at smaller window sizes.
+                panel_col.spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Stretch,
+                        row_gap: Val::Px(theme::GAP_SM),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                ))
+                .with_children(|col| {
+                    col.spawn((
+                        Text::new("VOYAGE LENGTH"),
+                        TextFont {
+                            font_size: theme::FONT_MD,
+                            font_smoothing: bevy::text::FontSmoothing::None,
+                            ..default()
+                        },
+                        TextColor(ROPE),
+                        Node {
+                            align_self: AlignSelf::Center,
+                            ..default()
+                        },
+                    ));
+                    for &size in crate::map::MapSize::ALL {
+                        spawn_map_size_pill(col, size, size == map_size);
+                    }
                 });
+
+                // ---- BACK button at the bottom of the right column.
+                panel_col.spawn((
+                    Node {
+                        align_self: AlignSelf::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                ))
+                .with_children(|wrap| {
+                    wrap.spawn((ui_kit::button(WOOD_DARK), HullBackButton))
+                        .with_children(|b| {
+                            b.spawn(ui_kit::label("BACK", theme::FONT_MD, PARCHMENT));
+                        });
+                });
+            });
         });
 }
 
-/// One "berth" card — a vessel docked at a slip. The card itself
-/// shows the hull's silhouette (capsule, hull-tinted) floating in a
-/// water trough, with the name + tagline pinned underneath. Border
-/// flips to rope-yellow on the active pick.
-fn spawn_card(
+/// One map-size pill. Stacked vertically with its siblings, laid out
+/// as a single horizontal row: label on the left, detail on the
+/// right. Active pill gets a rope border + lighter wood fill.
+fn spawn_map_size_pill(
     parent: &mut ChildSpawnerCommands,
-    hull: Hull,
-    selected: bool,
-    card_w: f32,
+    size: crate::map::MapSize,
+    active: bool,
 ) {
-    let bg = if selected { WOOD_LIGHT } else { WOOD_DARK };
-    let border = if selected { ROPE } else { WOOD_GAP };
+    let bg = if active { WOOD_LIGHT } else { Color::srgba(0.0, 0.0, 0.0, 0.35) };
+    let border = if active { ROPE } else { WOOD_DARK };
+    let label_color = if active { Color::WHITE } else { ROPE };
+    let detail_color = if active {
+        Color::srgb(0.95, 0.90, 0.74)
+    } else {
+        Color::srgb(0.80, 0.72, 0.55)
+    };
     parent
         .spawn((
             Button,
             Node {
-                width: Val::Px(card_w),
-                padding: UiRect::all(Val::Px(theme::PAD_MD)),
-                border: UiRect::all(Val::Px(theme::BORDER_W * 2.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(theme::GAP_SM),
+                padding: UiRect::axes(Val::Px(theme::PAD_MD), Val::Px(theme::PAD_SM)),
+                border: UiRect::all(Val::Px(theme::BORDER_W)),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                column_gap: Val::Px(theme::GAP_MD),
                 ..default()
             },
             BackgroundColor(bg),
             BorderColor(border),
-            HullCard(hull),
+            MapSizeButton(size),
         ))
-        .with_children(|card| {
-            // "Water trough" — a thin band of harbour blue with the
-            // vessel's silhouette floating in it. Reads as the slip
-            // each ship is moored in.
-            card.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(34.0),
-                    padding: UiRect::axes(Val::Px(theme::PAD_MD), Val::Px(theme::PAD_SM)),
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
-                    border: UiRect::all(Val::Px(theme::BORDER_W)),
-                    ..default()
-                },
-                BackgroundColor(HARBOUR_WATER),
-                BorderColor(WOOD_GAP),
-            ))
-            .with_children(|slip| {
-                let (fill, length, height) = hull_silhouette(hull);
-                slip.spawn((
-                    Node {
-                        width: Val::Px(length),
-                        height: Val::Px(height),
-                        ..default()
-                    },
-                    BackgroundColor(fill),
-                    BorderRadius::all(Val::Px(height * 0.5)),
-                ));
-            });
-            let title_color = if selected { ROPE } else { PARCHMENT };
-            card.spawn(ui_kit::label(hull.label(), CARD_TITLE_FONT, title_color));
-            card.spawn((
-                Text::new(hull.tagline()),
+        .with_children(|pill| {
+            pill.spawn(ui_kit::label(size.label(), theme::FONT_MD, label_color));
+            pill.spawn((
+                Text::new(size.detail()),
                 TextFont {
-                    font_size: CARD_TAGLINE_FONT,
+                    font_size: theme::FONT_SM,
                     font_smoothing: bevy::text::FontSmoothing::None,
                     ..default()
                 },
-                TextColor(Color::srgb(0.85, 0.78, 0.62)),
+                TextColor(detail_color),
             ));
         });
-}
-
-/// Per-hull silhouette: (fill colour, length px, height px). Wider /
-/// taller capsules for the tankier hulls, slimmer for the fast scout
-/// flavours — gives the berth visual variety without needing
-/// per-hull sprites.
-fn hull_silhouette(hull: Hull) -> (Color, f32, f32) {
-    match hull {
-        Hull::Default     => (Color::srgb(0.75, 0.78, 0.84), 70.0, 16.0),
-        Hull::GlassCannon => (Color::srgb(0.55, 0.85, 0.90), 80.0, 12.0),
-        Hull::Rammer      => (Color::srgb(0.65, 0.55, 0.45), 78.0, 22.0),
-        Hull::Dreadnought => (Color::srgb(0.40, 0.45, 0.50), 92.0, 26.0),
-        Hull::Privateer   => (Color::srgb(0.90, 0.55, 0.30), 74.0, 16.0),
-        Hull::Corsair     => (Color::srgb(0.85, 0.80, 0.40), 84.0, 11.0),
-        Hull::Harpooner   => (Color::srgb(0.50, 0.70, 0.95), 88.0, 13.0),
-        Hull::Revenant    => (Color::srgb(0.60, 0.75, 0.85), 78.0, 14.0),
-    }
 }
 
 /// Right-panel content (title + tagline + buffs + nerfs + PLAY).
@@ -720,24 +689,40 @@ pub fn handle_back_on_esc(
     }
 }
 
-/// Rebuild the overlay whenever `SelectedHull` OR `PreviewHull`
-/// changes — keeps the card highlights + right-panel content in
-/// sync without per-text query plumbing. The overlay is small so
-/// the despawn/respawn cost is fine.
+/// Rebuild the overlay whenever the player's dockyard pick changes —
+/// `SelectedHull`, `PreviewHull`, or `MapSize`. Keeps card highlights
+/// + right-panel content + size pill tints in sync without per-text
+/// query plumbing. The overlay is small so despawn/respawn is fine.
 pub fn sync_hull_select_on_change(
     selected: Res<SelectedHull>,
     preview: Res<PreviewHull>,
+    map_size: Res<crate::map::MapSize>,
     commands: Commands,
     q: Query<Entity, With<HullSelectRoot>>,
     state: Res<State<crate::AppState>>,
-    images: ResMut<Assets<Image>>,
 ) {
-    if !selected.is_changed() && !preview.is_changed() { return; }
+    if !selected.is_changed() && !preview.is_changed() && !map_size.is_changed() { return; }
     if *state.get() != crate::AppState::HullSelect { return; }
     let mut commands = commands;
     for e in &q {
         commands.entity(e).despawn();
     }
     let panel_hull = preview.0.unwrap_or(selected.0);
-    spawn_overlay(commands, selected.0, panel_hull, images);
+    spawn_overlay(commands, panel_hull, *map_size);
+}
+
+/// Click handler — commit the player's pick to the `MapSize` resource.
+/// The rebuild system above picks up the change and re-tints the pills.
+pub fn handle_map_size_click(
+    interactions: Query<(&Interaction, &MapSizeButton), Changed<Interaction>>,
+    mut map_size: ResMut<crate::map::MapSize>,
+) {
+    for (interaction, btn) in &interactions {
+        if matches!(*interaction, Interaction::Pressed) {
+            if *map_size != btn.0 {
+                *map_size = btn.0;
+            }
+            return;
+        }
+    }
 }

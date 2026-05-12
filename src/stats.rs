@@ -153,8 +153,11 @@ impl Default for PlayerStats {
 
 impl PlayerStats {
     /// Current max HP rounded for the integer Health component.
+    /// Floored at 1 so a heavy negative buff (e.g. Glass Cannon's
+    /// `-30 HP` super mod stacked twice) can't push the ship into
+    /// instant-death territory.
     pub fn max_hp(&self) -> i32 {
-        self.hp.effective().round() as i32
+        self.hp.effective().round().max(1.0) as i32
     }
     /// Range multiplier (1.0 at 100% baseline). Multiplied with each
     /// weapon's intrinsic `range_mult` and any pier/slot buff.
@@ -299,10 +302,8 @@ impl StatKind {
             }
             // Relative percentages against the baseline so the
             // stat reads as a tunable knob ("100% = stock") rather
-            // than a raw rad/s value the player has to translate.
-            // Skips the degree glyph (default font has no U+00B0)
-            // which previously rendered as a tofu box that looked
-            // like the digit "1".
+            // than a raw rad/s value. No degree glyph — the default
+            // font has no U+00B0 and renders it as a tofu box.
             StatKind::TurnSpeed => {
                 let baseline = PlayerStats::default().turn_speed.effective();
                 let pct = (stats.turn_speed.effective() / baseline * 100.0).round() as i32;

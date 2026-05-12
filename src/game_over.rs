@@ -112,6 +112,10 @@ pub fn reset_run_for_restart(
             With<crate::beam::Beam>,
             With<crate::effects::MuzzleFlash>,
             With<crate::effects::HitParticle>,
+            // Allies are part of the live fleet — RESTART resets the
+            // recruited roster to empty, so any lingering ally
+            // entities from the dead run have to go too.
+            With<crate::ally::Ally>,
         )>,
     >,
     mut boat: Query<&mut Transform, With<MapBoat>>,

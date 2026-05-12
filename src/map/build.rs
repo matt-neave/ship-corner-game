@@ -17,88 +17,18 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use crate::balance::{PLAY_INTERNAL, PLAY_WORLD};
 use crate::palette::{MapCamera, Palette, PlayCamera};
 
-use super::{point_in_polygon, MapFillSprite, MapSection, MapState, ViewMode};
+use super::{point_in_polygon, MapFillSprite, MapState, ViewMode};
 
-// ---------- Map authoring ----------
-
-/// Hand-authored 10-section layout. Topology is intentionally irregular:
-/// sections vary in size (small corner wedges, large L-shaped flanks,
-/// irregular central pentagons) and the trijunctions zig-zag in y so no
-/// continuous horizontal or vertical line crosses the map. Each interior
-/// edge then gets the deterministic `wobble_for_edge` curve on top,
-/// finishing the hand-drawn feel. Trijunction names like `j_134` mean
-/// "shared by sections 1, 3, 4" — handy for tracing adjacencies.
-pub fn build_default_map() -> Vec<MapSection> {
-    let m = PLAY_WORLD / 2.0; // 100
-
-    // Edge-boundary points — interior boundaries hitting the square edges.
-    let p_left_t  = v(-m,    33.0);
-    let p_left_b  = v(-m,   -22.0);
-    let p_top_l   = v(-32.0,  m);
-    let p_top_r   = v( 44.0,  m);
-    let p_right_t = v( m,    32.0);
-    let p_right_b = v( m,   -42.0);
-    let p_bot_l   = v(-28.0, -m);
-    let p_bot_r   = v( 38.0, -m);
-
-    // Interior trijunctions — shared by exactly 3 sections.
-    let j_013 = v(-48.0,  56.0);
-    let j_134 = v( 12.0,  62.0);
-    let j_124 = v( 54.0,  64.0);
-    let j_345 = v(-26.0,  24.0);
-    let j_246 = v( 62.0,  26.0);
-    let j_357 = v(-54.0,  -8.0);
-    let j_456 = v( 16.0,   4.0);
-    let j_578 = v(-14.0, -56.0);
-    let j_568 = v( 44.0, -26.0);
-    let j_689 = v( 76.0, -54.0);
-
-    let sq_tl = v(-m,  m);
-    let sq_tr = v( m,  m);
-    let sq_br = v( m, -m);
-    let sq_bl = v(-m, -m);
-
-    let cells: [(u32, Vec<Vec2>, Vec2, &[u32]); 10] = [
-        (0, vec![sq_tl, p_left_t, j_013, p_top_l],                            v(-72.0, 71.0), &[1, 3]),
-        (1, vec![p_top_l, j_013, j_134, j_124, p_top_r],                       v(  4.0, 76.0), &[0, 2, 3, 4]),
-        (2, vec![p_top_r, j_124, j_246, p_right_t, sq_tr],                     v( 72.0, 64.0), &[1, 4, 6]),
-        (3, vec![p_left_t, p_left_b, j_357, j_345, j_134, j_013],              v(-54.0, 22.0), &[0, 1, 4, 5, 7]),
-        (4, vec![j_345, j_456, j_246, j_124, j_134],                           v( 22.0, 36.0), &[1, 2, 3, 5, 6]),
-        (5, vec![j_357, j_578, j_568, j_456, j_345],                           v( -7.0, -12.0), &[3, 4, 6, 7, 8]),
-        (6, vec![p_right_t, j_246, j_456, j_568, j_689, p_right_b],            v( 67.0, -11.0), &[2, 4, 5, 8, 9]),
-        (7, vec![p_left_b, sq_bl, p_bot_l, j_578, j_357],                      v(-60.0, -58.0), &[3, 5, 8]),
-        (8, vec![p_bot_l, p_bot_r, j_689, j_568, j_578],                       v( 22.0, -67.0), &[5, 6, 7, 9]),
-        (9, vec![p_bot_r, sq_br, p_right_b, j_689],                            v( 78.0, -75.0), &[6, 8]),
-    ];
-
-    cells
-        .into_iter()
-        .map(|(id, corners, center, adj)| {
-            let polygon = build_section_polygon(&corners);
-            MapSection {
-                id,
-                corners,
-                polygon,
-                center,
-                adjacencies: adj.to_vec(),
-                stars: 1,
-                slots: Vec::new(),
-                // Filled in by `MapState::new` after `compute_stars`
-                // — only 5★ sections get a boss assigned.
-                boss_class: None,
-            }
-        })
-        .collect()
-}
-
-#[inline]
-fn v(x: f32, y: f32) -> Vec2 { Vec2::new(x, y) }
+// Map authoring is procedural — see `procgen::build_random_map`. The
+// helpers below (polygon construction, ribbon meshing, boundary
+// detection, deterministic wobble) are consumed by procgen and by
+// the runtime fill / divider systems.
 
 /// Build the full polygon vertex list from corner points by inserting the
 /// shared deterministic wobble between any two corners that lie on an
 /// interior boundary. Outer-square edges stay straight so the map fills
 /// the play area cleanly.
-fn build_section_polygon(corners: &[Vec2]) -> Vec<Vec2> {
+pub(super) fn build_section_polygon(corners: &[Vec2]) -> Vec<Vec2> {
     let n = corners.len();
     let mut pts = Vec::with_capacity(n * 5);
     for i in 0..n {

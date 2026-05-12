@@ -1041,6 +1041,7 @@ pub fn turret_color_for(weapon: WeaponType) -> Color {
         WeaponType::Booster => hex(crate::palette::BOOSTER_HEX),
         WeaponType::Blade => hex(crate::palette::BLADE_HEX),
         WeaponType::Cage => hex(crate::palette::CAGE_HEX),
+        WeaponType::Harpoon => hex(crate::palette::HARPOON_HEX),
     }
 }
 
@@ -1062,6 +1063,7 @@ pub fn turret_barrel_color_for(weapon: WeaponType) -> Color {
         WeaponType::Booster => hex(crate::palette::BOOSTER_BRIGHT_HEX),
         WeaponType::Blade => hex(crate::palette::BLADE_BRIGHT_HEX),
         WeaponType::Cage => hex(crate::palette::OCTOPUS_BODY_HEX),
+        WeaponType::Harpoon => hex(crate::palette::HARPOON_BRIGHT_HEX),
     }
 }
 

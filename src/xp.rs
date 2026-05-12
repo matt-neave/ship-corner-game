@@ -101,12 +101,8 @@ impl Buff {
     }
 
     pub fn apply(&self, stats: &mut PlayerStats) {
-        // All buffs apply to `stat.flat` so they share the same
-        // application semantics as shop mods. The "flat vs percent"
-        // distinction was a leftover from when level-ups had bigger
-        // values than mods; aligning the two means the same delta
-        // means the same thing whether you got it from a level-up
-        // or a mod card.
+        // Buffs apply to `stat.flat` so a delta from a level-up means
+        // the same thing as the same delta from a shop mod card.
         let s = self.kind.stat_mut(stats);
         s.flat += self.delta;
         let _ = self.flat;

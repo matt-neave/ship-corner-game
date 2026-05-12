@@ -18,8 +18,8 @@ use std::collections::VecDeque;
 
 use crate::ally::{ally_is_submerged, Ally};
 use crate::balance::{
-    BOMBER_DETONATE_DIST, BULLET_SPEED, ENEMY_BARREL_TIP, ENEMY_BULLET_HALF_LEN, ENEMY_LEN,
-    ENEMY_RANGE, ENEMY_WIDTH, HUD_LAYER, PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W,
+    ARENA_H, ARENA_W, BOMBER_DETONATE_DIST, BULLET_SPEED, ENEMY_BARREL_TIP,
+    ENEMY_BULLET_HALF_LEN, ENEMY_LEN, ENEMY_RANGE, ENEMY_WIDTH, PLAY_LAYER,
 };
 use crate::bullet::Bullet;
 use bevy::sprite::MeshMaterial2d;
@@ -34,55 +34,27 @@ use crate::trails::{empty_dynamic_mesh, EnemyTrail};
 use crate::weapon::WeaponType;
 use crate::{GameMode, Score, Scrap};
 
-// ---------- Variant tunables ----------
+// Submodules — variant-specific behaviour (sniper aim, artillery
+// telegraph, rammer mine) and the HP-bar visuals are split out so
+// this file stays focused on shared state.
+pub mod artillery;
+pub mod hp_bar;
+pub mod rammer;
+pub mod sniper;
 
-/// Distance (world units) the Sniper tries to maintain from its
-/// current target. Inside `desired - 10` it sprints away; outside
-/// `desired + 15` it closes at half speed; in between it orbits
-/// slowly so the player can't pre-aim the dodge.
-pub const SNIPER_DESIRED_DIST: f32 = 80.0;
+pub use hp_bar::{
+    setup_enemy_hp_bar_assets, track_enemy_damage_for_hp_bars,
+    update_enemy_hp_bars,
+};
 
-/// Sniper effective firing range. Bigger than `ENEMY_RANGE` (45) so
-/// the sniper can engage from past the standard enemy threat ring.
-pub const SNIPER_FIRE_RANGE: f32 = 100.0;
-
-/// Aim duration in seconds — the trajectory line is visible for this
-/// long, then the bullet fires. Long enough to dodge with reasonable
-/// reaction; short enough that sitting still gets punished.
-pub const SNIPER_AIM_TIME: f32 = 1.5;
-
-/// Speed (world units / sec) of the sniper's heavy bullet. A touch
-/// faster than the standard `BULLET_SPEED` (110) so the dodge
-/// window doesn't last forever once the shot fires.
-pub const SNIPER_BULLET_SPEED: f32 = 140.0;
-
-/// Visual scale applied to the standard enemy bullet meshes when
-/// rendered as a sniper round. Reads as a heavier shell vs the
-/// regular pellets.
-pub const SNIPER_BULLET_SCALE: f32 = 1.6;
-
-/// Distance the Artillery wants to keep from its target. Inside
-/// `desired - 15` it backpedals; outside `desired + 20` it closes
-/// at half speed; in between it orbits perpendicularly.
-pub const ARTILLERY_DESIRED_DIST: f32 = 110.0;
-
-/// Telegraph window (seconds) — the landing reticle is visible for
-/// this long before the shell impacts. Long enough for the player to
-/// dodge with reasonable reaction time.
-pub const ARTILLERY_TELEGRAPH_TIME: f32 = 1.5;
-
-/// World-units radius of the artillery shell's splash AOE.
-pub const ARTILLERY_SPLASH_RADIUS: f32 = 8.0;
-
-/// Time-fuse on the landmine a Rammer drops on death. Long enough
-/// that the player can read the threat and walk away, short enough
-/// that lingering = pain.
-pub const RAMMER_MINE_FUSE: f32 = 3.0;
-/// Damage dealt by the Rammer's landmine to any unit inside the
-/// blast radius when it cooks off.
-pub const RAMMER_MINE_DAMAGE: i32 = 6;
-/// World-units radius of the Rammer mine's AOE.
-pub const RAMMER_MINE_RADIUS: f32 = 9.0;
+pub use artillery::{
+    artillery_fire, artillery_shell_tick, ARTILLERY_DESIRED_DIST,
+};
+pub use rammer::enemy_landmine_tick;
+pub use sniper::{
+    sniper_aim_line_tick, sniper_fire, sniper_turret_aim,
+    SniperTurret, SNIPER_DESIRED_DIST,
+};
 
 // ---------- Components / enums ----------
 
@@ -116,42 +88,6 @@ pub struct EnemyHpBar {
     pub remaining: f32,
 }
 
-/// Marks a Sniper that's currently in its 1.5s aim phase. Holds the
-/// snapshotted target world position (so the bullet flies along the
-/// telegraphed line even if the target moves), the time remaining
-/// until fire, and the entity ID of the visible aim-line decoration.
-/// Removed when the shot fires (or when the sniper dies and Bevy
-/// auto-cleans the line via the back-ref system).
-#[derive(Component)]
-pub struct SniperAim {
-    pub remaining: f32,
-    pub target_world: Vec2,
-    pub line: Entity,
-}
-
-/// Free-floating aim-line entity drawn from a Sniper's current
-/// position to the Sniper's locked target world position. Its
-/// `Transform` is rewritten every frame from the live sniper
-/// position; the `target_world` snapshot stays fixed for the
-/// duration of the aim. Auto-despawns when the source sniper is
-/// gone.
-#[derive(Component)]
-pub struct SniperAimLine {
-    pub sniper: Entity,
-    pub target_world: Vec2,
-    /// Seconds until fire, mirrored from `SniperAim.remaining`.
-    pub remaining: f32,
-}
-
-/// Marker on the Sniper's independent-rotation turret base. The
-/// barrel mesh is parented to this entity (not directly to the body),
-/// so rotating this base — driven by `sniper_turret_aim` — orbits
-/// the barrel around the body centre while the body itself heads
-/// wherever its movement AI dictates. Decouples body heading from
-/// shot direction, giving the sniper effective 360° fire.
-#[derive(Component)]
-pub struct SniperTurret;
-
 /// Time-fused enemy landmine dropped by a Rammer on death. Counts
 /// down `fuse`; on 0, applies `damage` to every friendly/ally inside
 /// `blast_radius` and despawns with a particle burst.
@@ -160,31 +96,6 @@ pub struct EnemyLandmine {
     pub fuse: f32,
     pub damage: i32,
     pub blast_radius: f32,
-}
-
-/// Landing reticle drawn at the impact point during the Artillery's
-/// telegraph window. Visual only — `ArtilleryShell::reticle` holds
-/// the back-ref so the shell can despawn it on impact (or sooner if
-/// the artillery dies mid-flight).
-#[derive(Component)]
-pub struct ArtilleryReticle {
-    pub remaining: f32,
-    pub initial: f32,
-}
-
-/// In-flight artillery shell. Mirrors `MortarShell` but enemy-side
-/// — splash damage applies to friendly + allies on landing instead
-/// of enemies. Arcs from `origin` to `target` over
-/// `time_of_flight` with a sin-shaped vertical lift, same as the
-/// player's mortar.
-#[derive(Component)]
-pub struct ArtilleryShell {
-    pub target: Vec2,
-    pub time_of_flight: f32,
-    pub elapsed: f32,
-    pub damage: i32,
-    pub splash_radius: f32,
-    pub reticle: Option<Entity>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -222,7 +133,10 @@ pub enum EnemyVariant {
 
 impl EnemyVariant {
     pub fn hp(self) -> i32 {
-        match self {
+        // Base HP per variant, then a uniform +25% durability buff so
+        // every encounter lasts a touch longer without re-tuning each
+        // entry by hand.
+        let base: i32 = match self {
             EnemyVariant::Standard => 5,
             EnemyVariant::Heavy    => 15,
             EnemyVariant::Scout    => 2,
@@ -230,7 +144,8 @@ impl EnemyVariant {
             EnemyVariant::Rammer   => 3,
             EnemyVariant::Sniper   => 8,
             EnemyVariant::Artillery=> 7,
-        }
+        };
+        ((base as f32) * 1.25).round().max(1.0) as i32
     }
     pub fn speed(self) -> f32 {
         match self {
@@ -317,28 +232,154 @@ impl EnemyVariant {
         }
     }
 
-    /// Onboarding gate — minimum `CampaignProgress.battles_cleared`
-    /// before this variant is eligible to spawn. Standard + Scout
-    /// always spawn (the gentle openers); harder variants unlock one
-    /// every TWO cleared stages so each new threat gets a full
-    /// stage of breathing room before the next one arrives, instead
-    /// of half the roster appearing within the first few battles.
-    pub fn unlock_battles(self) -> u32 {
-        match self {
-            EnemyVariant::Standard  => 0,
-            EnemyVariant::Scout     => 0,
-            EnemyVariant::Heavy     => 2,
-            EnemyVariant::Bomber    => 4,
-            EnemyVariant::Rammer    => 6,
-            EnemyVariant::Sniper    => 8,
-            EnemyVariant::Artillery => 10,
-        }
-    }
+}
 
-    /// Returns true when this variant is eligible given how many
-    /// battles the player has cleared so far this run.
-    pub fn unlocked_at(self, battles_cleared: u32) -> bool {
-        battles_cleared >= self.unlock_battles()
+/// Per-variant spawn weight at this stage of the campaign. Weights
+/// move smoothly (rust-SNKRX `variant_mix_for_round` pattern) instead
+/// of binary unlock gates — stage 1 is 100% Bomber because everyone
+/// else's weight is 0.0; later stages add new threats as small slices
+/// while keeping the early variants common.
+///
+/// Bomber stays ≥30% even at peak progression so the rhythm of "loads
+/// of kamikazes plus some spice" remains the through-line.
+fn variant_mix_for_stage(battles_cleared: u32, boss_wave: bool) -> [(EnemyVariant, f32); 7] {
+    let c = battles_cleared;
+    if boss_wave {
+        // Boss-wave mix — heavier on tough variants, but Bomber stays
+        // a strong presence so the wave reads as "the usual swarm,
+        // hardened" rather than a different encounter.
+        return [
+            (EnemyVariant::Bomber,    boss_bomber_weight(c)),
+            (EnemyVariant::Heavy,     boss_heavy_weight(c)),
+            (EnemyVariant::Rammer,    boss_rammer_weight(c)),
+            (EnemyVariant::Artillery, boss_artillery_weight(c)),
+            (EnemyVariant::Sniper,    boss_sniper_weight(c)),
+            (EnemyVariant::Standard,  boss_standard_weight(c)),
+            (EnemyVariant::Scout,     boss_scout_weight(c)),
+        ];
+    }
+    [
+        // Bomber dominates at first; floored at 0.30 forever so the
+        // signature kamikaze rhythm survives the variant-mix bloom.
+        (EnemyVariant::Bomber,    bomber_weight(c).max(0.30)),
+        (EnemyVariant::Scout,     scout_weight(c)),
+        (EnemyVariant::Standard,  standard_weight(c)),
+        (EnemyVariant::Heavy,     heavy_weight(c)),
+        (EnemyVariant::Rammer,    rammer_weight(c)),
+        (EnemyVariant::Sniper,    sniper_weight(c)),
+        (EnemyVariant::Artillery, artillery_weight(c)),
+    ]
+}
+
+// ---- Standard-wave per-variant weight schedules ----
+
+fn bomber_weight(c: u32) -> f32 {
+    match c {
+        0 => 1.00,
+        1 => 0.65,
+        2 => 0.55,
+        3 => 0.45,
+        4 => 0.40,
+        _ => 0.35,
+    }
+}
+fn scout_weight(c: u32) -> f32 {
+    match c {
+        0 => 0.0,
+        1 => 0.30,
+        2 => 0.20,
+        3 => 0.18,
+        _ => 0.15,
+    }
+}
+fn standard_weight(c: u32) -> f32 {
+    match c {
+        0 | 1 => 0.0,
+        2     => 0.20,
+        3     => 0.18,
+        _     => 0.15,
+    }
+}
+fn heavy_weight(c: u32) -> f32 {
+    match c {
+        0..=2 => 0.0,
+        3     => 0.10,
+        4     => 0.10,
+        _     => 0.12,
+    }
+}
+fn rammer_weight(c: u32) -> f32 {
+    match c {
+        0..=3 => 0.0,
+        4     => 0.08,
+        5     => 0.10,
+        _     => 0.10,
+    }
+}
+fn sniper_weight(c: u32) -> f32 {
+    match c {
+        0..=4 => 0.0,
+        5     => 0.08,
+        6     => 0.10,
+        _     => 0.10,
+    }
+}
+fn artillery_weight(c: u32) -> f32 {
+    match c {
+        0..=5 => 0.0,
+        6     => 0.05,
+        _     => 0.08,
+    }
+}
+
+// ---- Boss-wave per-variant weight schedules ----
+
+fn boss_bomber_weight(c: u32) -> f32 {
+    // Boss waves still kamikaze-heavy — Bomber is the constant.
+    match c { 0 => 1.0, 1 => 0.50, _ => 0.30 }
+}
+fn boss_heavy_weight(c: u32) -> f32 {
+    match c {
+        0..=2 => 0.0,
+        3     => 0.20,
+        _     => 0.25,
+    }
+}
+fn boss_rammer_weight(c: u32) -> f32 {
+    match c { 0..=3 => 0.0, 4 => 0.12, _ => 0.15 }
+}
+fn boss_artillery_weight(c: u32) -> f32 {
+    match c { 0..=5 => 0.0, _ => 0.12 }
+}
+fn boss_sniper_weight(c: u32) -> f32 {
+    match c { 0..=4 => 0.0, _ => 0.10 }
+}
+fn boss_standard_weight(c: u32) -> f32 {
+    match c { 0..=1 => 0.0, _ => 0.08 }
+}
+fn boss_scout_weight(c: u32) -> f32 {
+    match c { 0 => 0.0, _ => 0.05 }
+}
+
+impl EnemyVariant {
+    /// Weighted pick from this stage's mix table. Total weights need
+    /// not sum to 1.0 — the roll normalises against the live sum so
+    /// missing variants just lower the cumulative density rather than
+    /// over-weighting whatever remains.
+    pub fn roll_weighted(
+        battles_cleared: u32,
+        boss_wave: bool,
+        rng: &mut impl Rng,
+    ) -> EnemyVariant {
+        let mix = variant_mix_for_stage(battles_cleared, boss_wave);
+        let total: f32 = mix.iter().map(|(_, w)| *w).sum();
+        if total <= 0.0 { return EnemyVariant::Bomber; }
+        let mut roll: f32 = rng.gen_range(0.0..total);
+        for (v, w) in &mix {
+            if roll < *w { return *v; }
+            roll -= *w;
+        }
+        EnemyVariant::Bomber
     }
 }
 
@@ -492,7 +533,7 @@ pub fn spawn_enemy(
 /// - **Spawning**: pre-rolls every enemy's spawn position on entry +
 ///   spawns a flashing on-screen indicator at each pre-clamped edge
 ///   point so the player can see what's incoming. Then drips one
-///   enemy per `WAVE_SPAWN_INTERVAL`, despawning each indicator as
+///   enemy per `wave_spawn_interval`, despawning each indicator as
 ///   its enemy lands. Empties → `Fighting`.
 /// - **Fighting**: wait for the arena to clear → `Cooldown`.
 /// - **Cooldown**: short breather; advance to next wave or sit idle
@@ -512,6 +553,7 @@ pub fn spawn_enemies(
     mut return_state: ResMut<crate::xp::LevelUpReturn>,
     mut next_state: ResMut<NextState<crate::AppState>>,
     mut seen: ResMut<crate::onboarding::SeenVariants>,
+    mut boss_intro_pending: ResMut<crate::boss_intro::BossIntroPending>,
     existing_banners: Query<Entity, With<crate::onboarding::NotificationLifetime>>,
     enemies: Query<Entity, With<Enemy>>,
 ) {
@@ -529,31 +571,61 @@ pub fn spawn_enemies(
             // pre-roll every position for this wave + spawn the
             // flashing indicators. Brief telegraph delay before the
             // first drip so the player gets a moment to react.
+            //
+            // Position mix: single drops + clustered drops (2-4 enemies
+            // arriving from roughly the same direction). Stage 1
+            // (battles_cleared = 0) skips clusters entirely so the
+            // bomber-only opener stays orderly while the player learns
+            // the threat. Cluster chance ramps up with progression.
             if combat_ctx.pending_spawns.is_empty() && combat_ctx.wave_remaining > 0 {
                 let mut rng = rand::thread_rng();
-                let mut queue = Vec::with_capacity(combat_ctx.wave_remaining as usize);
-                for _ in 0..combat_ctx.wave_remaining {
-                    let pos = random_edge_pos(&mut rng);
-                    let indicator = spawn_indicator(&mut commands, &indicator_assets, pos);
-                    queue.push(PendingSpawn { pos, indicator });
+                let total = combat_ctx.wave_remaining as usize;
+                let mut queue = Vec::with_capacity(total);
+                let cluster_chance: f32 = match combat_ctx.battles_cleared {
+                    0 => 0.0,
+                    1 => 0.15,
+                    2 => 0.25,
+                    _ => 0.35,
+                };
+                let mut remaining = total;
+                while remaining > 0 {
+                    let use_cluster = remaining >= 2 && rng.gen::<f32>() < cluster_chance;
+                    if use_cluster {
+                        let size = rng.gen_range(2..=4).min(remaining);
+                        let center = random_edge_pos(&mut rng);
+                        for _ in 0..size {
+                            let pos = center + Vec2::new(
+                                rng.gen_range(-6.0..6.0),
+                                rng.gen_range(-6.0..6.0),
+                            );
+                            let indicator = spawn_indicator(&mut commands, &indicator_assets, pos);
+                            queue.push(PendingSpawn { pos, indicator });
+                        }
+                        remaining -= size;
+                    } else {
+                        let pos = random_edge_pos(&mut rng);
+                        let indicator = spawn_indicator(&mut commands, &indicator_assets, pos);
+                        queue.push(PendingSpawn { pos, indicator });
+                        remaining -= 1;
+                    }
                 }
                 combat_ctx.pending_spawns = queue;
                 combat_ctx.spawn_tick = WAVE_TELEGRAPH_DELAY;
 
-                // Final wave of a 5★ section drops the boss into the
-                // arena alongside the normal wave roster. The boss is
-                // tagged `Enemy` (via `spawn_boss`) so the existing
-                // death / collision / level-complete plumbing handles
-                // it without bespoke wiring; budget isn't decremented
-                // for the boss, so `level_complete_check` keeps
-                // waiting for it to die after the last regular spawn.
+                // Final wave of a 5★ section: queue the Borderlands-
+                // style intro instead of dropping the boss in directly.
+                // `boss_intro::exit_boss_intro` does the actual
+                // `spawn_boss` call after the overlay finishes. Combat
+                // freezes for the duration because `BossIntro` isn't in
+                // `in_combat_view`'s allow-list.
                 if combat_ctx.wave_idx + 1 == combat_ctx.wave_count {
                     if let Some(class) = combat_ctx.boss_pending.take() {
                         let pos = random_edge_pos(&mut rng);
                         let heading = (-pos.x).atan2(pos.y) + std::f32::consts::PI;
-                        crate::ally::spawn_boss(
-                            &mut commands, &pm, &em, &mut meshes, pos, heading, class,
-                        );
+                        boss_intro_pending.class = Some(class);
+                        boss_intro_pending.pos = pos;
+                        boss_intro_pending.heading = heading;
+                        next_state.set(crate::AppState::BossIntro);
                     }
                 }
                 return;
@@ -582,7 +654,8 @@ pub fn spawn_enemies(
                     &mut commands, &existing_banners, spawned_variant,
                 );
             }
-            combat_ctx.spawn_tick = WAVE_SPAWN_INTERVAL;
+            combat_ctx.spawn_tick =
+                crate::balance::wave_spawn_interval(combat_ctx.battles_cleared);
             combat_ctx.wave_remaining = combat_ctx.wave_remaining.saturating_sub(1);
             combat_ctx.enemy_budget = combat_ctx.enemy_budget.saturating_sub(1);
 
@@ -617,11 +690,74 @@ pub fn spawn_enemies(
     }
 }
 
-/// Per-tick interval between drips inside a `Spawning` phase.
-const WAVE_SPAWN_INTERVAL: f32 = 0.15;
 /// Pause between indicator-pop and the first drip — gives the player
 /// a beat to read the directions before enemies start arriving.
+/// Per-tick drip interval is supplied by `balance::wave_spawn_interval`
+/// (scales down with `battles_cleared`).
 const WAVE_TELEGRAPH_DELAY: f32 = 0.8;
+
+/// Seconds between chaos drips while a boss is alive. Tender bosses
+/// can't attack, so they get a faster cadence to keep pressure on the
+/// player even when the boss itself is just slow-rolling around.
+const BOSS_CHAOS_INTERVAL_DEFAULT: f32 = 3.5;
+const BOSS_CHAOS_INTERVAL_TENDER: f32 = 2.2;
+
+/// While at least one boss is alive in the arena, periodically drop a
+/// fresh enemy at the edge to keep the chaos up. These spawns do NOT
+/// count against `enemy_budget` — they're flavour bonus enemies for
+/// the boss phase only, and naturally stop the moment the boss dies.
+/// Tender bosses spawn faster because they have no offensive output.
+pub fn boss_chaos_spawn(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<EffectMeshes>>,
+    mode: Res<GameMode>,
+    view: Res<crate::map::ViewMode>,
+    mut combat_ctx: ResMut<crate::map::CombatContext>,
+    bosses: Query<&Ally, (With<Enemy>, With<Ally>)>,
+    enemies: Query<Entity, With<Enemy>>,
+) {
+    if *mode != GameMode::Sandbox { return; }
+    if !matches!(*view, crate::map::ViewMode::Combat) { return; }
+    let Some(pm) = pm else { return; };
+    let Some(em) = em else { return; };
+
+    // No live boss → reset the timer so the first chaos spawn after a
+    // boss appears uses the full interval, not an already-expired one.
+    let Some(boss_ally) = bosses.iter().next() else {
+        combat_ctx.boss_chaos_cd = 0.0;
+        return;
+    };
+
+    let interval = if matches!(boss_ally.class, crate::ally::ShipClass::Tender) {
+        BOSS_CHAOS_INTERVAL_TENDER
+    } else {
+        BOSS_CHAOS_INTERVAL_DEFAULT
+    };
+
+    if combat_ctx.boss_chaos_cd <= 0.0 {
+        combat_ctx.boss_chaos_cd = interval;
+    }
+    combat_ctx.boss_chaos_cd -= time.delta_secs();
+    if combat_ctx.boss_chaos_cd > 0.0 { return; }
+
+    // Respect the on-screen cap so we don't snowball into a renderer
+    // stall if the player can't keep up.
+    if enemies.iter().count() >= combat_ctx.enemy_cap() {
+        combat_ctx.boss_chaos_cd = 0.5;
+        return;
+    }
+
+    let mut rng = rand::thread_rng();
+    let pos = random_edge_pos(&mut rng);
+    spawn_one_at(
+        &mut commands, &pm, &em, &mut meshes,
+        pos, /*boss_wave=*/ true, combat_ctx.battles_cleared,
+    );
+    combat_ctx.boss_chaos_cd = interval;
+}
 
 /// If `pos` is past the playable arena edge on either axis, replace
 /// the proposed `motion_dir` with one that pushes back inward.
@@ -633,8 +769,8 @@ fn inward_correction(pos: Vec2, motion_dir: Vec2) -> Vec2 {
     // 5-unit margin so the correction kicks in before the enemy
     // visually reaches the wall, not after.
     let margin = 5.0;
-    let half_w = PLAY_WORLD_W * 0.5 - margin;
-    let half_h = PLAY_WORLD_H * 0.5 - margin;
+    let half_w = ARENA_W * 0.5 - margin;
+    let half_h = ARENA_H * 0.5 - margin;
     let outside_right = pos.x > half_w;
     let outside_left = pos.x < -half_w;
     let outside_top = pos.y > half_h;
@@ -650,8 +786,12 @@ fn inward_correction(pos: Vec2, motion_dir: Vec2) -> Vec2 {
 }
 
 fn random_edge_pos(rng: &mut rand::rngs::ThreadRng) -> Vec2 {
-    let half_w = PLAY_WORLD_W * 0.5;
-    let half_h = PLAY_WORLD_H * 0.5;
+    // Spawns sit `+20` past the arena edge so enemies drift INTO view
+    // rather than popping in at the wall. With `big_arena` the arena
+    // is larger than the viewport — early spawns can appear off-camera
+    // and steam toward the player, which is exactly the intent.
+    let half_w = ARENA_W * 0.5;
+    let half_h = ARENA_H * 0.5;
     let edge = rng.gen_range(0..4);
     match edge {
         0 => Vec2::new(rng.gen_range(-half_w..half_w), half_h + 20.0),
@@ -671,48 +811,7 @@ fn spawn_one_at(
     battles_cleared: u32,
 ) -> EnemyVariant {
     let mut rng = rand::thread_rng();
-    // Try the standard weighted roll first. If the rolled variant
-    // hasn't unlocked yet (player early in the campaign), fall back
-    // to the highest-priority unlocked variant — Standard is the
-    // floor since `unlock_battles == 0` for it.
-    let variant = if boss_wave {
-        match rng.gen_range(0u32..100) {
-            0..25  => EnemyVariant::Heavy,
-            25..45 => EnemyVariant::Bomber,
-            45..60 => EnemyVariant::Rammer,
-            60..75 => EnemyVariant::Sniper,
-            75..90 => EnemyVariant::Artillery,
-            _      => EnemyVariant::Standard,
-        }
-    } else {
-        match rng.gen_range(0u32..100) {
-            0..30  => EnemyVariant::Standard,
-            30..47 => EnemyVariant::Scout,
-            47..62 => EnemyVariant::Heavy,
-            62..74 => EnemyVariant::Bomber,
-            74..84 => EnemyVariant::Rammer,
-            84..92 => EnemyVariant::Sniper,
-            _      => EnemyVariant::Artillery,
-        }
-    };
-    // Onboarding gate — if the rolled variant isn't unlocked yet,
-    // re-roll among the unlocked subset. Keeps stage 1 clean
-    // (Standard / Scout only) and ramps up by `battles_cleared`.
-    let variant = if variant.unlocked_at(battles_cleared) {
-        variant
-    } else {
-        let pool: Vec<EnemyVariant> = ALL_VARIANTS
-            .iter()
-            .copied()
-            .filter(|v| v.unlocked_at(battles_cleared))
-            .collect();
-        // `Standard` is always in the pool (unlock_battles == 0) so
-        // the unwrap fallback is just paranoia for an empty slice.
-        pool.get(rng.gen_range(0..pool.len().max(1)))
-            .copied()
-            .unwrap_or(EnemyVariant::Standard)
-    };
-
+    let variant = EnemyVariant::roll_weighted(battles_cleared, boss_wave, &mut rng);
     let inward = (-pos).normalize_or(Vec2::Y);
     let heading = (-inward.x).atan2(inward.y);
     spawn_enemy(commands, pm, em, meshes, pos, heading, variant);
@@ -766,8 +865,8 @@ fn spawn_indicator(
     spawn_pos: Vec2,
 ) -> Entity {
     let inset = 5.0;
-    let inner_x = PLAY_WORLD_W * 0.5 - inset;
-    let inner_y = PLAY_WORLD_H * 0.5 - inset;
+    let inner_x = ARENA_W * 0.5 - inset;
+    let inner_y = ARENA_H * 0.5 - inset;
     let pos = Vec2::new(
         spawn_pos.x.clamp(-inner_x, inner_x),
         spawn_pos.y.clamp(-inner_y, inner_y),
@@ -821,26 +920,22 @@ pub fn clear_spawn_indicators(
 pub fn enemy_ai(
     time: Res<Time>,
     friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
-    allies: Query<(&Transform, &Ally), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
-    // Stunned enemies skip the AI entirely — their Velocity stays at
-    // whatever it was last frame, but `apply_velocity` early-outs
-    // for Stunned so they hold position regardless.
+    ally_cache: Res<crate::ally::AllyPositionsCache>,
+    // Stunned enemies skip AI — Velocity holds at last frame's value
+    // and `apply_velocity` early-outs for Stunned regardless.
+    // `Without<Ally>` excludes bosses — they carry both `Enemy` (for
+    // bullet/death routing) and `Ally` (for class-aware AI from
+    // `ally_ai`), so generic enemy AI must NOT also fight to drive
+    // their velocity each frame.
     mut q: Query<
         (&mut Transform, &mut Velocity, &mut Heading, &mut Enemy),
-        Without<crate::components::Stunned>,
+        (Without<crate::components::Stunned>, Without<Ally>),
     >,
 ) {
     let dt = time.delta_secs();
     let Ok(ftf) = friendly.single() else { return; };
     let fpos = ftf.translation.truncate();
-    // Snapshot ally positions once per frame — all enemies pick the
-    // nearest target from the same list. Submerged allies are filtered
-    // out here so normal enemies don't try to chase a sub they can't hit.
-    let ally_positions: Vec<Vec2> = allies
-        .iter()
-        .filter(|(_, a)| !ally_is_submerged(a))
-        .map(|(t, _)| t.translation.truncate())
-        .collect();
+    let ally_positions = &ally_cache.positions;
     let mut rng = rand::thread_rng();
 
     for (mut tf, mut vel, mut heading, mut enemy) in &mut q {
@@ -853,7 +948,7 @@ pub fn enemy_ai(
         // Per-enemy nearest-target pick — chooses among
         // {friendly, allies}. Re-evaluated every frame so a closer
         // ally that drifts into range pulls aggro naturally.
-        let target_pos = nearest_target(pos, fpos, &ally_positions);
+        let target_pos = nearest_target(pos, fpos, ally_positions);
 
         // Bombers + Rammers skip the state machine — head straight
         // at their target, no waypoints, no firing. Contact damage
@@ -994,11 +1089,14 @@ pub fn enemy_fire(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
-    allies: Query<(&Transform, &Ally), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
+    ally_cache: Res<crate::ally::AllyPositionsCache>,
     // Stunned enemies hold fire — same gate as movement.
+    // `Without<Ally>` excludes bosses — they fire via their
+    // class-specific paths (cannons, missiles, boarding, oil, etc.),
+    // not the generic Standard-enemy bullet this system spawns.
     mut enemies: Query<
         (Entity, &Transform, &Heading, &mut Enemy),
-        Without<crate::components::Stunned>,
+        (Without<crate::components::Stunned>, Without<Ally>),
     >,
 ) {
     let Some(pm) = pm else { return; };
@@ -1006,30 +1104,18 @@ pub fn enemy_fire(
     let dt = time.delta_secs();
     let Ok(ftf) = friendly.single() else { return; };
     let fpos = ftf.translation.truncate();
-    // Skip submerged allies — `enemy_ai` already excludes them from
-    // steering, and aiming at them here would waste shots that would
-    // pass through anyway.
-    let ally_positions: Vec<Vec2> = allies
-        .iter()
-        .filter(|(_, a)| !ally_is_submerged(a))
-        .map(|(t, _)| t.translation.truncate())
-        .collect();
+    let ally_positions = &ally_cache.positions;
 
     for (enemy_entity, tf, heading, mut enemy) in &mut enemies {
         if !enemy.variant.has_gun() { continue; }
-        // Sniper has its own bespoke firing pipeline (aim phase +
-        // telegraph + heavy bullet) — `sniper_fire` owns its
-        // cooldown and shot path. Skip it here so it doesn't also
-        // fire a regular straight-ahead shot.
+        // Sniper has its own firing pipeline (aim → telegraph → heavy).
         if enemy.variant == EnemyVariant::Sniper { continue; }
         enemy.fire_cd -= dt;
         let pos = tf.translation.truncate();
-        // Off-screen enemies don't shoot — they need to drift back
-        // into the arena before opening fire. Avoids the "invisible
-        // sniper plinking from past the edge" feel.
+        // Off-screen enemies hold fire so they don't plink from outside
+        // the visible arena.
         if !crate::balance::in_play_area(pos) { continue; }
-        // Aim at the closest of {friendly, allies}.
-        let target_pos = nearest_target(pos, fpos, &ally_positions);
+        let target_pos = nearest_target(pos, fpos, ally_positions);
         let to = target_pos - pos;
         if to.length() > ENEMY_RANGE { continue; }
         let forward = Vec2::new(-heading.0.sin(), heading.0.cos());
@@ -1089,7 +1175,12 @@ pub fn bomber_detonate(
     mut commands: Commands,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
-    mut bombers: Query<(Entity, &Transform, &Enemy, &mut Health)>,
+    // `Without<Ally>` keeps boss ships (which carry both Enemy and
+    // Ally) out of the kamikaze branch — they're not actually
+    // Bomber/Rammer variants anyway, but the filter is explicit so
+    // future variant changes can't accidentally turn bosses into
+    // self-destructors.
+    mut bombers: Query<(Entity, &Transform, &Enemy, &mut Health), Without<Ally>>,
     mut friendly: Query<
         (&Transform, &mut Health, &mut HitFx),
         (With<Friendly>, Without<Ally>, Without<Enemy>),
@@ -1158,546 +1249,6 @@ pub fn bomber_detonate(
     }
 }
 
-/// Tick every armed enemy landmine. When `fuse <= 0` the mine
-/// explodes: damages anything in `blast_radius` (friendly + allies),
-/// spawns a two-tone particle burst, and despawns. Mirrors the
-/// Mortar splash damage pattern so the rules feel consistent across
-/// AOE sources.
-pub fn enemy_landmine_tick(
-    time: Res<Time>,
-    mut commands: Commands,
-    pm: Option<Res<PaletteMaterials>>,
-    em: Option<Res<EffectMeshes>>,
-    mut mines: Query<(Entity, &Transform, &mut EnemyLandmine)>,
-    mut friendly: Query<
-        (&Transform, &mut Health, &mut HitFx),
-        (With<Friendly>, Without<Ally>, Without<EnemyLandmine>),
-    >,
-    mut allies: Query<
-        (&Transform, &Ally, &mut Health, &mut HitFx),
-        (With<Ally>, Without<Friendly>, Without<EnemyLandmine>),
-    >,
-) {
-    let Some(pm) = pm else { return; };
-    let Some(em) = em else { return; };
-    let dt = time.delta_secs();
-    let mut rng = rand::thread_rng();
-
-    for (entity, tf, mut mine) in &mut mines {
-        mine.fuse -= dt;
-        if mine.fuse > 0.0 { continue; }
-        let center = tf.translation.truncate();
-        let r2 = mine.blast_radius * mine.blast_radius;
-
-        if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
-            if ftf.translation.truncate().distance_squared(center) < r2 {
-                fx.pulse();
-                h.0 = (h.0 - mine.damage).max(0);
-            }
-        }
-        for (atf, ally, mut h, mut fx) in &mut allies {
-            if ally_is_submerged(ally) { continue; }
-            if atf.translation.truncate().distance_squared(center) >= r2 { continue; }
-            fx.pulse();
-            h.0 = (h.0 - mine.damage).max(0);
-        }
-
-        spawn_hit_particles(&mut commands, &em, &pm.enemy,        center, 16, 90.0,  &mut rng);
-        spawn_hit_particles(&mut commands, &em, &pm.enemy_mine_dot, center, 10, 110.0, &mut rng);
-        commands.entity(entity).despawn();
-    }
-}
-
-/// Sniper firing pipeline — runs separately from `enemy_fire` because
-/// the sniper has bespoke aim/telegraph/heavy-shot semantics.
-///
-/// Two phases driven by the optional `SniperAim` component:
-///   1. **Idle** (no `SniperAim`): if a target is in `SNIPER_FIRE_RANGE`
-///      and the shot cooldown is ready, snapshot the target's world
-///      position, insert `SniperAim`, and spawn the visible aim-line
-///      decoration.
-///   2. **Aiming** (has `SniperAim`): tick `remaining` down. On 0,
-///      spawn the heavy bullet flying along the locked trajectory,
-///      remove `SniperAim`, despawn the line, and reset the slot's
-///      shot cooldown via `enemy.fire_cd`.
-pub fn sniper_fire(
-    time: Res<Time>,
-    mut commands: Commands,
-    pm: Option<Res<PaletteMaterials>>,
-    em: Option<Res<EffectMeshes>>,
-    friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
-    allies: Query<(&Transform, &Ally), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
-    mut snipers: Query<(Entity, &Transform, &mut Enemy, Option<&mut SniperAim>)>,
-) {
-    let Some(pm) = pm else { return; };
-    let Some(em) = em else { return; };
-    let dt = time.delta_secs();
-    let Ok(ftf) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
-    let ally_positions: Vec<Vec2> = allies
-        .iter()
-        .filter(|(_, a)| !ally_is_submerged(a))
-        .map(|(t, _)| t.translation.truncate())
-        .collect();
-
-    for (entity, tf, mut enemy, aim) in &mut snipers {
-        if enemy.variant != EnemyVariant::Sniper { continue; }
-        let pos = tf.translation.truncate();
-        enemy.fire_cd -= dt;
-        // Off-screen snipers don't aim or fire — they have to come
-        // inside the arena to engage.
-        if aim.is_none() && !crate::balance::in_play_area(pos) { continue; }
-
-        if let Some(mut aim) = aim {
-            // Aiming — tick down. On expiry, fire along the locked
-            // trajectory and clean up.
-            aim.remaining -= dt;
-            if aim.remaining > 0.0 { continue; }
-            let to = aim.target_world - pos;
-            let dir = to.normalize_or(Vec2::Y);
-            let bullet_pos = pos + dir * (ENEMY_BARREL_TIP + ENEMY_BULLET_HALF_LEN);
-            let bullet = commands.spawn((
-                Mesh2d(em.bullet_enemy_outer.clone()),
-                MeshMaterial2d(pm.bullet_enemy_outer.clone()),
-                Transform::from_xyz(bullet_pos.x, bullet_pos.y, 4.0)
-                    .with_rotation(Quat::from_rotation_z((-dir.x).atan2(dir.y)))
-                    .with_scale(Vec3::splat(SNIPER_BULLET_SCALE)),
-                Bullet {
-                    faction: FactionKind::Enemy,
-                    damage: enemy.variant.fire_damage(),
-                    remaining: SNIPER_FIRE_RANGE * 1.4,
-                    weapon: WeaponType::Standard,
-                    source: None,
-                    runes: [None; 3],
-                },
-                Velocity(dir * SNIPER_BULLET_SPEED),
-                RenderLayers::layer(PLAY_LAYER),
-            )).id();
-            let inner = commands.spawn((
-                Mesh2d(em.bullet_enemy_inner.clone()),
-                MeshMaterial2d(pm.bullet_enemy.clone()),
-                Transform::from_xyz(0.0, 0.0, 0.05),
-                RenderLayers::layer(PLAY_LAYER),
-            )).id();
-            commands.entity(inner).insert(ChildOf(bullet));
-
-            // Tear down the aim — line is a free entity, so the
-            // `sniper_aim_line_tick` system will catch it next
-            // frame via the back-ref. Despawn here too for
-            // immediate cleanup.
-            commands.entity(aim.line).despawn();
-            commands.entity(entity).remove::<SniperAim>();
-            // Reset the shot cooldown so the next aim cycle can't
-            // start until `1/fire_rate` seconds have passed.
-            enemy.fire_cd = 1.0 / enemy.variant.fire_rate().max(0.1);
-            continue;
-        }
-
-        // Idle — start a fresh aim if the cooldown is ready and a
-        // target is in range.
-        if enemy.fire_cd > 0.0 { continue; }
-        let target_pos = nearest_target(pos, fpos, &ally_positions);
-        let to = target_pos - pos;
-        if to.length() > SNIPER_FIRE_RANGE { continue; }
-
-        // Spawn the telegraph: a constant translucent line spanning
-        // sniper -> locked target. Final-Fantasy-style aim hint that
-        // sits there for the whole window without flicker or pulse.
-        // The translucent material (set in `palette.rs`) keeps it
-        // readable without occluding play under it.
-        let mid = (pos + target_pos) * 0.5;
-        let length = to.length().max(1.0);
-        let angle = (-(to.x)).atan2(to.y);
-        let line = commands.spawn((
-            Mesh2d(em.beam.clone()),
-            MeshMaterial2d(pm.sniper_aim.clone()),
-            Transform::from_xyz(mid.x, mid.y, 3.5)
-                .with_rotation(Quat::from_rotation_z(angle))
-                // Beam mesh is `Rectangle::new(1.0, BEAM_LENGTH)` -
-                // scale Y to span the sniper-to-target distance,
-                // X to a chunky-but-not-overpowering thickness so
-                // the dark-amber line reads clearly across the
-                // arena without dominating it.
-                .with_scale(Vec3::new(1.4, length / crate::balance::BEAM_LENGTH, 1.0)),
-            SniperAimLine {
-                sniper: entity,
-                target_world: target_pos,
-                remaining: SNIPER_AIM_TIME,
-            },
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-        commands.entity(entity).insert(SniperAim {
-            remaining: SNIPER_AIM_TIME,
-            target_world: target_pos,
-            line,
-        });
-    }
-}
-
-/// Artillery firing pipeline — every `1/fire_rate` seconds, lock a
-/// target world position, spawn the landing reticle, and launch an
-/// arcing `ArtilleryShell` toward that point. The reticle is the
-/// player's dodge cue.
-pub fn artillery_fire(
-    time: Res<Time>,
-    mut commands: Commands,
-    pm: Option<Res<PaletteMaterials>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    friendly: Query<(&Transform, &Velocity), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
-    allies: Query<(&Transform, &Ally), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
-    mut artilleries: Query<(&Transform, &mut Enemy)>,
-) {
-    let Some(pm) = pm else { return; };
-    let dt = time.delta_secs();
-    let Ok((ftf, fvel)) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
-    // Predicted friendly position. The shell lands where the
-    // player WILL be in `ARTILLERY_LEAD_TIME` seconds at their
-    // current velocity. Tuned so holding course inside the splash
-    // window catches the hit, while turning OR slowing dodges.
-    // Bumped from 0.5s to 0.9s so the splash lands further ahead
-    // and players have to actually break their line, not just
-    // cruise through and trust the half-second prediction error.
-    const ARTILLERY_LEAD_TIME: f32 = 0.9;
-    let fpred = fpos + fvel.0 * ARTILLERY_LEAD_TIME;
-    let ally_positions: Vec<Vec2> = allies
-        .iter()
-        .filter(|(_, a)| !ally_is_submerged(a))
-        .map(|(t, _)| t.translation.truncate())
-        .collect();
-
-    // Lazily build the reticle ring mesh — a thin annulus centred on
-    // the impact point. Reused across every shell that fires this
-    // frame so we're not re-allocating.
-    let mut reticle_mesh: Option<Handle<Mesh>> = None;
-
-    for (tf, mut enemy) in &mut artilleries {
-        if enemy.variant != EnemyVariant::Artillery { continue; }
-        enemy.fire_cd -= dt;
-        if enemy.fire_cd > 0.0 { continue; }
-        let pos = tf.translation.truncate();
-        // Off-screen artillery doesn't fire — keeps the dodge cue
-        // (the reticle) inside the visible arena.
-        if !crate::balance::in_play_area(pos) { continue; }
-        // Pick nearest of {predicted friendly, current allies}. Using
-        // the predicted position for the friendly means artillery
-        // either misses (player dodged) OR hits (player held course).
-        let target = {
-            let mut best = fpred;
-            let mut best_d2 = pos.distance_squared(fpred);
-            for &ap in &ally_positions {
-                let d2 = pos.distance_squared(ap);
-                if d2 < best_d2 {
-                    best = ap;
-                    best_d2 = d2;
-                }
-            }
-            best
-        };
-        // Spawn reticle at landing zone — bright crimson disc that
-        // shrinks across the telegraph window so the player has a
-        // visible countdown to impact.
-        let mesh = reticle_mesh
-            .get_or_insert_with(|| meshes.add(Circle::new(ARTILLERY_SPLASH_RADIUS)))
-            .clone();
-        let reticle = commands.spawn((
-            Mesh2d(mesh),
-            MeshMaterial2d(pm.artillery_reticle.clone()),
-            Transform::from_xyz(target.x, target.y, 0.4),
-            ArtilleryReticle {
-                remaining: ARTILLERY_TELEGRAPH_TIME,
-                initial: ARTILLERY_TELEGRAPH_TIME,
-            },
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-        commands.spawn((
-            ArtilleryShell {
-                target,
-                time_of_flight: ARTILLERY_TELEGRAPH_TIME,
-                elapsed: 0.0,
-                damage: enemy.variant.fire_damage(),
-                splash_radius: ARTILLERY_SPLASH_RADIUS,
-                reticle: Some(reticle),
-            },
-        ));
-        enemy.fire_cd = 1.0 / enemy.variant.fire_rate().max(0.1);
-    }
-}
-
-/// Tick + impact for in-flight artillery shells. Shrinks the
-/// reticle each frame from its initial size down to ~10% so the
-/// player gets a visible "incoming" countdown. On impact: AOE damage
-/// to friendly + non-submerged allies, particle burst, despawn shell
-/// + reticle.
-pub fn artillery_shell_tick(
-    time: Res<Time>,
-    mut commands: Commands,
-    pm: Option<Res<PaletteMaterials>>,
-    em: Option<Res<EffectMeshes>>,
-    mut shells: Query<(Entity, &mut ArtilleryShell)>,
-    mut reticles: Query<(&mut ArtilleryReticle, &mut Transform), Without<ArtilleryShell>>,
-    mut friendly: Query<
-        (&Transform, &mut Health, &mut HitFx),
-        (With<Friendly>, Without<Ally>, Without<ArtilleryShell>, Without<ArtilleryReticle>),
-    >,
-    mut allies: Query<
-        (&Transform, &Ally, &mut Health, &mut HitFx),
-        (With<Ally>, Without<Friendly>, Without<ArtilleryShell>, Without<ArtilleryReticle>),
-    >,
-) {
-    let Some(pm) = pm else { return; };
-    let Some(em) = em else { return; };
-    let dt = time.delta_secs();
-    let mut rng = rand::thread_rng();
-
-    for (entity, mut shell) in &mut shells {
-        shell.elapsed += dt;
-        // GROW the reticle as time passes so the player sees the
-        // splash zone fill in toward impact - FF-style "warning
-        // expanding" cue rather than the previous "shrinking
-        // crosshair" which read as the danger getting smaller.
-        // Starts small (10%) and grows to full splash radius right
-        // before the shell lands.
-        if let Some(r) = shell.reticle {
-            if let Ok((mut ret, mut rtf)) = reticles.get_mut(r) {
-                ret.remaining = (ret.initial - shell.elapsed).max(0.0);
-                let progress = (shell.elapsed / shell.time_of_flight.max(0.0001)).clamp(0.0, 1.0);
-                let frac = 0.10 + 0.90 * progress;
-                rtf.scale = Vec3::new(frac, frac, 1.0);
-            }
-        }
-        if shell.elapsed < shell.time_of_flight { continue; }
-
-        // Impact — AOE damage to friendly + allies in range.
-        let center = shell.target;
-        let r2 = shell.splash_radius * shell.splash_radius;
-        if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
-            if ftf.translation.truncate().distance_squared(center) < r2 {
-                fx.pulse();
-                h.0 = (h.0 - shell.damage).max(0);
-            }
-        }
-        for (atf, ally, mut h, mut fx) in &mut allies {
-            if ally_is_submerged(ally) { continue; }
-            if atf.translation.truncate().distance_squared(center) >= r2 { continue; }
-            fx.pulse();
-            h.0 = (h.0 - shell.damage).max(0);
-        }
-        spawn_hit_particles(&mut commands, &em, &pm.enemy,             center, 18, 100.0, &mut rng);
-        spawn_hit_particles(&mut commands, &em, &pm.artillery_reticle, center, 10, 130.0, &mut rng);
-        if let Some(r) = shell.reticle {
-            commands.entity(r).despawn();
-        }
-        commands.entity(entity).despawn();
-    }
-}
-
-/// Per-frame: rotate every Sniper's `SniperTurret` child base so the
-/// barrel points at the locked target (during aim) or the live
-/// nearest target (idle). Local rotation = world-aim − body-heading,
-/// so the barrel's WORLD orientation tracks the target regardless of
-/// which way the body is moving.
-pub fn sniper_turret_aim(
-    snipers: Query<(&Transform, &Heading, &Enemy, Option<&SniperAim>, &Children)>,
-    friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
-    allies: Query<(&Transform, &Ally), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
-    mut turrets: Query<
-        &mut Transform,
-        (With<SniperTurret>, Without<Enemy>, Without<Friendly>, Without<Ally>),
-    >,
-) {
-    let Ok(ftf) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
-    let ally_positions: Vec<Vec2> = allies
-        .iter()
-        .filter(|(_, a)| !ally_is_submerged(a))
-        .map(|(t, _)| t.translation.truncate())
-        .collect();
-
-    for (tf, heading, enemy, aim, children) in &snipers {
-        if enemy.variant != EnemyVariant::Sniper { continue; }
-        let pos = tf.translation.truncate();
-        // Aim phase locks the target — keep the barrel glued to the
-        // telegraphed line so the visual matches the bullet path.
-        let target = aim
-            .map(|a| a.target_world)
-            .unwrap_or_else(|| nearest_target(pos, fpos, &ally_positions));
-        let to = target - pos;
-        if to.length_squared() < 1.0 { continue; }
-        let world_aim = (-to.x).atan2(to.y);
-        // Body's transform.rotation == Heading.0 (set by enemy_ai).
-        // Local turret rotation = world_aim - body_heading so the
-        // child's WORLD rotation = body_heading + local = world_aim.
-        let local = world_aim - heading.0;
-        let want = Quat::from_rotation_z(local);
-        for c in children.iter() {
-            if let Ok(mut t_tf) = turrets.get_mut(c) {
-                if t_tf.rotation != want { t_tf.rotation = want; }
-            }
-        }
-    }
-}
-
-/// Per-frame sync of every aim-line entity:
-///   - Despawn it if its source sniper is gone (e.g. shot dead mid-aim).
-///   - Otherwise rewrite its transform to span sniper.position →
-///     locked target_world (target stays frozen for the duration —
-///     telegraph is a commitment).
-///   - Pulse the line's width as the aim timer counts down so the
-///     thread thickens at the moment of fire.
-pub fn sniper_aim_line_tick(
-    time: Res<Time>,
-    mut commands: Commands,
-    snipers: Query<(&Transform, Option<&SniperAim>), With<Enemy>>,
-    mut lines: Query<(Entity, &mut Transform, &mut SniperAimLine), Without<Enemy>>,
-) {
-    let dt = time.delta_secs();
-    for (line_entity, mut tf, mut line) in &mut lines {
-        let Ok((sniper_tf, aim)) = snipers.get(line.sniper) else {
-            // Sniper despawned — clean up the orphan line.
-            commands.entity(line_entity).despawn();
-            continue;
-        };
-        // If the SniperAim was removed before the line caught up
-        // (e.g. fire path despawned us), drop the line.
-        let Some(aim) = aim else {
-            commands.entity(line_entity).despawn();
-            continue;
-        };
-        line.remaining = (line.remaining - dt).max(0.0);
-        let _ = aim;
-
-        // Constant-width translucent beam from the sniper to the
-        // locked target. No pulse, no width modulation - the steady
-        // line IS the threat cue, FF-style. Sniper position drives
-        // the recompute each frame so the beam follows the sniper's
-        // body even though the target stays locked.
-        let pos = sniper_tf.translation.truncate();
-        let to = line.target_world - pos;
-        let mid = (pos + line.target_world) * 0.5;
-        let length = to.length().max(1.0);
-        let angle = (-(to.x)).atan2(to.y);
-        tf.translation.x = mid.x;
-        tf.translation.y = mid.y;
-        tf.rotation = Quat::from_rotation_z(angle);
-        tf.scale = Vec3::new(1.4, length / crate::balance::BEAM_LENGTH, 1.0);
-    }
-}
-
-// ---------- Enemy HP bars (on-damage, fade after 3 s) ----------
-
-/// How long the bar stays visible after the most recent damage tick.
-const HP_BAR_SHOW_TIME: f32 = 3.0;
-/// World-units offset above the enemy's center where the bar sits.
-/// Tuned to sit just above standard enemies (~half-length 5–6) — boss
-/// hulls (Carrier at ~12) will overlap the lower edge slightly, which
-/// is fine: a bar that "hugs" the ship reads more clearly than one
-/// floating in empty water above it.
-const HP_BAR_Y_OFFSET:  f32 = 7.0;
-/// Bar dimensions in world units (= internal pixels at this play
-/// area's nearest-neighbor scale).
-const HP_BAR_W: f32 = 8.0;
-const HP_BAR_H: f32 = 1.0;
-
-/// Cached mesh + material for the red HP bars. Built once at startup
-/// so spawning a bar is a transform-and-component insert, no asset
-/// alloc.
-#[derive(Resource)]
-pub struct EnemyHpBarAssets {
-    pub mesh: Handle<Mesh>,
-    pub fill: Handle<ColorMaterial>,
-}
-
-/// Build the cached HP-bar mesh + material once at startup.
-pub fn setup_enemy_hp_bar_assets(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
-    let mesh = meshes.add(Rectangle::new(HP_BAR_W, HP_BAR_H));
-    let fill = materials.add(Color::srgb(0.92, 0.18, 0.22));
-    commands.insert_resource(EnemyHpBarAssets { mesh, fill });
-}
-
-/// Detect HP drops and spawn / refresh the floating bar. Reads
-/// `Health` against `PreviousHp`; on a strict decrease either
-/// resets an existing bar's timer or spawns a new one. Runs in the
-/// damage-application chain so it sees the new HP for the same
-/// frame the hit landed.
-pub fn track_enemy_damage_for_hp_bars(
-    mut commands: Commands,
-    assets: Option<Res<EnemyHpBarAssets>>,
-    mut enemies: Query<(Entity, &Health, &mut PreviousHp), With<Enemy>>,
-    mut bars: Query<&mut EnemyHpBar>,
-) {
-    let Some(assets) = assets else { return; };
-    for (e, h, mut prev) in &mut enemies {
-        if h.0 < prev.0 {
-            // Took damage this frame. Find an existing bar for this
-            // enemy and bump its timer; otherwise spawn one.
-            let mut found = false;
-            for mut bar in &mut bars {
-                if bar.enemy == e {
-                    bar.remaining = HP_BAR_SHOW_TIME;
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                commands.spawn((
-                    Mesh2d(assets.mesh.clone()),
-                    MeshMaterial2d(assets.fill.clone()),
-                    // World-space placement sync'd each frame by
-                    // `update_enemy_hp_bars`. z = 5.5 sits above
-                    // hulls (1.0) and bullets (4.0) so the bar
-                    // doesn't get visually buried. Lives on
-                    // `HUD_LAYER` so the HudCamera renders it at
-                    // native resolution — the chunky-pixel filter
-                    // doesn't apply, keeping the bar crisp.
-                    Transform::from_xyz(0.0, 0.0, 5.5),
-                    EnemyHpBar { enemy: e, remaining: HP_BAR_SHOW_TIME },
-                    RenderLayers::layer(HUD_LAYER),
-                ));
-            }
-        }
-        prev.0 = h.0;
-    }
-}
-
-/// Per-frame visual update for HP bars: ticks the fade timer, snaps
-/// position to the enemy's current location, and writes the fill
-/// scale + offset so the bar shrinks left-anchored as HP drops. Bars
-/// despawn when their timer expires or their target enemy is gone.
-pub fn update_enemy_hp_bars(
-    time: Res<Time>,
-    mut commands: Commands,
-    enemies: Query<(&Transform, &Health, &Enemy), Without<EnemyHpBar>>,
-    mut bars: Query<(Entity, &mut EnemyHpBar, &mut Transform)>,
-) {
-    let dt = time.delta_secs();
-    for (bar_e, mut bar, mut tf) in &mut bars {
-        bar.remaining -= dt;
-        if bar.remaining <= 0.0 {
-            commands.entity(bar_e).despawn();
-            continue;
-        }
-        let Ok((e_tf, h, enemy)) = enemies.get(bar.enemy) else {
-            commands.entity(bar_e).despawn();
-            continue;
-        };
-        let max = enemy.max_hp.max(1) as f32;
-        let ratio = (h.0 as f32 / max).clamp(0.0, 1.0);
-        // Anchor the bar's left edge: the centered Rectangle scales
-        // around its midpoint, so we shift the center by half the
-        // empty width to keep the left edge fixed under the enemy.
-        let world = e_tf.translation.truncate();
-        tf.translation.x = world.x + HP_BAR_W * (ratio - 1.0) * 0.5;
-        tf.translation.y = world.y + HP_BAR_Y_OFFSET;
-        tf.scale.x = ratio;
-        tf.scale.y = 1.0;
-    }
-}
-
 /// Despawn enemies whose HP has dropped to 0, regardless of damage source
 /// (bullet, beam, fire, future debuffs). Awards score, scrap, and XP, and
 /// emits the generic enemy-color destruction burst — source-specific flair
@@ -1753,39 +1304,8 @@ pub fn enemy_death_check(
         // `bomber_detonate`, bullets drive it to 0 via
         // `bullet_collisions`; both flow through here).
         if enemy.variant == EnemyVariant::Rammer {
-            spawn_rammer_landmine(&mut commands, &pm, &mut meshes, pos);
+            rammer::spawn_rammer_landmine(&mut commands, &pm, &mut meshes, pos);
         }
     }
 }
 
-/// Spawn the time-fused landmine a Rammer leaves behind. Two-tone
-/// disc — dark shell + warning-orange dot — so the silhouette reads
-/// as "stay clear" against the play area. Component-driven fuse and
-/// AOE damage handled by `enemy_landmine_tick`.
-fn spawn_rammer_landmine(
-    commands: &mut Commands,
-    pm: &PaletteMaterials,
-    meshes: &mut Assets<Mesh>,
-    pos: Vec2,
-) {
-    let outer_mesh = meshes.add(Circle::new(1.5));
-    let inner_mesh = meshes.add(Circle::new(0.6));
-    let mine = commands.spawn((
-        Mesh2d(outer_mesh),
-        MeshMaterial2d(pm.mine_outer.clone()),
-        Transform::from_xyz(pos.x, pos.y, 0.5),
-        EnemyLandmine {
-            fuse: RAMMER_MINE_FUSE,
-            damage: RAMMER_MINE_DAMAGE,
-            blast_radius: RAMMER_MINE_RADIUS,
-        },
-        RenderLayers::layer(PLAY_LAYER),
-    )).id();
-    let dot = commands.spawn((
-        Mesh2d(inner_mesh),
-        MeshMaterial2d(pm.enemy_mine_dot.clone()),
-        Transform::from_xyz(0.0, 0.0, 0.05),
-        RenderLayers::layer(PLAY_LAYER),
-    )).id();
-    commands.entity(dot).insert(ChildOf(mine));
-}

@@ -568,6 +568,7 @@ pub fn level_complete_check(
     mut state: ResMut<MapState>,
     mut campaign: ResMut<crate::CampaignProgress>,
     combat_ctx: Res<CombatContext>,
+    mut boss_reward_pending: ResMut<crate::boss_reward::BossRewardPending>,
     mut next_state: ResMut<NextState<crate::AppState>>,
     mode: Res<crate::modes::GameMode>,
     enemies: Query<Entity, With<Enemy>>,
@@ -578,8 +579,19 @@ pub fn level_complete_check(
     if enemies.iter().count() > 0 { return; }
 
     let id = state.current as usize;
+    // Capture the boss class BEFORE flipping ownership so the reward
+    // screen knows which class to offer for recruit. The class lives
+    // on the section regardless of clear order; ownership flip is
+    // separate.
+    let boss_class = state
+        .sections
+        .get(id)
+        .and_then(|s| s.boss_class);
     if id < state.owned.len() && !state.owned[id] {
         state.owned[id] = true;
+    }
+    if let Some(class) = boss_class {
+        boss_reward_pending.0 = Some(class);
     }
     campaign.battles_cleared = campaign.battles_cleared.saturating_add(1);
 

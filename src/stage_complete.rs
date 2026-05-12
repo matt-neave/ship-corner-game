@@ -167,14 +167,17 @@ pub fn tick_stage_complete(
     time: Res<Time>,
     mut timer: ResMut<StageCompleteTimer>,
     pending: Res<crate::xp::LevelUpsPending>,
+    boss_reward: Res<crate::boss_reward::BossRewardPending>,
     mut next: ResMut<NextState<crate::AppState>>,
 ) {
     timer.0 += time.delta_secs();
     if timer.0 >= DURATION {
-        // Level-ups earned this stage get spent before the shop opens.
-        // Each pick decrements the queue; the click handler routes back
-        // here-or-onward to Customize when it's drained.
-        if pending.0 > 0 {
+        // Pick order: boss reward (if the just-cleared section had one)
+        // → level-up cards (any pending levels) → shop. Each screen
+        // hands off to the next once it's done.
+        if boss_reward.0.is_some() {
+            next.set(crate::AppState::BossReward);
+        } else if pending.0 > 0 {
             next.set(crate::AppState::LevelUp);
         } else {
             next.set(crate::AppState::Customize);

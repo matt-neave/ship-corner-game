@@ -143,10 +143,13 @@ pub fn map_boat_movement(
             state.boat_target = None;
         } else {
             let desired = (-to.x).atan2(to.y);
-            let new_h = approach_angle(heading.0, desired, stats.turn_speed.effective() * dt);
+            // Map navigation uses the unmodded base speeds so high-end
+            // builds (or hobbled ones) don't change how long it takes to
+            // cross a section — keeps overworld pacing consistent.
+            let new_h = approach_angle(heading.0, desired, stats.turn_speed.base * dt);
             heading.0 = new_h;
             let dir = Vec2::new(-new_h.sin(), new_h.cos());
-            let new_pos = pos + dir * stats.move_speed.effective() * dt;
+            let new_pos = pos + dir * stats.move_speed.base * dt;
             // Map's bounds are the authored 200×200 square regardless
             // of the combat play-area shape — keep clamp on PLAY_WORLD
             // (which aliases PLAY_WORLD_H = 200).

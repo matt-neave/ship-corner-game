@@ -212,8 +212,15 @@ pub fn bullet_collisions(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mut queue: ResMut<PendingDamageQueue>,
-    bullets: Query<(Entity, &Transform, &Bullet, &Velocity, Option<&Knockback>), (Without<Enemy>, Without<Friendly>, Without<Ally>)>,
-    enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
+    bullets: Query<
+        (
+            Entity, &Transform, &Bullet, &Velocity,
+            Option<&Knockback>,
+            Option<&crate::harpoon::HarpoonTip>,
+        ),
+        (Without<Enemy>, Without<Friendly>, Without<Ally>),
+    >,
+    enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
     mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
 ) {
@@ -231,7 +238,7 @@ pub fn bullet_collisions(
 
     let dt = time.delta_secs();
 
-    for (be, btf, b, bv, kb) in &bullets {
+    for (be, btf, b, bv, kb, harpoon_tip) in &bullets {
         let bp = btf.translation.truncate();
         // Swept segment for this frame. `apply_velocity` already moved
         // the bullet to `bp` this tick; rewind by `velocity * dt` for
@@ -262,6 +269,15 @@ pub fn bullet_collisions(
                             velocity: dir * kb.force,
                             decay_per_sec: crate::cannon::CANNONBALL_KNOCKBACK_DECAY,
                         });
+                    }
+                    if harpoon_tip.is_some() {
+                        // Attach a tether + spawn the chain visual. The
+                        // tether's source is the player ship — taken
+                        // from the same `friendly` query the enemy-bullet
+                        // path uses below.
+                        if let Ok((fe, _, _, _, _)) = friendly.single() {
+                            crate::harpoon::attach_harpoon(&mut commands, &em, &pm, fe, ee);
+                        }
                     }
                     // Crits only roll for player-sourced bullets — ally
                     // damage uses its baseline number for share-bar
@@ -349,7 +365,7 @@ pub fn process_damage_events(
     em: Option<Res<EffectMeshes>>,
     mut enemies: Query<
         (Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity),
-        (With<Enemy>, Without<Friendly>, Without<Ally>),
+        (With<Enemy>, Without<Friendly>),
     >,
     on_fire: Query<&OnFire>,
     on_frost: Query<&OnFrost>,
@@ -397,7 +413,7 @@ fn process_damage_event(
     em: &EffectMeshes,
     future_stun: f32,
     enemy_snap: &[(Entity, Vec2, f32)],
-    enemies: &mut Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>, Without<Ally>)>,
+    enemies: &mut Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
     on_fire: &Query<&OnFire>,
     on_frost: &Query<&OnFrost>,
     on_conduit: &Query<&OnConduit>,

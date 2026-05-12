@@ -51,3 +51,11 @@ dev = ["bevy/dynamic_linking"]
 # Affects PLAY_WORLD_W / PLAY_INTERNAL_W and every spawn-bounds,
 # despawn, camera, and HUD layout that reads them.
 wide_play = []
+# AB-test a playable arena 20% bigger than the camera viewport.
+# Entities live inside `ARENA_W × ARENA_H` (= 1.2× viewport) while
+# the camera renders the same viewport-sized window; the camera
+# follows the player and clamps to the arena edges, mirroring how
+# top-down games handle "bigger world than screen". Off → arena
+# matches the viewport (no follow needed). On → ~1.44× the play
+# space per stage. Try `cargo run --features big_arena`.
+big_arena = []

@@ -14,13 +14,22 @@ pub const UI_WIDTH: f32 = 280.0;
 
 // ---------- Play area dimensions ----------
 //
-// The play arena is a centred axis-aligned rectangle. The default
-// build keeps it square at 200×200; building with the `wide_play`
-// Cargo feature swaps to 360×200 for AB-testing wider stages.
-// `_W` / `_H` are authoritative; the unqualified `PLAY_INTERNAL` /
-// `PLAY_WORLD` aliases point at the HEIGHT axis (kept for sites
-// that genuinely don't care about which axis — e.g. HUD layout
-// helpers that target the vertical extent).
+// Three related concepts; keep them straight:
+//
+// * `PLAY_INTERNAL_W/H` — render target size in pixels.
+// * `PLAY_WORLD_W/H`    — camera viewport in world units (= internal
+//                         px when 1:1). What the player SEES.
+// * `ARENA_W/H`         — playable bounds where entities live + AI
+//                         confines. Equal to viewport by default; the
+//                         `big_arena` Cargo feature scales it up so
+//                         the camera follows the player and clamps to
+//                         the larger arena.
+//
+// The default build keeps everything 200×200; building with the
+// `wide_play` Cargo feature swaps the viewport to 360×200 for
+// AB-testing wider stages; building with `big_arena` keeps the
+// viewport but stretches `ARENA_*` by `ARENA_SCALE` so the arena
+// overruns the screen.
 
 #[cfg(feature = "wide_play")]
 pub const PLAY_INTERNAL_W: u32 = 360;
@@ -34,19 +43,43 @@ pub const PLAY_WORLD_W: f32 = 360.0;
 pub const PLAY_WORLD_W: f32 = 200.0;
 pub const PLAY_WORLD_H: f32 = 200.0;
 
+/// Multiplier from viewport to arena. `1.0` keeps them locked; the
+/// `big_arena` feature bumps it to `1.2` so each axis grows 20%
+/// beyond what the camera can show.
+#[cfg(feature = "big_arena")]
+pub const ARENA_SCALE: f32 = 1.2;
+#[cfg(not(feature = "big_arena"))]
+pub const ARENA_SCALE: f32 = 1.0;
+
+/// Arena bounds in world units. Equals the viewport unless `big_arena`
+/// is enabled, in which case it grows by `ARENA_SCALE`. Use this for
+/// anywhere "the playable region" matters — spawn extents, AI
+/// confinement, ship wall-bounce. **The map view should keep using
+/// `PLAY_WORLD_*` since the map renders inside the viewport.**
+pub const ARENA_W: f32 = PLAY_WORLD_W * ARENA_SCALE;
+pub const ARENA_H: f32 = PLAY_WORLD_H * ARENA_SCALE;
+
+/// `true` when the arena is larger than the viewport along either
+/// axis. `apply_camera_follow` checks this to decide whether to
+/// auto-follow + clamp the camera.
+#[inline]
+pub fn arena_overruns_viewport() -> bool {
+    ARENA_W > PLAY_WORLD_W + 0.001 || ARENA_H > PLAY_WORLD_H + 0.001
+}
+
 /// Legacy aliases — kept so call sites that don't distinguish axes
 /// still compile. New code should prefer the `_W` / `_H` pair.
 pub const PLAY_INTERNAL: u32 = PLAY_INTERNAL_H;
 pub const PLAY_WORLD: f32 = PLAY_WORLD_H;
 
-/// Is this world-space position inside the play arena (a centred
-/// `PLAY_WORLD_W × PLAY_WORLD_H` rectangle)? Used by enemy firing
-/// systems to avoid taking pot-shots from outside the visible play
-/// field — off-screen enemies should drift back IN before they shoot.
+/// Is this world-space position inside the playable arena? Used by
+/// enemy firing systems so off-arena enemies don't pot-shot from
+/// outside the bounds. With `big_arena` the arena is wider than the
+/// visible viewport — bullets still spawn anywhere in the arena.
 #[inline]
 pub fn in_play_area(p: bevy::math::Vec2) -> bool {
-    let hw = PLAY_WORLD_W * 0.5;
-    let hh = PLAY_WORLD_H * 0.5;
+    let hw = ARENA_W * 0.5;
+    let hh = ARENA_H * 0.5;
     p.x.abs() < hw && p.y.abs() < hh
 }
 
@@ -67,6 +100,19 @@ pub const HUD_LAYER:     usize = 4;
 /// every primitive is rasterized at the internal resolution before being
 /// scaled up.
 pub const CUSTOMIZE_LAYER: usize = 5;
+
+/// Layer for the hull-select dockyard scene — water, wooden piers,
+/// and one parked-ship mesh per hull variant. Mirrors the customize
+/// pipeline (own camera → low-res image → nearest-neighbor upscale)
+/// so the chunky-pixel look matches in-game combat. Active only while
+/// `AppState::HullSelect`.
+pub const DOCKYARD_LAYER: usize = 6;
+
+/// Internal render-target resolution for the dockyard. Wider than tall
+/// so the 4-column berth grid fits comfortably without crowding the
+/// RHS Bevy UI manifest panel that overlays the right portion.
+pub const DOCKYARD_INTERNAL_W: u32 = 320;
+pub const DOCKYARD_INTERNAL_H: u32 = 200;
 
 /// Internal resolution of the customize render target. Picked so 4×
 /// upscale equals the default 1280×800 window — keeps things pixel-
@@ -247,10 +293,6 @@ pub const RESONATE_DECAY:           f32 = 2.0;
 pub const RESONATE_DAMAGE_PER_STACK: f32 = 0.20;
 pub const RESONATE_MAX_STACKS:      u8  = 5;
 
-// (Old Wave-mode constants — FRIENDLY_HP_WAVE, WAVE_*_DELAY,
-// FRIENDLY_DOCK_*, ENEMY_WAVE_X, PIER_* — were removed with the
-// retired Wave game mode + pier drafting system.)
-
 // ---------- Wave structure ----------
 //
 // A combat encounter is split into discrete waves. Star tier picks the
@@ -272,28 +314,32 @@ pub fn waves_for_stars(stars: u8) -> u8 {
     }
 }
 
-/// Enemy count for a single wave. Composed from three terms:
+/// Enemy count for a single wave. Three terms multiplied:
 ///
-/// - **Base wave ramp**: `4 + wave_idx / 2` — within a stage, later
-///   waves feel weightier than the opener.
-/// - **Stage progression**: `× (1 + 0.25 × min(battles_cleared, 6))` —
-///   gentler ramp than before AND capped, so a long campaign can't
-///   compound the multiplier into chaos. Stage 1 = ×1.0, Stage 2 =
-///   ×1.25, …, Stage 7+ caps at ×2.5.
-/// - **Star density**: `× (1 + 0.2 × (stars - 1))` — higher-star
-///   sections are denser per wave on top of having more waves total
-///   (`waves_for_stars`). 5★ ≈ ×1.8 vs 1★ baseline.
+/// - **Base ramp**: `3 + wave_idx`. Linear inside a stage so later
+///   waves feel meaningfully bigger than the opener.
+/// - **Stage progression**: `× (1 + 0.22 × min(battles_cleared, 12))`.
+///   Stage 1 = ×1.0, Stage 13+ caps at ×3.64 — late campaign should
+///   feel like a swarm, not the same count + harder variants.
+/// - **Star density**: `× (1 + 0.20 × (stars - 1))`. 5★ ≈ ×1.8.
 ///
-/// Maximum theoretical wave size with everything maxed: last wave of
-/// a 5★ stage 7+ ≈ `(4+5) × 2.5 × 1.8 ≈ 40`. Concurrent on-screen cap
-/// (`CombatContext::enemy_cap`) drips overflow in as existing enemies
-/// die so the arena stays legible.
+/// Concurrent on-screen cap (`CombatContext::enemy_cap`) drips overflow
+/// in as existing enemies die so the arena stays legible.
 pub fn wave_size(wave_idx: u8, stars: u8, battles_cleared: u32) -> u32 {
-    let base = 4.0 + (wave_idx as u32 / 2) as f32;
-    let capped_cleared = battles_cleared.min(6) as f32;
-    let progress_mult = 1.0 + 0.25 * capped_cleared;
-    let star_mult = 1.0 + 0.2 * (stars.saturating_sub(1) as f32);
+    let base = 3.0 + wave_idx as f32;
+    let capped_cleared = battles_cleared.min(12) as f32;
+    let progress_mult = 1.0 + 0.22 * capped_cleared;
+    let star_mult = 1.0 + 0.20 * (stars.saturating_sub(1) as f32);
     (base * progress_mult * star_mult).round().max(1.0) as u32
+}
+
+/// Per-drip interval inside a `Spawning` phase. Falls with progression
+/// so late-stage swarms arrive faster — the same 60-enemy wave at
+/// stage 1 vs stage 12 reads completely differently when the second
+/// one drops twice as quick.
+pub fn wave_spawn_interval(battles_cleared: u32) -> f32 {
+    let capped = battles_cleared.min(12) as f32;
+    (0.15 - 0.007 * capped).max(0.06)
 }
 
 /// True when this wave should swap to the boss-style variant mix.

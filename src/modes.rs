@@ -24,12 +24,8 @@ use crate::ui::{ScoreText, UiPanel};
 
 // ---------- Resources ----------
 
-/// Top-level game-mode resource. Only one variant survives — the
-/// previous `Wave` mode (scripted auto-battle, dock spawn, pier
-/// drafting) was retired in favour of Sandbox's own sub-wave system
-/// inside `CombatContext`. The enum is kept as a single-variant
-/// resource so future modes can be added without re-wiring resource
-/// insertion / `Default` derives elsewhere.
+/// Top-level game-mode resource. Single-variant for now (Sandbox); the
+/// enum lets future modes plug in without re-wiring resource insertion.
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GameMode {
     #[default]
@@ -105,11 +101,10 @@ pub struct DesktopHint;
 
 // ---------- Layout helpers (used by mode + UI + ship systems) ----------
 
-/// Authoritative play-area screen rect for the current window size. Both the
-/// upscale sprite placement and cursor→world mapping use this so they can't
-/// drift out of sync as the window resizes. `ui_width` is 0 in desktop mode.
-/// Returns `(left, top, width, height)` — the rect is no longer square when
-/// the `wide_play` Cargo feature flips `PLAY_INTERNAL_W` to 360.
+/// Authoritative play-area screen rect for the current window size. Both
+/// the upscale sprite placement and cursor→world mapping read this so
+/// they can't drift out of sync as the window resizes. `ui_width` is 0
+/// in desktop mode. Returns `(left, top, width, height)`.
 pub fn play_area_screen_rect(logical_w: f32, logical_h: f32, ui_width: f32) -> (f32, f32, f32, f32) {
     let avail_w = (logical_w - ui_width).max(0.0);
     let scale_x = (avail_w / PLAY_INTERNAL_W as f32).floor();
@@ -346,10 +341,16 @@ pub fn apply_camera_follow(
         ),
     >,
 ) {
-    let target = if follow.active {
-        friendly.single().ok()
-            .map(|f_tf| f_tf.translation.truncate())
-            .unwrap_or(Vec2::ZERO)
+    // With `big_arena` the arena is wider than the viewport — the
+    // camera HAS to follow the player and clamp to the arena edges,
+    // otherwise the screen shows water beyond the playable bounds.
+    // Without `big_arena`, the FOLLOW button is the only control.
+    let force_follow = crate::balance::arena_overruns_viewport();
+    let player_pos = friendly.single().ok()
+        .map(|f_tf| f_tf.translation.truncate())
+        .unwrap_or(Vec2::ZERO);
+    let target = if force_follow || follow.active {
+        clamp_camera_to_arena(player_pos)
     } else {
         Vec2::ZERO
     };
@@ -374,6 +375,25 @@ pub fn apply_camera_follow(
         cam_tf.translation.x = target.x + shake_off.x;
         cam_tf.translation.y = target.y + shake_off.y;
     }
+}
+
+/// Clamp the camera centre so the viewport stays inside the arena.
+/// Half the overscan (arena minus viewport) on each axis is the
+/// maximum the camera can drift from origin before the viewport
+/// edge would fall outside the arena.
+///
+/// When the arena equals the viewport (default, no `big_arena`) the
+/// clamp collapses to `0` on both axes — the camera sits at origin
+/// regardless of player position. That branch is also why this still
+/// produces sensible output for the user-toggled FOLLOW mode in the
+/// default build: the player moves around within a fixed view.
+fn clamp_camera_to_arena(player_pos: bevy::math::Vec2) -> bevy::math::Vec2 {
+    let half_overscan_x = ((crate::balance::ARENA_W - crate::balance::PLAY_WORLD_W) * 0.5).max(0.0);
+    let half_overscan_y = ((crate::balance::ARENA_H - crate::balance::PLAY_WORLD_H) * 0.5).max(0.0);
+    bevy::math::Vec2::new(
+        player_pos.x.clamp(-half_overscan_x, half_overscan_x),
+        player_pos.y.clamp(-half_overscan_y, half_overscan_y),
+    )
 }
 
 // ---------- Screen shake ----------
