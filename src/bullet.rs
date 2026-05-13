@@ -493,11 +493,25 @@ fn process_damage_event(
     // splash victims receive NO further rune procs (events pushed
     // with empty `runes`) so a heavy-rune bullet doesn't pepper
     // half the screen with Fire/Frost/Shock.
+    //
+    // Stacking is internal: more Blast runes = more radius (linear
+    // with stack count). Player-facing tooltip just calls it [AOE],
+    // hiding the stack mechanic so the rune reads as a transformation
+    // rather than a numeric upgrade.
+    //
+    // Splash rune synergy: each Splash rune on the same slot widens
+    // the radius by +50% × rune_effect (identical formula to Splash's
+    // effect on Mortar), so Splash now actually does something on
+    // non-Mortar weapons when paired with Blast.
     let blast_stacks = ev.runes.iter().filter(|&&r| r == Rune::Blast).count() as f32;
     if blast_stacks > 0.0 && !ev.procced.contains(&Rune::Blast) {
+        let splash_stacks = ev.runes.iter().filter(|&&r| r == Rune::Splash).count() as f32;
+        let rune_effect = player_stats.rune_damage_mult();
+        let splash_mult = 1.0 + 0.5 * splash_stacks * rune_effect;
         let radius = blast_stacks
-            * crate::balance::BLAST_RADIUS_PER_STACK
-            * player_stats.rune_damage_mult();
+            * crate::balance::BLAST_RADIUS
+            * rune_effect
+            * splash_mult;
         let splash_dmg = (ev.amount as f32 * crate::balance::BLAST_SPLASH_FRAC)
             .round()
             .max(1.0) as i32;
@@ -518,11 +532,15 @@ fn process_damage_event(
                 proc_strength: 0.0,
             });
         }
-        // Visible flair so the player sees the splash. A handful of
-        // bullet-color motes around the hit point at low speed reads
-        // as "this bullet exploded a little" without competing with
-        // the hit-flash from the primary target.
-        spawn_hit_particles(commands, em, spark_mat, ev.hit_pos, 8, 65.0, rng);
+        // Visible flair sized to the actual splash radius. A
+        // single-point hit-particle burst (the previous version)
+        // scattered randomly regardless of how big the splash
+        // really was, so the player couldn't tell the radius from
+        // the visual. Instead we drop particles in a ring at the
+        // resolved radius and use a fixed palette orange so the
+        // Blast AOE reads as a distinct "explosive" cue independent
+        // of the host weapon's bullet colour.
+        spawn_blast_ring(commands, em, &pm.blast, ev.hit_pos, radius, rng);
     }
 
     // Lethal-only branch: Cascade is the one rune that fires *because*
@@ -715,6 +733,57 @@ fn process_damage_event(
 }
 
 /// Spawn a short-lived **zig-zag** lightning bolt visual between two
+/// Particle ring sized to the Blast splash radius — so the player can
+/// read the actual reach off the visual instead of guessing from a
+/// scatter of motes. Particles sit on the rim (jittered between 75%
+/// and 100% of `radius` for some depth) and drift outward slowly so
+/// the ring lingers at the right size before dissipating. Particle
+/// count scales with radius so a wide splash doesn't look sparse and
+/// a small one isn't over-crowded.
+fn spawn_blast_ring(
+    commands: &mut Commands,
+    em: &EffectMeshes,
+    mat: &Handle<ColorMaterial>,
+    centre: Vec2,
+    radius: f32,
+    rng: &mut rand::rngs::ThreadRng,
+) {
+    use std::f32::consts::TAU;
+    if radius <= 0.5 { return; }
+    // Roughly 0.8 particles per spec-pixel of radius, clamped so the
+    // tiny base splash still reads as a ring (≥8 particles) and the
+    // biggest stacks don't blow up the particle count (≤32).
+    let count = (radius * 0.8).round().clamp(8.0, 32.0) as u32;
+    for i in 0..count {
+        // Evenly spaced base angle + small jitter — reads as a
+        // deliberate ring rather than random scatter.
+        let base_a = (i as f32 / count as f32) * TAU;
+        let a = base_a + rng.gen_range(-0.18..0.18);
+        let dir = Vec2::new(a.cos(), a.sin());
+        let r = radius * rng.gen_range(0.75..1.0);
+        let pos = centre + dir * r;
+        // Outward drift is small relative to lifetime so the ring
+        // stays at roughly its spawn diameter instead of flying past
+        // the actual blast extent.
+        let v = dir * rng.gen_range(8.0..18.0);
+        let rot = (-v.x).atan2(v.y);
+        let scale = rng.gen_range(0.7..1.1);
+        let life = rng.gen_range(0.30..0.55);
+        commands.spawn((
+            Mesh2d(em.particle.clone()),
+            MeshMaterial2d(mat.clone()),
+            Transform {
+                translation: Vec3::new(pos.x, pos.y, 5.5),
+                rotation: Quat::from_rotation_z(rot),
+                scale: Vec3::new(scale, scale, 1.0),
+            },
+            crate::effects::HitParticle { life, max_life: life, base_scale: scale },
+            Velocity(v),
+            bevy::render::view::RenderLayers::layer(crate::balance::PLAY_LAYER),
+        ));
+    }
+}
+
 /// world points. Built from `SEGMENTS` straight beam-mesh segments
 /// strung between sample points along the line `a → b`; interior
 /// points get a random perpendicular jitter so the bolt forks like

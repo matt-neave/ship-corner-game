@@ -230,6 +230,7 @@ pub const FIRE_HEX:  &str = "#ff8030"; // bright fire orange
 pub const FROST_HEX: &str = "#80d8ff"; // cool sky blue (cyan-ish, distinct from fire)
 pub const SHOCK_HEX: &str = "#ffe680"; // electric yellow (lightning arc)
 pub const BLEED_HEX: &str = "#b21030"; // deep crimson (DoT blood drips)
+pub const BLAST_HEX: &str = "#ef7d57"; // hot orange (Blast on-hit AOE ring)
 
 // ---------- UI theme (LHS panel + draft cards) ----------
 pub const UI_BG:        Color = Color::srgb(0.07, 0.08, 0.11);
@@ -432,6 +433,10 @@ pub struct PaletteMaterials {
     pub shock: Handle<ColorMaterial>,
     /// Bleed-rune particle color (dark crimson drip motes).
     pub bleed: Handle<ColorMaterial>,
+    /// Blast-rune splash ring color (palette orange). A fixed hue so
+    /// the Blast AOE reads as a distinct "explosive" cue regardless
+    /// of the host weapon's own bullet colour.
+    pub blast: Handle<ColorMaterial>,
     /// Translucent green tint for owned territory. Currently unused —
     /// section fills are rendered via a pre-rasterized sprite in `map.rs`
     /// (single-quad rendering avoids alpha-blend triangle seams). Left in
@@ -552,6 +557,7 @@ impl PaletteMaterials {
             frost:                 materials.add(hex(FROST_HEX)),
             shock:                 materials.add(hex(SHOCK_HEX)),
             bleed:                 materials.add(hex(BLEED_HEX)),
+            blast:                 materials.add(hex(BLAST_HEX)),
             // Map tints: opaque pre-blended colors. Alpha-blended translucent
             // tints over a fan-triangulated mesh leave faint visible "rays"
             // along each fan-edge (the alpha math doesn't perfectly

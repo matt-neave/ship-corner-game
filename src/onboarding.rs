@@ -163,7 +163,7 @@ pub fn spawn_new_enemy_banner(
         commands,
         stack_bottom_px(stack_index),
         theme::ACCENT,
-        "New!",
+        "New enemy!",
         Some(variant.label()),
         enemy_short_desc(variant),
         theme::ON_SURFACE,

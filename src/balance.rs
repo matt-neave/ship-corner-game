@@ -304,14 +304,12 @@ pub const RESONATE_DAMAGE_PER_STACK: f32 = 0.20;
 pub const RESONATE_MAX_STACKS:      u8  = 5;
 
 // ---------- Blast rune (on-impact AOE on any weapon) ----------
-/// Radius added per Blast stack, in world units, before Rune Effect
-/// scales it. Each Blast stack adds this much radius to the impact
-/// splash. Tuned small so a single rune on an MG isn't oppressive;
-/// multiple stacks + high Rune Effect = mortar-comparable area.
-pub const BLAST_RADIUS_PER_STACK: f32 = 6.0;
+/// Radius (world units) of the on-impact splash, before Rune Effect
+/// scales it and before the Splash rune's per-stack widener applies.
+pub const BLAST_RADIUS:           f32 = 12.0;
 /// Fraction of the bullet's primary damage applied to each enemy
-/// caught in the splash. Less than 1.0 so a four-stack Blast on a
-/// crit-Sniper isn't doing 4× full damage to half the screen.
+/// caught in the splash. Less than 1.0 so a Blast'd crit-Sniper
+/// isn't doing full damage to half the screen.
 pub const BLAST_SPLASH_FRAC:      f32 = 0.6;
 
 // ---------- Wave structure ----------

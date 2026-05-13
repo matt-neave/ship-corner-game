@@ -18,13 +18,14 @@ use super::drag::{
 };
 use super::setup::{
     empty_slot_color, empty_socket_color, rune_color_for, turret_barrel_color_for,
-    turret_color_for, CustomizeScrapText, SellPricePreview, ShipRuneSocketLockHash,
-    ShipRuneSocketPart, ShipSlotBadgeText,
+    turret_color_for, CustomizeScrapText, DragSourceMarker, SellPricePreview,
+    ShipRuneSocketLockHash, ShipRuneSocketPart, ShipSlotBadgeText,
     ShipSlotBase, ShopRerollBg, ShopRerollBtn, ShopRerollCostText, ShopRuneAoeTag,
     ShopRuneAoeTagText, ShopRuneCostText, ShopRuneNameText, ShopRuneVisual,
     ShopTurretAoeTag, ShopTurretAoeTagText, ShopTurretBadgeText, ShopTurretBase,
     ShopTurretCostText, ShopTurretNameText, ShopTurretVisual,
 };
+use crate::rune::Rune;
 use super::CustomizeOpen;
 
 pub fn update_customize_ui(
@@ -47,11 +48,13 @@ pub fn update_customize_ship(
     open: Res<CustomizeOpen>,
     cfg: Res<TurretConfig>,
     drag: Res<DragState>,
+    shop: Option<Res<CustomizeShop>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     bases: Query<(&ShipSlotBase, &MeshMaterial2d<ColorMaterial>)>,
     socket_parts: Query<(&ShipRuneSocketPart, &MeshMaterial2d<ColorMaterial>)>,
     mut hash_overlays: Query<(&ShipRuneSocketLockHash, &mut Visibility)>,
     mut badge_texts: Query<(&ShipSlotBadgeText, &mut Text2d)>,
+    drag_sources: Query<(&Transform, &super::setup::HitArea, &DragSourceMarker)>,
 ) {
     if !open.open {
         return;
@@ -94,7 +97,19 @@ pub fn update_customize_ship(
     // when the slot already holds a targeting rune in another socket
     // — targeting-rune exclusivity: one per weapon. The base material
     // stays the regular empty-socket tint so the hash reads cleanly.
+    //
+    // The hash is gated on the player *currently interacting with a
+    // targeting rune*: either actively dragging one, or hovering one
+    // in the shop. Otherwise the warning is irrelevant noise on every
+    // slot that already holds a targeting rune.
+    let active_rune = active_targeting_rune(
+        &drag,
+        shop.as_deref(),
+        &cfg,
+        &drag_sources,
+    );
     let lock_state = |slot_idx: usize, rune_idx: usize| -> bool {
+        if active_rune.is_none() { return false; }
         let s = cfg.slots[slot_idx];
         if !s.equipped { return false; }
         if dragged_slot == Some(slot_idx) { return false; }
@@ -635,5 +650,66 @@ pub fn handle_close_click(
             next.set(crate::AppState::Map);
             return;
         }
+    }
+}
+
+/// Which targeting rune (if any) the player is currently *interacting
+/// with* — defined as either dragging it (from a ship socket or a shop
+/// card) or hovering it on a shop card. Returns `None` if the
+/// interaction is not on a targeting rune; that's the signal used by
+/// the socket-lockout hash overlay to stay hidden. Without this gate
+/// the hash would render perpetually on every slot that owns a
+/// targeting rune, which is just noise — the warning only matters
+/// when the player could plausibly try to slot a second one.
+fn active_targeting_rune(
+    drag: &DragState,
+    shop: Option<&CustomizeShop>,
+    cfg: &TurretConfig,
+    drag_sources: &Query<(&Transform, &super::setup::HitArea, &DragSourceMarker)>,
+) -> Option<Rune> {
+    // Drag path — the picked source resolves to a specific rune.
+    if let Some(picked) = drag.picked.as_ref() {
+        return resolve_rune(picked.source, cfg, shop);
+    }
+    // Hover path — only matters when nothing is being dragged. Walk
+    // every drag source under the cursor and pick the smallest hit
+    // area (sockets win over slot bases, matching the click-resolver
+    // behaviour in `complete_drag`). Only shop runes contribute here:
+    // hovering an already-equipped ship rune doesn't suggest the
+    // player is about to add a second one.
+    let cursor = drag.spec_cursor?;
+    let mut best: Option<(f32, Rune)> = None;
+    for (tf, hit, marker) in drag_sources {
+        if !matches!(marker.0, DragSourceKind::ShopRune(_)) { continue; }
+        let centre = tf.translation.truncate();
+        let half = hit.size * 0.5;
+        if cursor.x < centre.x - half.x || cursor.x > centre.x + half.x { continue; }
+        if cursor.y < centre.y - half.y || cursor.y > centre.y + half.y { continue; }
+        let Some(rune) = resolve_rune(marker.0, cfg, shop) else { continue; };
+        let area = hit.size.x * hit.size.y;
+        if best.map_or(true, |(a, _)| area < a) {
+            best = Some((area, rune));
+        }
+    }
+    let (_, rune) = best?;
+    if !rune.is_targeting() { return None; }
+    Some(rune)
+}
+
+fn resolve_rune(
+    source: DragSourceKind,
+    cfg: &TurretConfig,
+    shop: Option<&CustomizeShop>,
+) -> Option<Rune> {
+    match source {
+        DragSourceKind::ShipRune { slot, rune_idx } => {
+            let rune = cfg.slots.get(slot)?.runes.get(rune_idx).copied().flatten()?;
+            if rune.is_targeting() { Some(rune) } else { None }
+        }
+        DragSourceKind::ShopRune(idx) => {
+            let rune = shop?.runes.get(idx).copied().flatten()?;
+            if rune.is_targeting() { Some(rune) } else { None }
+        }
+        _ => None,
     }
 }

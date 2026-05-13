@@ -962,7 +962,7 @@ fn tag_chip_color(name: &str) -> Option<Color> {
     // Targeting-rune chip — informational tag underneath the rune
     // name. Cool slate-grey so it reads as a meta-category, distinct
     // from elemental colours used by Fire/Frost/Shock.
-    if name == "TARGETING" {
+    if name == "TARGET" {
         return Some(Color::srgb(0.70, 0.80, 0.95));
     }
     // `[???]` is rendered in dim grey — it's the "synergy not yet
@@ -1178,7 +1178,9 @@ fn describe_source(
             if !s.equipped {
                 return None;
             }
-            s.runes[rune_idx].map(|r| rune_tooltip(r, stats))
+            // Pass the slot's full rune array so Blast can fold in any
+            // sibling Splash runes when displaying its splash radius.
+            s.runes[rune_idx].map(|r| rune_tooltip(r, stats, Some(&s.runes)))
         }
         DragSourceKind::ShopTurret(idx) => shop
             .and_then(|s| s.turrets.get(idx))
@@ -1190,7 +1192,9 @@ fn describe_source(
             .and_then(|s| s.runes.get(idx))
             .and_then(|o| o.as_ref())
             .copied()
-            .map(|r| rune_tooltip(r, stats)),
+            // No slot context yet — the player hasn't placed it. Blast
+            // will display its base radius.
+            .map(|r| rune_tooltip(r, stats, None)),
     }
 }
 
@@ -1295,7 +1299,11 @@ fn turret_tooltip(
     (title, body)
 }
 
-fn rune_tooltip(rune: Rune, stats: &crate::stats::PlayerStats) -> (String, String) {
+fn rune_tooltip(
+    rune: Rune,
+    stats: &crate::stats::PlayerStats,
+    slot_runes: Option<&[Option<Rune>; 3]>,
+) -> (String, String) {
     let mut body = String::new();
     // Targeting runes carry a `[Targeting Mode]` chip on the line
     // beneath the name so the player can tell at a glance that
@@ -1305,12 +1313,16 @@ fn rune_tooltip(rune: Rune, stats: &crate::stats::PlayerStats) -> (String, Strin
     // resolve the chip name (which is fine here since the tag is
     // informational, not gameplay).
     if rune.target_priority().is_some() || matches!(rune, Rune::TargetCarousel) {
-        body.push_str("[TARGETING]\n");
+        body.push_str("[TARGET]\n");
     }
-    if matches!(rune, Rune::Splash | Rune::Blast) {
+    // Splash gets the `[AOE]` chip — it's an AoE modifier. Blast
+    // omits it because its description body already ends with
+    // "This weapon is now considered [AOE]." — printing the chip on
+    // top would just be a duplicate.
+    if matches!(rune, Rune::Splash) {
         body.push_str(AOE_TAG);
     }
-    body.push_str(&rune_dynamic_description(rune, stats));
+    body.push_str(&rune_dynamic_description(rune, stats, slot_runes));
     (rune.label().to_string(), body)
 }
 
@@ -1382,7 +1394,11 @@ fn weapon_extra_line(
 /// Numbers reflect the current Rune Effect multiplier so the player
 /// sees the exact value the rune will produce at fire time. Passive
 /// targeting runes fall through to the static description.
-fn rune_dynamic_description(rune: Rune, stats: &crate::stats::PlayerStats) -> String {
+fn rune_dynamic_description(
+    rune: Rune,
+    stats: &crate::stats::PlayerStats,
+    slot_runes: Option<&[Option<Rune>; 3]>,
+) -> String {
     let rune_dmg = stats.rune_damage_mult();
     let chain_count = rune_dmg.round().max(1.0) as i32;
     match rune {
@@ -1465,11 +1481,29 @@ fn rune_dynamic_description(rune: Rune, stats: &crate::stats::PlayerStats) -> St
             )
         }
         Rune::Blast => {
-            let radius = crate::balance::BLAST_RADIUS_PER_STACK * rune_dmg;
+            // "Attacks" not "bullets" — Blast fires inside the shared
+            // damage-event pipeline, so it works for every weapon
+            // type that pushes through `PendingDamageQueue` (melee
+            // Blade, autonomous Helicopter / Octopus, beam Railgun,
+            // mortar shells, regular bullets — all of them).
+            // Deliberately no "per stack" language — Blast reads as
+            // a weapon transformation, not a numeric upgrade.
+            //
+            // When slot context is available (hovering an equipped
+            // Blast, not a shop card), the radius shown folds in any
+            // Splash runes on the same slot — same `+50% × stacks ×
+            // rune_effect` formula the runtime uses. Lets the player
+            // see exactly how Splash + Blast combine without picking
+            // them up off the ship.
+            let splash_stacks = slot_runes
+                .map(|rs| rs.iter().filter(|r| matches!(r, Some(Rune::Splash))).count())
+                .unwrap_or(0) as f32;
+            let splash_mult = 1.0 + 0.5 * splash_stacks * rune_dmg;
+            let radius = crate::balance::BLAST_RADIUS * rune_dmg * splash_mult;
             let pct = crate::balance::BLAST_SPLASH_FRAC * 100.0;
             format!(
-                "Bullets explode on impact, hitting enemies within {:.1} px for {:.0}% damage per stack. Stack to widen.",
-                radius, pct,
+                "Attacks explode on impact, splashing {:.0}% damage to enemies within {:.1} px. This weapon is now considered [AOE].",
+                pct, radius,
             )
         }
         Rune::Hustle => {

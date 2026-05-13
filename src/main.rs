@@ -256,6 +256,17 @@ fn main() {
             primary_window: Some(Window {
                 title: "Ship Game".into(),
                 resolution: (WINDOW_W, WINDOW_H).into(),
+                // On wasm, let Bevy auto-resize the canvas to fill its
+                // parent element. itch.io embeds the game in an iframe
+                // whose dimensions are set on the project page; without
+                // this flag the canvas stays at the desktop default
+                // (WINDOW_W × WINDOW_H) and either overflows or
+                // leaves blank gutters. With it, every frame the
+                // canvas matches the iframe size and the camera /
+                // upscale logic adapts via `resize_customize_display`
+                // + the play-area's letterbox math.
+                #[cfg(target_arch = "wasm32")]
+                fit_canvas_to_parent: true,
                 ..default()
             }),
             ..default()

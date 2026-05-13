@@ -761,11 +761,17 @@ fn spawn_socket_container(
     // visible by `update_customize_ui` when a sibling socket holds a
     // targeting rune (targeting-rune exclusivity). Reads as a hatched
     // "do not enter" pattern instead of a flat red fill.
-    let stripe_mesh = meshes.add(Rectangle::new(SOCKET * 1.4, 0.8));
+    //
+    // Stripe geometry tuned to stay INSIDE the rounded 8×8 socket.
+    // The previous SOCKET × 1.4 length poked past the corners; with
+    // 3 stripes at perp offsets ±2 and length 5, every endpoint
+    // lands within the rounded-corner bounds (max axis displacement
+    // ~3.2 vs socket extent 4).
+    let stripe_mesh = meshes.add(Rectangle::new(5.0, 0.8));
     let dark_mat  = materials.add(Color::srgb(0.30, 0.08, 0.10));
     let light_mat = materials.add(Color::srgb(0.85, 0.42, 0.42));
-    let perps = [-3.0_f32, -1.0, 1.0, 3.0];
-    let mats  = [&dark_mat, &light_mat, &dark_mat, &light_mat];
+    let perps = [-2.0_f32, 0.0, 2.0];
+    let mats  = [&dark_mat, &light_mat, &dark_mat];
     // 45° rotation, perpendicular offset translated along the
     // anti-diagonal so stripes parade across the socket evenly.
     let cos45 = std::f32::consts::FRAC_1_SQRT_2;

@@ -83,7 +83,7 @@ rune_resonate_desc,Hits weaken the target. Up to 5 stacks. Stacks fade without f
 rune_vampire_desc,Heal a sliver of HP every few hits. Stack to drink faster.
 rune_ward_desc,Killing blows refill some shield. Stack for bigger refills.
 rune_bleed_desc,Anti-tank DoT. Ticks a percent of the target's max HP for 4 seconds. Stack to bleed faster.
-rune_blast_desc,Bullets explode on impact, hitting enemies in a small radius. Stack to widen.
+rune_blast_desc,Attacks explode on impact, splashing damage to nearby enemies. This weapon is now considered [AOE].
 rune_hustle_desc,Autonomous units (helicopter, octopus) get +100% move speed per stack. No effect on regular turrets.
 rune_target_furthest,FURTHEST
 rune_target_max_hp,MAX HP

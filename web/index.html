@@ -21,7 +21,15 @@
     }
     canvas {
       display: block;
-      margin: 0 auto;
+      /* Fill the iframe / window completely. Bevy resizes the canvas
+         to its parent each frame (via `fit_canvas_to_parent` on the
+         wasm build), so we just need the CSS to let it occupy 100%
+         of the container without margin centring. `position: fixed`
+         pins it to the viewport regardless of any layout flow above. */
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
       /* `outline: none` strips the focus ring that browsers add to a
          canvas the moment it gains keyboard focus — Bevy's input
          system needs focus to receive keys, so we always want the
