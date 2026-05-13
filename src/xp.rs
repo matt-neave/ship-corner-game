@@ -39,7 +39,8 @@ impl Plugin for LevelUpPlugin {
             .add_systems(OnExit(AppState::LevelUp), exit_level_up)
             .add_systems(
                 Update,
-                handle_level_up_click.run_if(in_state(AppState::LevelUp)),
+                (handle_level_up_click, reveal_level_up_after_layout)
+                    .run_if(in_state(AppState::LevelUp)),
             );
     }
 }
@@ -303,6 +304,38 @@ pub fn enter_level_up(
     spawn_level_up_overlay(&mut commands, &choices, &xp, &stats);
 }
 
+/// Frame-counter reveal: the overlay is spawned `Hidden` with a
+/// 1-frame countdown so Bevy UI's PostUpdate layout pass can place
+/// every child before the player ever sees the panel. Without this
+/// gate, the stats panel + buff cards briefly render at default
+/// (uncomputed) positions for one frame, then snap into place — the
+/// visible "blip" the user reported.
+///
+/// Why a counter and not "reveal on the first run": OnEnter runs
+/// during StateTransition, which is between PreUpdate and Update.
+/// If we revealed in this frame's Update, PostUpdate's layout pass
+/// hasn't computed yet → still flashes. Skipping one full frame
+/// gives layout a chance to run.
+pub fn reveal_level_up_after_layout(
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut Visibility, &mut HideUntilLayout)>,
+) {
+    for (e, mut vis, mut marker) in &mut q {
+        if marker.0 == 0 {
+            if *vis != Visibility::Inherited { *vis = Visibility::Inherited; }
+            commands.entity(e).remove::<HideUntilLayout>();
+        } else {
+            marker.0 -= 1;
+        }
+    }
+}
+
+/// Frame-countdown marker. Spawned with `frames=1`; decremented each
+/// Update until 0, then `reveal_level_up_after_layout` flips the
+/// overlay visible and strips the marker.
+#[derive(Component)]
+pub struct HideUntilLayout(pub u8);
+
 pub fn exit_level_up(mut commands: Commands, q: Query<Entity, With<LevelUpRoot>>) {
     for e in &q {
         commands.entity(e).despawn();
@@ -377,7 +410,12 @@ fn spawn_level_up_overlay(
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
             // Below customize (200) and pause (180); above gameplay HUD.
             ZIndex(160),
-            Visibility::Inherited,
+            // Hidden for one frame so flex layout computes before
+            // the overlay becomes visible (otherwise the stats panel
+            // + buff cards flash at default positions). Cleared by
+            // `reveal_level_up_after_layout` next tick.
+            Visibility::Hidden,
+            HideUntilLayout(1),
             // Absorb clicks so they don't fall through to gameplay UI.
             Button,
             LevelUpRoot,

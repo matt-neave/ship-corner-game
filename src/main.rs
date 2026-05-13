@@ -400,10 +400,17 @@ fn main() {
                 enemy_death_check,
             ).chain(),
             // Track damage frame-to-frame to spawn / refresh enemy
-            // HP bars; visual updater positions + scales them.
+            // HP bars. Gated to combat — outside combat there's no
+            // damage to detect.
             track_enemy_damage_for_hp_bars,
-            update_enemy_hp_bars,
         ).run_if(in_combat_view))
+        // The bar updater runs unconditionally so orphan bars get
+        // cleaned up regardless of state. If the player dies (→
+        // GameOver) while an enemy still had a visible bar, leaving
+        // this gated to combat freezes the bar in place forever —
+        // visible bar with no owner. Letting it tick everywhere
+        // also means bars naturally despawn during pause / shop.
+        .add_systems(Update, update_enemy_hp_bars)
         // Transition detectors — "we just left Playing". Gated on
         // `in_state(Playing)` rather than the broader `in_combat_view`
         // (which includes `StageComplete`) because the conditions they

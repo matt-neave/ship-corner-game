@@ -126,12 +126,20 @@ pub struct PlayerStats {
     pub turret_damage_pct: Stat,
 }
 
+/// Baseline `move_speed` value. Pulled out as a named constant so
+/// `StatKind::format_delta` can express speed mod deltas as a
+/// percentage of base ("+10%") rather than as a raw world-units
+/// number ("+3"), which doesn't read for the player.
+pub const MOVE_SPEED_BASE: f32 = 30.0;
+/// Baseline `turn_speed` value. Same rationale as `MOVE_SPEED_BASE`.
+pub const TURN_SPEED_BASE: f32 = 5.0;
+
 impl Default for PlayerStats {
     fn default() -> Self {
         Self {
             hp: Stat::new(75.0),
-            move_speed: Stat::new(30.0),
-            turn_speed: Stat::new(5.0),
+            move_speed: Stat::new(MOVE_SPEED_BASE),
+            turn_speed: Stat::new(TURN_SPEED_BASE),
             // Default = the cap (360°/s = 2π rad/s). Bumping T.TURN
             // beyond this clamps in `effective_turret_turn_speed`.
             turret_turn_speed: Stat::new(std::f32::consts::TAU),
@@ -143,7 +151,7 @@ impl Default for PlayerStats {
             range_pct: Stat::new(100.0),
             harvest_pct: Stat::new(0.0),
             shield_max: Stat::new(0.0),
-            shield_recharge_rate_pct: Stat::new(20.0),
+            shield_recharge_rate_pct: Stat::new(5.0),
             shield_recharge_delay: Stat::new(3.0),
             rune_damage: Stat::new(1.0),
             turret_damage_pct: Stat::new(0.0),
@@ -398,6 +406,17 @@ impl StatKind {
             | StatKind::ProcStrength
             | StatKind::Range
             | StatKind::Harvest => format!("{:+.0}%", delta),
+            // Movement / turning are stored as raw world units but a
+            // raw "+3" doesn't tell the player anything. Express as
+            // a percentage of the baseline so "+3 SPEED" reads as
+            // "+10% SPEED". Math stays additive on `.flat`; this is
+            // a display-only conversion.
+            StatKind::MoveSpeed => {
+                format!("{:+.0}%", (delta / MOVE_SPEED_BASE) * 100.0)
+            }
+            StatKind::TurnSpeed => {
+                format!("{:+.0}%", (delta / TURN_SPEED_BASE) * 100.0)
+            }
             // Everything else - bare signed number, drop the .0
             // when the value is an integer so it doesn't read as a
             // float (e.g. "+3" not "+3.0").

@@ -36,6 +36,11 @@ use crate::weapon::WeaponType;
 const HARPOON_SCALE_X: f32 = 0.6;
 const HARPOON_SCALE_Y: f32 = 1.8;
 
+/// Projectile speed multiplier vs the standard `BULLET_SPEED`. A
+/// spear should feel snappier than a regular bullet — long range +
+/// faster travel makes the "reach out and grab" fantasy land.
+const HARPOON_SPEED_MULT: f32 = 1.5;
+
 /// World units / sec the impaled enemy is dragged toward the ship.
 /// Faster than the toughest enemy's natural speed so the pull always
 /// wins. Tuned so a 60-unit harpoon shot reels in over ~1.2 s.
@@ -83,15 +88,23 @@ pub struct HarpoonPlugin;
 
 impl Plugin for HarpoonPlugin {
     fn build(&self, app: &mut App) {
-        // The tether tick runs after the AI / friendly-movement block
-        // and before `apply_velocity`, so it gets the final word on
-        // per-frame velocity for harpooned enemies. The chain visual
-        // sync runs alongside other per-frame UI/visual updates and
-        // self-gates on the presence of a chain.
+        // `tick_harpoons` must have the final word on a harpooned
+        // enemy's per-frame velocity. Both `enemy_ai` and
+        // `tick_harpoons` write `Velocity`; without explicit
+        // ordering Bevy can run them in either order, and if
+        // `enemy_ai` runs LAST it overwrites the pull velocity and
+        // the harpoon effectively does nothing. Pin tick_harpoons
+        // after the AI systems and before `apply_velocity` (which
+        // integrates Velocity into Transform) so the pull always
+        // wins. The chain visual sync runs alongside other per-frame
+        // visual updates and self-gates on the presence of a chain.
         app.add_systems(
             Update,
             (
-                tick_harpoons.before(crate::ship::apply_velocity),
+                tick_harpoons
+                    .after(crate::enemy::enemy_ai)
+                    .after(crate::ally::ally_ai)
+                    .before(crate::ship::apply_velocity),
                 update_harpoon_chains,
             ),
         );
@@ -132,7 +145,7 @@ pub fn spawn_harpoon_spear(
             source,
             runes,
         },
-        Velocity(dir * BULLET_SPEED),
+        Velocity(dir * BULLET_SPEED * HARPOON_SPEED_MULT),
         HarpoonTip,
         RenderLayers::layer(PLAY_LAYER),
     )).id();

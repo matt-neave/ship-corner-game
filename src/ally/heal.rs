@@ -9,6 +9,7 @@ use rand::Rng;
 use crate::balance::PLAY_LAYER;
 use crate::components::{Faction, FactionKind, Friendly, Health, Velocity};
 use crate::effects::{EffectMeshes, HitParticle};
+use crate::enemy::Enemy;
 use crate::modes::GameMode;
 use crate::palette::PaletteMaterials;
 
@@ -112,8 +113,19 @@ pub fn tender_heal_beam(
         (Entity, &Transform, &Faction, &mut Health),
         (With<Friendly>, Without<Ally>, Without<HealBeamEmitter>),
     >,
-    mut heal_targets: Query<
+    // Pure allies (Friendly side ally ships). `Without<Enemy>` keeps
+    // boss-side ships out — those are handled by the enemy query below
+    // because their max-HP authority is `Enemy.max_hp`, not `class.hp()`.
+    mut ally_targets: Query<
         (Entity, &Transform, &Ally, &Faction, &mut Health),
+        (Without<Friendly>, Without<Enemy>, Without<HealBeamEmitter>),
+    >,
+    // Anything with `Enemy` — regular enemy variants AND boss ships
+    // (which carry both `Enemy` and `Ally`). Max HP comes from
+    // `Enemy.max_hp`, set per-variant for regulars and per-class
+    // (`boss_hp`) for bosses, so a single lookup works for both.
+    mut enemy_targets: Query<
+        (Entity, &Transform, &Enemy, &Faction, &mut Health),
         (Without<Friendly>, Without<HealBeamEmitter>),
     >,
 ) {
@@ -130,7 +142,10 @@ pub fn tender_heal_beam(
         let range_sq = emitter.range * emitter.range;
         let heal_faction = emitter.heal_faction;
 
-        let mut chosen: Option<(Entity, Vec2, bool)> = None;
+        // (entity, pos, is_player, max_hp). max_hp is stored at pick
+        // time so the heal-apply branch doesn't have to re-derive it
+        // from the original source query.
+        let mut chosen: Option<(Entity, Vec2, bool, i32)> = None;
 
         if let Ok((fe, ftf, ffac, fh)) = friendly.single() {
             if ffac.0 == heal_faction
@@ -139,14 +154,17 @@ pub fn tender_heal_beam(
             {
                 let fp = ftf.translation.truncate();
                 if fp.distance_squared(tender_pos) < range_sq {
-                    chosen = Some((fe, fp, true));
+                    chosen = Some((fe, fp, true, player_max_hp));
                 }
             }
         }
 
         if chosen.is_none() {
-            let mut best: Option<(Entity, Vec2, i32)> = None;
-            for (ae, atf, ally, afac, h) in &heal_targets {
+            // (entity, pos, missing_hp, max_hp). Pick the unit with
+            // the most missing HP across both ally and enemy pools.
+            let mut best: Option<(Entity, Vec2, i32, i32)> = None;
+
+            for (ae, atf, ally, afac, h) in &ally_targets {
                 if ae == tender_e { continue; }
                 if afac.0 != heal_faction { continue; }
                 if h.0 <= 0 { continue; }
@@ -155,16 +173,31 @@ pub fn tender_heal_beam(
                 if missing <= 0 { continue; }
                 let ap = atf.translation.truncate();
                 if ap.distance_squared(tender_pos) >= range_sq { continue; }
-                if best.map_or(true, |(_, _, m)| missing > m) {
-                    best = Some((ae, ap, missing));
+                if best.map_or(true, |(_, _, m, _)| missing > m) {
+                    best = Some((ae, ap, missing, max));
                 }
             }
-            if let Some((e, p, _)) = best {
-                chosen = Some((e, p, false));
+
+            for (ee, etf, enemy, efac, h) in &enemy_targets {
+                if ee == tender_e { continue; }
+                if efac.0 != heal_faction { continue; }
+                if h.0 <= 0 { continue; }
+                let max = enemy.max_hp;
+                let missing = max - h.0;
+                if missing <= 0 { continue; }
+                let ep = etf.translation.truncate();
+                if ep.distance_squared(tender_pos) >= range_sq { continue; }
+                if best.map_or(true, |(_, _, m, _)| missing > m) {
+                    best = Some((ee, ep, missing, max));
+                }
+            }
+
+            if let Some((e, p, _, max)) = best {
+                chosen = Some((e, p, false, max));
             }
         }
 
-        let Some((target_e, target_pos, is_player)) = chosen else {
+        let Some((target_e, target_pos, is_player, max)) = chosen else {
             emitter.accumulator =
                 (emitter.accumulator - dt * emitter.hp_per_sec).max(0.0);
             continue;
@@ -176,10 +209,11 @@ pub fn tender_heal_beam(
             emitter.accumulator -= heal_int as f32;
             if is_player {
                 if let Ok((_, _, _, mut h)) = friendly.single_mut() {
-                    h.0 = (h.0 + heal_int).min(player_max_hp);
+                    h.0 = (h.0 + heal_int).min(max);
                 }
-            } else if let Ok((_, _, ally, _, mut h)) = heal_targets.get_mut(target_e) {
-                let max = ally.class.hp();
+            } else if let Ok((_, _, _, _, mut h)) = ally_targets.get_mut(target_e) {
+                h.0 = (h.0 + heal_int).min(max);
+            } else if let Ok((_, _, _, _, mut h)) = enemy_targets.get_mut(target_e) {
                 h.0 = (h.0 + heal_int).min(max);
             }
         }
