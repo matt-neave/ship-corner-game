@@ -10,7 +10,6 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 // ---------- Window / layout ----------
 pub const WINDOW_W: f32 = 1280.0;
 pub const WINDOW_H: f32 = 800.0;
-pub const UI_WIDTH: f32 = 280.0;
 
 // ---------- Play area dimensions ----------
 //
@@ -200,19 +199,6 @@ pub const TURRET_ADJACENCY: [&[usize]; 8] = [
     &[5, 6],          // 7 stern → aft wings
 ];
 
-/// i18n keys for each turret name (cell index 0..7). Display strings live in
-/// `data/translations.csv`; this array maps slot index → CSV key.
-pub const TURRET_NAME_KEYS: [&str; 8] = [
-    "turret_bow",
-    "turret_fore_port",
-    "turret_fore_stbd",
-    "turret_mid_port",
-    "turret_mid_stbd",
-    "turret_aft_port",
-    "turret_aft_stbd",
-    "turret_stern",
-];
-
 // ---------- Barrels & bullets ----------
 pub const BARREL_LATERAL:           f32 = 1.15;
 pub const FRIENDLY_BARREL_TIP:      f32 = 5.0;
@@ -306,7 +292,7 @@ pub const RESONATE_MAX_STACKS:      u8  = 5;
 // ---------- Blast rune (on-impact AOE on any weapon) ----------
 /// Radius (world units) of the on-impact splash, before Rune Effect
 /// scales it and before the Splash rune's per-stack widener applies.
-pub const BLAST_RADIUS:           f32 = 12.0;
+pub const BLAST_RADIUS:           f32 = 8.0;
 /// Fraction of the bullet's primary damage applied to each enemy
 /// caught in the splash. Less than 1.0 so a Blast'd crit-Sniper
 /// isn't doing full damage to half the screen.

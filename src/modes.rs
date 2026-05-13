@@ -199,6 +199,15 @@ pub struct ScanlineSprite;
 
 // ---------- Layout helpers (used by mode + UI + ship systems) ----------
 
+/// Vertical breathing room reserved above + below the play area as a
+/// fraction of the window's logical height. A small inset keeps the
+/// play square / map from hitting the top and bottom edges of the
+/// window, which felt cramped on the design layout. Tuned to leave
+/// ~6% margin per side at any window size; play area scales to fit
+/// the remaining height. Tweak this constant if the breathing room
+/// feels off.
+const PLAY_VERTICAL_PAD_RATIO: f32 = 0.06;
+
 /// Authoritative play-area screen rect for the current window size. Both
 /// the upscale sprite placement and cursor→world mapping read this so
 /// they can't drift out of sync as the window resizes. Returns
@@ -216,8 +225,13 @@ pub struct ScanlineSprite;
 /// invisible during gameplay and a clear win over leaving large
 /// letterbox gutters.
 pub fn play_area_screen_rect(logical_w: f32, logical_h: f32) -> (f32, f32, f32, f32) {
+    // Reserve vertical breathing room so the play area doesn't touch
+    // the top / bottom of the window. Horizontal padding falls out
+    // naturally because the scale is fit-on-min: capping height
+    // shrinks the square so the sides grow too.
+    let avail_h = (logical_h * (1.0 - 2.0 * PLAY_VERTICAL_PAD_RATIO)).max(0.0);
     let scale_x = logical_w / PLAY_INTERNAL_W as f32;
-    let scale_y = logical_h / PLAY_INTERNAL_H as f32;
+    let scale_y = avail_h    / PLAY_INTERNAL_H as f32;
     // Floor at 0.5 so a very small window still shows a usable play
     // area rather than collapsing to nothing. Otherwise pure fit.
     let scale = scale_x.min(scale_y).max(0.5);

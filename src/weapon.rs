@@ -252,27 +252,6 @@ fn score_for(
 }
 
 impl WeaponType {
-    /// Forward-cycle through equipped types (for the EQUIP button). `None`
-    /// represents wrapping back to "unequipped". New tag-flavour weapons
-    /// (Cannon → Booster → Blade) sit at the end of the cycle so the
-    /// classic Naval roster comes first.
-    pub fn next(self) -> Option<Self> {
-        match self {
-            WeaponType::Standard   => Some(WeaponType::Sniper),
-            WeaponType::Sniper     => Some(WeaponType::MachineGun),
-            WeaponType::MachineGun => Some(WeaponType::Shotgun),
-            WeaponType::Shotgun    => Some(WeaponType::Railgun),
-            WeaponType::Railgun    => Some(WeaponType::Mortar),
-            WeaponType::Mortar     => Some(WeaponType::HeliPad),
-            WeaponType::HeliPad    => Some(WeaponType::Cannon),
-            WeaponType::Cannon     => Some(WeaponType::Booster),
-            WeaponType::Booster    => Some(WeaponType::Blade),
-            WeaponType::Blade      => Some(WeaponType::Cage),
-            WeaponType::Cage       => Some(WeaponType::Harpoon),
-            WeaponType::Harpoon    => None,
-        }
-    }
-
     /// Default `(damage, fire_rate)` snapped on when this weapon is selected.
     /// For Shotgun the damage is per pellet; for Railgun it's per enemy
     /// hit by the beam (which pierces).

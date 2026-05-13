@@ -101,12 +101,12 @@ use turret::{
     sync_turret_config, turret_aim_fire, TurretConfig,
 };
 use ui::{
-    force_hide_ui_panel, setup_damage_panel, setup_ui,
+    setup_damage_panel, setup_ui,
     setup_wave_indicator, sync_ally_hp_bars, sync_damage_panel_visibility,
-    ui_button_system, update_ally_hp_values, update_damage_bars, update_damage_panel,
+    ui_button_system, update_ally_hp_values, update_damage_panel,
     update_damage_row_icons, update_fps_text, update_hp_bar_pixel_scale,
     update_hp_subdividers, update_map_button,
-    update_score_text, update_slot_labels, update_vsync_label, update_wave_indicator,
+    update_score_text, update_vsync_label, update_wave_indicator,
     update_wave_ui, DamageStats,
 };
 
@@ -485,8 +485,6 @@ fn main() {
             update_fps_text,
             update_vsync_label,
             ui_button_system,
-            update_slot_labels,
-            update_damage_bars,
             // Sub-tuple keeps the outer count under Bevy's 20-system cap.
             (
                 sync_ui_scale,
@@ -552,7 +550,6 @@ fn main() {
             (
                 handle_debug_buttons, update_debug_button_tints, update_claim_label,
                 toggle_debug_ui_on_hash, sync_debug_panel_visibility,
-                force_hide_ui_panel,
                 update_damage_panel, update_damage_row_icons, sync_damage_panel_visibility,
                 update_wave_indicator,
                 tick_spawn_indicators,

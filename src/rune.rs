@@ -2,7 +2,7 @@
 //!
 //! Adding a new rune type:
 //! 1. Add a variant to `Rune`.
-//! 2. Add rows in `label`, `proc_coefficient`, `cycle_next`, `cycle_prev`.
+//! 2. Add rows in `label`, `description`, `proc_coefficient`.
 //! 3. Add the on-hit branch in `apply_rune` (insert a status component) OR
 //!    add a chain-style branch in `bullet::process_damage_event` (instant
 //!    effect that spawns a follow-up damage event — mirror Shock).
@@ -266,62 +266,6 @@ impl Rune {
 pub fn hustle_speed_mult(runes: &[Option<Rune>; 3], rune_effect: f32) -> f32 {
     let stacks = runes.iter().filter(|r| matches!(r, Some(Rune::Hustle))).count() as f32;
     1.0 + stacks * rune_effect
-}
-
-/// Cycle a slot's rune forward.
-pub fn cycle_next(current: Option<Rune>) -> Option<Rune> {
-    match current {
-        None                       => Some(Rune::Fire),
-        Some(Rune::Fire)           => Some(Rune::Frost),
-        Some(Rune::Frost)          => Some(Rune::Shock),
-        Some(Rune::Shock)          => Some(Rune::Echo),
-        Some(Rune::Echo)           => Some(Rune::Cascade),
-        Some(Rune::Cascade)        => Some(Rune::Conduit),
-        Some(Rune::Conduit)        => Some(Rune::Resonate),
-        Some(Rune::Resonate)       => Some(Rune::TargetFurthest),
-        Some(Rune::TargetFurthest) => Some(Rune::TargetHighestHp),
-        Some(Rune::TargetHighestHp)=> Some(Rune::TargetLowestHp),
-        Some(Rune::TargetLowestHp) => Some(Rune::TargetCarousel),
-        Some(Rune::TargetCarousel) => Some(Rune::Splash),
-        Some(Rune::Splash)         => Some(Rune::Vampire),
-        Some(Rune::Vampire)        => Some(Rune::Ward),
-        Some(Rune::Ward)           => Some(Rune::Bleed),
-        Some(Rune::Bleed)          => Some(Rune::Blast),
-        Some(Rune::Blast)          => Some(Rune::Hustle),
-        Some(Rune::Hustle)         => None,
-    }
-}
-
-/// Cycle backward — reverse of `cycle_next`.
-pub fn cycle_prev(current: Option<Rune>) -> Option<Rune> {
-    match current {
-        None                       => Some(Rune::Hustle),
-        Some(Rune::Hustle)         => Some(Rune::Blast),
-        Some(Rune::Blast)          => Some(Rune::Bleed),
-        Some(Rune::Bleed)          => Some(Rune::Ward),
-        Some(Rune::Ward)           => Some(Rune::Vampire),
-        Some(Rune::Vampire)        => Some(Rune::Splash),
-        Some(Rune::Splash)         => Some(Rune::TargetCarousel),
-        Some(Rune::TargetCarousel) => Some(Rune::TargetLowestHp),
-        Some(Rune::TargetLowestHp) => Some(Rune::TargetHighestHp),
-        Some(Rune::TargetHighestHp)=> Some(Rune::TargetFurthest),
-        Some(Rune::TargetFurthest) => Some(Rune::Resonate),
-        Some(Rune::Resonate)       => Some(Rune::Conduit),
-        Some(Rune::Conduit)        => Some(Rune::Cascade),
-        Some(Rune::Cascade)        => Some(Rune::Echo),
-        Some(Rune::Echo)           => Some(Rune::Shock),
-        Some(Rune::Shock)          => Some(Rune::Frost),
-        Some(Rune::Frost)          => Some(Rune::Fire),
-        Some(Rune::Fire)           => None,
-    }
-}
-
-/// Display string for a rune slot — "NONE" or the rune's own label.
-pub fn rune_display(rune: Option<Rune>) -> &'static str {
-    match rune {
-        None    => tr("rune_none"),
-        Some(r) => r.label(),
-    }
 }
 
 // ---------- On-hit application ----------

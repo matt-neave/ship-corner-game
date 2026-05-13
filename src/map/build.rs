@@ -153,8 +153,8 @@ pub fn build_map_fill_image(state: &MapState, palette: &Palette) -> Image {
     let h = PLAY_INTERNAL;
     let mut data = vec![0u8; (w * h * 4) as usize];
 
-    let owned = blend_to_bgra(palette.ocean, Color::srgb(0.18, 0.98, 0.40), 0.70);
-    let enemy = blend_to_bgra(palette.ocean, Color::srgb(1.00, 0.05, 0.15), 0.70);
+    let owned = blend_to_rgba(palette.ocean, Color::srgb(0.18, 0.98, 0.40), 0.70);
+    let enemy = blend_to_rgba(palette.ocean, Color::srgb(1.00, 0.05, 0.15), 0.70);
     let transparent: [u8; 4] = [0, 0, 0, 0];
 
     for py in 0..h {
@@ -179,29 +179,32 @@ pub fn build_map_fill_image(state: &MapState, palette: &Palette) -> Image {
         }
     }
 
+    // Rgba8UnormSrgb so WebGL2 / ANGLE can sample this sprite —
+    // sampling a Bgra8 sRGB texture is unreliable on those backends
+    // and leaves the green / red territory tints invisible on web.
     let mut img = Image::new(
         Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         TextureDimension::D2,
         data,
-        TextureFormat::Bgra8UnormSrgb,
+        TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     );
     img.sampler = ImageSampler::nearest();
     img
 }
 
-/// Mix `tint` into `base` at weight `t` (0=base, 1=tint) and return BGRA
-/// bytes for the `Bgra8UnormSrgb` format.
-fn blend_to_bgra(base: Color, tint: Color, t: f32) -> [u8; 4] {
+/// Mix `tint` into `base` at weight `t` (0=base, 1=tint) and return RGBA
+/// bytes for the `Rgba8UnormSrgb` format.
+fn blend_to_rgba(base: Color, tint: Color, t: f32) -> [u8; 4] {
     let b: bevy::color::Srgba = base.into();
     let n: bevy::color::Srgba = tint.into();
     let r  = (b.red   * (1.0 - t) + n.red   * t).clamp(0.0, 1.0);
     let g  = (b.green * (1.0 - t) + n.green * t).clamp(0.0, 1.0);
     let bl = (b.blue  * (1.0 - t) + n.blue  * t).clamp(0.0, 1.0);
     [
-        (bl * 255.0).round() as u8,
-        (g  * 255.0).round() as u8,
         (r  * 255.0).round() as u8,
+        (g  * 255.0).round() as u8,
+        (bl * 255.0).round() as u8,
         255,
     ]
 }

@@ -104,7 +104,7 @@ impl Plugin for CustomizePlugin {
             // visibility on the strip.
             .add_systems(
                 Update,
-                (start_drag, update_drag_ghost, complete_drag, update_sell_label)
+                (start_drag, promote_pending_drag, update_drag_ghost, complete_drag, update_sell_label)
                     .chain()
                     .after(sync_customize_text)
                     .after(track_customize_cursor),
@@ -130,8 +130,8 @@ pub use setup::{
     setup_customize_ui, sync_customize_text, turret_barrel_color_for, turret_color_for,
 };
 pub use drag::{
-    complete_drag, init_customize_shop, start_drag, tick_purchase_particles,
-    track_customize_cursor, update_drag_ghost, DragState,
+    complete_drag, init_customize_shop, promote_pending_drag, start_drag,
+    tick_purchase_particles, track_customize_cursor, update_drag_ghost, DragState,
 };
 pub use shop_mods::{handle_shop_mod_click, update_shop_mod_cards};
 pub use stats_panel::{handle_stat_debug_buttons, sync_stat_debug_visibility, sync_stats_panel};

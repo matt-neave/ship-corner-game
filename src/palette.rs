@@ -230,19 +230,12 @@ pub const FIRE_HEX:  &str = "#ff8030"; // bright fire orange
 pub const FROST_HEX: &str = "#80d8ff"; // cool sky blue (cyan-ish, distinct from fire)
 pub const SHOCK_HEX: &str = "#ffe680"; // electric yellow (lightning arc)
 pub const BLEED_HEX: &str = "#b21030"; // deep crimson (DoT blood drips)
-pub const BLAST_HEX: &str = "#ef7d57"; // hot orange (Blast on-hit AOE ring)
+pub const BLAST_HEX: &str = "#94b0c2"; // soft blue-grey shockwave (distinct from Fire's orange)
 
-// ---------- UI theme (LHS panel + draft cards) ----------
-pub const UI_BG:        Color = Color::srgb(0.07, 0.08, 0.11);
-pub const UI_ROW_BG:    Color = Color::srgb(0.12, 0.13, 0.17);
-pub const UI_ROW_DIV:   Color = Color::srgb(0.22, 0.24, 0.30);
+// ---------- UI theme (HUD chrome) ----------
 pub const UI_TEXT:      Color = Color::srgb(0.92, 0.93, 0.96);
 pub const UI_TEXT_DIM:  Color = Color::srgb(0.55, 0.60, 0.70);
 pub const UI_VALUE:     Color = Color::srgb(1.00, 0.85, 0.30);
-pub const UI_BTN_BG:    Color = Color::srgb(0.22, 0.24, 0.30);
-pub const UI_EQUIP_BG:  Color = Color::srgb(0.18, 0.40, 0.26);
-pub const UI_ACTIVE_BG: Color = Color::srgb(0.20, 0.28, 0.40);
-pub const UI_DOT_ON:    Color = Color::srgb(1.00, 0.85, 0.30);
 
 // ---------- Palette resource ----------
 #[derive(Resource, Clone, Debug)]

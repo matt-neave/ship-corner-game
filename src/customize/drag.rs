@@ -44,6 +44,11 @@ use super::CustomizeOpen;
 #[derive(Resource, Default)]
 pub struct DragState {
     pub picked: Option<Picked>,
+    /// A press-and-hold candidate, waiting out the debounce window
+    /// before becoming an active drag. A quick click → release inside
+    /// `DRAG_HOLD_THRESHOLD` resolves as a click-buy with no ghost
+    /// ever spawned, so the visual stays still for shop clicks.
+    pub pending: Option<Pending>,
     pub ghost: Option<Entity>,
     /// Last known spec cursor — used by the ghost-follow system + hit-test.
     pub spec_cursor: Option<Vec2>,
@@ -54,6 +59,23 @@ pub struct Picked {
     pub source: DragSourceKind,
     pub payload: Payload,
 }
+
+/// A draggable hit by the press but not yet promoted to an active
+/// drag. `press_time` is `Time::elapsed_secs()` at the press; the
+/// promoter checks the gap each frame and converts to `picked` once
+/// the threshold passes.
+#[derive(Clone)]
+pub struct Pending {
+    pub source: DragSourceKind,
+    pub payload: Payload,
+    pub press_time: f32,
+}
+
+/// How long a mouse-down must be held on a draggable before a drag
+/// ghost actually appears. Below this window we treat the press as a
+/// click-buy. Tuned so a deliberate click feels instant but a held
+/// press starts the drag without noticeable latency.
+pub const DRAG_HOLD_THRESHOLD: f32 = 0.15;
 
 #[derive(Clone, Copy)]
 pub enum Payload {
@@ -288,17 +310,15 @@ pub fn track_customize_cursor(
 // ---------- Press → start drag ----------
 
 pub fn start_drag(
-    mut commands: Commands,
     open: Res<CustomizeOpen>,
     cfg: Res<TurretConfig>,
     shop_opt: Option<Res<CustomizeShop>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    time: Res<Time>,
     mut drag: ResMut<DragState>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
     sources: Query<(&Transform, &HitArea, &DragSourceMarker)>,
 ) {
-    if !open.open || drag.picked.is_some() {
+    if !open.open || drag.picked.is_some() || drag.pending.is_some() {
         return;
     }
     if !mouse.just_pressed(MouseButton::Left) {
@@ -321,12 +341,39 @@ pub fn start_drag(
     }
     let Some((_, source)) = best else { return };
 
-    // Shop AND ship sources both enter the drag flow now. Shop drops
-    // on a valid slot/socket consume the shop offering + deduct cost
-    // in `complete_drag`. Releasing without hitting a drop target
-    // falls back to click-buy (auto-place to the first empty slot)
-    // so a quick click still buys without requiring precise aim.
+    // Stash as a *pending* drag rather than spawning the ghost
+    // immediately. `promote_pending_drag` upgrades it to an active
+    // drag after `DRAG_HOLD_THRESHOLD`; if the player releases first
+    // (a click rather than a hold), `complete_drag` resolves the
+    // pending as a click-buy with no ghost ever visible.
     let Some(payload) = payload_for(source, &cfg, &shop) else { return };
+    drag.pending = Some(Pending {
+        source,
+        payload,
+        press_time: time.elapsed_secs(),
+    });
+}
+
+/// Promote a held-down pending drag to an active drag once the
+/// debounce window elapses. Spawns the ghost only at this point, so
+/// a quick click → release before the threshold never causes the
+/// drag animation to flash.
+pub fn promote_pending_drag(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut drag: ResMut<DragState>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    if drag.picked.is_some() { return; }
+    let Some(pending) = drag.pending.as_ref() else { return };
+    if time.elapsed_secs() - pending.press_time < DRAG_HOLD_THRESHOLD {
+        return;
+    }
+    let Some(cursor) = drag.spec_cursor else { return };
+    let source = pending.source;
+    let payload = pending.payload;
+    drag.pending = None;
     drag.picked = Some(Picked { source, payload });
     let ghost = spawn_ghost(&mut commands, &mut meshes, &mut materials, payload, cursor);
     drag.ghost = Some(ghost);
@@ -567,12 +614,43 @@ pub fn complete_drag(
     if !mouse.just_released(MouseButton::Left) {
         return;
     }
-    let Some(picked) = drag.picked.take() else {
+
+    // Release-while-pending = the press never crossed the debounce
+    // threshold, so the player meant to *click*, not drag. Skip the
+    // drop-target resolution path entirely and run the click-buy
+    // directly — no ghost ever spawned, no transient drag visual.
+    if drag.picked.is_none() {
+        if let Some(pending) = drag.pending.take() {
+            let from_shop = matches!(
+                pending.source,
+                DragSourceKind::ShopTurret(_) | DragSourceKind::ShopRune(_)
+            );
+            if from_shop {
+                let burst_color = purchase_burst_color(
+                    &pending.source,
+                    shop.as_deref(),
+                );
+                if let (Some(mut shop_ref), Some(cursor)) = (shop.as_mut(), drag.spec_cursor) {
+                    if click_buy_shop(pending.source, &mut cfg, &mut shop_ref, &mut scrap) {
+                        if let Some(color) = burst_color {
+                            spawn_purchase_burst(
+                                &mut commands, &mut meshes, &mut materials, cursor, color,
+                            );
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        // Nothing in flight — clean up any stale ghost just in case.
         for e in &ghosts {
             commands.entity(e).despawn();
         }
         return;
-    };
+    }
+
+    let picked = drag.picked.take().expect("checked is_none above");
+    drag.pending = None;
     drag.ghost = None;
     for e in &ghosts {
         commands.entity(e).despawn();
@@ -641,25 +719,15 @@ pub fn complete_drag(
             }
         }
         None => {
-            // Released without aim on a slot/socket — for shop
-            // sources, behave like a click-buy: auto-place into the
-            // first empty target. Keeps the quick-click UX even
-            // though we always spawn a ghost on mouse-down now.
-            if from_shop {
-                let burst_color = purchase_burst_color(
-                    &picked.source,
-                    shop.as_deref(),
-                );
-                if let Some(mut shop_ref) = shop {
-                    if click_buy_shop(picked.source, &mut cfg, &mut shop_ref, &mut scrap) {
-                        if let Some(color) = burst_color {
-                            spawn_purchase_burst(
-                                &mut commands, &mut meshes, &mut materials, cursor, color,
-                            );
-                        }
-                    }
-                }
-            }
+            // Released off any drop target. A genuine click (press +
+            // release inside `DRAG_HOLD_THRESHOLD`) is handled by the
+            // pending branch at the top of this function — by the time
+            // we reach the drop-resolution arm, the player has been
+            // dragging a ghost. Releasing in empty space then means
+            // "cancel this drag", not "auto-place". No purchase, no
+            // refund, no movement.
+            let _ = from_shop;
+            let _ = cursor;
         }
     }
 }

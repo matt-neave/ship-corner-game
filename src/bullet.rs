@@ -733,13 +733,12 @@ fn process_damage_event(
 }
 
 /// Spawn a short-lived **zig-zag** lightning bolt visual between two
-/// Particle ring sized to the Blast splash radius — so the player can
-/// read the actual reach off the visual instead of guessing from a
-/// scatter of motes. Particles sit on the rim (jittered between 75%
-/// and 100% of `radius` for some depth) and drift outward slowly so
-/// the ring lingers at the right size before dissipating. Particle
-/// count scales with radius so a wide splash doesn't look sparse and
-/// a small one isn't over-crowded.
+/// Visual for the Blast on-impact AOE: a bright central pop plus a
+/// burst of dots that fly outward from the centre, reaching the splash
+/// `radius` over their lifetime. The player reads the actual reach off
+/// the visual instead of guessing from a scatter of motes. Dot count
+/// scales with radius so a small splash still reads as an explosion
+/// and a wide one isn't over-crowded.
 fn spawn_blast_ring(
     commands: &mut Commands,
     em: &EffectMeshes,
@@ -750,32 +749,47 @@ fn spawn_blast_ring(
 ) {
     use std::f32::consts::TAU;
     if radius <= 0.5 { return; }
-    // Roughly 0.8 particles per spec-pixel of radius, clamped so the
-    // tiny base splash still reads as a ring (≥8 particles) and the
-    // biggest stacks don't blow up the particle count (≤32).
-    let count = (radius * 0.8).round().clamp(8.0, 32.0) as u32;
-    for i in 0..count {
-        // Evenly spaced base angle + small jitter — reads as a
-        // deliberate ring rather than random scatter.
-        let base_a = (i as f32 / count as f32) * TAU;
-        let a = base_a + rng.gen_range(-0.18..0.18);
-        let dir = Vec2::new(a.cos(), a.sin());
-        let r = radius * rng.gen_range(0.75..1.0);
-        let pos = centre + dir * r;
-        // Outward drift is small relative to lifetime so the ring
-        // stays at roughly its spawn diameter instead of flying past
-        // the actual blast extent.
-        let v = dir * rng.gen_range(8.0..18.0);
-        let rot = (-v.x).atan2(v.y);
-        let scale = rng.gen_range(0.7..1.1);
-        let life = rng.gen_range(0.30..0.55);
+
+    // Soft puff — a single quick flash at the impact, sized about
+    // a third of the splash radius. Reads as displaced air rather
+    // than fire / explosion.
+    {
+        let life = 0.08;
+        let pop_scale = (radius * 0.35).max(1.5);
         commands.spawn((
-            Mesh2d(em.particle.clone()),
+            Mesh2d(em.boarder_dot.clone()),
             MeshMaterial2d(mat.clone()),
             Transform {
-                translation: Vec3::new(pos.x, pos.y, 5.5),
-                rotation: Quat::from_rotation_z(rot),
+                translation: Vec3::new(centre.x, centre.y, 5.6),
+                scale: Vec3::new(pop_scale, pop_scale, 1.0),
+                ..default()
+            },
+            crate::effects::HitParticle { life, max_life: life, base_scale: pop_scale },
+            Velocity(Vec2::ZERO),
+            bevy::render::view::RenderLayers::layer(crate::balance::PLAY_LAYER),
+        ));
+    }
+
+    // A small handful of dots drift outward to the rim. Count
+    // intentionally low so the visual reads as a quiet shockwave
+    // rather than a particle explosion.
+    let count = (radius * 0.6).round().clamp(5.0, 16.0) as u32;
+    let base_life = 0.28;
+    for i in 0..count {
+        let base_a = (i as f32 / count as f32) * TAU;
+        let a = base_a + rng.gen_range(-0.30..0.30);
+        let dir = Vec2::new(a.cos(), a.sin());
+        let life = base_life * rng.gen_range(0.80..1.20);
+        let speed = (radius / base_life) * rng.gen_range(2.4..3.2);
+        let v = dir * speed;
+        let scale = rng.gen_range(0.6..1.0);
+        commands.spawn((
+            Mesh2d(em.boarder_dot.clone()),
+            MeshMaterial2d(mat.clone()),
+            Transform {
+                translation: Vec3::new(centre.x, centre.y, 5.5),
                 scale: Vec3::new(scale, scale, 1.0),
+                ..default()
             },
             crate::effects::HitParticle { life, max_life: life, base_scale: scale },
             Velocity(v),

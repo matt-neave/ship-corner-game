@@ -72,17 +72,17 @@ rune_bleed,BLEED
 rune_blast,BLAST
 rune_hustle,HUSTLE
 rune_fire_desc,Sets enemies ablaze, dealing 1 every 0.5s for 4 seconds.
-rune_frost_desc,Freezes enemies in place. Movement crawls. Stack to deepen the chill.
-rune_shock_desc,Chains lightning to nearby enemies. Stack to add more arcs.
-rune_echo_desc,Fires a second shot at the same target moments later. Stack for more echoes.
-rune_cascade_desc,Killing blows leap to a nearby enemy. Stack for longer chains.
-rune_conduit_desc,Marks the target. Other runes are 10% more likely to trigger on marked enemies. Stack to deepen the mark. Rune Effect scales the bonus.
-rune_resonate_desc,Hits weaken the target. Up to 5 stacks. Stacks fade without fire.
-rune_vampire_desc,Heal a sliver of HP every few hits. Stack to drink faster.
-rune_ward_desc,Killing blows refill some shield. Stack for bigger refills.
-rune_bleed_desc,Anti-tank DoT. Ticks a percent of the target's max HP for 4 seconds. Stack to bleed faster.
+rune_frost_desc,Freezes enemies in place. Movement crawls.
+rune_shock_desc,Chains lightning to nearby enemies.
+rune_echo_desc,Fires a second shot at the same target moments later.
+rune_cascade_desc,Killing blows leap to a nearby enemy.
+rune_conduit_desc,Marks the target. Other runes are 10% more likely to trigger on marked enemies. Rune Effect scales the bonus.
+rune_resonate_desc,Hits weaken the target. Damage taken grows with each hit and fades when the hits stop.
+rune_vampire_desc,Heal a sliver of HP every few hits.
+rune_ward_desc,Killing blows refill some shield.
+rune_bleed_desc,Anti-tank DoT. Ticks a percent of the target's max HP for 4 seconds.
 rune_blast_desc,Attacks explode on impact, splashing damage to nearby enemies. This weapon is now considered [AOE].
-rune_hustle_desc,Autonomous units (helicopter, octopus) get +100% move speed per stack. No effect on regular turrets.
+rune_hustle_desc,Autonomous units get +100% move speed.
 rune_target_furthest,FURTHEST
 rune_target_max_hp,MAX HP
 rune_target_min_hp,MIN HP
@@ -90,9 +90,9 @@ rune_target_furthest_desc,Aim at the furthest enemy in range.
 rune_target_max_hp_desc,Aim at the toughest enemy in range.
 rune_target_min_hp_desc,Aim at the weakest enemy in range.
 rune_target_carousel,CAROUSEL
-rune_target_carousel_desc,Each shot cycles to the next enemy in range. Spreads damage across the wave instead of dumping it all into one target.
+rune_target_carousel_desc,Each shot cycles to the next enemy in range.
 rune_splash,SPLASH
-rune_splash_desc,Bigger blast radius on this turret. Stack to widen further.
+rune_splash_desc,Widens AOE weapons' blast radius by +50%.
 stat_hp_desc,Maximum hull health.
 stat_move_speed_desc,Ship movement speed.
 stat_turn_speed_desc,How fast the ship turns toward the cursor.
@@ -107,7 +107,7 @@ stat_xp_harvest_desc,XP gained from each kill. 100% is baseline (1 XP per kill, 
 stat_shield_max_desc,Recharging shield that absorbs damage before HP takes any.
 stat_shield_rate_desc,How fast the shield refills after a delay.
 stat_shield_delay_desc,Pause after a hit before the shield starts refilling.
-stat_rune_damage_desc,Scales rune effects. Boosts Fire and Detonate damage. Adds chain bolts to Shock. Widens AOE-rune radius.
+stat_rune_damage_desc,Scales rune effects. Boosts Fire damage, adds chain bolts to Shock, widens AOE radius.
 stat_turret_damage_desc,Total damage multiplier on every weapon. 100% is baseline; mods and Naval synergy stack on top.
 map_popup_build,BUILD
 map_building_weaponry,WEAPONRY

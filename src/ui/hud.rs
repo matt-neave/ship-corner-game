@@ -120,7 +120,7 @@ pub fn setup_hud(commands: &mut Commands) {
         },
         BackgroundColor(Color::NONE),
         BorderColor(UI_TEXT_DIM),
-        SlotButton { slot: 0, kind: ButtonKind::ToggleVsync },
+        SlotButton { kind: ButtonKind::ToggleVsync },
     ))
     .with_children(|b| {
         b.spawn((
@@ -147,7 +147,7 @@ pub fn setup_hud(commands: &mut Commands) {
         BackgroundColor(Color::NONE),
         BorderColor(UI_VALUE),
         Visibility::Hidden,
-        SlotButton { slot: 0, kind: ButtonKind::ReturnToMap },
+        SlotButton { kind: ButtonKind::ReturnToMap },
         ReturnToMapButton,
     ))
     .with_children(|b| {
@@ -173,7 +173,7 @@ pub fn setup_hud(commands: &mut Commands) {
         },
         BackgroundColor(Color::NONE),
         BorderColor(UI_VALUE),
-        SlotButton { slot: 0, kind: ButtonKind::ToggleCameraFollow },
+        SlotButton { kind: ButtonKind::ToggleCameraFollow },
         CameraFollowButton,
     ))
     .with_children(|b| {

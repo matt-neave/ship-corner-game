@@ -1426,73 +1426,65 @@ fn rune_dynamic_description(
             )
         }
         Rune::Frost => {
-            // Compounded slow per stack. 1 stack at base = 60% slow,
-            // 2 stacks = 84%, etc. Frost doesn't scale with Rune Effect.
+            // Slow compounds across multiple Frost runes on the same
+            // bullet; the displayed value is the per-application slow.
             let slow_pct = (1.0 - crate::balance::FROST_SPEED_MULT) * 100.0;
             format!(
-                "Freezes enemies for {:.1}s. {:.0}% slow per stack (compounds).",
+                "Freezes enemies for {:.1}s. {:.0}% slow.",
                 crate::balance::FROST_DURATION, slow_pct,
             )
         }
         Rune::Shock => format!(
-            "Chains lightning to {} nearby enemies for 100% weapon damage each. Stack to add more arcs.",
+            "Chains lightning to {} nearby enemies for 100% weapon damage each.",
             chain_count,
         ),
         Rune::Echo => format!(
-            "Fires a second hit on the same target {:.1}s later. Stack for more echoes.",
+            "Fires a second hit on the same target {:.1}s later.",
             crate::rune::ECHO_DELAY,
         ),
         Rune::Cascade => {
-            // Per-stack leap. Each Cascade rune on the bullet adds one
-            // nearest-enemy hop on kill. Chain damage at 70% strength.
-            "Killing blows leap to a nearby enemy at 70% proc strength. Each stack adds another leap.".to_string()
+            "Killing blows leap to a nearby enemy at 70% proc strength.".to_string()
         }
         Rune::Conduit => {
-            // Per-stack bonus = (CONDUIT_PROC_MULT - 1) × rune_effect,
-            // shown as a percentage. Mirrors `OnConduit::proc_mult`.
+            // Bonus mirrors `OnConduit::proc_mult`.
             let pct = (crate::balance::CONDUIT_PROC_MULT - 1.0) * rune_dmg * 100.0;
             format!(
-                "Marks the target. Each stack makes other runes {:+.0}% more likely to trigger on marked enemies.",
+                "Marks the target. Other runes are {:+.0}% more likely to trigger on marked enemies.",
                 pct,
             )
         }
         Rune::Resonate => {
-            // +20% damage per stack on the target, up to 5 stacks.
             let per_stack = crate::balance::RESONATE_DAMAGE_PER_STACK * 100.0;
             format!(
-                "Hits weaken the target: +{:.0}% damage taken per stack (up to {}). Stacks fade after {:.0}s without a hit.",
+                "Hits weaken the target: each hit adds +{:.0}% damage taken (up to {} hits). Fades after {:.0}s without a hit.",
                 per_stack,
                 crate::balance::RESONATE_MAX_STACKS,
                 crate::balance::RESONATE_DECAY,
             )
         }
         Rune::Vampire => {
-            // Hits to heal 1 HP at base = 10 / rune_effect. Floor so
-            // we don't promise sub-hit precision in the tooltip.
             let hits_per_hp = (10.0 / rune_dmg.max(0.001)).max(1.0).round() as i32;
             format!(
-                "Heal 1 HP every {} hits. Stack to drink faster.",
+                "Heal 1 HP every {} hits.",
                 hits_per_hp,
             )
         }
         Rune::Ward => format!(
-            "Killing blows refill {:.0} shield per stack (capped at Shield Max).",
+            "Killing blows refill {:.0} shield (capped at Shield Max).",
             rune_dmg,
         ),
         Rune::Bleed => {
-            // Per-tick % of MAX HP at base = BLEED_PCT_PER_TICK ×
-            // rune_effect. Display as percent with one decimal.
             let pct = crate::balance::BLEED_PCT_PER_TICK * 100.0 * rune_dmg;
             format!(
-                "Anti-tank DoT. Each tick chips {:.1}% of the target's max HP for 4 seconds. Stack to bleed faster.",
+                "Anti-tank DoT. Each tick chips {:.1}% of the target's max HP for 4 seconds.",
                 pct,
             )
         }
         Rune::Splash => {
-            // Per-stack radius bonus on AoE weapons (currently Mortar).
+            // Live value reflects the player's Rune Effect stat.
             let per_stack = 0.5 * rune_dmg * 100.0;
             format!(
-                "Widens this turret's blast radius by {:+.0}% per stack.",
+                "Widens AOE weapons' radius by {:+.0}%.",
                 per_stack,
             )
         }
@@ -1523,12 +1515,12 @@ fn rune_dynamic_description(
             )
         }
         Rune::Hustle => {
-            // Per-stack speed bonus = +100% × rune_effect. Only matters
-            // on an [Autonomous] turret; show the live number so the
-            // player can predict the boost.
+            // Speed bonus applied to the deployed unit of Autonomous-
+            // tagged turrets. Live value reflects the player's Rune
+            // Effect stat.
             let per_stack = rune_dmg * 100.0;
             format!(
-                "Autonomous units (helicopter, octopus) get +{:.0}% move speed per stack. No effect on regular turrets.",
+                "Autonomous units get +{:.0}% move speed.",
                 per_stack,
             )
         }

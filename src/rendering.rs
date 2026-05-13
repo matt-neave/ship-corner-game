@@ -60,50 +60,57 @@ pub fn make_scanline_image() -> Image {
     let mut data = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         let dark = (y % 2) == 0;
-        let bgra = if dark { [0u8, 0, 0, DARK_ALPHA] } else { [0u8, 0, 0, 0] };
-        for _ in 0..w { data.extend_from_slice(&bgra); }
+        let rgba = if dark { [0u8, 0, 0, DARK_ALPHA] } else { [0u8, 0, 0, 0] };
+        for _ in 0..w { data.extend_from_slice(&rgba); }
     }
+    // Rgba8UnormSrgb (not Bgra8) for sampled procedural textures —
+    // WebGL2/ANGLE doesn't reliably support sampling Bgra8 sRGB
+    // textures, so on the web build those sprites render as blank.
+    // Render-target images keep Bgra8 because that's the swap-chain
+    // format wgpu requests on most platforms.
     let mut img = Image::new(
         Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         TextureDimension::D2,
         data,
-        TextureFormat::Bgra8UnormSrgb,
+        TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     );
     img.sampler = ImageSampler::nearest();
     img
 }
 
-/// Build an `N×N` BGRA tile with equal-width diagonal stripes —
+/// Build an `N×N` RGBA tile with equal-width diagonal stripes —
 /// `light` stripes on `(x+y) % tile < tile/2`, otherwise `dark`.
 /// Tileable. `tile` controls the diagonal-stripe period; smaller
 /// tiles repeat the pattern more times within a sprite.
 pub fn make_hash_image_with_tile(light: Color, dark: Color, tile: u32) -> Image {
     let half = tile / 2;
-    let to_bgra = |c: Color| {
+    let to_rgba = |c: Color| {
         let s: bevy::color::Srgba = c.into();
         [
-            (s.blue  * 255.0).round() as u8,
-            (s.green * 255.0).round() as u8,
             (s.red   * 255.0).round() as u8,
+            (s.green * 255.0).round() as u8,
+            (s.blue  * 255.0).round() as u8,
             255u8,
         ]
     };
-    let lb = to_bgra(light);
-    let db = to_bgra(dark);
+    let lb = to_rgba(light);
+    let db = to_rgba(dark);
     let mut data = Vec::with_capacity((tile * tile * 4) as usize);
     for y in 0..tile {
         for x in 0..tile {
             let band = ((x + y) % tile) < half;
-            let bgra = if band { lb } else { db };
-            data.extend_from_slice(&bgra);
+            let rgba = if band { lb } else { db };
+            data.extend_from_slice(&rgba);
         }
     }
+    // Rgba8UnormSrgb so the texture samples correctly on WebGL2 /
+    // ANGLE — see `make_scanline_image` for the same constraint.
     let mut img = Image::new(
         Extent3d { width: tile, height: tile, depth_or_array_layers: 1 },
         TextureDimension::D2,
         data,
-        TextureFormat::Bgra8UnormSrgb,
+        TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     );
     img.sampler = ImageSampler::nearest();
@@ -389,19 +396,46 @@ pub fn update_hud_camera_viewport(
     mut hud: Query<&mut Camera, With<HudCamera>>,
 ) {
     let Ok(window) = windows.single() else { return; };
+    let phys_target = window.physical_size();
+    // Minimize / iframe-collapse / mid-resize can briefly leave the
+    // window's physical size at 0 or 1. Setting a viewport bigger
+    // than the swap-chain target then triggers a wgpu validation
+    // panic ("Scissor Rect … is not contained in the render
+    // target"). Clear the viewport when the window is degenerate and
+    // come back next frame when the size is real again.
+    if phys_target.x <= 1 || phys_target.y <= 1 {
+        for mut cam in &mut hud {
+            if cam.viewport.is_some() { cam.viewport = None; }
+        }
+        return;
+    }
+
     let logical_w = window.width();
     let logical_h = window.height();
     let scale = window.scale_factor();
     let (left, top, play_w, play_h) = play_area_screen_rect(logical_w, logical_h);
 
+    let raw_x = (left * scale).round().max(0.0) as u32;
+    let raw_y = (top  * scale).round().max(0.0) as u32;
+    let raw_w = (play_w * scale).round().max(1.0) as u32;
+    let raw_h = (play_h * scale).round().max(1.0) as u32;
+    // Clamp so the viewport always lives inside the swap-chain
+    // target — defensive against any frame where the rounding above
+    // pushes the bottom-right edge one pixel past it.
     let phys_pos = UVec2::new(
-        (left * scale).round() as u32,
-        (top  * scale).round() as u32,
+        raw_x.min(phys_target.x.saturating_sub(1)),
+        raw_y.min(phys_target.y.saturating_sub(1)),
     );
     let phys_size = UVec2::new(
-        (play_w * scale).round() as u32,
-        (play_h * scale).round() as u32,
+        raw_w.min(phys_target.x.saturating_sub(phys_pos.x)),
+        raw_h.min(phys_target.y.saturating_sub(phys_pos.y)),
     );
+    if phys_size.x == 0 || phys_size.y == 0 {
+        for mut cam in &mut hud {
+            if cam.viewport.is_some() { cam.viewport = None; }
+        }
+        return;
+    }
 
     // Viewport doesn't impl PartialEq, so compare its fields manually
     // before writing to avoid spamming change detection every frame.

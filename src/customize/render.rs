@@ -145,7 +145,6 @@ pub fn setup_customize_render(
 /// here would race against their own owners (`apply_crt_mode`,
 /// `update_hash_image`) which only write on state change.
 type GameplayChromeFilter = Or<(
-    With<crate::ui::UiPanel>,
     // DebugPanel is owned by `map::hud::sync_debug_panel_visibility`
     // (combines the `#` toggle + customize-open + pause). Listing it
     // here would race the two writers.
@@ -171,7 +170,6 @@ pub fn toggle_customize_render(
         (
             With<CustomizeDisplaySprite>,
             Without<CustomizeBackdropSprite>,
-            Without<crate::ui::UiPanel>,
         ),
     >,
     mut backdrop_q: Query<
@@ -179,7 +177,6 @@ pub fn toggle_customize_render(
         (
             With<CustomizeBackdropSprite>,
             Without<CustomizeDisplaySprite>,
-            Without<crate::ui::UiPanel>,
         ),
     >,
     mut chrome_q: Query<

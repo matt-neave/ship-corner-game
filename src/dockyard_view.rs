@@ -37,7 +37,6 @@ use crate::AppState;
 /// poke through). Hidden while HullSelect is up so the menu
 /// dominates the frame; restored on exit.
 type GameplayChromeFilter = bevy::ecs::query::Or<(
-    bevy::ecs::query::With<crate::ui::UiPanel>,
     bevy::ecs::query::With<crate::ui::ScoreText>,
     bevy::ecs::query::With<crate::ui::FpsText>,
     bevy::ecs::query::With<crate::ui::ReturnToMapButton>,
