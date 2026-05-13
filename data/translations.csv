@@ -83,6 +83,8 @@ rune_target_min_hp,MIN HP
 rune_target_furthest_desc,Aim at the furthest enemy in range.
 rune_target_max_hp_desc,Aim at the toughest enemy in range.
 rune_target_min_hp_desc,Aim at the weakest enemy in range.
+rune_target_carousel,CAROUSEL
+rune_target_carousel_desc,Each shot cycles to the next enemy in range. Spreads damage across the wave instead of dumping it all into one target.
 rune_splash,SPLASH
 rune_splash_desc,Bigger blast radius on this turret. Stack to widen further.
 stat_hp_desc,Maximum hull health.
@@ -94,12 +96,12 @@ stat_luck_desc,Free re-rolls on failed rune procs. 100% guarantees one re-roll p
 stat_proc_strength_desc,Raises the chance every rune procs on hit.
 stat_crit_desc,Chance to crit on hit. 100% always crits for 2x damage. 200% always for 3x.
 stat_range_desc,Bonus to turret firing range.
-stat_harvest_desc,Bonus scrap per kill. 100% guarantees +1 scrap on every kill.
+stat_harvest_desc,Expected scrap per kill. 100% is baseline; harvest mods and the Pirate synergy stack on top.
 stat_shield_max_desc,Recharging shield that absorbs damage before HP takes any.
 stat_shield_rate_desc,How fast the shield refills after a delay.
 stat_shield_delay_desc,Pause after a hit before the shield starts refilling.
 stat_rune_damage_desc,Scales rune effects. Boosts Fire and Detonate damage. Adds chain bolts to Shock.
-stat_turret_damage_desc,Percentage bonus to every turret's damage. Stacks with synergies.
+stat_turret_damage_desc,Total damage multiplier on every weapon. 100% is baseline; mods and Naval synergy stack on top.
 map_popup_build,BUILD
 map_building_weaponry,WEAPONRY
 map_building_weaponry_desc,Customize turret loadout in this section.

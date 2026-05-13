@@ -113,25 +113,31 @@ impl Synergies {
     /// Combined damage multiplier applied to a slot whose weapon
     /// carries `tag`. Bakes Naval (global) and Support (non-Support
     /// only) together; Support slots opt out of their own buff.
-    pub fn damage_mult_for(&self, tag: WeaponTag) -> f32 {
+    pub fn damage_mult_for(&self, tags: &[WeaponTag]) -> f32 {
         let mut m = self.naval_damage_mult();
-        if !matches!(tag, WeaponTag::Support) {
+        // Support's broad buff opts out for any Support-tagged
+        // weapon — including multi-tag weapons where Support is
+        // just one of the tags, so Support never accidentally buffs
+        // itself.
+        if !tags.contains(&WeaponTag::Support) {
             m *= self.support_damage_mult();
         }
         m
     }
 
     /// Combined fire-rate multiplier applied to a slot whose weapon
-    /// carries `tag`. Bakes Autonomous's tag-specific buff AND
-    /// Support's broad buff (Support opts out for itself). Future
-    /// no longer buffs fire rate — its synergy is the on-hit stun
-    /// applied in `process_damage_events`.
-    pub fn fire_rate_mult_for(&self, tag: WeaponTag) -> f32 {
-        let tag_specific = match tag {
-            WeaponTag::Autonomous => self.autonomous_fire_rate_mult(),
-            _ => 1.0,
+    /// carries any of `tags`. Bakes Autonomous's tag-specific buff
+    /// (applied if Autonomous is in the list) AND Support's broad
+    /// buff (opts out if Support is in the list). Future no longer
+    /// buffs fire rate — its synergy is the on-hit stun applied in
+    /// `process_damage_events`.
+    pub fn fire_rate_mult_for(&self, tags: &[WeaponTag]) -> f32 {
+        let tag_specific = if tags.contains(&WeaponTag::Autonomous) {
+            self.autonomous_fire_rate_mult()
+        } else {
+            1.0
         };
-        let support_buff = if matches!(tag, WeaponTag::Support) {
+        let support_buff = if tags.contains(&WeaponTag::Support) {
             1.0
         } else {
             self.support_fire_rate_mult()
@@ -146,15 +152,20 @@ pub fn compute_synergies(cfg: Res<TurretConfig>, mut syn: ResMut<Synergies>) {
     if !cfg.is_changed() { return; }
     let mut counts = [0u8; 6];
     for slot in cfg.slots.iter().filter(|s| s.equipped) {
-        let i = match slot.weapon.tag() {
-            WeaponTag::Naval      => 0,
-            WeaponTag::Future     => 1,
-            WeaponTag::Autonomous => 2,
-            WeaponTag::Pirate     => 3,
-            WeaponTag::Support    => 4,
-            WeaponTag::Melee      => 5,
-        };
-        counts[i] += 1;
+        // Multi-tag weapons (e.g. Harpoon = Pirate + Melee) count
+        // toward EVERY one of their tags. Each tag pool tracks its
+        // own tier independently.
+        for &tag in slot.weapon.tags() {
+            let i = match tag {
+                WeaponTag::Naval      => 0,
+                WeaponTag::Future     => 1,
+                WeaponTag::Autonomous => 2,
+                WeaponTag::Pirate     => 3,
+                WeaponTag::Support    => 4,
+                WeaponTag::Melee      => 5,
+            };
+            counts[i] += 1;
+        }
     }
     *syn = Synergies {
         naval:      tier_for(counts[0]),
@@ -193,12 +204,19 @@ pub fn discover_synergies(
     existing: Query<Entity, With<crate::onboarding::NotificationLifetime>>,
 ) {
     if !synergies.is_changed() { return; }
+    // Seed from the world-visible banner count, then bump locally per
+    // spawn — multiple synergies unlocked in one frame (e.g. dragging
+    // a turret that crosses two tag thresholds) need to stack rather
+    // than overlap. Querying the world per spawn won't work because
+    // commands are buffered until the schedule flushes.
+    let mut stack_index = existing.iter().count();
     for &tag in WeaponTag::all() {
         if tier_for_tag(tag, &synergies) >= 1 && !discovered.has(tag) {
             discovered.mark(tag);
             crate::onboarding::spawn_synergy_discovered_banner(
-                &mut commands, &existing, tag,
+                &mut commands, stack_index, tag,
             );
+            stack_index += 1;
         }
     }
 }

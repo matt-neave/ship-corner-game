@@ -89,6 +89,13 @@ pub enum Rune {
     /// Turret prefers the lowest-HP enemy in arc/range — good for
     /// finishing-blow snipers / scrap harvesting.
     TargetLowestHp,
+    /// "Carousel" — round-robin targeting. Each shot cycles to the
+    /// NEXT enemy in the candidate list instead of dumping every
+    /// bullet into the same priority pick. Cycles deterministically
+    /// via the slot's `cycle_idx` (advanced once per shot), so a
+    /// stable enemy ordering produces a stable rotation. Great on
+    /// sustained-fire weapons against grouped waves.
+    TargetCarousel,
     /// Passive AoE-radius modifier. Currently scoped to Mortar's
     /// splash; future AoE weapons should multiply by the same factor.
     /// Each socketed `Splash` rune contributes additively (+50% per
@@ -110,6 +117,7 @@ impl Rune {
             Rune::TargetFurthest   => tr("rune_target_furthest"),
             Rune::TargetHighestHp  => tr("rune_target_max_hp"),
             Rune::TargetLowestHp   => tr("rune_target_min_hp"),
+            Rune::TargetCarousel   => tr("rune_target_carousel"),
             Rune::Splash           => tr("rune_splash"),
         }
     }
@@ -128,6 +136,7 @@ impl Rune {
             Rune::TargetFurthest   => tr("rune_target_furthest_desc"),
             Rune::TargetHighestHp  => tr("rune_target_max_hp_desc"),
             Rune::TargetLowestHp   => tr("rune_target_min_hp_desc"),
+            Rune::TargetCarousel   => tr("rune_target_carousel_desc"),
             Rune::Splash           => tr("rune_splash_desc"),
         }
     }
@@ -179,6 +188,7 @@ impl Rune {
             Rune::TargetFurthest  => 0.0,
             Rune::TargetHighestHp => 0.0,
             Rune::TargetLowestHp  => 0.0,
+            Rune::TargetCarousel  => 0.0,
             // Splash is a passive AoE-radius modifier read by the
             // mortar firing path; never procs.
             Rune::Splash          => 0.0,
@@ -200,7 +210,8 @@ pub fn cycle_next(current: Option<Rune>) -> Option<Rune> {
         Some(Rune::Resonate)       => Some(Rune::TargetFurthest),
         Some(Rune::TargetFurthest) => Some(Rune::TargetHighestHp),
         Some(Rune::TargetHighestHp)=> Some(Rune::TargetLowestHp),
-        Some(Rune::TargetLowestHp) => Some(Rune::Splash),
+        Some(Rune::TargetLowestHp) => Some(Rune::TargetCarousel),
+        Some(Rune::TargetCarousel) => Some(Rune::Splash),
         Some(Rune::Splash)         => None,
     }
 }
@@ -209,7 +220,8 @@ pub fn cycle_next(current: Option<Rune>) -> Option<Rune> {
 pub fn cycle_prev(current: Option<Rune>) -> Option<Rune> {
     match current {
         None                       => Some(Rune::Splash),
-        Some(Rune::Splash)         => Some(Rune::TargetLowestHp),
+        Some(Rune::Splash)         => Some(Rune::TargetCarousel),
+        Some(Rune::TargetCarousel) => Some(Rune::TargetLowestHp),
         Some(Rune::TargetLowestHp) => Some(Rune::TargetHighestHp),
         Some(Rune::TargetHighestHp)=> Some(Rune::TargetFurthest),
         Some(Rune::TargetFurthest) => Some(Rune::Resonate),
@@ -269,6 +281,7 @@ pub fn apply_rune_stacked(
         Rune::TargetFurthest
         | Rune::TargetHighestHp
         | Rune::TargetLowestHp
+        | Rune::TargetCarousel
         | Rune::Splash => {}
     }
 }

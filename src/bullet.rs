@@ -428,7 +428,7 @@ fn process_damage_event(
     // entity is removed next frame regardless). Only Future-tagged
     // weapons proc the stun, and only when at least one Future
     // synergy tier is active (`future_stun > 0`).
-    if future_stun > 0.0 && matches!(ev.weapon.tag(), crate::weapon::WeaponTag::Future) {
+    if future_stun > 0.0 && ev.weapon.tags().contains(&crate::weapon::WeaponTag::Future) {
         commands
             .entity(ev.target)
             .insert(crate::components::Stunned { remaining: future_stun });
@@ -633,6 +633,7 @@ fn process_damage_event(
             Rune::TargetFurthest
             | Rune::TargetHighestHp
             | Rune::TargetLowestHp
+            | Rune::TargetCarousel
             | Rune::Splash => {}
         }
     }

@@ -127,6 +127,7 @@ pub fn setup_world(
                 barrels: slot.barrels.max(1),
                 next_barrel: 0,
                 runes: slot.runes,
+                cycle_idx: 0,
             },
             RenderLayers::layer(PLAY_LAYER),
         ));

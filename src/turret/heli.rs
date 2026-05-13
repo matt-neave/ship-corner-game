@@ -251,8 +251,13 @@ pub fn helicopter_ai(
         // Rune priority measured relative to the SHIP (Furthest =
         // furthest from ship, not from this helicopter). Per-slot
         // offset keeps multiple helis from converging on one spot.
+        // Helis don't carry their own carousel cursor — passing
+        // `None` makes a Carousel rune degenerate to "first
+        // candidate" instead of crashing. Future work could thread
+        // a per-heli cycle counter through here if Carousel becomes
+        // a meaningful HeliPad slot pick.
         let best_pos = crate::weapon::pick_target(
-            &enemy_snap, ship_pos, cur, &slot_cfg.runes,
+            &enemy_snap, ship_pos, cur, &slot_cfg.runes, None,
         )
         .map(|p| p + crate::weapon::offset_for_slot(heli.owner_slot));
         let best: Option<(f32, Vec2)> = best_pos.map(|p| (p.distance(cur), p));

@@ -135,27 +135,33 @@ const PANEL_H: f32 = 110.0;
 const PANEL_INSET: f32 = 12.0;
 const PANEL_GAP: f32 = 6.0;
 
-/// `existing_banners` is any query that captures BOTH banner kinds
-/// (via `With<NotificationLifetime>`); the count drives the
-/// per-banner vertical offset so a synergy popup that lands during
-/// an active NEW! banner stacks above it instead of overlapping.
-fn stack_bottom_px(count: usize) -> f32 {
-    PANEL_INSET + (count as f32) * (PANEL_H + PANEL_GAP)
+/// `stack_index` is the 0-based slot the banner will sit in, counted
+/// from the bottom of the notification column. The caller is
+/// responsible for incrementing the index when it spawns multiple
+/// banners in one tick — querying `With<NotificationLifetime>` here
+/// would miss the just-spawned ones (commands are buffered, not yet
+/// in the world), causing every banner spawned in the same frame
+/// to stack at index 0 and overlap.
+pub fn stack_bottom_px(stack_index: usize) -> f32 {
+    PANEL_INSET + (stack_index as f32) * (PANEL_H + PANEL_GAP)
 }
 
 /// Spawn the bottom-left "New!" panel for `variant`. Three lines:
 /// accent-yellow "New!" header, the variant's name in body white,
 /// then a short plain-language behaviour cue underneath so the
 /// player learns the threat in one read.
+///
+/// `stack_index` is the slot this banner will occupy. Callers
+/// typically seed it with `existing_banners.iter().count()` and
+/// increment per spawn so multi-spawn frames stack correctly.
 pub fn spawn_new_enemy_banner(
     commands: &mut Commands,
-    existing_banners: &Query<Entity, With<NotificationLifetime>>,
+    stack_index: usize,
     variant: EnemyVariant,
 ) {
-    let bottom_px = stack_bottom_px(existing_banners.iter().count());
     spawn_text_banner(
         commands,
-        bottom_px,
+        stack_bottom_px(stack_index),
         theme::ACCENT,
         "New!",
         Some(variant.label()),
@@ -169,16 +175,16 @@ pub fn spawn_new_enemy_banner(
 /// unlocked synergy. Same three-line layout as the New! enemy
 /// panel — the two share `NotificationLifetime` so they stack via
 /// `stack_bottom_px`. Border + header take the tag's accent color
-/// so each unlock reads distinct at a glance.
+/// so each unlock reads distinct at a glance. See
+/// `spawn_new_enemy_banner` for `stack_index` semantics.
 pub fn spawn_synergy_discovered_banner(
     commands: &mut Commands,
-    existing_banners: &Query<Entity, With<NotificationLifetime>>,
+    stack_index: usize,
     tag: WeaponTag,
 ) {
-    let bottom_px = stack_bottom_px(existing_banners.iter().count());
     spawn_text_banner(
         commands,
-        bottom_px,
+        stack_bottom_px(stack_index),
         tag.color(),
         "Discovered!",
         Some(tag.label()),

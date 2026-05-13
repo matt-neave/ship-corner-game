@@ -1083,6 +1083,7 @@ pub fn rune_color_for(rune: Rune) -> Color {
         Rune::TargetFurthest   => Color::srgb(0.50, 0.30, 0.80), // long-range purple
         Rune::TargetHighestHp  => Color::srgb(0.85, 0.30, 0.30), // big-target red
         Rune::TargetLowestHp   => Color::srgb(0.30, 0.85, 0.40), // execute green
+        Rune::TargetCarousel   => Color::srgb(0.95, 0.85, 0.35), // rotating gold
         Rune::Splash           => Color::srgb(0.95, 0.55, 0.20), // explosive orange
     }
 }

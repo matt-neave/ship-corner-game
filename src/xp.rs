@@ -520,7 +520,7 @@ fn spawn_level_up_overlay(
                                     theme::ON_SURFACE_DIM,
                                 ));
                                 stat_row.spawn(ui_kit::label(
-                                    kind.format_value(stats),
+                                    kind.format_value(stats, None),
                                     theme::FONT_MD,
                                     theme::ON_SURFACE,
                                 ));

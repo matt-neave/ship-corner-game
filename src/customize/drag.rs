@@ -210,6 +210,7 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         Rune::TargetFurthest,
         Rune::TargetHighestHp,
         Rune::TargetLowestHp,
+        Rune::TargetCarousel,
         Rune::Splash,
     ];
     let mut turrets = Vec::with_capacity(3);

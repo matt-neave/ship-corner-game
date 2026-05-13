@@ -170,8 +170,33 @@ pub fn pick_target(
     anchor: bevy::math::Vec2,
     fallback: bevy::math::Vec2,
     runes: &[Option<crate::rune::Rune>; 3],
+    cycle_idx: Option<u32>,
 ) -> Option<bevy::math::Vec2> {
     if candidates.is_empty() { return None; }
+
+    // Carousel rune: pick by deterministic rotation, not score. The
+    // slot's `cycle_idx` advances once per shot in `turret_aim_fire`,
+    // so successive shots step through the in-arc candidates in
+    // order. Callers without a cycle source (helis, octopus) pass
+    // `None` and the rune degenerates to "first candidate" — not
+    // ideal but stable and non-crashing. Stable sorted-by-distance
+    // ordering keeps the rotation visually predictable even as the
+    // candidate set shifts frame to frame.
+    let has_carousel = runes
+        .iter()
+        .any(|r| matches!(*r, Some(crate::rune::Rune::TargetCarousel)));
+    if has_carousel {
+        let mut ordered: Vec<(bevy::math::Vec2, i32)> = candidates.to_vec();
+        ordered.sort_by(|a, b| {
+            a.0.distance_squared(anchor)
+                .partial_cmp(&b.0.distance_squared(anchor))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let n = ordered.len();
+        let idx = (cycle_idx.unwrap_or(0) as usize) % n;
+        return Some(ordered[idx].0);
+    }
+
     let priority = runes
         .iter()
         .find_map(|r| r.and_then(|r| r.target_priority()));
@@ -407,25 +432,44 @@ impl WeaponType {
         )
     }
 
-    /// Gameplay-class tag — the chip rendered in the tooltip and the
-    /// hook for future synergies. See `WeaponTag` for the full taxonomy.
-    pub fn tag(self) -> WeaponTag {
+    /// Gameplay-class tags — every chip rendered in the tooltip and
+    /// every synergy pool this weapon contributes to. Most weapons
+    /// have a single tag; multi-tag weapons (e.g. `Harpoon`) count
+    /// toward two synergies simultaneously, which makes them
+    /// natural "bridge" picks for cross-synergy builds. The FIRST
+    /// tag is treated as the "primary" by the rest of the codebase
+    /// (turret accent colour, banner stacking order). See
+    /// `WeaponTag` for the full taxonomy.
+    pub fn tags(self) -> &'static [WeaponTag] {
         match self {
             WeaponType::Standard
             | WeaponType::Sniper
             | WeaponType::MachineGun
             | WeaponType::Shotgun
-            | WeaponType::Mortar   => WeaponTag::Naval,
-            WeaponType::Railgun    => WeaponTag::Future,
-            WeaponType::HeliPad    => WeaponTag::Autonomous,
-            WeaponType::Cannon     => WeaponTag::Pirate,
-            WeaponType::Booster    => WeaponTag::Support,
-            WeaponType::Blade      => WeaponTag::Melee,
-            WeaponType::Cage       => WeaponTag::Autonomous,
-            WeaponType::Harpoon    => WeaponTag::Melee,
+            | WeaponType::Mortar   => &[WeaponTag::Naval],
+            WeaponType::Railgun    => &[WeaponTag::Future],
+            WeaponType::HeliPad    => &[WeaponTag::Autonomous],
+            WeaponType::Cannon     => &[WeaponTag::Pirate],
+            WeaponType::Booster    => &[WeaponTag::Support],
+            WeaponType::Blade      => &[WeaponTag::Melee],
+            WeaponType::Cage       => &[WeaponTag::Autonomous],
+            // Pirate spear-thrower — counts as Pirate for scrap
+            // synergy AND Melee for the heal-on-kill synergy. The
+            // "reel in then ram" loop fits both flavours.
+            WeaponType::Harpoon    => &[WeaponTag::Pirate, WeaponTag::Melee],
         }
     }
 
+    /// Convenience for call sites that only need the primary
+    /// (display / colour) tag — currently only the in-world turret
+    /// accent. Equivalent to `tags()[0]` and panics only if a weapon
+    /// was ever given an empty tag list (which would be a definition
+    /// bug). Marked `allow(dead_code)` so adding it as a deliberate
+    /// API doesn't have to wait for a second consumer.
+    #[allow(dead_code)]
+    pub fn primary_tag(self) -> WeaponTag {
+        self.tags()[0]
+    }
 }
 
 /// Per-weapon material lookups. Lives in this module (not in palette) so

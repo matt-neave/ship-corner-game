@@ -504,7 +504,7 @@ fn spawn_stats_panel(parent: &mut ChildSpawnerCommands, stats: &PlayerStats) {
                     theme::ON_SURFACE_DIM,
                 ));
                 stat_row.spawn((
-                    Text::new(kind.format_value(stats)),
+                    Text::new(kind.format_value(stats, None)),
                     TextFont { font_size: theme::FONT_MD, ..default() },
                     TextColor(value_color),
                 ));

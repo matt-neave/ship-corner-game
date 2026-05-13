@@ -61,6 +61,13 @@ pub struct TurretSlot {
     /// turret inherit *every* equipped rune; the proc system rolls
     /// each independently. `None` slots are inert.
     pub runes: [Option<Rune>; 3],
+    /// Carousel cursor — advances by 1 every time this slot fires a
+    /// shot. Only read when a `TargetCarousel` rune is socketed:
+    /// `pick_target` indexes into the sorted candidate list with
+    /// `cycle_idx % len` so successive shots step through targets in
+    /// a stable rotation. Wraps at `u32::MAX` (never an issue in
+    /// practice).
+    pub cycle_idx: u32,
 }
 
 /// Marks a barrel mesh child of a turret base. Index 0 is port-side / single,
@@ -142,13 +149,15 @@ pub fn sync_turret_config(
     let turret_damage_mult = stats.turret_damage_mult();
     for (mut slot, mut vis, mut tf, mut mat, children) in &mut q {
         let s = cfg.slots[slot.index];
-        let tag = s.weapon.tag();
+        let tags = s.weapon.tags();
         // Synergy multipliers — Naval is global damage, Future /
         // Autonomous boost their own fire rate, Support boosts every
-        // non-Support turret. See `synergy::Synergies` for the full
-        // ladder.
-        let damage_mult = synergies.damage_mult_for(tag);
-        let synergy_rate_mult = synergies.fire_rate_mult_for(tag);
+        // non-Support turret. Multi-tag weapons pass the full slice
+        // so Support/Autonomous opt-in / opt-out checks see every
+        // tag, not just the primary. See `synergy::Synergies` for
+        // the full ladder.
+        let damage_mult = synergies.damage_mult_for(tags);
+        let synergy_rate_mult = synergies.fire_rate_mult_for(tags);
         // Final damage = base × player TurretDamage % × tag synergy.
         // Live damage flows through `slot.damage` so every downstream
         // consumer (bullets, beams, blades, octopus, helipad heli,
@@ -326,7 +335,11 @@ pub fn turret_aim_fire(
             })
             .collect();
         let best = crate::weapon::pick_target(
-            &candidates, turret_world, turret_world, &slot.runes,
+            &candidates,
+            turret_world,
+            turret_world,
+            &slot.runes,
+            Some(slot.cycle_idx),
         );
 
         let desired_local = if let Some(ep) = best {
@@ -362,6 +375,9 @@ pub fn turret_aim_fire(
                 let barrels_n = slot.barrels.max(1) as f32;
                 // Twin barrels = twice the effective rate (alternating barrels).
                 slot.fire_cd = 1.0 / (slot.fire_rate.max(0.1) * barrels_n);
+                // Advance the Carousel cursor every shot. Wraps at
+                // u32::MAX which is unreachable in any real game.
+                slot.cycle_idx = slot.cycle_idx.wrapping_add(1);
 
                 let total_angle = ship_h + slot.barrel_angle;
                 let barrel_forward = Vec2::new(-total_angle.sin(), total_angle.cos());

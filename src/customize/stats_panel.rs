@@ -132,18 +132,36 @@ pub fn handle_stat_debug_buttons(
 /// raw number alone.
 pub fn sync_stats_panel(
     stats: Res<PlayerStats>,
+    synergies: Res<crate::synergy::Synergies>,
     open: Res<super::CustomizeOpen>,
     mut q: Query<(&StatPanelValue, &mut Text2d, &mut TextColor)>,
 ) {
     if !open.open { return; }
     let baseline = PlayerStats::default();
     for (sv, mut text, mut color) in &mut q {
-        let s = sv.0.format_value(&stats);
+        let s = sv.0.format_value(&stats, Some(&synergies));
         if text.0 != s {
             text.0 = s;
         }
-        let cur = sv.0.stat(&stats).effective();
-        let base = sv.0.stat(&baseline).effective();
+        // For most stats, the buffed/nerfed comparison runs on the
+        // raw `stat.effective()`. The synergy-folded stats (WEAPON
+        // DAMAGE bakes in Naval, HARVEST bakes in Pirate) have to
+        // fold the same multiplier into the colour comparison too
+        // — otherwise a Naval / Pirate active build shows the
+        // boosted percentage in grey because the underlying `.flat`
+        // is still at baseline.
+        let (cur, base) = match sv.0 {
+            StatKind::TurretDamage => (
+                stats.turret_damage_mult() * synergies.naval_damage_mult(),
+                1.0,
+            ),
+            StatKind::Harvest => (
+                (1.0 + stats.harvest_pct.effective() / 100.0)
+                    * synergies.pirate_harvest_mult(),
+                1.0,
+            ),
+            _ => (sv.0.stat(&stats).effective(), sv.0.stat(&baseline).effective()),
+        };
         let want = if cur > base + 0.001 {
             Color::srgb(0.55, 0.95, 0.55) // green: buffed
         } else if cur < base - 0.001 {

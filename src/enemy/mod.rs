@@ -650,8 +650,13 @@ pub fn spawn_enemies(
             // panel so they get a heads-up about the new threat.
             if !seen.has(spawned_variant) {
                 seen.mark(spawned_variant);
+                // One enemy drips in per Update tick, so the query
+                // count is current at this point — no buffered-spawn
+                // race like the synergy-discovery path has.
                 crate::onboarding::spawn_new_enemy_banner(
-                    &mut commands, &existing_banners, spawned_variant,
+                    &mut commands,
+                    existing_banners.iter().count(),
+                    spawned_variant,
                 );
             }
             combat_ctx.spawn_tick =

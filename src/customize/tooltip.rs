@@ -95,9 +95,11 @@ pub struct TooltipLayout {
 pub struct TooltipLayoutState {
     pub pos_spec: Vec2,
     pub size_spec: Vec2,
-    /// `Some(tag)` only when the hovered source is a turret. The
-    /// banner system uses this to look up the ladder + active tier.
-    pub tag: Option<WeaponTag>,
+    /// `Some(tags)` only when the hovered source is a turret. The
+    /// banner system iterates this and stacks one section per tag
+    /// so multi-tag weapons (e.g. Harpoon = Pirate + Melee) show
+    /// every synergy they participate in.
+    pub tags: Option<&'static [WeaponTag]>,
 }
 
 /// Minimum tooltip box dims in spec pixels — the box grows beyond this
@@ -340,11 +342,12 @@ pub fn update_customize_tooltip(
     let shop_ref = data.shop.as_deref();
 
     // `info` tracks the hovered target's (title, body, centre, half-extent);
-    // `info_tag` tracks the WEAPON TAG when the hovered source is a turret
-    // (shop slot or ship slot). Runes and stat rows leave it None, which
-    // hides the synergy banner.
+    // `info_tags` tracks every WEAPON TAG when the hovered source is a turret
+    // (shop slot or ship slot). Multi-tag weapons (e.g. Harpoon) carry
+    // multiple tags so the banner can stack one section per tag. Runes
+    // and stat rows leave it `None`, which hides the synergy banner.
     let mut info: Option<(String, String, Vec2, Vec2)> = None;
-    let mut info_tag: Option<WeaponTag> = None;
+    let mut info_tags: Option<&'static [WeaponTag]> = None;
     let mut best_area = f32::INFINITY;
     for (tf, hit, marker) in &sources {
         let centre = tf.translation.truncate();
@@ -364,7 +367,7 @@ pub fn update_customize_tooltip(
             marker.0, &data.cfg, shop_ref, &data.discovered, &data.stats,
         ) {
             info = Some((title, body, centre, half));
-            info_tag = turret_tag_for_source(marker.0, &data.cfg, shop_ref);
+            info_tags = turret_tags_for_source(marker.0, &data.cfg, shop_ref);
             best_area = area;
         }
     }
@@ -391,7 +394,7 @@ pub fn update_customize_tooltip(
             half,
         ));
         // Stat rows never get a synergy banner — they're stats, not turrets.
-        info_tag = None;
+        info_tags = None;
         best_area = area;
     }
 
@@ -523,7 +526,7 @@ pub fn update_customize_tooltip(
     layout.state = Some(TooltipLayoutState {
         pos_spec: pos,
         size_spec: Vec2::new(tooltip_w_spec, tooltip_h_spec),
-        tag: info_tag,
+        tags: info_tags,
     });
 }
 
@@ -606,57 +609,103 @@ pub fn update_synergy_banner(
         hide(&mut outline_q, &mut fill_q, &mut text_q);
         return;
     };
-    let Some(tag) = state.tag else {
+    let Some(all_tags) = state.tags else {
         hide(&mut outline_q, &mut fill_q, &mut text_q);
         return;
     };
-    // Hide the banner entirely until the player has discovered
-    // this synergy. The `[???]` chip in the main tooltip body is
-    // the only cue at that point — once 2 of this tag are equipped
-    // (`DiscoveredSynergies` flips the bit) the banner reveals
-    // with full description + value ladder.
-    if !discovered.has(tag) {
+    // Multi-tag weapons stack one section per DISCOVERED tag. Hidden
+    // chips (`[???]` in the main tooltip body) don't reveal their
+    // ladder until 2 of that tag have been equipped. So filter down
+    // to the discovered tags only; if none, hide entirely.
+    let visible_tags: Vec<WeaponTag> = all_tags
+        .iter()
+        .copied()
+        .filter(|t| discovered.has(*t))
+        .collect();
+    if visible_tags.is_empty() {
         hide(&mut outline_q, &mut fill_q, &mut text_q);
         return;
     }
-    let (values, descriptor) = synergy_ladder(tag);
-    let tier = active_tier(tag, &synergies);
-    let description = synergy_description(tag);
-    // Auto-battler layout:
-    //   [TAG] description
-    //   (2) value descriptor
-    //   (4) value descriptor   <- active row glows
-    //   (6) value descriptor
-    //   (8) value descriptor
-    // The description establishes WHAT is being buffed; each ladder
-    // row shows the count threshold + the value at that tier.
-    let header_plain = format!("[{}] {}", tag.label(), description);
-    // Plain-text mirror of what the spans render, used only for the
-    // wrap/width estimate. Each row is its own line so the widest
-    // row drives the box width.
-    let ladder_rows_plain: Vec<String> = values
+
+    // Build a per-tag section descriptor — pre-computed so the
+    // dimension math and the span-rendering both see the same data
+    // without re-deriving from the tag enum twice.
+    struct Section {
+        tag: WeaponTag,
+        description: &'static str,
+        values: [&'static str; 4],
+        descriptor: &'static str,
+        tier: u8,
+        header_plain: String,
+        ladder_rows_plain: Vec<String>,
+    }
+    let sections: Vec<Section> = visible_tags
         .iter()
-        .enumerate()
-        .map(|(i, v)| format!("({}) {} {}", (i + 1) * 2, v, descriptor))
+        .map(|&tag| {
+            let (values, descriptor) = synergy_ladder(tag);
+            let description = synergy_description(tag);
+            let header_plain = format!("[{}] {}", tag.label(), description);
+            let ladder_rows_plain = values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("({}) {} {}", (i + 1) * 2, v, descriptor))
+                .collect();
+            Section {
+                tag,
+                description,
+                values,
+                descriptor,
+                tier: active_tier(tag, &synergies),
+                header_plain,
+                ladder_rows_plain,
+            }
+        })
         .collect();
-    let banner_text_plain = format!(
-        "{}\n{}",
-        header_plain,
-        ladder_rows_plain.join("\n"),
-    );
-    let s = viewport.display_scale;
-    let header_w_unwrapped = estimate_text_native_width(&header_plain, SYNERGY_FONT);
-    let widest_ladder_row = ladder_rows_plain
+
+    // Plain-text mirror used by the change-detection cache key.
+    let banner_text_plain = sections
         .iter()
-        .map(|r| estimate_text_native_width(r, SYNERGY_FONT))
+        .map(|s| {
+            let mut block = s.header_plain.clone();
+            for row in &s.ladder_rows_plain {
+                block.push('\n');
+                block.push_str(row);
+            }
+            block
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let s = viewport.display_scale;
+    // Width = widest row across every section. Each section's header
+    // wraps independently; ladder rows have known lengths.
+    let widest_unwrapped = sections
+        .iter()
+        .flat_map(|sec| {
+            std::iter::once(estimate_text_native_width(&sec.header_plain, SYNERGY_FONT))
+                .chain(
+                    sec.ladder_rows_plain
+                        .iter()
+                        .map(|r| estimate_text_native_width(r, SYNERGY_FONT)),
+                )
+        })
         .fold(0.0_f32, f32::max);
-    let widest_unwrapped = header_w_unwrapped.max(widest_ladder_row);
     let banner_text_w = widest_unwrapped.min(SYNERGY_TEXT_MAX_W);
     let banner_fill_w_native = banner_text_w + 2.0 * SYNERGY_TEXT_PAD_X;
-    // Line count: header still wraps at the cap (1-2 lines typical),
-    // plus 4 fixed ladder rows underneath.
-    let header_lines = (header_w_unwrapped / SYNERGY_TEXT_MAX_W).ceil().max(1.0);
-    let total_lines = header_lines + 4.0;
+    // Line count: header wraps per section (1-2 lines typical) plus 4
+    // ladder rows. Sections are separated by a blank line in the
+    // rendered text so the visual break is unmistakable.
+    let lines_per_section: Vec<f32> = sections
+        .iter()
+        .map(|sec| {
+            let h_w = estimate_text_native_width(&sec.header_plain, SYNERGY_FONT);
+            let header_lines = (h_w / SYNERGY_TEXT_MAX_W).ceil().max(1.0);
+            header_lines + 4.0
+        })
+        .collect();
+    let section_lines_total: f32 = lines_per_section.iter().sum();
+    let dividers = sections.len().saturating_sub(1) as f32;
+    let total_lines = section_lines_total + dividers;
     let banner_fill_h_native =
         total_lines * SYNERGY_FONT * TOOLTIP_LINE_HEIGHT_MULT + 2.0 * SYNERGY_TEXT_PAD_Y;
     let banner_w_spec = banner_fill_w_native / s;
@@ -712,10 +761,16 @@ pub fn update_synergy_banner(
         if !text.0.is_empty() { text.0 = String::new(); }
     }
 
-    // Rebuild spans when tag, tier, or text changes. The
-    // undiscovered case early-returns above, so we always render
-    // the full discovered banner here.
-    let banner_key = format!("{}|{}|{}", tag.label(), tier, banner_text_plain);
+    // Rebuild spans when any section's tag/tier/text changes. Key
+    // includes every section's (tag, tier) so a tier-up on either
+    // half of a multi-tag banner re-renders without missing it.
+    let banner_key = {
+        let sigs: Vec<String> = sections
+            .iter()
+            .map(|s| format!("{}:{}", s.tag.label(), s.tier))
+            .collect();
+        format!("{}|{}", sigs.join(","), banner_text_plain)
+    };
     if *banner_cache != banner_key {
         *banner_cache = banner_key;
         for span in existing_banner_spans.iter() {
@@ -723,63 +778,78 @@ pub fn update_synergy_banner(
         }
         if let Ok(banner_entity) = banner_entity_q.single() {
             commands.entity(banner_entity).with_children(|p| {
-                // ---- Header line: tag chip + full description ----
-                p.spawn((
-                    TextSpan::new(format!("[{}] ", tag.label())),
-                    TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
-                    TextColor(tag.color()),
-                    SynergyBannerSpan,
-                ));
-                p.spawn((
-                    TextSpan::new(description.to_string()),
-                    TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
-                    TextColor(SYNERGY_DESC_COLOR),
-                    SynergyBannerSpan,
-                ));
-                // ---- Newline forces the ladder onto its own line ----
-                p.spawn((
-                    TextSpan::new("\n".to_string()),
-                    TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
-                    TextColor(SYNERGY_DESC_COLOR),
-                    SynergyBannerSpan,
-                ));
-                // ---- Vertical ladder: one row per tier ----
-                // `(N) value descriptor`. Auto-battler convention -
-                // the count threshold is on the left, the value and
-                // unit follow, and the active tier's whole row reads
-                // bright while the rest stay dim. Each row gets its
-                // own newline so they stack vertically.
-                for (i, v) in values.iter().enumerate() {
-                    let active = (tier as usize) == i + 1;
-                    let count_color = if active { SYNERGY_ACTIVE_COLOR } else { SYNERGY_INACTIVE_COLOR };
-                    let value_color = if active { SYNERGY_ACTIVE_COLOR } else { SYNERGY_INACTIVE_COLOR };
-                    let desc_color = if active { SYNERGY_DESC_COLOR } else { SYNERGY_INACTIVE_COLOR };
-                    let count = (i as u32 + 1) * 2;
-                    p.spawn((
-                        TextSpan::new(format!("({}) ", count)),
-                        TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
-                        TextColor(count_color),
-                        SynergyBannerSpan,
-                    ));
-                    p.spawn((
-                        TextSpan::new(format!("{} ", v)),
-                        TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
-                        TextColor(value_color),
-                        SynergyBannerSpan,
-                    ));
-                    p.spawn((
-                        TextSpan::new(descriptor.to_string()),
-                        TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
-                        TextColor(desc_color),
-                        SynergyBannerSpan,
-                    ));
-                    if i < values.len() - 1 {
+                for (sec_idx, sec) in sections.iter().enumerate() {
+                    // Blank-line divider between sections — only
+                    // emitted BEFORE second-and-later sections so
+                    // the first header sits flush at the top of
+                    // the banner.
+                    if sec_idx > 0 {
                         p.spawn((
-                            TextSpan::new("\n".to_string()),
+                            TextSpan::new("\n\n".to_string()),
                             TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
                             TextColor(SYNERGY_DESC_COLOR),
                             SynergyBannerSpan,
                         ));
+                    }
+                    // ---- Header line: tag chip + full description ----
+                    p.spawn((
+                        TextSpan::new(format!("[{}] ", sec.tag.label())),
+                        TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                        TextColor(sec.tag.color()),
+                        SynergyBannerSpan,
+                    ));
+                    // Description can itself contain inline chips
+                    // (e.g. "[MELEE] kills heal your hull"). Split
+                    // into coloured segments so the chip renders in
+                    // its tag colour rather than as plain bracket
+                    // text in the dim desc colour.
+                    for (segment, colour) in colorize_banner_description(sec.description) {
+                        p.spawn((
+                            TextSpan::new(segment),
+                            TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                            TextColor(colour),
+                            SynergyBannerSpan,
+                        ));
+                    }
+                    p.spawn((
+                        TextSpan::new("\n".to_string()),
+                        TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                        TextColor(SYNERGY_DESC_COLOR),
+                        SynergyBannerSpan,
+                    ));
+                    // ---- Vertical ladder: one row per tier ----
+                    for (i, v) in sec.values.iter().enumerate() {
+                        let active = (sec.tier as usize) == i + 1;
+                        let count_color = if active { SYNERGY_ACTIVE_COLOR } else { SYNERGY_INACTIVE_COLOR };
+                        let value_color = if active { SYNERGY_ACTIVE_COLOR } else { SYNERGY_INACTIVE_COLOR };
+                        let desc_color = if active { SYNERGY_DESC_COLOR } else { SYNERGY_INACTIVE_COLOR };
+                        let count = (i as u32 + 1) * 2;
+                        p.spawn((
+                            TextSpan::new(format!("({}) ", count)),
+                            TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                            TextColor(count_color),
+                            SynergyBannerSpan,
+                        ));
+                        p.spawn((
+                            TextSpan::new(format!("{} ", v)),
+                            TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                            TextColor(value_color),
+                            SynergyBannerSpan,
+                        ));
+                        p.spawn((
+                            TextSpan::new(sec.descriptor.to_string()),
+                            TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                            TextColor(desc_color),
+                            SynergyBannerSpan,
+                        ));
+                        if i < sec.values.len() - 1 {
+                            p.spawn((
+                                TextSpan::new("\n".to_string()),
+                                TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                                TextColor(SYNERGY_DESC_COLOR),
+                                SynergyBannerSpan,
+                            ));
+                        }
                     }
                 }
             });
@@ -787,24 +857,26 @@ pub fn update_synergy_banner(
     }
 }
 
-/// Resolve a drag-source to its weapon tag — Some only for turrets
-/// (ship or shop). Runes and stat rows return None, so the synergy
-/// banner stays hidden over them.
-fn turret_tag_for_source(
+/// Resolve a drag-source to the weapon's tag list — `Some` only for
+/// turrets (ship or shop). Returns the full slice so multi-tag
+/// weapons (e.g. Harpoon) get every synergy banner stacked, not
+/// just the primary tag's. Runes and stat rows return `None`, so
+/// the synergy banner stays hidden over them.
+fn turret_tags_for_source(
     source: DragSourceKind,
     cfg: &TurretConfig,
     shop: Option<&CustomizeShop>,
-) -> Option<WeaponTag> {
+) -> Option<&'static [WeaponTag]> {
     match source {
         DragSourceKind::ShipSlot(slot) => {
             let s = cfg.slots[slot];
             if !s.equipped { return None; }
-            Some(s.weapon.tag())
+            Some(s.weapon.tags())
         }
         DragSourceKind::ShopTurret(idx) => shop
             .and_then(|s| s.turrets.get(idx))
             .and_then(|o| o.as_ref())
-            .map(|o| o.weapon.tag()),
+            .map(|o| o.weapon.tags()),
         DragSourceKind::ShipRune { .. } | DragSourceKind::ShopRune(_) => None,
     }
 }
@@ -830,6 +902,45 @@ const TOOLTIP_AOE_TAG_COLOR: Color = Color::srgb(1.00, 0.55, 0.20);
 /// `weapon.rs` automatically gets a coloured chip with no edits here.
 /// Returns `None` for unknown tag names — caller falls back to the
 /// default body color so unrecognised tags still render as plain text.
+/// Split synergy-banner description text into coloured segments,
+/// painting `[NAME]` tokens as tag chips and leaving everything
+/// else in the banner's default desc colour. Lighter sibling of
+/// `colorize_bonuses` — banner text only has chips, no `+X%` /
+/// `-X%` tokens, and the body colour is `SYNERGY_DESC_COLOR` not
+/// `TOOLTIP_BODY_COLOR`, so we don't share the implementation.
+fn colorize_banner_description(text: &str) -> Vec<(String, Color)> {
+    let mut segments: Vec<(String, Color)> = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let at_word_start = i == 0
+            || chars[i - 1].is_whitespace()
+            || chars[i - 1] == ']';
+        if c == '[' && at_word_start {
+            if let Some(close_off) = chars[i + 1..].iter().position(|&ch| ch == ']') {
+                let close = i + 1 + close_off;
+                let name: String = chars[i + 1..close].iter().collect();
+                if let Some(color) = tag_chip_color(&name) {
+                    if !current.is_empty() {
+                        segments.push((std::mem::take(&mut current), SYNERGY_DESC_COLOR));
+                    }
+                    segments.push((format!("[{}]", name), color));
+                    i = close + 1;
+                    continue;
+                }
+            }
+        }
+        current.push(c);
+        i += 1;
+    }
+    if !current.is_empty() {
+        segments.push((current, SYNERGY_DESC_COLOR));
+    }
+    segments
+}
+
 fn tag_chip_color(name: &str) -> Option<Color> {
     for &tag in WeaponTag::all() {
         if tag.label() == name {
@@ -869,11 +980,15 @@ fn colorize_bonuses(text: &str) -> Vec<(String, Color)> {
         let is_bare_number = c.is_ascii_digit()
             && (i == 0 || chars[i - 1].is_whitespace());
         // `[XXX]` tag chip — only recognised at the very start of the
-        // body or right after whitespace, so a stray bracket inside
-        // sentence text doesn't accidentally get coloured. The chip
-        // text itself includes the brackets so the rendered output
-        // reads e.g. `[NAVAL] Balanced cannon...`.
-        let at_word_start = i == 0 || chars[i - 1].is_whitespace();
+        // body, right after whitespace, or directly after a previous
+        // chip's closing `]` (the multi-tag `[PIRATE][MELEE]` case),
+        // so a stray bracket inside sentence text doesn't
+        // accidentally get coloured. The chip text itself includes
+        // the brackets so the rendered output reads e.g.
+        // `[NAVAL] Balanced cannon...`.
+        let at_word_start = i == 0
+            || chars[i - 1].is_whitespace()
+            || chars[i - 1] == ']';
         if c == '[' && at_word_start {
             if let Some(close_off) = chars[i + 1..].iter().position(|&ch| ch == ']') {
                 let close = i + 1 + close_off;
@@ -1035,8 +1150,10 @@ fn describe_source(
             if !s.equipped {
                 return None;
             }
-            let tag_known = discovered.has(s.weapon.tag());
-            Some(turret_tooltip(s.weapon, s.barrels.max(1), tag_known, stats))
+            // `turret_tooltip` iterates each tag and renders a chip
+            // for each one, gated by per-tag discovery. So a Harpoon
+            // with only Pirate discovered shows `[PIRATE][???]`.
+            Some(turret_tooltip(s.weapon, s.barrels.max(1), discovered, stats))
         }
         DragSourceKind::ShipRune { slot, rune_idx } => {
             let s = cfg.slots[slot];
@@ -1048,10 +1165,7 @@ fn describe_source(
         DragSourceKind::ShopTurret(idx) => shop
             .and_then(|s| s.turrets.get(idx))
             .and_then(|o| o.as_ref())
-            .map(|o| {
-                let tag_known = discovered.has(o.weapon.tag());
-                turret_tooltip(o.weapon, o.barrels.max(1), tag_known, stats)
-            }),
+            .map(|o| turret_tooltip(o.weapon, o.barrels.max(1), discovered, stats)),
         DragSourceKind::ShopRune(idx) => shop
             .and_then(|s| s.runes.get(idx))
             .and_then(|o| o.as_ref())
@@ -1106,7 +1220,7 @@ fn synergy_description(tag: WeaponTag) -> &'static str {
         WeaponTag::Support =>
             "Boosts every neighbour that is not Support. Fire rate first, then damage from tier two onward.",
         WeaponTag::Melee =>
-            "Melee kills heal your hull. Higher tiers, bigger heal.",
+            "[MELEE] kills heal your hull. Higher tiers, bigger heal.",
     }
 }
 
@@ -1125,12 +1239,21 @@ fn active_tier(tag: WeaponTag, syn: &Synergies) -> u8 {
 fn turret_tooltip(
     weapon: WeaponType,
     barrels: u8,
-    tag_discovered: bool,
+    discovered: &crate::onboarding::DiscoveredSynergies,
     stats: &crate::stats::PlayerStats,
 ) -> (String, String) {
     let title = weapon.label().to_string();
-    let chip = if tag_discovered { weapon.tag().label() } else { "???" };
-    let mut body = format!("[{}]\n", chip);
+    // Multi-tag weapons render one chip per tag, gated individually
+    // by discovery. Undiscovered tags show `[???]`; discovered ones
+    // show e.g. `[PIRATE]`. `colorize_bonuses` paints each bracket
+    // token in its own colour, so a Harpoon with both tags known
+    // reads `[PIRATE][MELEE]` in two distinct colours.
+    let mut body = String::new();
+    for &tag in weapon.tags() {
+        let chip = if discovered.has(tag) { tag.label() } else { "???" };
+        body.push_str(&format!("[{}]", chip));
+    }
+    body.push('\n');
     if matches!(weapon, WeaponType::Mortar) {
         body.push_str(AOE_TAG);
     }

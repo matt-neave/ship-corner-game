@@ -324,7 +324,7 @@ pub fn octopus_ai(
             .map(|s| s.runes)
             .unwrap_or([None; 3]);
         let Some(target) = crate::weapon::pick_target(
-            &snapshot, ship_pos, pos, &runes,
+            &snapshot, ship_pos, pos, &runes, None,
         )
         .map(|t| t + crate::weapon::offset_for_slot(oct.owner_slot))
         else { continue; };
@@ -402,7 +402,7 @@ pub fn octopus_spawn_tentacles(
             .map(|(t, h)| (t.translation.truncate(), h.0))
             .collect();
         let Some(target_pos) = crate::weapon::pick_target(
-            &in_range, ship_pos, body_pos, &s.runes,
+            &in_range, ship_pos, body_pos, &s.runes, None,
         )
         .map(|t| t + crate::weapon::offset_for_slot(oct.owner_slot))
         else { continue; };

@@ -296,11 +296,24 @@ impl StatKind {
             StatKind::Harvest => "HARVEST",
             StatKind::ShieldMax => "SHIELD",
             StatKind::RuneDamage => "RUNE DAMAGE",
-            StatKind::TurretDamage => "TURRET DAMAGE",
+            StatKind::TurretDamage => "WEAPON DAMAGE",
         }
     }
     /// Formatted current value (with units / sign where helpful).
-    pub fn format_value(self, stats: &PlayerStats) -> String {
+    /// `synergies` is optional so non-customize call sites (boss
+    /// reward, level-up card stats panel) can still call this
+    /// without piping a `Synergies` resource through. When `None`,
+    /// any "folded synergy" stat (currently only Weapon Damage)
+    /// falls back to the raw player value — the synergy is invisible
+    /// there, which is acceptable since those screens are short-
+    /// lived informational overlays. The live customize panel
+    /// passes `Some(&synergies)` so the headline number always
+    /// matches the damage the weapons actually deal.
+    pub fn format_value(
+        self,
+        stats: &PlayerStats,
+        synergies: Option<&crate::synergy::Synergies>,
+    ) -> String {
         match self {
             StatKind::Hp => format!("{}", stats.max_hp()),
             StatKind::MoveSpeed => {
@@ -330,7 +343,23 @@ impl StatKind {
             StatKind::ProcStrength => format!("{:.0}%", stats.proc_strength_pct.effective()),
             StatKind::Crit => format!("{:.0}%", stats.crit_pct.effective()),
             StatKind::Range => format!("{:.0}%", stats.range_pct.effective()),
-            StatKind::Harvest => format!("{:.0}%", stats.harvest_pct.effective()),
+            StatKind::Harvest => {
+                // Expected scrap-per-kill expressed as a baseline-
+                // 100% percentage, with the Pirate synergy folded in
+                // the same way Naval folds into Weapon Damage.
+                // `harvest_pct` is a RoR-style tier chance: at +100%
+                // every kill drops +1 scrap, at +50% half do — so in
+                // expected-value terms `base_mult = 1 + harvest/100`.
+                // Pirate multiplies on top (1.0 / 1.5 / 2.0 / 2.5 /
+                // 3.0 per tier). 100% = stock 1-scrap drop, 200% = a
+                // Pirate-T2 build dropping ~2 scrap on average.
+                let base_mult = 1.0 + stats.harvest_pct.effective() / 100.0;
+                let pirate_mult = synergies
+                    .map(|s| s.pirate_harvest_mult())
+                    .unwrap_or(1.0);
+                let total_pct = base_mult * pirate_mult * 100.0;
+                format!("{:.0}%", total_pct)
+            }
             StatKind::ShieldMax => format!("{:.0}", stats.shield_max.effective()),
             StatKind::RuneDamage => {
                 // Default 1.0 reads as 100%; players track Rune
@@ -340,8 +369,25 @@ impl StatKind {
                 format!("{}%", pct)
             }
             StatKind::TurretDamage => {
-                let v = stats.turret_damage_pct.effective();
-                if v >= 0.0 { format!("+{:.0}%", v) } else { format!("{:.0}%", v) }
+                // Total damage multiplier expressed as a baseline-
+                // 100% percentage so mods and Naval synergy read
+                // additively from the player's mental "what am I
+                // doing right now" anchor: 100% = stock, 120% = a
+                // Naval T1 build with no mods, 156% = a +30% mod
+                // build with Naval T2 active.
+                //
+                // Naval is folded in because it's the one synergy
+                // that buffs damage globally (every tag benefits) —
+                // Support's buff is per-slot conditional and not
+                // safe to fold into a global readout. Math: combined
+                // multiplier = (1 + base%) × naval_mult; displayed
+                // total = combined × 100.
+                let base_mult = stats.turret_damage_mult();
+                let naval_mult = synergies
+                    .map(|s| s.naval_damage_mult())
+                    .unwrap_or(1.0);
+                let total_pct = base_mult * naval_mult * 100.0;
+                format!("{:.0}%", total_pct)
             }
         }
     }
