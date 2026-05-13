@@ -151,7 +151,7 @@ pub fn sniper_fire(
             MeshMaterial2d(pm.sniper_aim.clone()),
             Transform::from_xyz(mid.x, mid.y, 3.5)
                 .with_rotation(Quat::from_rotation_z(angle))
-                .with_scale(Vec3::new(1.4, length / crate::balance::BEAM_LENGTH, 1.0)),
+                .with_scale(Vec3::new(2.2, length / crate::balance::BEAM_LENGTH, 1.0)),
             SniperAimLine {
                 sniper: entity,
                 target_world: target_pos,

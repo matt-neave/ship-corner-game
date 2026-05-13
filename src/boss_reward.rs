@@ -216,12 +216,15 @@ pub fn exit_boss_reward(
 /// Apply the chosen reward, queue the next state, and let `OnExit`
 /// tear down the overlay.
 pub fn handle_boss_reward_click(
+    mut commands: Commands,
     interactions: Query<(&Interaction, &BossRewardButton), Changed<Interaction>>,
     offer: Res<BossRewardOffer>,
     mut recruits: ResMut<RecruitedAllies>,
     mut scrap: ResMut<crate::Scrap>,
     mut scrap_earned: ResMut<crate::stage_complete::ScrapEarnedThisStage>,
     mut stats: ResMut<PlayerStats>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     pending_levels: Res<crate::xp::LevelUpsPending>,
     mut next: ResMut<NextState<crate::AppState>>,
 ) {
@@ -245,12 +248,15 @@ pub fn handle_boss_reward_click(
                 }
             }
         }
-        let dest = if pending_levels.0 > 0 {
-            crate::AppState::LevelUp
+        if pending_levels.0 > 0 {
+            next.set(crate::AppState::LevelUp);
         } else {
-            crate::AppState::Customize
-        };
-        next.set(dest);
+            // White-wipe transition on the hop to the shop.
+            crate::stage_complete::spawn_transition(
+                &mut commands, &mut meshes, &mut materials,
+                crate::AppState::Customize,
+            );
+        }
         return;
     }
 }

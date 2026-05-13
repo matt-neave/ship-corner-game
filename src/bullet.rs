@@ -548,16 +548,16 @@ fn process_damage_event(
     // frame of FX on something already despawning).
     if h.0 <= 0 {
         // Ward shield-on-kill (fires regardless of proc roll). Each
-        // Ward stack on the killing bullet grants `rune_effect`
-        // shield, capped at the player's `shield_max`. Lethal-branch
-        // sibling to Cascade, but pure sustain — no fan-out.
+        // Ward stack on the killing bullet adds `rune_effect` shield,
+        // allowed to push the current shield ABOVE `shield_max` as a
+        // one-time overflow buffer. Natural shield regen never refills
+        // above max, so the overflow only decays by absorbing hits.
         let ward_stacks = ev.runes.iter().filter(|&&r| r == Rune::Ward).count();
         if ward_stacks > 0 {
             let gain = ward_stacks as f32 * player_stats.rune_damage_mult();
-            let shield_max = player_stats.shield_max.effective().max(0.0);
             for (_, sh_opt) in friendly.iter_mut() {
                 if let Some(mut sh) = sh_opt {
-                    sh.current = (sh.current + gain).min(shield_max);
+                    sh.current += gain;
                 }
             }
         }

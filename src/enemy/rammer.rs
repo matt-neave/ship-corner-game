@@ -77,9 +77,30 @@ pub fn enemy_landmine_tick(
 
     for (entity, tf, mut mine) in &mut mines {
         mine.fuse -= dt;
-        if mine.fuse > 0.0 { continue; }
         let center = tf.translation.truncate();
         let r2 = mine.blast_radius * mine.blast_radius;
+
+        // Impact trigger: any non-submerged friendly/ally inside the
+        // blast radius cooks the mine off immediately, even if the
+        // fuse hasn't expired yet.
+        let mut detonate = mine.fuse <= 0.0;
+        if !detonate {
+            if let Ok((ftf, _, _)) = friendly.single_mut() {
+                if ftf.translation.truncate().distance_squared(center) < r2 {
+                    detonate = true;
+                }
+            }
+        }
+        if !detonate {
+            for (atf, ally, _, _) in &mut allies {
+                if ally_is_submerged(ally) { continue; }
+                if atf.translation.truncate().distance_squared(center) < r2 {
+                    detonate = true;
+                    break;
+                }
+            }
+        }
+        if !detonate { continue; }
 
         if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
             if ftf.translation.truncate().distance_squared(center) < r2 {

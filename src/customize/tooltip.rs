@@ -82,6 +82,10 @@ pub struct TooltipDataCtx<'w> {
     /// multipliers in so the tooltip number matches the damage the
     /// shot actually deals.
     pub synergies: Res<'w, crate::synergy::Synergies>,
+    /// Per-slot damage tallies from the last + current round. Surfaced
+    /// in the turret tooltip as "Damage last round: X% (N)" so the
+    /// player can tell which slots are pulling their weight.
+    pub damage_stats: Res<'w, crate::ui::DamageStats>,
 }
 
 /// Layout snapshot for the main tooltip. Written by
@@ -104,6 +108,29 @@ pub struct TooltipLayoutState {
     /// so multi-tag weapons (e.g. Harpoon = Pirate + Melee) show
     /// every synergy they participate in.
     pub tags: Option<&'static [WeaponTag]>,
+}
+
+/// Marker on the invisible hit area sitting under the SCRAP counter in
+/// the customize overlay. Hovering it shows a fixed explainer tooltip
+/// describing how scrap is earned. No dynamic state — the title and
+/// body are constants.
+#[derive(Component, Clone, Copy)]
+pub struct ScrapTooltipHover;
+
+/// Two queries the tooltip update reads to detect hovers over
+/// non-drag-source UI: the stats column and the scrap counter. Bundled
+/// as a `SystemParam` so the parent system stays inside Bevy's 16-arg
+/// `IntoSystem` cap.
+#[derive(SystemParam)]
+pub struct HoverQueries<'w, 's> {
+    pub stat_hovers: Query<'w, 's,
+        (&'static Transform, &'static HitArea, &'static super::stats_panel::StatHover),
+        Without<DragSourceMarker>,
+    >,
+    pub scrap_hovers: Query<'w, 's,
+        (&'static Transform, &'static HitArea),
+        (With<ScrapTooltipHover>, Without<DragSourceMarker>, Without<super::stats_panel::StatHover>),
+    >,
 }
 
 /// Minimum tooltip box dims in spec pixels — the box grows beyond this
@@ -296,7 +323,7 @@ pub fn update_customize_tooltip(
     body_entity_q: Query<Entity, With<CustomizeTooltipBody>>,
     existing_body_spans: Query<Entity, With<CustomizeTooltipBodySpan>>,
     sources: Query<(&Transform, &HitArea, &DragSourceMarker)>,
-    stat_hovers: Query<(&Transform, &HitArea, &super::stats_panel::StatHover), Without<DragSourceMarker>>,
+    hovers: HoverQueries,
     mut outline_q: Query<
         (&mut Visibility, &mut Transform, &mut Sprite),
         (
@@ -306,6 +333,7 @@ pub fn update_customize_tooltip(
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
+            Without<ScrapTooltipHover>,
         ),
     >,
     mut fill_q: Query<
@@ -317,6 +345,7 @@ pub fn update_customize_tooltip(
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
+            Without<ScrapTooltipHover>,
         ),
     >,
     mut title_q: Query<
@@ -328,6 +357,7 @@ pub fn update_customize_tooltip(
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
+            Without<ScrapTooltipHover>,
         ),
     >,
     mut body_q: Query<
@@ -339,6 +369,7 @@ pub fn update_customize_tooltip(
             Without<CustomizeTooltipTitle>,
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
+            Without<ScrapTooltipHover>,
         ),
     >,
 ) {
@@ -375,6 +406,7 @@ pub fn update_customize_tooltip(
         }
         if let Some((title, body)) = describe_source(
             marker.0, &data.cfg, shop_ref, &data.discovered, &data.stats, &data.synergies,
+            &data.damage_stats,
         ) {
             info = Some((title, body, centre, half));
             info_tags = turret_tags_for_source(marker.0, &data.cfg, shop_ref);
@@ -383,7 +415,7 @@ pub fn update_customize_tooltip(
     }
     // Stat-row hovers — same smallest-hit-area selection, so a row only
     // wins over a turret/rune if the cursor is exclusively on the row.
-    for (tf, hit, hover) in &stat_hovers {
+    for (tf, hit, hover) in &hovers.stat_hovers {
         let centre = tf.translation.truncate();
         let half = hit.size * 0.5;
         if cursor.x < centre.x - half.x
@@ -404,6 +436,30 @@ pub fn update_customize_tooltip(
             half,
         ));
         // Stat rows never get a synergy banner — they're stats, not turrets.
+        info_tags = None;
+        best_area = area;
+    }
+    // Scrap-counter hover — fixed explainer describing how scrap is earned.
+    for (tf, hit) in &hovers.scrap_hovers {
+        let centre = tf.translation.truncate();
+        let half = hit.size * 0.5;
+        if cursor.x < centre.x - half.x
+            || cursor.x > centre.x + half.x
+            || cursor.y < centre.y - half.y
+            || cursor.y > centre.y + half.y
+        {
+            continue;
+        }
+        let area = hit.size.x * hit.size.y;
+        if area >= best_area {
+            continue;
+        }
+        info = Some((
+            "SCRAP".to_string(),
+            "\u{1F}+1 per wave cleared. +1 interest per 5 scrap held coming into a stage. Boss kills pay a bounty. Harvest stat rolls drops on kills (Pirate multiplies).".to_string(),
+            centre,
+            half,
+        ));
         info_tags = None;
         best_area = area;
     }
@@ -996,6 +1052,20 @@ fn tag_chip_color(name: &str) -> Option<Color> {
 /// tint. A `[NAME]` chip (only at the start of a word) is coloured
 /// per `tag_chip_color`. Everything else stays the default body color.
 fn colorize_bonuses(text: &str) -> Vec<(String, Color)> {
+    // `\x1F` (unit separator) acts as a "switch to gray footer" marker.
+    // Everything before it goes through normal colorisation; everything
+    // after is rendered as one flat-gray segment matching the `[???]`
+    // tint, so the per-slot damage footer reads as auxiliary info
+    // rather than competing with buff/nerf numbers above it.
+    if let Some(split) = text.find('\u{1F}') {
+        let (head, tail) = text.split_at(split);
+        let mut segments = colorize_bonuses(head);
+        let footer = &tail[1..];
+        if !footer.is_empty() {
+            segments.push((footer.to_string(), SYNERGY_INACTIVE_COLOR));
+        }
+        return segments;
+    }
     let mut segments: Vec<(String, Color)> = Vec::new();
     let mut current = String::new();
     let chars: Vec<char> = text.chars().collect();
@@ -1110,6 +1180,7 @@ fn hide_all(
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
+            Without<ScrapTooltipHover>,
         ),
     >,
     fill_q: &mut Query<
@@ -1121,6 +1192,7 @@ fn hide_all(
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
+            Without<ScrapTooltipHover>,
         ),
     >,
     title_q: &mut Query<
@@ -1132,6 +1204,7 @@ fn hide_all(
             Without<CustomizeTooltipBody>,
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
+            Without<ScrapTooltipHover>,
         ),
     >,
     body_q: &mut Query<
@@ -1143,6 +1216,7 @@ fn hide_all(
             Without<CustomizeTooltipTitle>,
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
+            Without<ScrapTooltipHover>,
         ),
     >,
 ) {
@@ -1175,6 +1249,7 @@ fn describe_source(
     discovered: &crate::onboarding::DiscoveredSynergies,
     stats: &crate::stats::PlayerStats,
     synergies: &Synergies,
+    damage_stats: &crate::ui::DamageStats,
 ) -> Option<(String, String)> {
     match source {
         DragSourceKind::ShipSlot(slot) => {
@@ -1187,6 +1262,7 @@ fn describe_source(
             // with only Pirate discovered shows `[PIRATE][???]`.
             Some(turret_tooltip(
                 s.weapon, s.barrels.max(1), discovered, stats, synergies,
+                Some((damage_stats.per_slot[slot], damage_stats.total)),
             ))
         }
         DragSourceKind::ShipRune { slot, rune_idx } => {
@@ -1202,7 +1278,7 @@ fn describe_source(
             .and_then(|s| s.turrets.get(idx))
             .and_then(|o| o.as_ref())
             .map(|o| turret_tooltip(
-                o.weapon, o.barrels.max(1), discovered, stats, synergies,
+                o.weapon, o.barrels.max(1), discovered, stats, synergies, None,
             )),
         DragSourceKind::ShopRune(idx) => shop
             .and_then(|s| s.runes.get(idx))
@@ -1282,6 +1358,7 @@ fn turret_tooltip(
     discovered: &crate::onboarding::DiscoveredSynergies,
     stats: &crate::stats::PlayerStats,
     synergies: &Synergies,
+    damage_share: Option<(u64, u64)>,
 ) -> (String, String) {
     let title = weapon.label().to_string();
     // Multi-tag weapons render one chip per tag, gated individually
@@ -1312,6 +1389,21 @@ fn turret_tooltip(
         body.push('\n');
         body.push_str(&extra);
     }
+    // Per-slot damage-last-round footer. Only present for equipped ship
+    // slots (shop turrets have no history). The `\x1F` sentinel splits
+    // the body in `colorize_bonuses` so the footer renders entirely in
+    // the dim "[???]" gray instead of getting buff/value colorisation.
+    if let Some((dealt, total)) = damage_share {
+        if total > 0 {
+            let pct = (dealt as f32 / total as f32 * 100.0).round() as u32;
+            body.push_str(&format!(
+                "\n\n\u{1F}Damage last round: {}% ({})",
+                pct, dealt,
+            ));
+        } else {
+            body.push_str("\n\n\u{1F}Damage last round: 0% (0)");
+        }
+    }
     (title, body)
 }
 
@@ -1331,13 +1423,10 @@ fn rune_tooltip(
     if rune.target_priority().is_some() || matches!(rune, Rune::TargetCarousel) {
         body.push_str("[TARGET]\n");
     }
-    // Splash gets the `[AOE]` chip — it's an AoE modifier. Blast
-    // omits it because its description body already ends with
-    // "This weapon is now considered [AOE]." — printing the chip on
-    // top would just be a duplicate.
-    if matches!(rune, Rune::Splash) {
-        body.push_str(AOE_TAG);
-    }
+    // Neither Splash nor Blast gets a prefix `[AOE]` chip — the
+    // chip appears inline inside each body sentence instead, so the
+    // tag reads as the noun it modifies rather than a standalone
+    // header.
     body.push_str(&rune_dynamic_description(rune, stats, slot_runes));
     (rune.label().to_string(), body)
 }
@@ -1470,7 +1559,7 @@ fn rune_dynamic_description(
             )
         }
         Rune::Ward => format!(
-            "Killing blows refill {:.0} shield (capped at Shield Max).",
+            "Killing blows grant {:.0} shield. Can overflow above Shield Max as a one-time buffer (no recharge above).",
             rune_dmg,
         ),
         Rune::Bleed => {
@@ -1481,10 +1570,13 @@ fn rune_dynamic_description(
             )
         }
         Rune::Splash => {
-            // Live value reflects the player's Rune Effect stat.
+            // Live value reflects the player's Rune Effect stat. The
+            // `[AOE]` token is colourised inline by `colorize_bonuses`
+            // so it reads as the same chip the rest of the tooltip
+            // system uses for AoE tags.
             let per_stack = 0.5 * rune_dmg * 100.0;
             format!(
-                "Widens AOE weapons' radius by {:+.0}%.",
+                "Widens [AOE] weapons' radius by {:+.0}%.",
                 per_stack,
             )
         }

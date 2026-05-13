@@ -287,6 +287,15 @@ pub fn setup_customize_ui(
         20.0,
         CustomizeScrapText,
     );
+    // Invisible hit area sitting under the SCRAP counter — hovering
+    // it routes through the same tooltip pipeline as turret / stat
+    // hovers and shows a fixed explainer about how scrap is earned.
+    commands.spawn((
+        Transform::from_translation(scrap_pos.extend(2.0)),
+        HitArea { size: Vec2::new(60.0, 14.0) },
+        super::tooltip::ScrapTooltipHover,
+        RenderLayers::layer(CUSTOMIZE_LAYER),
+    ));
 
     // ---------- Top-right CLOSE button ----------
     let close_pos = Vec2::new(
@@ -756,33 +765,23 @@ fn spawn_socket_container(
         ));
     }
 
-    // Diagonal hash overlay: 4 thin stripes alternating light/dark red,
-    // rotated 45°, centred on the socket. Initially Hidden — toggled
-    // visible by `update_customize_ui` when a sibling socket holds a
-    // targeting rune (targeting-rune exclusivity). Reads as a hatched
-    // "do not enter" pattern instead of a flat red fill.
+    // Red X overlay marking sockets blocked by targeting-rune
+    // exclusivity. Two diagonal bars (45° and -45°) form the cross.
+    // Initially Hidden — toggled visible by `update_customize_ui`
+    // when a sibling socket holds a targeting rune.
     //
-    // Stripe geometry tuned to stay INSIDE the rounded 8×8 socket.
-    // The previous SOCKET × 1.4 length poked past the corners; with
-    // 3 stripes at perp offsets ±2 and length 5, every endpoint
-    // lands within the rounded-corner bounds (max axis displacement
-    // ~3.2 vs socket extent 4).
-    let stripe_mesh = meshes.add(Rectangle::new(5.0, 0.8));
-    let dark_mat  = materials.add(Color::srgb(0.30, 0.08, 0.10));
-    let light_mat = materials.add(Color::srgb(0.85, 0.42, 0.42));
-    let perps = [-2.0_f32, 0.0, 2.0];
-    let mats  = [&dark_mat, &light_mat, &dark_mat];
-    // 45° rotation, perpendicular offset translated along the
-    // anti-diagonal so stripes parade across the socket evenly.
-    let cos45 = std::f32::consts::FRAC_1_SQRT_2;
-    for (perp, mat_ref) in perps.iter().zip(mats.iter()) {
-        let off = Vec2::new(-perp * cos45, perp * cos45);
+    // Bar geometry kept INSIDE the rounded 8×8 socket: length 6,
+    // thickness 1.2. At 45° the endpoints sit ~2.1 from the centre
+    // along each axis, well within the socket's 4-half-extent.
+    let bar_mesh = meshes.add(Rectangle::new(6.0, 1.2));
+    let cross_mat = materials.add(Color::srgb(0.90, 0.30, 0.30));
+    for angle in [std::f32::consts::FRAC_PI_4, -std::f32::consts::FRAC_PI_4] {
         commands.spawn((
-            Mesh2d(stripe_mesh.clone()),
-            MeshMaterial2d((*mat_ref).clone()),
+            Mesh2d(bar_mesh.clone()),
+            MeshMaterial2d(cross_mat.clone()),
             Transform {
-                translation: (pos + off).extend(Z_TILE_FG),
-                rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_4),
+                translation: pos.extend(Z_TILE_FG),
+                rotation: Quat::from_rotation_z(angle),
                 ..default()
             },
             Visibility::Hidden,

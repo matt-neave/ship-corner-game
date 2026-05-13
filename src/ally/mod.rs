@@ -143,23 +143,24 @@ pub enum ShipClass {
 
 impl ShipClass {
     pub fn hp(self) -> i32 {
+        // Boss-tier HP ladder. Ordered roughly by "how late this boss
+        // feels in a run". Carrier sits at the top as the apex bullet
+        // sponge; Submarine is the easiest first-boss target.
         match self {
-            ShipClass::PirateShip => 40,
-            ShipClass::Carrier    => 200,
-            ShipClass::Submarine  => 20,
-            ShipClass::Minelayer  => 25,
-            ShipClass::Tender     => 35,
-            // Blackbeard is the flagship — most HP of the surface
-            // fleet so it can survive the close-range orbit boarding
-            // requires.
-            ShipClass::Blackbeard => 60,
-            // Chunky industrial hull — sturdier than the Pirate but
-            // not on Carrier scale. The oil-spray fantasy wants the
-            // tanker to survive its full cycle under light fire so
-            // the player sees the burn payoff.
-            ShipClass::OilTanker  => 70,
+            ShipClass::Submarine  =>  35,
+            ShipClass::Minelayer  =>  45,
+            ShipClass::Tender     =>  60,
+            ShipClass::PirateShip =>  80,
+            // Blackbeard is the flagship — boarding wants close-range
+            // orbit, so the hull has to survive the approach.
+            ShipClass::Blackbeard => 120,
+            // Chunky industrial hull. Oil-spray fantasy wants the
+            // tanker to live its full burn cycle.
+            ShipClass::OilTanker  => 150,
             // Built for ramming — sturdy enough to survive the charge.
-            ShipClass::Viking     => 75,
+            ShipClass::Viking     => 170,
+            // Apex bullet sponge.
+            ShipClass::Carrier    => 300,
         }
     }
     pub fn speed(self) -> f32 {
@@ -276,7 +277,7 @@ impl ShipClass {
     }
     pub fn fire_damage(self) -> i32 {
         match self {
-            ShipClass::PirateShip => 1,
+            ShipClass::PirateShip => 10,
             ShipClass::Carrier    => 0,
             ShipClass::Submarine  => 0,
             ShipClass::Minelayer  => 0,
@@ -340,26 +341,19 @@ impl ShipClass {
         matches!(self, ShipClass::Submarine)
     }
 
-    /// HP a boss-side spawn of this class gets, hand-tuned per class
-    /// so each plays as a tough but killable mini-boss against a
-    /// default-loadout player. Started at 10× the ally HP per the
-    /// initial spec, lowered after testing — the carrier's 2000 HP
-    /// version felt invincible to a single-cannon ship.
+    /// Base HP for a boss-side spawn of this class. The actual spawn
+    /// multiplies this by the section's star tier (`spawn_boss(stars)`),
+    /// so a 5★ boss is 5× as tough as a 3★ boss of the same class.
     pub fn boss_hp(self) -> i32 {
         match self {
-            ShipClass::PirateShip => 100,
-            ShipClass::Carrier    => 400,
-            ShipClass::Submarine  => 60,
-            ShipClass::Minelayer  => 80,
-            ShipClass::Tender     => 100,
-            ShipClass::Blackbeard => 200,
-            // Tankers in boss form are slow, valuable targets — high
-            // HP so the player has to commit to interrupting the
-            // burn loop rather than instagibbing it.
-            ShipClass::OilTanker  => 250,
-            // Viking boss is a ramming juggernaut — high HP since
-            // the player has to outmanoeuvre rather than out-DPS it.
-            ShipClass::Viking     => 220,
+            ShipClass::Submarine  => 180,
+            ShipClass::Minelayer  => 180,
+            ShipClass::Tender     =>  80,
+            ShipClass::PirateShip => 180,
+            ShipClass::Blackbeard => 220,
+            ShipClass::OilTanker  => 220,
+            ShipClass::Viking     => 300,
+            ShipClass::Carrier    => 300,
         }
     }
 
@@ -516,12 +510,21 @@ pub fn spawn_boss(
     pos: Vec2,
     heading: f32,
     class: ShipClass,
+    stars: u8,
+    battles_cleared: u32,
 ) {
     let ship = build_ship_for_faction(
         commands, pm, em, meshes, pos, heading, class,
         FactionKind::Enemy,
     );
-    let boss_hp = class.boss_hp();
+    // Boss HP scales with section star tier AND total stages cleared
+    // so each successive boss feels meaningfully tankier than the
+    // last — Brotato-style escalation that compounds on top of the
+    // tier bump every 3 stages. +15% per cleared stage, capped at 12
+    // (3.4x at the wall).
+    let stage_mult = 1.0 + 0.15 * battles_cleared.min(12) as f32;
+    let base_hp = class.boss_hp() * stars.max(1) as i32;
+    let boss_hp = ((base_hp as f32) * stage_mult).round() as i32;
     // `EnemyVariant::Standard` is a placeholder — `enemy_ai` /
     // `enemy_fire` / `bomber_detonate` all gate `Without<Ally>` so
     // the variant's stats / firing path never apply to a boss. Kept

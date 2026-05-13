@@ -186,11 +186,11 @@ fn short_stat_label(kind: StatKind) -> &'static str {
 }
 
 /// Scrap cost to re-roll the shop. Refills every slot — sold or not.
-pub const SHOP_REROLL_COST: u32 = 5;
+pub const SHOP_REROLL_COST: u32 = 1;
 /// Scrap cost for a turret purchase.
-pub const SHOP_TURRET_COST: u32 = 15;
+pub const SHOP_TURRET_COST: u32 = 2;
 /// Scrap cost for a rune purchase.
-pub const SHOP_RUNE_COST: u32 = 10;
+pub const SHOP_RUNE_COST: u32 = 2;
 /// Sell refund fraction — selling returns this share of the
 /// original purchase cost (rounded down). `0.33` → 33%: a 15-scrap
 /// turret refunds 4 (15 × 0.33 = 4.95 → 4); a 10-scrap rune refunds
@@ -907,15 +907,23 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
                     return false;
                 }
             }
-            // Targeting-rune exclusivity: at most one targeting rune
-            // per weapon. If the dropped rune is a targeting rune
-            // and the destination slot already carries one in
-            // *another* socket, reject the drop. Same-socket
-            // overwrite is fine (replacing the existing targeting
-            // rune with a different targeting rune).
+            let displaced = cfg.slots[slot].runes[rune_idx];
+            let ship_src = if let DragSourceKind::ShipRune { slot: s, rune_idx: r } = picked.source {
+                Some((s, r))
+            } else {
+                None
+            };
+            // Targeting-rune exclusivity on the destination slot. The
+            // moving rune takes `rune_idx`, so exclude that socket. If
+            // the drag started in the same slot, the rune still sits
+            // in its source socket pre-write — exclude that too, or
+            // we'd count it as a stale duplicate.
             if rune.is_targeting() {
                 for (i, r) in cfg.slots[slot].runes.iter().enumerate() {
                     if i == rune_idx { continue; }
+                    if let Some((src_slot, src_idx)) = ship_src {
+                        if src_slot == slot && src_idx == i { continue; }
+                    }
                     if let Some(other) = r {
                         if other.is_targeting() {
                             return false;
@@ -923,9 +931,28 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
                     }
                 }
             }
+            // Cross-slot swap: the displaced rune is about to take the
+            // source socket. Enforce the same exclusivity on the source
+            // slot so a swap can't smuggle two targeting runes onto one
+            // weapon.
+            if let (Some(disp), Some((src_slot, src_idx))) = (displaced, ship_src) {
+                if src_slot != slot && disp.is_targeting() {
+                    for (i, r) in cfg.slots[src_slot].runes.iter().enumerate() {
+                        if i == src_idx { continue; }
+                        if let Some(other) = r {
+                            if other.is_targeting() {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
             cfg.slots[slot].runes[rune_idx] = Some(rune);
-            if let DragSourceKind::ShipRune { slot: s, rune_idx: r } = picked.source {
-                cfg.slots[s].runes[r] = None;
+            if let Some((src_slot, src_idx)) = ship_src {
+                // Send the displaced rune back to the source socket so
+                // ship-to-ship rune drops behave as a swap, not an
+                // overwrite. Empty destination => source clears.
+                cfg.slots[src_slot].runes[src_idx] = displaced;
             }
             true
         }

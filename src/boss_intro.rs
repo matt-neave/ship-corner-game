@@ -69,6 +69,13 @@ pub struct BossIntroPending {
     pub class: Option<ShipClass>,
     pub pos: Vec2,
     pub heading: f32,
+    /// Star tier of the section the boss is spawning in. `spawn_boss`
+    /// multiplies the class's base `boss_hp()` by this, so a 5★ boss
+    /// is ~5× as durable as a 3★ boss of the same class.
+    pub stars: u8,
+    /// Stage progression at spawn time (campaign.battles_cleared). Folded
+    /// into the boss HP multiplier so each successive boss tanks harder.
+    pub battles_cleared: u32,
 }
 
 /// Elapsed time since `OnEnter(BossIntro)` fired. Drives the streak
@@ -226,7 +233,8 @@ pub fn exit_boss_intro(
     if let Some(class) = pending.class.take() {
         crate::ally::spawn_boss(
             &mut commands, &pm, &em, &mut meshes,
-            pending.pos, pending.heading, class,
+            pending.pos, pending.heading, class, pending.stars,
+            pending.battles_cleared,
         );
     }
 }

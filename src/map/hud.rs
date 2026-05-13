@@ -434,6 +434,11 @@ pub fn handle_debug_buttons(
                     player_pos + offset,
                     std::f32::consts::FRAC_PI_2,
                     class,
+                    // Debug spawner — drop in at 3★ baseline.
+                    3,
+                    // No campaign context in the debug path; treat as a
+                    // fresh-run boss so the multiplier is the baseline 1.0×.
+                    0,
                 );
             }
             DebugButton::SpawnEnemy(variant) => {

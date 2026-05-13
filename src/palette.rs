@@ -484,7 +484,7 @@ impl PaletteMaterials {
             // what's underneath.
             artillery_reticle:     materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.40)),
             artillery_reticle_outline: materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.95)),
-            sniper_aim:            materials.add(translucent(hex(SNIPER_AIM_HEX), 0.35)),
+            sniper_aim:            materials.add(translucent(hex(SNIPER_AIM_HEX), 0.65)),
             enemy_mine_dot:        materials.add(hex(ENEMY_MINE_DOT_HEX)),
             bullet_friendly:       materials.add(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN)),
             bullet_enemy:          materials.add(lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN)),

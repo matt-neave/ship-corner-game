@@ -373,6 +373,8 @@ pub fn handle_level_up_click(
     mut stats: ResMut<PlayerStats>,
     mut pending: ResMut<LevelUpsPending>,
     mut return_state: ResMut<LevelUpReturn>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     xp: Res<Xp>,
     mut next: ResMut<NextState<crate::AppState>>,
     overlay: Query<Entity, With<LevelUpRoot>>,
@@ -396,7 +398,22 @@ pub fn handle_level_up_click(
             // Customize for the post-stage path. Cleared so a stale
             // override can't leak into the next level-up.
             let dest = return_state.0.take().unwrap_or(crate::AppState::Customize);
-            next.set(dest);
+            // Despawn the level-up overlay synchronously so it's gone
+            // before the wipe starts expanding. Otherwise the overlay
+            // sits visibly behind the wipe for ~0.3s while the circle
+            // grows over it. With this, the cards vanish on click,
+            // there's a brief beat of the play area showing through,
+            // then the wipe sweeps in.
+            for e in &overlay {
+                commands.entity(e).despawn();
+            }
+            if matches!(dest, crate::AppState::Customize) {
+                crate::stage_complete::spawn_transition(
+                    &mut commands, &mut meshes, &mut materials, dest,
+                );
+            } else {
+                next.set(dest);
+            }
         }
         return;
     }

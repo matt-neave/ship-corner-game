@@ -149,7 +149,7 @@ pub fn reset_run_for_restart(
     // Cannon once, they keep Glass Cannon after dying. Returning to
     // MainMenu and re-PLAY-ing routes through HullSelect to repick.
     selected_hull.0.apply(&mut stats);
-    scrap.0 = 15;
+    scrap.0 = 0;
     *campaign = crate::CampaignProgress::default();
     *cfg = crate::turret::TurretConfig::default();
     // Reset onboarding so a RESTART re-introduces every enemy

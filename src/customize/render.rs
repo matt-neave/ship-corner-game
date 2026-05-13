@@ -110,7 +110,11 @@ pub fn setup_customize_render(
 
     commands.spawn((
         Sprite {
-            color: Color::srgb(0.10, 0.11, 0.13),
+            // Matches the customize camera's clear color above so the
+            // backdrop bars seamlessly continue the shop's interior
+            // colour — no visible seam between the rendered shop and
+            // the surrounding letterbox region on non-16:10 windows.
+            color: Color::srgb(0.13, 0.14, 0.17),
             custom_size: Some(Vec2::new(4096.0, 4096.0)),
             ..default()
         },

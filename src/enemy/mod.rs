@@ -133,28 +133,28 @@ pub enum EnemyVariant {
 
 impl EnemyVariant {
     pub fn hp(self) -> i32 {
-        // Base HP per variant, then a uniform +25% durability buff so
-        // every encounter lasts a touch longer without re-tuning each
-        // entry by hand.
-        let base: i32 = match self {
-            EnemyVariant::Standard => 5,
-            EnemyVariant::Heavy    => 15,
-            EnemyVariant::Scout    => 2,
-            EnemyVariant::Bomber   => 4,
-            EnemyVariant::Rammer   => 3,
-            EnemyVariant::Sniper   => 8,
-            EnemyVariant::Artillery=> 7,
-        };
-        ((base as f32) * 1.25).round().max(1.0) as i32
+        // Tuned so HP escalates with introduction order: a player
+        // shouldn't see the tankiest variant until they've cleared
+        // enough stages to handle it. See `variant_mix_for_stage`
+        // for the introduction schedule.
+        match self {
+            EnemyVariant::Bomber   => 2,   // intro: stage 0 — paper-thin kamikaze
+            EnemyVariant::Scout    => 3,   // intro: stage 1
+            EnemyVariant::Rammer   => 6,   // intro: stage 3
+            EnemyVariant::Standard => 8,   // intro: stage 2
+            EnemyVariant::Sniper   => 14,  // intro: stage 4
+            EnemyVariant::Heavy    => 104,  // intro: stage 5
+            EnemyVariant::Artillery=> 52,  // intro: stage 6 — apex AOE tank
+        }
     }
     pub fn speed(self) -> f32 {
         match self {
             EnemyVariant::Standard => 18.0,
-            EnemyVariant::Heavy    => 12.0,
+            EnemyVariant::Heavy    => 16.0,
             EnemyVariant::Scout    => 28.0,
-            EnemyVariant::Bomber   => 26.0,
-            EnemyVariant::Rammer   => 34.0,
-            EnemyVariant::Sniper   => 16.0,
+            EnemyVariant::Bomber   => 39.0,
+            EnemyVariant::Rammer   => 45.0,
+            EnemyVariant::Sniper   => 26.0,
             EnemyVariant::Artillery=> 6.0,
         }
     }
@@ -163,7 +163,7 @@ impl EnemyVariant {
             EnemyVariant::Standard => 0.9,
             EnemyVariant::Heavy    => 0.55,
             EnemyVariant::Scout    => 1.7,
-            EnemyVariant::Bomber   => 0.6,
+            EnemyVariant::Bomber   => 1.4,
             EnemyVariant::Rammer   => 1.4,
             EnemyVariant::Sniper   => 0.5,
             EnemyVariant::Artillery=> 0.4,
@@ -198,13 +198,13 @@ impl EnemyVariant {
         }
     }
     pub fn fire_damage(self) -> i32 {
-        // Most enemy cannons do 1 damage. Sniper hits noticeably
+        // Most enemy cannons do 3 damage. Sniper hits noticeably
         // harder to make the long telegraph feel earned. Artillery
         // does middling damage but in an area.
         match self {
-            EnemyVariant::Sniper    => 4,
-            EnemyVariant::Artillery => 4,
-            _ => 1,
+            EnemyVariant::Sniper    => 25,
+            EnemyVariant::Artillery => 20,
+            _ => 3,
         }
     }
     pub fn has_gun(self) -> bool {
@@ -300,7 +300,7 @@ fn standard_weight(c: u32) -> f32 {
         _     => 0.15,
     }
 }
-fn heavy_weight(c: u32) -> f32 {
+fn rammer_weight(c: u32) -> f32 {
     match c {
         0..=2 => 0.0,
         3     => 0.10,
@@ -308,7 +308,7 @@ fn heavy_weight(c: u32) -> f32 {
         _     => 0.12,
     }
 }
-fn rammer_weight(c: u32) -> f32 {
+fn sniper_weight(c: u32) -> f32 {
     match c {
         0..=3 => 0.0,
         4     => 0.08,
@@ -316,7 +316,7 @@ fn rammer_weight(c: u32) -> f32 {
         _     => 0.10,
     }
 }
-fn sniper_weight(c: u32) -> f32 {
+fn heavy_weight(c: u32) -> f32 {
     match c {
         0..=4 => 0.0,
         5     => 0.08,
@@ -338,21 +338,21 @@ fn boss_bomber_weight(c: u32) -> f32 {
     // Boss waves still kamikaze-heavy — Bomber is the constant.
     match c { 0 => 1.0, 1 => 0.50, _ => 0.30 }
 }
-fn boss_heavy_weight(c: u32) -> f32 {
+fn boss_rammer_weight(c: u32) -> f32 {
     match c {
         0..=2 => 0.0,
         3     => 0.20,
         _     => 0.25,
     }
 }
-fn boss_rammer_weight(c: u32) -> f32 {
+fn boss_sniper_weight(c: u32) -> f32 {
     match c { 0..=3 => 0.0, 4 => 0.12, _ => 0.15 }
 }
-fn boss_artillery_weight(c: u32) -> f32 {
-    match c { 0..=5 => 0.0, _ => 0.12 }
+fn boss_heavy_weight(c: u32) -> f32 {
+    match c { 0..=4 => 0.0, _ => 0.20 }
 }
-fn boss_sniper_weight(c: u32) -> f32 {
-    match c { 0..=4 => 0.0, _ => 0.10 }
+fn boss_artillery_weight(c: u32) -> f32 {
+    match c { 0..=5 => 0.0, _ => 0.15 }
 }
 fn boss_standard_weight(c: u32) -> f32 {
     match c { 0..=1 => 0.0, _ => 0.08 }
@@ -554,6 +554,7 @@ pub fn spawn_enemies(
     mut next_state: ResMut<NextState<crate::AppState>>,
     mut seen: ResMut<crate::onboarding::SeenVariants>,
     mut boss_intro_pending: ResMut<crate::boss_intro::BossIntroPending>,
+    mut scrap_w: crate::stage_complete::ScrapWriter,
     existing_banners: Query<Entity, With<crate::onboarding::NotificationLifetime>>,
     enemies: Query<Entity, With<Enemy>>,
 ) {
@@ -625,6 +626,11 @@ pub fn spawn_enemies(
                         boss_intro_pending.class = Some(class);
                         boss_intro_pending.pos = pos;
                         boss_intro_pending.heading = heading;
+                        // Carry the section's star tier so `spawn_boss`
+                        // can scale HP accordingly — 3★ boss vs 5★ boss
+                        // of the same class differ by ~1.67× HP.
+                        boss_intro_pending.stars = combat_ctx.stars;
+                        boss_intro_pending.battles_cleared = combat_ctx.battles_cleared;
                         next_state.set(crate::AppState::BossIntro);
                     }
                 }
@@ -672,6 +678,10 @@ pub fn spawn_enemies(
             if enemies.iter().count() == 0 {
                 combat_ctx.wave_phase = crate::map::WavePhase::Cooldown;
                 combat_ctx.wave_cd = crate::map::BETWEEN_WAVES_DURATION;
+                // Fixed +1 scrap per cleared wave — the bulk of the
+                // economy alongside interest + boss bounty. `grant`
+                // updates the live total + the stage tally together.
+                scrap_w.grant(1);
                 // Drain queued level-ups in the breather between waves
                 // — but ONLY when there's another wave coming. On the
                 // last wave we let the existing StageComplete →
@@ -1201,7 +1211,7 @@ pub fn bomber_detonate(
 
     for (_be, btf, enemy, mut be_hp) in &mut bombers {
         let (radius, contact_damage) = match enemy.variant {
-            EnemyVariant::Bomber => (BOMBER_DETONATE_DIST, 5),
+            EnemyVariant::Bomber => (BOMBER_DETONATE_DIST, 15),
             EnemyVariant::Rammer => (BOMBER_DETONATE_DIST * 0.6, 3),
             _ => continue,
         };
@@ -1284,14 +1294,11 @@ pub fn enemy_death_check(
         if h.0 > 0 { continue; }
         commands.entity(e).despawn();
         score.0 += 10;
-        // Base +1 scrap per kill, multiplied by the harvest tier roll
-        // (RoR-style: 0% → 1, 50% → 50/50 between 1 and 2, 100% → 2, …).
-        // The Pirate synergy then scales the result by 1.5×/2×/2.5×/3×
-        // at T1/T2/T3/T4.
-        let base_scrap = player_stats.roll_harvest_mult(&mut rng);
-        let scrap_drop = (base_scrap as f32 * synergies.pirate_harvest_mult())
-            .round()
-            .max(0.0) as u32;
+        // Harvest = chance an enemy drops 1 scrap on death. Pirate
+        // synergy multiplies the chance. Most kills give nothing on
+        // their own — wave clears, interest, and the boss bounty are
+        // the bulk of the economy.
+        let scrap_drop = player_stats.roll_harvest_drop(&mut rng, synergies.pirate_harvest_mult());
         scrap.0 = scrap.0.saturating_add(scrap_drop);
         // Mirror the increment into the per-stage tally so the
         // StageComplete transition can render "+N SCRAP" earned

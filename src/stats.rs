@@ -54,9 +54,10 @@ pub fn shield_recharge_system(
     let delay = stats.shield_recharge_delay.effective().max(0.0);
     let rate_per_sec = (stats.shield_recharge_rate_pct.effective() / 100.0).max(0.0) * max;
     for mut shield in &mut q {
-        if shield.current > max {
-            shield.current = max;
-        }
+        // Don't clamp current down to max — Ward (and any future
+        // overflow source) is allowed to sit above shield_max as a
+        // one-time buffer. Regen only fires while current < max, so
+        // overflow doesn't get topped back up after it absorbs a hit.
         shield.time_since_damage += dt;
         if shield.time_since_damage >= delay && shield.current < max {
             shield.current = (shield.current + rate_per_sec * dt).min(max);
@@ -223,9 +224,12 @@ impl PlayerStats {
         }
         false
     }
-    /// Roll the scrap multiplier for one pickup. Always ≥1.
-    pub fn roll_harvest_mult(&self, rng: &mut impl Rng) -> u32 {
-        roll_ror_tier(rng, self.harvest_pct.effective())
+    /// Roll a single scrap drop for one enemy kill. `harvest_pct` is
+    /// the percentage chance the enemy drops 1 scrap; otherwise 0.
+    /// Returns 0 or 1.
+    pub fn roll_harvest_drop(&self, rng: &mut impl Rng, pirate_mult: f32) -> u32 {
+        let chance = (self.harvest_pct.effective() / 100.0 * pirate_mult).clamp(0.0, 1.0);
+        if rng.r#gen::<f32>() < chance { 1 } else { 0 }
     }
     /// Effective half-arc for a turret slot, in radians, clamped to
     /// 180° (= 360° total cone). `slot_base_half_rad` is the per-slot
@@ -360,21 +364,13 @@ impl StatKind {
             StatKind::Crit => format!("{:.0}%", stats.crit_pct.effective()),
             StatKind::Range => format!("{:.0}%", stats.range_pct.effective()),
             StatKind::Harvest => {
-                // Expected scrap-per-kill expressed as a baseline-
-                // 100% percentage, with the Pirate synergy folded in
-                // the same way Naval folds into Weapon Damage.
-                // `harvest_pct` is a RoR-style tier chance: at +100%
-                // every kill drops +1 scrap, at +50% half do — so in
-                // expected-value terms `base_mult = 1 + harvest/100`.
-                // Pirate multiplies on top (1.0 / 1.5 / 2.0 / 2.5 /
-                // 3.0 per tier). 100% = stock 1-scrap drop, 200% = a
-                // Pirate-T2 build dropping ~2 scrap on average.
-                let base_mult = 1.0 + stats.harvest_pct.effective() / 100.0;
+                // Chance an enemy drops 1 scrap on death. Pirate
+                // synergy multiplies the chance (1× / 1.5× / 2× / …).
                 let pirate_mult = synergies
                     .map(|s| s.pirate_harvest_mult())
                     .unwrap_or(1.0);
-                let total_pct = base_mult * pirate_mult * 100.0;
-                format!("{:.0}%", total_pct)
+                let chance = (stats.harvest_pct.effective() * pirate_mult).clamp(0.0, 100.0);
+                format!("{:.0}%", chance)
             }
             StatKind::XpHarvest => {
                 // XP multiplier expressed as a baseline-100%
@@ -453,7 +449,7 @@ impl StatKind {
             StatKind::ProcStrength => 10.0,
             StatKind::Crit => 25.0,
             StatKind::Range => 10.0,
-            StatKind::Harvest => 25.0,
+            StatKind::Harvest => 1.0,
             StatKind::XpHarvest => 10.0,
             StatKind::ShieldMax => 5.0,
             StatKind::RuneDamage => 0.1,

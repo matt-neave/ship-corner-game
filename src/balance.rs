@@ -210,7 +210,7 @@ pub const BARREL_MIDDLE_EXTEND:     f32 = 1.0;
 pub const ENEMY_BARREL_TIP:         f32 = 3.55;
 pub const FRIENDLY_BULLET_HALF_LEN: f32 = 2.75;
 pub const ENEMY_BULLET_HALF_LEN:    f32 = 2.25;
-pub const BULLET_SPEED:             f32 = 110.0;
+pub const BULLET_SPEED:             f32 = 200.0;
 
 // ---------- Enemy chassis ----------
 pub const ENEMY_RANGE:           f32 = 45.0;

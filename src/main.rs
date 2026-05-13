@@ -253,25 +253,36 @@ fn main() {
     let cfg = TurretConfig::default();
 
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Ship Game".into(),
-                resolution: (WINDOW_W, WINDOW_H).into(),
-                // On wasm, let Bevy auto-resize the canvas to fill its
-                // parent element. itch.io embeds the game in an iframe
-                // whose dimensions are set on the project page; without
-                // this flag the canvas stays at the desktop default
-                // (WINDOW_W × WINDOW_H) and either overflows or
-                // leaves blank gutters. With it, every frame the
-                // canvas matches the iframe size and the camera /
-                // upscale logic adapts via `resize_customize_display`
-                // + the play-area's letterbox math.
-                #[cfg(target_arch = "wasm32")]
-                fit_canvas_to_parent: true,
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Ship Game".into(),
+                        resolution: (WINDOW_W, WINDOW_H).into(),
+                        // On wasm, let Bevy auto-resize the canvas to
+                        // fill its parent element. itch.io embeds the
+                        // game in an iframe whose dimensions are set on
+                        // the project page; without this flag the canvas
+                        // stays at the desktop default and either
+                        // overflows or leaves blank gutters.
+                        #[cfg(target_arch = "wasm32")]
+                        fit_canvas_to_parent: true,
+                        ..default()
+                    }),
+                    ..default()
+                })
+                // Pipelined rendering races main-world camera-viewport
+                // writes against render-world swap-chain texture reads:
+                // during minimize / alt-tab / resize the surface
+                // transiently becomes 1×1, and the HUD camera's
+                // play-area-sized scissor panics wgpu validation. No
+                // main-world guard can fully fix this because the
+                // race window is on the render thread. Disabling
+                // pipelining serialises the two worlds and removes
+                // the race entirely. Cost: a small throughput hit on
+                // multi-core; in practice unnoticeable for this game.
+                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
+        )
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         // Per-weapon plugins for the new tag-flavour weapons. Each
         // owns its own decoration entities + tick systems so the
@@ -328,9 +339,9 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
         .insert_resource(Score(0))
         .insert_resource(CampaignProgress::default())
-        // Starter purse — enough to build one tier-1 (10) plus a small
-        // buffer so the first map decision isn't a forced no-op.
-        .insert_resource(Scrap(15))
+        // Player earns scrap from the first wave clear onward; no
+        // starting purse.
+        .insert_resource(Scrap(0))
         .insert_resource(Steel::default())
         .insert_resource(RefinedSteel::default())
         .insert_resource(SpawnTimer { t: 0.0, elapsed: 0.0 })

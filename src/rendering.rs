@@ -394,19 +394,46 @@ pub fn resize_upscale_sprite(
 pub fn update_hud_camera_viewport(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut hud: Query<&mut Camera, With<HudCamera>>,
+    mut last_phys: Local<UVec2>,
+    mut steady_frames: Local<u8>,
 ) {
     let Ok(window) = windows.single() else { return; };
     let phys_target = window.physical_size();
-    // Minimize / iframe-collapse / mid-resize can briefly leave the
-    // window's physical size at 0 or 1. Setting a viewport bigger
-    // than the swap-chain target then triggers a wgpu validation
-    // panic ("Scissor Rect … is not contained in the render
-    // target"). Clear the viewport when the window is degenerate and
-    // come back next frame when the size is real again.
-    if phys_target.x <= 1 || phys_target.y <= 1 {
-        for mut cam in &mut hud {
+
+    // Wipe the viewport in three cases so wgpu never sees a scissor
+    // larger than the swap-chain target:
+    //
+    //   1. Window is degenerate (≤ 1 px on either axis) — minimize,
+    //      mid-resize, iframe collapse.
+    //   2. Physical size changed since last frame — the surface has
+    //      to reconfigure, and the first re-rendered frame might
+    //      still see the old 1×1 placeholder texture.
+    //   3. We haven't yet seen the current size stable for two
+    //      frames — guards against startup races where the window
+    //      reports its final size before the surface is configured.
+    //
+    // While the viewport is `None`, the HUD camera draws to the
+    // whole target — visually fine for one frame (the HUD just
+    // covers the full window briefly) and crash-free.
+    let bail = |hud: &mut Query<&mut Camera, With<HudCamera>>| {
+        for mut cam in hud {
             if cam.viewport.is_some() { cam.viewport = None; }
         }
+    };
+    if phys_target.x <= 1 || phys_target.y <= 1 {
+        *steady_frames = 0;
+        bail(&mut hud);
+        return;
+    }
+    if phys_target != *last_phys {
+        *last_phys = phys_target;
+        *steady_frames = 1;
+        bail(&mut hud);
+        return;
+    }
+    if *steady_frames < 3 {
+        *steady_frames = steady_frames.saturating_add(1);
+        bail(&mut hud);
         return;
     }
 
@@ -431,9 +458,7 @@ pub fn update_hud_camera_viewport(
         raw_h.min(phys_target.y.saturating_sub(phys_pos.y)),
     );
     if phys_size.x == 0 || phys_size.y == 0 {
-        for mut cam in &mut hud {
-            if cam.viewport.is_some() { cam.viewport = None; }
-        }
+        bail(&mut hud);
         return;
     }
 

@@ -27,7 +27,7 @@ pub const HELI_ORBIT_RADIUS: f32 = 30.0;
 pub const HELI_SPEED: f32 = 28.0;
 /// Slow enough that the heli has visible inertia.
 pub const HELI_TURN_RATE: f32 = 2.5;
-pub const HELI_BULLET_SPEED: f32 = 120.0;
+pub const HELI_BULLET_SPEED: f32 = 180.0;
 /// Lateral offset per nose barrel (port / centre / stbd). The firing
 /// path uses the same values so muzzle visuals line up with the bullets.
 pub const HELI_BARREL_LATERAL: [f32; 3] = [-1.4, 0.0, 1.4];
