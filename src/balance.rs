@@ -324,6 +324,16 @@ pub const EXECUTIONER_BONUS_PER_STACK: f32 = 0.50;
 /// Effect. 1 stack = +100%, scaled linearly by Rune Effect on top.
 pub const OPENER_BONUS_PER_STACK: f32 = 1.00;
 
+// ---------- Spike Plate (passive armour turret) ----------
+/// Extra ram damage the ship deals on contact for each equipped
+/// Spike Plate slot. Stacks linearly — 3 plates = +15 ram damage.
+pub const SPIKED_PLATE_DAMAGE_BONUS: i32 = 5;
+/// Damage subtracted from an incoming bullet hit when the bullet
+/// impacts the hull on the same side as a Spike Plate slot. Read by
+/// `bullet_collisions` after computing the nearest slot to the
+/// impact direction.
+pub const SPIKED_PLATE_REDUCTION: i32 = 1;
+
 // ---------- Wave structure ----------
 //
 // A combat encounter is split into discrete waves. Star tier picks the

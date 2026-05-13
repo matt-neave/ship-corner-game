@@ -69,6 +69,12 @@ pub enum WeaponType {
     /// rune — burn is a separate effect from Fire status. See
     /// `flamethrower.rs` for the cone + tick logic.
     Flamethrower,
+    /// Spike-armoured deck plate. Doesn't fire anything. Each equipped
+    /// slot adds `SPIKED_PLATE_DAMAGE_BONUS` to the ship's contact-ram
+    /// damage AND reduces incoming bullet damage by
+    /// `SPIKED_PLATE_REDUCTION` when the bullet hits the hull on the
+    /// same side this slot occupies. Tagged Melee + Support.
+    SpikedPlate,
 }
 
 /// Gameplay-class tag attached to each weapon. Used by the tooltip to
@@ -317,6 +323,10 @@ impl WeaponType {
             // outer 3-on / 3-off cycle is owned by the `Flamethrower`
             // component itself.
             WeaponType::Flamethrower => (1, 2.0),
+            // Spike Plate: doesn't fire. Placeholder zeros so the
+            // stats panel reads "0 / 0" cleanly. Damage/reduction
+            // numbers live in `balance::SPIKED_PLATE_*`.
+            WeaponType::SpikedPlate => (0, 0.0),
         }
     }
 
@@ -337,6 +347,7 @@ impl WeaponType {
             WeaponType::Harpoon    => tr("weapon_harpoon"),
             WeaponType::SpreadRockets => tr("weapon_spread_rockets"),
             WeaponType::Flamethrower => tr("weapon_flamethrower"),
+            WeaponType::SpikedPlate => tr("weapon_spiked_plate"),
         }
     }
 
@@ -358,6 +369,7 @@ impl WeaponType {
             WeaponType::Harpoon    => tr("weapon_harpoon_desc"),
             WeaponType::SpreadRockets => tr("weapon_spread_rockets_desc"),
             WeaponType::Flamethrower => tr("weapon_flamethrower_desc"),
+            WeaponType::SpikedPlate => tr("weapon_spiked_plate_desc"),
         }
     }
 
@@ -405,6 +417,9 @@ impl WeaponType {
             // Flamethrower: short cone. Used by `flamethrower.rs` for
             // the cone reach calc.
             WeaponType::Flamethrower => 0.45,
+            // Spike Plate: doesn't project — placeholder for the
+            // exhaustive match.
+            WeaponType::SpikedPlate => 1.0,
         }
     }
 
@@ -436,15 +451,17 @@ impl WeaponType {
                 | WeaponType::Blade
                 | WeaponType::Cage
                 | WeaponType::Flamethrower
+                | WeaponType::SpikedPlate
         )
     }
 
     /// Whether this weapon's turret should show the standard barrel
     /// children. False for HeliPad (deck pad only), Booster (support
     /// platform), Blade (arm + blade decor instead), Cage (cage decor
-    /// + remote octopus), and Flamethrower (single fat nozzle, not
-    /// thin barrels). `sync_turret_config` uses this to hide the
-    /// barrel meshes when the slot's weapon doesn't have any.
+    /// + remote octopus), Flamethrower (single fat nozzle, not thin
+    /// barrels), and SpikedPlate (passive armour, no barrels).
+    /// `sync_turret_config` uses this to hide the barrel meshes when
+    /// the slot's weapon doesn't have any.
     pub fn has_barrels(self) -> bool {
         !matches!(
             self,
@@ -453,6 +470,7 @@ impl WeaponType {
                 | WeaponType::Blade
                 | WeaponType::Cage
                 | WeaponType::Flamethrower
+                | WeaponType::SpikedPlate
         )
     }
 
@@ -486,6 +504,9 @@ impl WeaponType {
             // Close-range burner — Melee for the heal-on-kill synergy
             // and the in-your-face engagement style.
             WeaponType::Flamethrower => &[WeaponTag::Melee],
+            // Spiked deck plate — Melee for the contact-damage buff
+            // and Support for the per-side reduction it grants.
+            WeaponType::SpikedPlate => &[WeaponTag::Melee, WeaponTag::Support],
         }
     }
 
@@ -523,6 +544,7 @@ impl PaletteMaterials {
             WeaponType::Harpoon    => &self.turret_harpoon,
             WeaponType::SpreadRockets => &self.turret_spread_rockets,
             WeaponType::Flamethrower => &self.turret_flamethrower,
+            WeaponType::SpikedPlate => &self.turret_spiked_plate,
         }
     }
 
@@ -550,6 +572,8 @@ impl PaletteMaterials {
             WeaponType::SpreadRockets => &self.bullet_missile_outer,
             // Flamethrower never spawns bullets; fallback to friendly.
             WeaponType::Flamethrower => &self.bullet_friendly_outer,
+            // Spike Plate never spawns bullets; fallback to friendly.
+            WeaponType::SpikedPlate => &self.bullet_friendly_outer,
         }
     }
 
@@ -570,6 +594,7 @@ impl PaletteMaterials {
             WeaponType::Harpoon    => &self.harpoon_head,
             WeaponType::SpreadRockets => &self.bullet_missile_inner,
             WeaponType::Flamethrower => &self.fire,
+            WeaponType::SpikedPlate => &self.bullet_friendly,
         }
     }
 }

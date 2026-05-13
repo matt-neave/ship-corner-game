@@ -447,15 +447,23 @@ pub fn update_hud_camera_viewport(
     let raw_w = (play_w * scale).round().max(1.0) as u32;
     let raw_h = (play_h * scale).round().max(1.0) as u32;
     // Clamp so the viewport always lives inside the swap-chain
-    // target — defensive against any frame where the rounding above
-    // pushes the bottom-right edge one pixel past it.
+    // target. `window.physical_size()` can transiently report a
+    // larger value than the surface texture during resize (the
+    // window reports its target dimensions before the swapchain
+    // reconfigures), so prefer the camera's actual target size
+    // when it's available — that's what wgpu validates against.
+    let cam_target = hud
+        .iter()
+        .next()
+        .and_then(|c| c.physical_target_size());
+    let bound = cam_target.unwrap_or(phys_target);
     let phys_pos = UVec2::new(
-        raw_x.min(phys_target.x.saturating_sub(1)),
-        raw_y.min(phys_target.y.saturating_sub(1)),
+        raw_x.min(bound.x.saturating_sub(1)),
+        raw_y.min(bound.y.saturating_sub(1)),
     );
     let phys_size = UVec2::new(
-        raw_w.min(phys_target.x.saturating_sub(phys_pos.x)),
-        raw_h.min(phys_target.y.saturating_sub(phys_pos.y)),
+        raw_w.min(bound.x.saturating_sub(phys_pos.x)),
+        raw_h.min(bound.y.saturating_sub(phys_pos.y)),
     );
     if phys_size.x == 0 || phys_size.y == 0 {
         bail(&mut hud);

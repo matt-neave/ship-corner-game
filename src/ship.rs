@@ -459,10 +459,12 @@ pub fn friendly_ram_damage(
     time: Res<Time>,
     mut commands: Commands,
     mut shake: ResMut<crate::modes::ScreenShake>,
+    cfg: Res<crate::turret::TurretConfig>,
     mut friendly: Query<
         (
             Entity,
             &Transform,
+            &Heading,
             &mut Health,
             &mut HitFx,
             Option<&mut crate::stats::Shield>,
@@ -475,8 +477,9 @@ pub fn friendly_ram_damage(
         Without<Friendly>,
     >,
 ) {
-    let Ok((fe, f_tf, mut fh, mut ffx, f_shield, f_self_grace)) = friendly.single_mut() else { return };
+    let Ok((fe, f_tf, f_heading, mut fh, mut ffx, f_shield, f_self_grace)) = friendly.single_mut() else { return };
     let f_pos = f_tf.translation.truncate();
+    let hull_yaw = f_heading.0;
     let dt = time.delta_secs();
 
     // Tick the ship's own collision-grace so a sustained overlap can't
@@ -509,8 +512,14 @@ pub fn friendly_ram_damage(
         let enemy_r = 3.5 * en.variant.scale();
         let r = HULL_HALF_LEN + enemy_r;
         if f_pos.distance_squared(ep) < r * r {
+            // Ram damage is base + Spike Plate bonus *only if* the
+            // contact lands on the slot side carrying a Spike Plate.
+            // Same per-slot mapping the bullet-damage reduction uses,
+            // so plate placement matters in both directions.
+            let ram_damage = RAM_DAMAGE_TO_ENEMY
+                + spiked_plate_contact_bonus(&cfg, f_pos, ep, hull_yaw);
             // Damage the enemy + flash.
-            crate::bullet::apply_damage(&mut h, &mut fx, RAM_DAMAGE_TO_ENEMY);
+            crate::bullet::apply_damage(&mut h, &mut fx, ram_damage);
             shake.add_trauma(RAM_TRAUMA);
             commands.entity(e).insert(RamGrace { remaining: RAM_GRACE });
 
@@ -536,4 +545,42 @@ pub fn friendly_ram_damage(
 #[derive(Component)]
 pub struct RamSelfGrace {
     pub remaining: f32,
+}
+
+/// Bonus damage added to a ram hit when the contacted enemy is on
+/// the side of a Spike Plate slot. Maps the impact direction into
+/// hull-local space and picks the slot whose mount angle is closest
+/// — same mapping `spiked_plate_reduction` uses for incoming
+/// bullets, so the player can reason about both effects identically.
+fn spiked_plate_contact_bonus(
+    cfg: &crate::turret::TurretConfig,
+    ship_pos: Vec2,
+    enemy_pos: Vec2,
+    hull_yaw: f32,
+) -> i32 {
+    let dir = enemy_pos - ship_pos;
+    if dir.length_squared() < 0.001 { return 0; }
+    let world_angle = (-dir.x).atan2(dir.y);
+    let mut local_angle = world_angle - hull_yaw;
+    local_angle = (local_angle + std::f32::consts::PI)
+        .rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    let mut best: Option<(usize, f32)> = None;
+    for (i, &mount) in crate::balance::TURRET_MOUNTS.iter().enumerate() {
+        let mut delta = local_angle - mount;
+        delta = (delta + std::f32::consts::PI)
+            .rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        let abs = delta.abs();
+        if best.map_or(true, |(_, b)| abs < b) {
+            best = Some((i, abs));
+        }
+    }
+    let Some((idx, _)) = best else { return 0; };
+    let slot = cfg.slots[idx];
+    if slot.equipped
+        && matches!(slot.weapon, crate::weapon::WeaponType::SpikedPlate)
+    {
+        crate::balance::SPIKED_PLATE_DAMAGE_BONUS
+    } else {
+        0
+    }
 }

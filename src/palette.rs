@@ -108,6 +108,13 @@ pub const SPREAD_ROCKETS_HEX: &str = "#7a8a98";
 /// reuses the Fire rune palette, so the base needs to read as the
 /// *device*, not the fire.
 pub const FLAMETHROWER_HEX:   &str = "#2a2a30";
+/// Spike Plate base — dull battleship grey so the bristled silhouette
+/// reads as raw armoured steel. Distinct from the warmer Cannon brown
+/// and the polished Spread Rockets blue-grey.
+pub const SPIKED_PLATE_HEX:   &str = "#5a5e66";
+/// Spike highlight — pale steel for the individual spike tips on top
+/// of the plate base.
+pub const SPIKED_PLATE_TIP_HEX: &str = "#d4d8de";
 
 /// Octopus cage — dark iron bars on the deck. The cage is a cube of
 /// dim metal so the bright purple octopus inside reads as the main
@@ -392,6 +399,8 @@ pub struct PaletteMaterials {
     /// flame uses the Fire-rune material so the device + the spit
     /// of fire read as separate elements.
     pub turret_flamethrower: Handle<ColorMaterial>,
+    /// `SpikedPlate` deck tint — battleship grey base.
+    pub turret_spiked_plate: Handle<ColorMaterial>,
     /// Ship-class hull tints — one per `ShipClass`. Looked up via
     /// `ally::PaletteMaterials::hull_for_class`.
     pub pirate_hull: Handle<ColorMaterial>,
@@ -541,6 +550,7 @@ impl PaletteMaterials {
             harpoon_chain:         materials.add(hex(HARPOON_CHAIN_HEX)),
             turret_spread_rockets: materials.add(hex(SPREAD_ROCKETS_HEX)),
             turret_flamethrower:   materials.add(hex(FLAMETHROWER_HEX)),
+            turret_spiked_plate:   materials.add(hex(SPIKED_PLATE_HEX)),
             bullet_mortar:         materials.add(hex(MORTAR_BRIGHT_HEX)),
             bullet_mortar_outer:   materials.add(mortar),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),

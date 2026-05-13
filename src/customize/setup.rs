@@ -1110,6 +1110,7 @@ pub fn turret_color_for(weapon: WeaponType) -> Color {
         WeaponType::Harpoon => hex(crate::palette::HARPOON_HEX),
         WeaponType::SpreadRockets => hex(crate::palette::SPREAD_ROCKETS_HEX),
         WeaponType::Flamethrower => hex(crate::palette::FLAMETHROWER_HEX),
+        WeaponType::SpikedPlate => hex(crate::palette::SPIKED_PLATE_HEX),
     }
 }
 
@@ -1137,6 +1138,8 @@ pub fn turret_barrel_color_for(weapon: WeaponType) -> Color {
         // Hot-orange glow on the nozzle tip — same hue family as
         // the Fire rune so the weapon reads as a burner at a glance.
         WeaponType::Flamethrower => hex(crate::palette::FIRE_HEX),
+        // Bright steel for the spike tips on top of the plate.
+        WeaponType::SpikedPlate => hex(crate::palette::SPIKED_PLATE_TIP_HEX),
     }
 }
 

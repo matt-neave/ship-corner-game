@@ -37,6 +37,7 @@ weapon_cage,CAGE
 weapon_harpoon,HARPOON
 weapon_spread_rockets,SPREAD ROCKETS
 weapon_flamethrower,FLAMETHROWER
+weapon_spiked_plate,SPIKED PLATE
 weapon_cannon_desc,Heavy cannonball. Knocks enemies back on hit.
 weapon_booster_desc,Does not fire. Boosts the fire rate of every adjacent turret.
 weapon_blade_desc,Spinning blade on an extending arm. Damages anything it touches near the ship.
@@ -44,6 +45,7 @@ weapon_cage_desc,Releases an octopus that hunts enemies in the water and slaps t
 weapon_harpoon_desc,Long-range melee. Lances out and reels the target into the hull.
 weapon_spread_rockets_desc,Salvo of 4 seeking rockets every 2.5s. Each rocket re-homes onto a target.
 weapon_flamethrower_desc,Short cone burner. Burns 3s then reloads 3s. Does not auto-apply Fire.
+weapon_spiked_plate_desc,Passive deck armour. On this slot's side of the hull: +5 ram damage to the enemy in contact and -1 incoming bullet damage.
 weapon_tag_naval,NAVAL
 weapon_tag_future,FUTURE
 weapon_tag_autonomous,AUTONOMOUS

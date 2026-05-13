@@ -110,6 +110,45 @@ pub enum DamageSource {
     Ally(crate::ally::ShipClass),
 }
 
+/// Map an impact world-space position to the turret slot whose mount
+/// angle is closest. Returns the resulting damage after a Spike Plate
+/// chip-down (or the original damage when the matching slot isn't a
+/// Spike Plate). Both ship-position `fp` and impact-position `ip` are
+/// in world coords; `heading` is the ship's hull yaw.
+fn spiked_plate_reduction(
+    cfg: &crate::turret::TurretConfig,
+    fp: Vec2,
+    ip: Vec2,
+    heading: f32,
+    damage: i32,
+) -> i32 {
+    let dir = ip - fp;
+    if dir.length_squared() < 0.001 { return damage; }
+    let world_angle = (-dir.x).atan2(dir.y);
+    let mut local_angle = world_angle - heading;
+    local_angle = (local_angle + std::f32::consts::PI)
+        .rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    let mut best: Option<(usize, f32)> = None;
+    for (i, &mount) in crate::balance::TURRET_MOUNTS.iter().enumerate() {
+        let mut delta = local_angle - mount;
+        delta = (delta + std::f32::consts::PI)
+            .rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        let abs = delta.abs();
+        if best.map_or(true, |(_, b)| abs < b) {
+            best = Some((i, abs));
+        }
+    }
+    let Some((idx, _)) = best else { return damage };
+    let slot = cfg.slots[idx];
+    if slot.equipped
+        && matches!(slot.weapon, crate::weapon::WeaponType::SpikedPlate)
+    {
+        (damage - crate::balance::SPIKED_PLATE_REDUCTION).max(0)
+    } else {
+        damage
+    }
+}
+
 #[derive(Component)]
 pub struct Bullet {
     pub faction: FactionKind,
@@ -272,6 +311,7 @@ pub fn bullet_collisions(
     player_stats: Res<crate::stats::PlayerStats>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
+    cfg: Res<crate::turret::TurretConfig>,
     mut queue: ResMut<PendingDamageQueue>,
     bullets: Query<
         (
@@ -283,7 +323,7 @@ pub fn bullet_collisions(
     >,
     mut pierces: Query<&mut Pierce>,
     enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
-    mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
+    mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>, &crate::components::Heading), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
 ) {
     let Some(pm) = pm else { return; };
@@ -359,7 +399,7 @@ pub fn bullet_collisions(
                         // path uses below. Bosses (Enemy + Ally) break
                         // free in 1s instead of the standard 4s.
                         let is_boss = allies.get(ee).is_ok();
-                        if let Ok((fe, _, _, _, _)) = friendly.single() {
+                        if let Ok((fe, _, _, _, _, _)) = friendly.single() {
                             crate::harpoon::attach_harpoon(
                                 &mut commands, &em, &pm, fe, ee, is_boss,
                             );
@@ -388,19 +428,23 @@ pub fn bullet_collisions(
                 // Enemy bullets carry no runes — keep the original inline
                 // hit logic and skip the proc queue.
                 let mut consumed = false;
-                for (_fe, ftf, mut h, mut fx, shield_opt) in &mut friendly {
+                for (_fe, ftf, mut h, mut fx, shield_opt, fheading) in &mut friendly {
                     let fp = ftf.translation.truncate();
                     // Swept segment vs ship hit radius (5).
                     if point_segment_dist_sq(fp, prev_bp, bp) < 5.0 * 5.0 {
                         commands.entity(be).despawn();
-                        // Friendly ship now takes damage in both modes.
-                        // Sandbox invincibility was useful while the
-                        // map / capture loop was being designed; with
-                        // ally HP also live, parity makes the sandbox
-                        // feel coherent.
+                        // Spike Plate per-side reduction: find which
+                        // slot's mount angle is closest to the impact
+                        // direction and chip 1 off the incoming damage
+                        // if that slot holds a Spike Plate. This is
+                        // pre-shield so an incoming hit absorbed by
+                        // the shield still gets the chip-down (matches
+                        // the "deflected by spikes before reaching the
+                        // shield" mental model).
+                        let dmg = spiked_plate_reduction(&cfg, fp, bp, fheading.0, b.damage);
                         let after_shield = shield_opt
-                            .map(|mut s| s.absorb(b.damage))
-                            .unwrap_or(b.damage);
+                            .map(|mut s| s.absorb(dmg))
+                            .unwrap_or(dmg);
                         apply_damage(&mut h, &mut fx, after_shield);
                         let hit_pos = ftf.translation.truncate();
                         spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
