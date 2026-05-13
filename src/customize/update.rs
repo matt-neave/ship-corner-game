@@ -539,6 +539,8 @@ fn weapon_short_label(w: WeaponType) -> &'static str {
         WeaponType::Blade      => "BLADE",
         WeaponType::Cage       => "CAGE",
         WeaponType::Harpoon    => "HARPOON",
+        WeaponType::SpreadRockets => "ROCKETS",
+        WeaponType::Flamethrower => "FLAMER",
     }
 }
 

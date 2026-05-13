@@ -18,6 +18,7 @@ mod customize;
 mod dockyard_view;
 mod effects;
 mod enemy;
+mod flamethrower;
 mod game_over;
 mod harpoon;
 mod hull;
@@ -54,7 +55,7 @@ use ally::{
 };
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
-use bullet::{bullet_collisions, bullet_update, process_damage_events, PendingDamageQueue, VampireAccumulator};
+use bullet::{bullet_collisions, bullet_update, process_damage_events, GreedAccumulator, PendingDamageQueue, VampireAccumulator};
 use effects::{
     apply_hit_fx_visuals, tick_hit_fx, update_hit_particles, update_muzzle_flashes,
 };
@@ -306,7 +307,10 @@ fn main() {
             customize::CustomizePlugin,
             hull::HullSelectPlugin,
         ))
-        .add_plugins(stats_panel_overlay::StatsPanelOverlayPlugin)
+        .add_plugins((
+            flamethrower::FlamethrowerPlugin,
+            stats_panel_overlay::StatsPanelOverlayPlugin,
+        ))
         // Workaround for a Bevy 0.16 + WebGL2/ANGLE bug: the default
         // mesh allocator packs many small meshes into shared "slab"
         // buffers and resizes them as meshes are added/freed. On
@@ -352,6 +356,7 @@ fn main() {
         .insert_resource(synergy::Synergies::default())
         .insert_resource(PendingDamageQueue::default())
         .insert_resource(VampireAccumulator::default())
+        .insert_resource(GreedAccumulator::default())
         .insert_resource(modes::ScreenShake::default())
         .insert_resource(RunTimer::default())
         .init_state::<AppState>()

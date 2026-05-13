@@ -58,6 +58,17 @@ pub enum WeaponType {
     /// with the friendly ship where `friendly_ram_damage` finishes
     /// the job. See `harpoon.rs` for the projectile + pull system.
     Harpoon,
+    /// Salvo launcher — every 2.5s, fires 4 seeking rockets at once.
+    /// Each rocket re-homes onto a target picked through the standard
+    /// targeting-rune pipeline (TargetCarousel rotates targets, others
+    /// pick the same priority enemy). Future-tagged. See `turret/mod.rs`
+    /// firing path; rockets reuse `HomingMissile` from `ally::missile`.
+    SpreadRockets,
+    /// Short-cone burner. Doesn't fire bullets. Ticks 1 damage every
+    /// 0.5s for 3s, then a 3s reload. Does NOT auto-apply the Fire
+    /// rune — burn is a separate effect from Fire status. See
+    /// `flamethrower.rs` for the cone + tick logic.
+    Flamethrower,
 }
 
 /// Gameplay-class tag attached to each weapon. Used by the tooltip to
@@ -295,6 +306,17 @@ impl WeaponType {
             // ship isn't a meat-grinder; one harpoon at a time keeps
             // the chain visual readable.
             WeaponType::Harpoon    => (1, 0.7),
+            // Spread Rockets: 4 rockets per shot, fire rate = 0.4Hz
+            // (one volley every 2.5s). Damage per rocket — modest so
+            // a full salvo lands as a satisfying chunk without being
+            // a Mortar-replacement.
+            WeaponType::SpreadRockets => (3, 0.4),
+            // Flamethrower: damage / tick repurposed by `flamethrower.rs`
+            // as "1 damage every 0.5s during the active burn phase".
+            // Fire rate = 2.0Hz drives the per-tick cadence; the
+            // outer 3-on / 3-off cycle is owned by the `Flamethrower`
+            // component itself.
+            WeaponType::Flamethrower => (1, 2.0),
         }
     }
 
@@ -313,6 +335,8 @@ impl WeaponType {
             WeaponType::Blade      => tr("weapon_blade"),
             WeaponType::Cage       => tr("weapon_cage"),
             WeaponType::Harpoon    => tr("weapon_harpoon"),
+            WeaponType::SpreadRockets => tr("weapon_spread_rockets"),
+            WeaponType::Flamethrower => tr("weapon_flamethrower"),
         }
     }
 
@@ -332,6 +356,8 @@ impl WeaponType {
             WeaponType::Blade      => tr("weapon_blade_desc"),
             WeaponType::Cage       => tr("weapon_cage_desc"),
             WeaponType::Harpoon    => tr("weapon_harpoon_desc"),
+            WeaponType::SpreadRockets => tr("weapon_spread_rockets_desc"),
+            WeaponType::Flamethrower => tr("weapon_flamethrower_desc"),
         }
     }
 
@@ -349,7 +375,9 @@ impl WeaponType {
     pub fn range_mult(self) -> f32 {
         match self {
             WeaponType::Standard   => 1.0,
-            WeaponType::Sniper     => 1.5,
+            // Long-distance king — heavy shots that reach noticeably
+            // further than every other direct-fire weapon.
+            WeaponType::Sniper     => 2.2,
             WeaponType::MachineGun => 0.9,
             WeaponType::Shotgun    => 0.6,
             WeaponType::Railgun    => 1.6,
@@ -370,6 +398,13 @@ impl WeaponType {
             // Harpoon: long reach — the whole point is to spear an
             // enemy at standoff and reel them in.
             WeaponType::Harpoon    => 1.5,
+            // Spread Rockets: medium range — the seek logic does the
+            // last-mile work, so the firing arc just needs to cover
+            // mid-field engagement.
+            WeaponType::SpreadRockets => 1.4,
+            // Flamethrower: short cone. Used by `flamethrower.rs` for
+            // the cone reach calc.
+            WeaponType::Flamethrower => 0.45,
         }
     }
 
@@ -389,25 +424,35 @@ impl WeaponType {
 
     /// Whether this weapon fires anything from the turret base. False for
     /// HeliPad (helicopter does the firing), Booster (pure support),
-    /// Blade (melee aura), and Cage (octopus does the slapping). The
-    /// aim/fire system early-returns for these so the slot doesn't try
-    /// to track a target or spawn muzzle flashes.
+    /// Blade (melee aura), Cage (octopus does the slapping), and
+    /// Flamethrower (the cone burn is owned by its own tick system).
+    /// The aim/fire system early-returns for these so the slot doesn't
+    /// try to track a target or spawn muzzle flashes.
     pub fn fires_from_base(self) -> bool {
         !matches!(
             self,
-            WeaponType::HeliPad | WeaponType::Booster | WeaponType::Blade | WeaponType::Cage
+            WeaponType::HeliPad
+                | WeaponType::Booster
+                | WeaponType::Blade
+                | WeaponType::Cage
+                | WeaponType::Flamethrower
         )
     }
 
     /// Whether this weapon's turret should show the standard barrel
     /// children. False for HeliPad (deck pad only), Booster (support
     /// platform), Blade (arm + blade decor instead), Cage (cage decor
-    /// + remote octopus). `sync_turret_config` uses this to hide the
+    /// + remote octopus), and Flamethrower (single fat nozzle, not
+    /// thin barrels). `sync_turret_config` uses this to hide the
     /// barrel meshes when the slot's weapon doesn't have any.
     pub fn has_barrels(self) -> bool {
         !matches!(
             self,
-            WeaponType::HeliPad | WeaponType::Booster | WeaponType::Blade | WeaponType::Cage
+            WeaponType::HeliPad
+                | WeaponType::Booster
+                | WeaponType::Blade
+                | WeaponType::Cage
+                | WeaponType::Flamethrower
         )
     }
 
@@ -436,6 +481,11 @@ impl WeaponType {
             // synergy AND Melee for the heal-on-kill synergy. The
             // "reel in then ram" loop fits both flavours.
             WeaponType::Harpoon    => &[WeaponTag::Pirate, WeaponTag::Melee],
+            // Smart munitions — Future for the guided-rocket fantasy.
+            WeaponType::SpreadRockets => &[WeaponTag::Future],
+            // Close-range burner — Melee for the heal-on-kill synergy
+            // and the in-your-face engagement style.
+            WeaponType::Flamethrower => &[WeaponTag::Melee],
         }
     }
 
@@ -471,6 +521,8 @@ impl PaletteMaterials {
             WeaponType::Blade      => &self.turret_blade,
             WeaponType::Cage       => &self.turret_cage,
             WeaponType::Harpoon    => &self.turret_harpoon,
+            WeaponType::SpreadRockets => &self.turret_spread_rockets,
+            WeaponType::Flamethrower => &self.turret_flamethrower,
         }
     }
 
@@ -492,6 +544,12 @@ impl PaletteMaterials {
             WeaponType::Cage       => &self.bullet_friendly_outer,
             // Harpoon spear uses the bronze launcher tone for the shaft.
             WeaponType::Harpoon    => &self.turret_harpoon,
+            // Spread rockets reuse the homing-missile colorway so the
+            // rust + flame palette reads consistently with the ally
+            // submarine's salvo.
+            WeaponType::SpreadRockets => &self.bullet_missile_outer,
+            // Flamethrower never spawns bullets; fallback to friendly.
+            WeaponType::Flamethrower => &self.bullet_friendly_outer,
         }
     }
 
@@ -510,6 +568,8 @@ impl PaletteMaterials {
             WeaponType::Cage       => &self.bullet_friendly,
             // Bright tip on the spear head.
             WeaponType::Harpoon    => &self.harpoon_head,
+            WeaponType::SpreadRockets => &self.bullet_missile_inner,
+            WeaponType::Flamethrower => &self.fire,
         }
     }
 }

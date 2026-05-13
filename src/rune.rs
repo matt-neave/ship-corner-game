@@ -128,6 +128,27 @@ pub enum Rune {
     /// octopus). No effect on non-autonomous slots. Stacks with the
     /// Autonomous synergy's per-tier speed bonus.
     Hustle,
+    /// Bullet survives the first hit and continues to the next enemy
+    /// in its path, dealing reduced damage on each pierce. Each stack
+    /// adds one extra pierce. Rune Effect raises the per-pierce damage
+    /// floor (less reduction at higher Rune Effect). Bullet-only — no
+    /// effect on Blade, Mortar splash, Beam, or autonomous weapons.
+    Pierce,
+    /// Long-tail economy rune. Every Nth kill landed by a bullet
+    /// carrying Greed drops +1 scrap. N starts at 25 and is reduced
+    /// by stacks (more frequent payouts) and by Rune Effect (better
+    /// efficiency). Accumulator is global so cross-slot Greeds share
+    /// the same kill counter.
+    Greed,
+    /// +X% damage to enemies below 30% HP. Each stack adds the bonus,
+    /// scaled by Rune Effect. Anti-finisher pressure that pairs with
+    /// sustained fire / Cascade.
+    Executioner,
+    /// Bonus damage on the first hit of an engagement: when the target
+    /// is at full HP, the hit deals extra damage. Each stack adds the
+    /// bonus, scaled by Rune Effect. Reads as "alpha strike" — great
+    /// on slow heavy weapons (Sniper, Cannon).
+    Opener,
 }
 
 impl Rune {
@@ -150,6 +171,10 @@ impl Rune {
             Rune::Bleed            => tr("rune_bleed"),
             Rune::Blast            => tr("rune_blast"),
             Rune::Hustle           => tr("rune_hustle"),
+            Rune::Pierce           => tr("rune_pierce"),
+            Rune::Greed            => tr("rune_greed"),
+            Rune::Executioner      => tr("rune_executioner"),
+            Rune::Opener           => tr("rune_opener"),
         }
     }
 
@@ -173,6 +198,10 @@ impl Rune {
             Rune::Bleed            => tr("rune_bleed_desc"),
             Rune::Blast            => tr("rune_blast_desc"),
             Rune::Hustle           => tr("rune_hustle_desc"),
+            Rune::Pierce           => tr("rune_pierce_desc"),
+            Rune::Greed            => tr("rune_greed_desc"),
+            Rune::Executioner      => tr("rune_executioner_desc"),
+            Rune::Opener           => tr("rune_opener_desc"),
         }
     }
 
@@ -255,6 +284,16 @@ impl Rune {
             // Hustle is a passive autonomous-unit speed buff; never
             // procs.
             Rune::Hustle          => 0.0,
+            // Pierce is a bullet-survival modifier read at spawn time
+            // and inside `bullet_collisions`; never procs.
+            Rune::Pierce          => 0.0,
+            // Greed fires inline on-kill from `process_damage_event`
+            // — no chain payload.
+            Rune::Greed           => 0.0,
+            // Executioner / Opener are pure damage multipliers folded
+            // into the primary hit; they don't trigger chain events.
+            Rune::Executioner     => 0.0,
+            Rune::Opener          => 0.0,
         }
     }
 }
@@ -315,7 +354,14 @@ pub fn apply_rune_stacked(
         | Rune::Vampire
         | Rune::Ward
         | Rune::Blast
-        | Rune::Hustle => {}
+        | Rune::Hustle
+        // Pierce is handled at bullet spawn time; Greed / Executioner /
+        // Opener fire inline inside `process_damage_event`. Nothing to
+        // attach to the target.
+        | Rune::Pierce
+        | Rune::Greed
+        | Rune::Executioner
+        | Rune::Opener => {}
     }
 }
 

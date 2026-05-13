@@ -220,6 +220,8 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         WeaponType::Blade,
         WeaponType::Cage,
         WeaponType::Harpoon,
+        WeaponType::SpreadRockets,
+        WeaponType::Flamethrower,
     ];
     let runes_pool = [
         Rune::Fire,
@@ -234,6 +236,10 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         Rune::Bleed,
         Rune::Blast,
         Rune::Hustle,
+        Rune::Pierce,
+        Rune::Greed,
+        Rune::Executioner,
+        Rune::Opener,
         Rune::TargetFurthest,
         Rune::TargetHighestHp,
         Rune::TargetLowestHp,
@@ -619,6 +625,13 @@ pub fn complete_drag(
     // threshold, so the player meant to *click*, not drag. Skip the
     // drop-target resolution path entirely and run the click-buy
     // directly — no ghost ever spawned, no transient drag visual.
+    //
+    // Ship-sourced clicks released over the SELL strip should still
+    // sell — the debounce shouldn't punish a quick press → release on
+    // the sell panel. So we resolve targets here for ship sources too,
+    // but only honour `DropTargetKind::Sell`; ship-to-ship rune/turret
+    // moves still require an actual drag (gives the player a clear
+    // visual contract: "to move, hold and drag").
     if drag.picked.is_none() {
         if let Some(pending) = drag.pending.take() {
             let from_shop = matches!(
@@ -637,6 +650,20 @@ pub fn complete_drag(
                                 &mut commands, &mut meshes, &mut materials, cursor, color,
                             );
                         }
+                    }
+                }
+            } else if let Some(cursor) = drag.spec_cursor {
+                // Ship-source click: only the SELL strip honours a
+                // click. Everything else requires holding for a drag.
+                let on_sell = targets.iter().any(|(tf, hit, marker)| {
+                    matches!(marker.0, DropTargetKind::Sell)
+                        && hit_test(cursor, tf.translation.truncate(), hit.size)
+                });
+                if on_sell {
+                    let refund = sell_refund_for(&pending.source, &cfg);
+                    if refund > 0 {
+                        clear_source(&pending.source, &mut cfg);
+                        scrap.0 = scrap.0.saturating_add(refund);
                     }
                 }
             }

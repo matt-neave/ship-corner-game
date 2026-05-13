@@ -141,7 +141,9 @@ const TOOLTIP_H: f32 = 22.0;
 /// Spec-pixel gap between the hovered source and the tooltip edge.
 const TOOLTIP_GAP: f32 = 2.0;
 /// Native-pixel padding between the text bounds and the fill edge.
-const TOOLTIP_TEXT_PAD: f32 = 12.0;
+/// Generous on the horizontal axis so the wrap-cap estimate has room
+/// to be wrong without text spilling onto the white outline.
+const TOOLTIP_TEXT_PAD: f32 = 18.0;
 /// Native-pixel thickness of the white outline ring around the fill.
 const TOOLTIP_BORDER_PX: f32 = 2.0;
 /// Title + body font sizes (native pixels). Both bumped so labels read
@@ -152,7 +154,7 @@ const TOOLTIP_BODY_FONT: f32 = 14.0;
 /// when it would exceed this. Big enough that short descriptions fit on
 /// one line; small enough that long descriptions stack neatly without
 /// dominating the canvas.
-const TOOLTIP_BODY_MAX_W: f32 = 280.0;
+const TOOLTIP_BODY_MAX_W: f32 = 260.0;
 /// Approx char width (chars × font_size × this ≈ rendered native width).
 /// Used both for the title's auto-fit and the body's line-count estimate.
 /// The default font has variable glyph width — capitals like "M" and
@@ -160,7 +162,7 @@ const TOOLTIP_BODY_MAX_W: f32 = 280.0;
 /// than a tight one: it prevents body text overrunning the fill on
 /// long descriptions (e.g. "Min HP", "Frost", "Furthest") at the cost
 /// of slightly wider tooltips than strictly needed.
-const TOOLTIP_CHAR_W: f32 = 0.62;
+const TOOLTIP_CHAR_W: f32 = 0.72;
 /// Vertical line-height multiplier for the wrapped body — turns
 /// `body_font * lines` into the total body block height.
 const TOOLTIP_LINE_HEIGHT_MULT: f32 = 1.25;
@@ -1454,6 +1456,25 @@ fn weapon_damage_line(
         * synergies.damage_mult_for(weapon.tags());
     let final_dmg = base_dmg as f32 * mult;
     let pct_bonus = ((mult - 1.0) * 100.0).round() as i32;
+    // Multi-shot weapons (currently SpreadRockets fires 4 rockets per
+    // trigger pull) deserve a "DMG × COUNT" headline so the player
+    // sees the volley total at a glance rather than the per-projectile
+    // damage in isolation.
+    let multishot = multishot_count(weapon);
+    if multishot > 1 {
+        let total = final_dmg * multishot as f32;
+        if pct_bonus == 0 {
+            return format!(
+                "Damage {:.1} × {} ({:.0} total)",
+                final_dmg, multishot, total,
+            );
+        }
+        let sign = if pct_bonus > 0 { "+" } else { "" };
+        return format!(
+            "Damage {:.1} × {} ({:.0} total, {}{}% bonus)",
+            final_dmg, multishot, total, sign, pct_bonus,
+        );
+    }
     if pct_bonus == 0 {
         format!("Damage {:.1}", final_dmg)
     } else {
@@ -1462,6 +1483,17 @@ fn weapon_damage_line(
             "Damage {:.1} ({} base, {}{}% bonus)",
             final_dmg, base_dmg, sign, pct_bonus,
         )
+    }
+}
+
+/// How many projectiles a single trigger pull spawns. 1 for
+/// single-shot weapons; matches the firing code's per-shot count
+/// for multi-projectile weapons.
+fn multishot_count(weapon: WeaponType) -> u8 {
+    match weapon {
+        WeaponType::SpreadRockets => 4,
+        WeaponType::Shotgun => crate::balance::SHOTGUN_PELLETS.min(255) as u8,
+        _ => 1,
     }
 }
 
@@ -1614,6 +1646,39 @@ fn rune_dynamic_description(
             format!(
                 "Autonomous units get +{:.0}% move speed.",
                 per_stack,
+            )
+        }
+        Rune::Pierce => {
+            let base = crate::balance::PIERCE_BASE_FALLOFF;
+            let falloff = (base + (1.0 - base) * (rune_dmg - 1.0).max(0.0)).clamp(base, 1.0);
+            let keep_pct = (falloff * 100.0).round() as i32;
+            format!(
+                "Bullets pierce one extra enemy per stack, keeping {}% damage on each subsequent hit.",
+                keep_pct,
+            )
+        }
+        Rune::Greed => {
+            let raw = crate::balance::GREED_BASE_KILLS
+                .saturating_sub(crate::balance::GREED_KILLS_PER_STACK);
+            let needed = (raw as f32 / rune_dmg.max(0.01)).ceil().max(1.0) as i32;
+            format!(
+                "+1 scrap every {} kills landed by this weapon. Stacks lower the threshold.",
+                needed,
+            )
+        }
+        Rune::Executioner => {
+            let pct = crate::balance::EXECUTIONER_BONUS_PER_STACK * rune_dmg * 100.0;
+            let threshold = (crate::balance::EXECUTIONER_HP_THRESHOLD * 100.0).round() as i32;
+            format!(
+                "+{:+.0}% damage to enemies below {}% HP.",
+                pct, threshold,
+            )
+        }
+        Rune::Opener => {
+            let pct = crate::balance::OPENER_BONUS_PER_STACK * rune_dmg * 100.0;
+            format!(
+                "+{:+.0}% damage to enemies at full HP.",
+                pct,
             )
         }
         // Targeting runes have no value to show — pure aim modifiers.

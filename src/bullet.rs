@@ -128,6 +128,49 @@ pub struct Bullet {
     pub runes: [Option<Rune>; 3],
 }
 
+/// Attached to bullets fired with the Pierce rune. Lets the bullet
+/// survive `max` hits before despawning, dealing geometrically-falling
+/// damage on each subsequent hit. Tracks which enemies have already
+/// been hit so the same bullet can't re-damage the same body on
+/// successive frames while it's inside the hit-disc.
+#[derive(Component)]
+pub struct Pierce {
+    /// Number of extra hits this bullet is allowed beyond the first.
+    pub max: u8,
+    /// Hits used so far. Damage on each new hit scales as
+    /// `base × falloff^used`.
+    pub used: u8,
+    /// Per-pierce damage multiplier in [0, 1]. Resolved at spawn time
+    /// from the base falloff floor and the player's Rune Effect stat.
+    pub falloff: f32,
+    /// Entities already hit by this bullet — prevents same-frame
+    /// re-damage to the same body before it leaves the hit-disc.
+    pub hit_targets: Vec<Entity>,
+}
+
+/// Helper: scan a slot's runes for Pierce stacks. Returns `Some(stacks)`
+/// when there's at least one, `None` otherwise. Used by bullet-spawn
+/// sites so they can attach the `Pierce` component without duplicating
+/// the filter in every caller.
+pub fn pierce_stacks(runes: &[Option<Rune>; 3]) -> Option<u8> {
+    let n = runes.iter().filter(|r| matches!(r, Some(Rune::Pierce))).count() as u8;
+    if n > 0 { Some(n) } else { None }
+}
+
+/// Build a `Pierce` from stack count + Rune Effect. Falloff floors at
+/// `PIERCE_BASE_FALLOFF` and rises linearly with Rune Effect above 1×,
+/// capped at 1.0 (no falloff).
+pub fn make_pierce(stacks: u8, rune_effect: f32) -> Pierce {
+    let base = crate::balance::PIERCE_BASE_FALLOFF;
+    let falloff = (base + (1.0 - base) * (rune_effect - 1.0).max(0.0)).clamp(base, 1.0);
+    Pierce {
+        max: stacks,
+        used: 0,
+        falloff,
+        hit_targets: Vec::new(),
+    }
+}
+
 pub fn bullet_update(
     time: Res<Time>,
     mut commands: Commands,
@@ -186,6 +229,15 @@ pub struct PendingDamageQueue(pub Vec<DamageEvent>);
 #[derive(Resource, Default)]
 pub struct VampireAccumulator(pub f32);
 
+/// Kill counter for the Greed rune. Increments on every kill scored
+/// by a bullet carrying Greed (regardless of how many Greed stacks
+/// the bullet had — stacks reduce the threshold, not the increment).
+/// When it crosses the per-bullet threshold the accumulator decrements
+/// by that threshold and +1 scrap is granted. Global so cross-slot
+/// Greeds share the same counter.
+#[derive(Resource, Default)]
+pub struct GreedAccumulator(pub u32);
+
 impl PendingDamageQueue {
     /// Convenience helper — flatten a slot's `[Option<Rune>; 3]` into
     /// a `Vec<Rune>` and push a fresh DamageEvent (proc_strength 1.0,
@@ -229,6 +281,7 @@ pub fn bullet_collisions(
         ),
         (Without<Enemy>, Without<Friendly>, Without<Ally>),
     >,
+    mut pierces: Query<&mut Pierce>,
     enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
     mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
@@ -259,11 +312,31 @@ pub fn bullet_collisions(
         match b.faction {
             FactionKind::Friendly => {
                 // First enemy whose hit-disc the bullet's swept
-                // segment grazes wins.
-                if let Some(&(ee, ep, _)) = enemy_snap.iter().find(|(_, ep, hd)| {
+                // segment grazes wins — except Pierce bullets, which
+                // skip any enemy they've already hit on a prior frame.
+                let already_hit: &[Entity] = pierces
+                    .get(be)
+                    .map(|p| p.hit_targets.as_slice())
+                    .unwrap_or(&[]);
+                if let Some(&(ee, ep, _)) = enemy_snap.iter().find(|(e, ep, hd)| {
+                    if already_hit.contains(e) { return false; }
                     point_segment_dist_sq(*ep, prev_bp, bp) < *hd * *hd
                 }) {
-                    commands.entity(be).despawn();
+                    // Pierce branch: scale damage by `falloff^used`,
+                    // record the hit, decide whether the bullet
+                    // survives. Despawn only when out of pierces.
+                    let pierce_damage = if let Ok(mut p) = pierces.get_mut(be) {
+                        let scaled = (b.damage as f32 * p.falloff.powi(p.used as i32)).round() as i32;
+                        p.hit_targets.push(ee);
+                        p.used = p.used.saturating_add(1);
+                        if p.used > p.max {
+                            commands.entity(be).despawn();
+                        }
+                        scaled.max(1)
+                    } else {
+                        commands.entity(be).despawn();
+                        b.damage
+                    };
                     // Cannonball knockback: insert a `Knockedback`
                     // component on the struck enemy. `apply_velocity`
                     // composes this on top of the AI's per-frame
@@ -303,7 +376,7 @@ pub fn bullet_collisions(
                     };
                     queue.push_initial(
                         ee,
-                        b.damage.saturating_mul(crit_mult),
+                        pierce_damage.saturating_mul(crit_mult),
                         ep,
                         b.weapon,
                         b.source,
@@ -377,6 +450,9 @@ pub fn process_damage_events(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mut vampire_acc: ResMut<VampireAccumulator>,
+    mut greed_acc: ResMut<GreedAccumulator>,
+    mut scrap: ResMut<crate::Scrap>,
+    mut scrap_earned: ResMut<crate::stage_complete::ScrapEarnedThisStage>,
     mut friendly: Query<
         (&mut Health, Option<&mut crate::stats::Shield>),
         (With<Friendly>, Without<Enemy>),
@@ -414,6 +490,7 @@ pub fn process_damage_events(
             &mut commands, &mut stats, &player_stats, &pm, &em,
             future_stun,
             &enemy_snap, &mut enemies, &mut friendly, &mut vampire_acc,
+            &mut greed_acc, &mut scrap, &mut scrap_earned,
             &on_conduit, &on_resonate, &mut rng,
         );
     }
@@ -432,12 +509,17 @@ fn process_damage_event(
     enemies: &mut Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
     friendly: &mut Query<(&mut Health, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>)>,
     vampire_acc: &mut VampireAccumulator,
+    greed_acc: &mut GreedAccumulator,
+    scrap: &mut crate::Scrap,
+    scrap_earned: &mut crate::stage_complete::ScrapEarnedThisStage,
     on_conduit: &Query<&OnConduit>,
     on_resonate: &Query<&OnResonate>,
     rng: &mut rand::rngs::ThreadRng,
 ) {
-    let Ok((_, _, _, mut h, mut fx, _)) = enemies.get_mut(ev.target) else { return; };
+    let Ok((_, _, en, mut h, mut fx, _)) = enemies.get_mut(ev.target) else { return; };
     if h.0 <= 0 { return; } // already dead from an earlier hit this frame
+    let max_hp_pre = en.max_hp;
+    let hp_pre = h.0;
 
     // Future synergy stun — apply BEFORE damage so a lethal hit still
     // briefly freezes a corpse that's about to despawn (cheap; the
@@ -454,8 +536,31 @@ fn process_damage_event(
     // damage source on this target. Read once per event so all damage
     // applied below uses the same multiplier.
     let resonate_mult = resonate_multiplier(on_resonate.get(ev.target).ok());
+
+    // Executioner + Opener: conditional damage multipliers folded into
+    // the primary hit before Resonate and before `apply_damage`. Both
+    // scale linearly with stacks AND with Rune Effect, so the player's
+    // rune-damage stat improves these on top of stacking.
+    let rune_eff = player_stats.rune_damage_mult();
+    let exec_stacks = ev.runes.iter().filter(|&&r| r == Rune::Executioner).count() as f32;
+    let opener_stacks = ev.runes.iter().filter(|&&r| r == Rune::Opener).count() as f32;
+    let mut conditional_mult = 1.0_f32;
+    if exec_stacks > 0.0 {
+        let frac = hp_pre as f32 / max_hp_pre.max(1) as f32;
+        if frac <= crate::balance::EXECUTIONER_HP_THRESHOLD {
+            conditional_mult += crate::balance::EXECUTIONER_BONUS_PER_STACK
+                * exec_stacks
+                * rune_eff;
+        }
+    }
+    if opener_stacks > 0.0 && hp_pre >= max_hp_pre {
+        conditional_mult += crate::balance::OPENER_BONUS_PER_STACK
+            * opener_stacks
+            * rune_eff;
+    }
+
     let amplify = |dmg: i32| -> i32 {
-        (dmg as f32 * resonate_mult).round() as i32
+        (dmg as f32 * resonate_mult * conditional_mult).round() as i32
     };
 
     let dealt = apply_damage(&mut h, &mut fx, amplify(ev.amount));
@@ -551,6 +656,27 @@ fn process_damage_event(
     // the target died. Other runes don't fan out from a kill (saves a
     // frame of FX on something already despawning).
     if h.0 <= 0 {
+        // Greed scrap-on-Nth-kill (fires regardless of proc roll).
+        // Stacks reduce the threshold (more frequent payouts), Rune
+        // Effect divides the remainder. Increment runs once per kill
+        // regardless of how many Greed stacks the bullet has — the
+        // payout *cadence* is what stacking buys, not extra scrap
+        // per kill.
+        let greed_stacks = ev.runes.iter().filter(|&&r| r == Rune::Greed).count() as u32;
+        if greed_stacks > 0 {
+            greed_acc.0 = greed_acc.0.saturating_add(1);
+            let raw = crate::balance::GREED_BASE_KILLS
+                .saturating_sub(greed_stacks * crate::balance::GREED_KILLS_PER_STACK);
+            let eff = (raw as f32 / player_stats.rune_damage_mult().max(0.01))
+                .ceil() as u32;
+            let needed = eff.max(1);
+            while greed_acc.0 >= needed {
+                greed_acc.0 -= needed;
+                scrap.0 = scrap.0.saturating_add(1);
+                scrap_earned.0 = scrap_earned.0.saturating_add(1);
+            }
+        }
+
         // Ward shield-on-kill (fires regardless of proc roll). Each
         // Ward stack on the killing bullet adds `rune_effect` shield,
         // allowed to push the current shield ABOVE `shield_max` as a
@@ -730,8 +856,18 @@ fn process_damage_event(
             | Rune::Splash => {}
             // Vampire/Ward/Blast fire inline (above), regardless of
             // proc roll. Hustle is a passive autonomous-unit speed
-            // buff — never reaches the proc loop.
-            Rune::Vampire | Rune::Ward | Rune::Blast | Rune::Hustle => {}
+            // buff — never reaches the proc loop. Pierce is read at
+            // bullet spawn time. Greed / Executioner / Opener are
+            // folded into the primary hit (above) or the lethal
+            // branch (Greed).
+            Rune::Vampire
+            | Rune::Ward
+            | Rune::Blast
+            | Rune::Hustle
+            | Rune::Pierce
+            | Rune::Greed
+            | Rune::Executioner
+            | Rune::Opener => {}
         }
     }
 }

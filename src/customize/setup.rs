@@ -1108,6 +1108,8 @@ pub fn turret_color_for(weapon: WeaponType) -> Color {
         WeaponType::Blade => hex(crate::palette::BLADE_HEX),
         WeaponType::Cage => hex(crate::palette::CAGE_HEX),
         WeaponType::Harpoon => hex(crate::palette::HARPOON_HEX),
+        WeaponType::SpreadRockets => hex(crate::palette::SPREAD_ROCKETS_HEX),
+        WeaponType::Flamethrower => hex(crate::palette::FLAMETHROWER_HEX),
     }
 }
 
@@ -1130,6 +1132,11 @@ pub fn turret_barrel_color_for(weapon: WeaponType) -> Color {
         WeaponType::Blade => hex(crate::palette::BLADE_BRIGHT_HEX),
         WeaponType::Cage => hex(crate::palette::OCTOPUS_BODY_HEX),
         WeaponType::Harpoon => hex(crate::palette::HARPOON_BRIGHT_HEX),
+        // Bright steel barrel highlight for the rocket rack.
+        WeaponType::SpreadRockets => Color::srgb(0.92, 0.96, 1.0),
+        // Hot-orange glow on the nozzle tip — same hue family as
+        // the Fire rune so the weapon reads as a burner at a glance.
+        WeaponType::Flamethrower => hex(crate::palette::FIRE_HEX),
     }
 }
 
@@ -1155,6 +1162,10 @@ pub fn rune_color_for(rune: Rune) -> Color {
         Rune::Splash           => Color::srgb(0.95, 0.55, 0.20), // explosive orange
         Rune::Blast            => Color::srgb(1.00, 0.42, 0.10), // hotter blast orange
         Rune::Hustle           => Color::srgb(0.45, 0.85, 0.40), // autonomous-speed green
+        Rune::Pierce           => Color::srgb(0.85, 0.85, 0.92), // bullet-trail silver
+        Rune::Greed            => Color::srgb(0.95, 0.78, 0.20), // gold-scrap
+        Rune::Executioner      => Color::srgb(0.55, 0.10, 0.10), // dark blood red
+        Rune::Opener           => Color::srgb(0.95, 0.95, 0.55), // first-strike yellow
     }
 }
 

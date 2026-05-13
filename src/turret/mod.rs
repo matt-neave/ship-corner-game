@@ -254,7 +254,7 @@ pub fn turret_aim_fire(
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
     ship_q: Query<(&Transform, &Heading), With<Friendly>>,
-    enemies: Query<(&Transform, &Faction, &Health), With<Enemy>>,
+    enemies: Query<(Entity, &Transform, &Faction, &Health), With<Enemy>>,
     mut turrets: Query<
         (Entity, &mut TurretSlot, &mut Transform, &Visibility),
         (Without<Friendly>, Without<Enemy>, Without<TurretBarrel>),
@@ -313,9 +313,14 @@ pub fn turret_aim_fire(
         // Anchor + fallback are both the turret itself: rune-priority
         // distance measures from the turret, and no-rune nearest-to
         // also resolves to the turret.
-        let candidates: Vec<(Vec2, i32)> = enemies
+        // Build candidates with Entity alongside (pos, hp) so the
+        // SpreadRockets path can resolve `pick_target`'s Vec2 result
+        // back to an entity for the homing missile's initial target.
+        // Normal weapons strip the Entity off after building it; the
+        // extra allocation is negligible.
+        let candidates_full: Vec<(Vec2, i32, Entity)> = enemies
             .iter()
-            .filter_map(|(etf, fac, hp)| {
+            .filter_map(|(ee, etf, fac, hp)| {
                 if fac.0 != FactionKind::Enemy { return None; }
                 let ep = etf.translation.truncate();
                 let to = ep - turret_world;
@@ -331,9 +336,11 @@ pub fn turret_aim_fire(
                 off = (off + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
                     - std::f32::consts::PI;
                 if off.abs() > half_arc { return None; }
-                Some((ep, hp.0))
+                Some((ep, hp.0, ee))
             })
             .collect();
+        let candidates: Vec<(Vec2, i32)> =
+            candidates_full.iter().map(|&(p, h, _)| (p, h)).collect();
         let best = crate::weapon::pick_target(
             &candidates,
             turret_world,
@@ -468,6 +475,7 @@ pub fn turret_aim_fire(
                                 muzzle_pos, pd, slot.weapon, slot.damage,
                                 Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
                                 effective_range, slot.runes, FactionKind::Friendly,
+                                stats.rune_damage_mult(),
                             );
                         }
                     }
@@ -533,6 +541,76 @@ pub fn turret_aim_fire(
                             effective_range, slot.runes, FactionKind::Friendly,
                         );
                     }
+                    WeaponType::SpreadRockets => {
+                        // Salvo: 4 seeking rockets per trigger pull. Each
+                        // rocket fans out at a small angle off the barrel
+                        // forward so the volley reads as a spread, then
+                        // homes via `homing_missile_track`. Each rocket
+                        // picks its OWN target via `pick_target` with an
+                        // advanced cycle_idx so a TargetCarousel slot
+                        // naturally distributes the 4 rockets across 4
+                        // enemies. Other targeting runes (Furthest /
+                        // MaxHP / MinHP) make all 4 stack on the same
+                        // priority enemy, which is fine — the seek will
+                        // overlap their flight paths but they still land.
+                        let muzzle_pos = turret_world
+                            + barrel_forward * (effective_tip + FRIENDLY_BULLET_HALF_LEN)
+                            + barrel_right * lateral;
+                        const ROCKET_COUNT: usize = 4;
+                        const FAN_HALF: f32 = 0.35; // ~20° spread
+                        // Cycle the carousel cursor an extra (count - 1)
+                        // steps so each rocket gets a unique target
+                        // index when Carousel is socketed.
+                        let base_cycle = slot.cycle_idx;
+                        slot.cycle_idx = slot.cycle_idx.wrapping_add(ROCKET_COUNT as u32 - 1);
+                        for i in 0..ROCKET_COUNT {
+                            let t = if ROCKET_COUNT > 1 {
+                                (i as f32 / (ROCKET_COUNT - 1) as f32) * 2.0 - 1.0
+                            } else {
+                                0.0
+                            };
+                            let rocket_angle = total_angle + t * FAN_HALF;
+                            let rocket_forward =
+                                Vec2::new(-rocket_angle.sin(), rocket_angle.cos());
+                            // Per-rocket target pick: advance cycle_idx
+                            // so a Carousel slot spreads across the 4
+                            // rockets. Resolve the picker's Vec2 back
+                            // to an Entity via candidates_full so the
+                            // homing tracker locks on immediately
+                            // instead of waiting to re-acquire.
+                            let per_rocket_cycle = base_cycle.wrapping_add(i as u32);
+                            let picked_pos = crate::weapon::pick_target(
+                                &candidates,
+                                turret_world,
+                                turret_world,
+                                &slot.runes,
+                                Some(per_rocket_cycle),
+                            );
+                            let initial_target = picked_pos.and_then(|p| {
+                                candidates_full
+                                    .iter()
+                                    .find(|c| c.0 == p)
+                                    .map(|c| c.2)
+                            });
+                            // Rockets need a generous flight envelope —
+                            // they curve through air time + may overshoot
+                            // and loop back when re-acquiring. Decouple
+                            // the bullet's max-travel distance from the
+                            // slot's `effective_range` (used only for
+                            // target picking) so the seek arc has time
+                            // to actually land hits.
+                            const ROCKET_RANGE_MULT: f32 = 3.0;
+                            crate::ally::spawn_homing_missile_full(
+                                &mut commands, &em, &pm,
+                                muzzle_pos, rocket_forward, slot.damage,
+                                initial_target, FactionKind::Enemy,
+                                Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
+                                slot.weapon, slot.runes,
+                                effective_range * ROCKET_RANGE_MULT,
+                                stats.rune_damage_mult(),
+                            );
+                        }
+                    }
                     _ => {
                         // Single-bullet path. MG applies an accuracy spread;
                         // others fire straight.
@@ -553,6 +631,7 @@ pub fn turret_aim_fire(
                             muzzle_pos, dir, slot.weapon, slot.damage,
                             Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
                             effective_range, slot.runes, FactionKind::Friendly,
+                            stats.rune_damage_mult(),
                         );
                     }
                 }
@@ -583,6 +662,7 @@ pub fn spawn_combat_bullet(
     range: f32,
     runes: [Option<Rune>; 3],
     faction: FactionKind,
+    rune_effect: f32,
 ) {
     let bullet = commands.spawn((
         Mesh2d(em.bullet_friendly_outer.clone()),
@@ -600,6 +680,16 @@ pub fn spawn_combat_bullet(
         Velocity(dir * BULLET_SPEED),
         RenderLayers::layer(PLAY_LAYER),
     )).id();
+    // Pierce socket: insert the survive-on-hit component so the
+    // bullet keeps flying after impact. Only meaningful on
+    // straight-flying bullets — Mortar's shell + the autonomous
+    // helicopter / octopus paths spawn from their own helpers and
+    // don't touch this function, so Pierce stays bullet-only.
+    if faction == FactionKind::Friendly {
+        if let Some(stacks) = crate::bullet::pierce_stacks(&runes) {
+            commands.entity(bullet).insert(crate::bullet::make_pierce(stacks, rune_effect));
+        }
+    }
     let inner = commands.spawn((
         Mesh2d(em.bullet_friendly_inner.clone()),
         MeshMaterial2d(inner_mat.clone()),

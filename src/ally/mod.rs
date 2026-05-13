@@ -64,7 +64,8 @@ pub use mine::{
     flash_mine_dots, mine_layer_drop, mine_tick, MineLayer,
 };
 pub use missile::{
-    homing_missile_track, missile_launcher_fire, MissileLauncher,
+    homing_missile_track, missile_launcher_fire, spawn_homing_missile_full,
+    MissileLauncher,
 };
 pub use oil::{
     oil_slick_burn_tick, oil_slick_grow_tick, oil_tanker_cycle,
@@ -1360,6 +1361,7 @@ pub fn ally_turret_aim_fire(
                     TURRET_RANGE,
                     [None; 3], // ally turrets don't currently carry runes
                     turret.target_faction.opposite(),
+                    1.0, // no rune effect on ally bullets (no runes)
                 );
             }
         }

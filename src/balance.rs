@@ -298,6 +298,32 @@ pub const BLAST_RADIUS:           f32 = 8.0;
 /// isn't doing full damage to half the screen.
 pub const BLAST_SPLASH_FRAC:      f32 = 0.6;
 
+// ---------- Pierce rune ----------
+/// Per-pierce damage retention at 1× Rune Effect — a pierced shot
+/// keeps 60% of the primary damage on the next enemy and so on
+/// (geometric falloff). Rune Effect scales this toward 1.0 (less
+/// falloff), capped so pierce never out-damages a fresh hit.
+pub const PIERCE_BASE_FALLOFF: f32 = 0.6;
+
+// ---------- Greed rune ----------
+/// Base kill count needed before a Greed-marked bullet drops +1 scrap.
+/// Stacks subtract from this (one stack = -5) and Rune Effect divides
+/// the remainder, so a 3-Greed socket at 2× Rune Effect needs
+/// `(25 - 15) / 2 = 5` kills per payout.
+pub const GREED_BASE_KILLS: u32 = 25;
+pub const GREED_KILLS_PER_STACK: u32 = 5;
+
+// ---------- Executioner rune ----------
+/// HP fraction threshold below which Executioner applies its bonus.
+pub const EXECUTIONER_HP_THRESHOLD: f32 = 0.30;
+/// Damage bonus per stack at 1× Rune Effect. 3 stacks at 1× = +150%.
+pub const EXECUTIONER_BONUS_PER_STACK: f32 = 0.50;
+
+// ---------- Opener rune ----------
+/// Bonus damage when the target is at full HP, per stack, at 1× Rune
+/// Effect. 1 stack = +100%, scaled linearly by Rune Effect on top.
+pub const OPENER_BONUS_PER_STACK: f32 = 1.00;
+
 // ---------- Wave structure ----------
 //
 // A combat encounter is split into discrete waves. Star tier picks the

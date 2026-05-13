@@ -65,6 +65,33 @@ fn spawn_homing_missile(
     target_faction: FactionKind,
     source: Option<crate::bullet::DamageSource>,
 ) {
+    spawn_homing_missile_full(
+        commands, em, pm, pos, forward, damage, initial_target,
+        target_faction, source, WeaponType::Standard,
+        [None; 3], MISSILE_RANGE, 1.0,
+    );
+}
+
+/// Generalised homing-missile spawner. Used by both the ally
+/// `MissileLauncher` (which fires WeaponType::Standard with no runes)
+/// and the player's `SpreadRockets` turret (which threads its slot's
+/// weapon type + runes + rune-effect through so Pierce and friends
+/// behave consistently with normal bullets).
+pub fn spawn_homing_missile_full(
+    commands: &mut Commands,
+    em: &EffectMeshes,
+    pm: &PaletteMaterials,
+    pos: Vec2,
+    forward: Vec2,
+    damage: i32,
+    initial_target: Option<Entity>,
+    target_faction: FactionKind,
+    source: Option<crate::bullet::DamageSource>,
+    weapon: WeaponType,
+    runes: [Option<crate::rune::Rune>; 3],
+    range: f32,
+    rune_effect: f32,
+) {
     let heading_rot = (-forward.x).atan2(forward.y);
     let bullet = commands.spawn((
         Mesh2d(em.bullet_missile_outer.clone()),
@@ -74,10 +101,10 @@ fn spawn_homing_missile(
         Bullet {
             faction: target_faction.opposite(),
             damage,
-            remaining: MISSILE_RANGE,
-            weapon: WeaponType::Standard,
+            remaining: range,
+            weapon,
             source,
-            runes: [None; 3],
+            runes,
         },
         Velocity(forward * MISSILE_SPEED),
         HomingMissile {
@@ -87,6 +114,11 @@ fn spawn_homing_missile(
         },
         RenderLayers::layer(PLAY_LAYER),
     )).id();
+    if target_faction == FactionKind::Enemy {
+        if let Some(stacks) = crate::bullet::pierce_stacks(&runes) {
+            commands.entity(bullet).insert(crate::bullet::make_pierce(stacks, rune_effect));
+        }
+    }
     let inner = commands.spawn((
         Mesh2d(em.bullet_missile_inner.clone()),
         MeshMaterial2d(pm.bullet_missile_inner.clone()),

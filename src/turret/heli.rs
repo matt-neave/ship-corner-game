@@ -358,8 +358,13 @@ pub fn helicopter_ai(
         // length 3.5, so the tip is at y=4.95 in body-local space.
         const NOSE_TIP_OFFSET: f32 = 4.95;
         let muzzle = new_pos + body_forward * NOSE_TIP_OFFSET + body_perp * lateral;
-        let dir = body_forward;
-        let _ = ep;
+        // Aim the bullet straight at the enemy from the muzzle. The
+        // aim-gate above guarantees the body is roughly pointing at
+        // the target (within ~22°), so the bullet's exit angle stays
+        // close to the visible nose direction while compensating for
+        // mid-turn drift + sideways orbital motion that would
+        // otherwise make the heli "spray".
+        let dir = (ep - muzzle).try_normalize().unwrap_or(body_forward);
 
         let bullet = commands.spawn((
             Mesh2d(em.bullet_plane_outer.clone()),

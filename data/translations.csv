@@ -35,11 +35,15 @@ weapon_booster,BOOSTER
 weapon_blade,BLADE
 weapon_cage,CAGE
 weapon_harpoon,HARPOON
+weapon_spread_rockets,SPREAD ROCKETS
+weapon_flamethrower,FLAMETHROWER
 weapon_cannon_desc,Heavy cannonball. Knocks enemies back on hit.
 weapon_booster_desc,Does not fire. Boosts the fire rate of every adjacent turret.
 weapon_blade_desc,Spinning blade on an extending arm. Damages anything it touches near the ship.
 weapon_cage_desc,Releases an octopus that hunts enemies in the water and slaps them with tentacles.
 weapon_harpoon_desc,Long-range melee. Lances out and reels the target into the hull.
+weapon_spread_rockets_desc,Salvo of 4 seeking rockets every 2.5s. Each rocket re-homes onto a target.
+weapon_flamethrower_desc,Short cone burner. Burns 3s then reloads 3s. Does not auto-apply Fire.
 weapon_tag_naval,NAVAL
 weapon_tag_future,FUTURE
 weapon_tag_autonomous,AUTONOMOUS
@@ -71,6 +75,10 @@ rune_ward,WARD
 rune_bleed,BLEED
 rune_blast,BLAST
 rune_hustle,HUSTLE
+rune_pierce,PIERCE
+rune_greed,GREED
+rune_executioner,EXECUTIONER
+rune_opener,OPENER
 rune_fire_desc,Sets enemies ablaze, dealing 1 every 0.5s for 4 seconds.
 rune_frost_desc,Freezes enemies in place. Movement crawls.
 rune_shock_desc,Chains lightning to nearby enemies.
@@ -83,6 +91,10 @@ rune_ward_desc,Killing blows refill some shield.
 rune_bleed_desc,Anti-tank DoT. Ticks a percent of the target's max HP for 4 seconds.
 rune_blast_desc,Attacks explode on impact, splashing damage to nearby enemies. This weapon is now considered [AOE].
 rune_hustle_desc,Autonomous units get +100% move speed.
+rune_pierce_desc,Bullets pierce through enemies with falling damage. Stacks add extra pierces; Rune Effect raises the floor.
+rune_greed_desc,Every Nth kill on this weapon drops +1 scrap. Stacks lower N; Rune Effect lowers it further.
+rune_executioner_desc,Bonus damage to enemies below 30% HP.
+rune_opener_desc,Bonus damage when the target is at full HP.
 rune_target_furthest,FURTHEST
 rune_target_max_hp,MAX HP
 rune_target_min_hp,MIN HP

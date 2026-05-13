@@ -100,6 +100,14 @@ pub const BLADE_BRIGHT_HEX:   &str = "#d8e0e8";
 pub const HARPOON_HEX:        &str = "#9a6a32";
 pub const HARPOON_BRIGHT_HEX: &str = "#e0b878";
 pub const HARPOON_CHAIN_HEX:  &str = "#4a3a2a";
+/// Spread Rockets launcher — bright steel / blue-grey body so the
+/// rack reads as modern guided ordnance, distinct from the iron Cannon
+/// or bronze Harpoon. Future-tagged sci-fi flavour.
+pub const SPREAD_ROCKETS_HEX: &str = "#7a8a98";
+/// Flamethrower nozzle — dull blackened steel; the spit-of-flame visual
+/// reuses the Fire rune palette, so the base needs to read as the
+/// *device*, not the fire.
+pub const FLAMETHROWER_HEX:   &str = "#2a2a30";
 
 /// Octopus cage — dark iron bars on the deck. The cage is a cube of
 /// dim metal so the bright purple octopus inside reads as the main
@@ -376,6 +384,14 @@ pub struct PaletteMaterials {
     pub turret_harpoon: Handle<ColorMaterial>,
     pub harpoon_head: Handle<ColorMaterial>,
     pub harpoon_chain: Handle<ColorMaterial>,
+    /// `SpreadRockets` launcher tint — bright steel rack. Pairs with
+    /// the existing `bullet_missile_*` materials for the rockets
+    /// themselves so the salvo reads as guided ordnance.
+    pub turret_spread_rockets: Handle<ColorMaterial>,
+    /// `Flamethrower` nozzle tint — dull blackened steel. The visible
+    /// flame uses the Fire-rune material so the device + the spit
+    /// of fire read as separate elements.
+    pub turret_flamethrower: Handle<ColorMaterial>,
     /// Ship-class hull tints — one per `ShipClass`. Looked up via
     /// `ally::PaletteMaterials::hull_for_class`.
     pub pirate_hull: Handle<ColorMaterial>,
@@ -523,6 +539,8 @@ impl PaletteMaterials {
             turret_harpoon:        materials.add(hex(HARPOON_HEX)),
             harpoon_head:          materials.add(hex(HARPOON_BRIGHT_HEX)),
             harpoon_chain:         materials.add(hex(HARPOON_CHAIN_HEX)),
+            turret_spread_rockets: materials.add(hex(SPREAD_ROCKETS_HEX)),
+            turret_flamethrower:   materials.add(hex(FLAMETHROWER_HEX)),
             bullet_mortar:         materials.add(hex(MORTAR_BRIGHT_HEX)),
             bullet_mortar_outer:   materials.add(mortar),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),
