@@ -105,7 +105,10 @@ pub fn missile_launcher_fire(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     candidates: Query<(Entity, &Transform, &Faction)>,
-    mut launchers: Query<(&Transform, &Heading, &mut MissileLauncher)>,
+    mut launchers: Query<
+        (&Transform, &Heading, &mut MissileLauncher),
+        Without<crate::harpoon::Harpooned>,
+    >,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };

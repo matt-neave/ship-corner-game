@@ -283,9 +283,13 @@ pub fn bullet_collisions(
                         // Attach a tether + spawn the chain visual. The
                         // tether's source is the player ship — taken
                         // from the same `friendly` query the enemy-bullet
-                        // path uses below.
+                        // path uses below. Bosses (Enemy + Ally) break
+                        // free in 1s instead of the standard 4s.
+                        let is_boss = allies.get(ee).is_ok();
                         if let Ok((fe, _, _, _, _)) = friendly.single() {
-                            crate::harpoon::attach_harpoon(&mut commands, &em, &pm, fe, ee);
+                            crate::harpoon::attach_harpoon(
+                                &mut commands, &em, &pm, fe, ee, is_boss,
+                            );
                         }
                     }
                     // Crits only roll for player-sourced bullets — ally

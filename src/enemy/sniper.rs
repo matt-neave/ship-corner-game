@@ -84,7 +84,10 @@ pub fn sniper_fire(
     em: Option<Res<EffectMeshes>>,
     friendly: Query<&Transform, (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     ally_cache: Res<crate::ally::AllyPositionsCache>,
-    mut snipers: Query<(Entity, &Transform, &mut Enemy, Option<&mut SniperAim>)>,
+    mut snipers: Query<
+        (Entity, &Transform, &mut Enemy, Option<&mut SniperAim>),
+        Without<crate::harpoon::Harpooned>,
+    >,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };

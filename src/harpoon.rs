@@ -50,6 +50,11 @@ pub const HARPOON_PULL_SPEED: f32 = 50.0;
 /// a tether from outliving the engagement if the ship sails away.
 const HARPOON_TETHER_LIFETIME: f32 = 4.0;
 
+/// Bosses break free much faster — 1 second of grace before they shrug
+/// the chain off. Long enough to interrupt one of their attacks; short
+/// enough that the harpoon can't permanently lock down a boss fight.
+const HARPOON_TETHER_LIFETIME_BOSS: f32 = 1.0;
+
 /// Distance at which the harpoon considers the target "landed" and
 /// removes the tether so `friendly_ram_damage` and any normal AI take
 /// over. Big enough that the target stops mid-deck rather than
@@ -170,11 +175,17 @@ pub fn attach_harpoon(
     pm: &PaletteMaterials,
     source: Entity,
     target: Entity,
+    is_boss: bool,
 ) {
+    let lifetime = if is_boss {
+        HARPOON_TETHER_LIFETIME_BOSS
+    } else {
+        HARPOON_TETHER_LIFETIME
+    };
     commands.entity(target).insert(Harpooned {
         source,
         pull_speed: HARPOON_PULL_SPEED,
-        remaining: HARPOON_TETHER_LIFETIME,
+        remaining: lifetime,
     });
     commands.spawn((
         Mesh2d(em.beam.clone()),

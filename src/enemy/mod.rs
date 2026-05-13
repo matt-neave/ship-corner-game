@@ -1111,7 +1111,11 @@ pub fn enemy_fire(
     // not the generic Standard-enemy bullet this system spawns.
     mut enemies: Query<
         (Entity, &Transform, &Heading, &mut Enemy),
-        (Without<crate::components::Stunned>, Without<Ally>),
+        (
+            Without<crate::components::Stunned>,
+            Without<Ally>,
+            Without<crate::harpoon::Harpooned>,
+        ),
     >,
 ) {
     let Some(pm) = pm else { return; };

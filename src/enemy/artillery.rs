@@ -54,7 +54,7 @@ pub fn artillery_fire(
     mut meshes: ResMut<Assets<Mesh>>,
     friendly: Query<(&Transform, &Velocity), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     ally_cache: Res<crate::ally::AllyPositionsCache>,
-    mut artilleries: Query<(&Transform, &mut Enemy)>,
+    mut artilleries: Query<(&Transform, &mut Enemy), Without<crate::harpoon::Harpooned>>,
 ) {
     let Some(pm) = pm else { return; };
     let dt = time.delta_secs();

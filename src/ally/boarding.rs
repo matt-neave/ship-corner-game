@@ -86,7 +86,10 @@ pub fn boarding_launcher_fire(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     candidates: Query<(Entity, &Transform, &Faction)>,
-    mut launchers: Query<(Entity, &Transform, &mut BoardingLauncher)>,
+    mut launchers: Query<
+        (Entity, &Transform, &mut BoardingLauncher),
+        Without<crate::harpoon::Harpooned>,
+    >,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };

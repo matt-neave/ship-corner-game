@@ -1265,6 +1265,7 @@ pub fn ally_turret_aim_fire(
     em: Option<Res<EffectMeshes>>,
     owners: Query<(&Transform, &Heading), Without<AllyTurret>>,
     owner_class: Query<&Ally>,
+    harpooned_owners: Query<(), With<crate::harpoon::Harpooned>>,
     targets: Query<(&Transform, &Faction), Without<AllyTurret>>,
     mut turrets: Query<
         (&ChildOf, &mut AllyTurret, &mut Transform),
@@ -1277,6 +1278,8 @@ pub fn ally_turret_aim_fire(
 
     for (parent, mut turret, mut tf) in &mut turrets {
         let Ok((owner_tf, owner_heading)) = owners.get(parent.0) else { continue; };
+        // Harpooned owner (boss): hold fire while the tether is active.
+        if harpooned_owners.get(parent.0).is_ok() { continue; }
         let owner_pos = owner_tf.translation.truncate();
         let owner_h = owner_heading.0;
         turret.fire_cd -= dt;
