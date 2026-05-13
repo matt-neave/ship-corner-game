@@ -244,7 +244,7 @@ pub fn blade_tick(
 
         // Push DamageEvents into the shared queue so the runes on
         // this slot get a turn through `process_damage_events` (Fire
-        // / Frost / Shock / Detonate / Echo / Cascade / Conduit /
+        // / Frost / Shock / Echo / Cascade / Conduit /
         // Resonate). Pre-tick HP < threshold check is informational
         // only — the actual kill detection (and Melee heal) happens
         // post-drain via the lethal branch in process_damage_event,
@@ -258,7 +258,7 @@ pub fn blade_tick(
         // Heal counter is a 1-frame-stale heuristic — we count
         // enemies whose pre-event HP is ≤ damage, which doesn't
         // perfectly match what `process_damage_event` will actually
-        // kill (Resonate amp / Detonate burst can overkill, Echo
+        // kill (Resonate amp can overkill, Echo
         // delays a hit), but is close enough for the on-kill heal.
         let mut kills_this_tick: i32 = 0;
         for (e, etf, en, h) in &enemies {

@@ -229,6 +229,7 @@ pub const MINE_INNER_HEX: &str = "#ff4d4d";
 pub const FIRE_HEX:  &str = "#ff8030"; // bright fire orange
 pub const FROST_HEX: &str = "#80d8ff"; // cool sky blue (cyan-ish, distinct from fire)
 pub const SHOCK_HEX: &str = "#ffe680"; // electric yellow (lightning arc)
+pub const BLEED_HEX: &str = "#b21030"; // deep crimson (DoT blood drips)
 
 // ---------- UI theme (LHS panel + draft cards) ----------
 pub const UI_BG:        Color = Color::srgb(0.07, 0.08, 0.11);
@@ -429,6 +430,8 @@ pub struct PaletteMaterials {
     pub frost: Handle<ColorMaterial>,
     /// Shock-rune lightning + particle color (electric yellow).
     pub shock: Handle<ColorMaterial>,
+    /// Bleed-rune particle color (dark crimson drip motes).
+    pub bleed: Handle<ColorMaterial>,
     /// Translucent green tint for owned territory. Currently unused —
     /// section fills are rendered via a pre-rasterized sprite in `map.rs`
     /// (single-quad rendering avoids alpha-blend triangle seams). Left in
@@ -548,6 +551,7 @@ impl PaletteMaterials {
             fire:                  materials.add(hex(FIRE_HEX)),
             frost:                 materials.add(hex(FROST_HEX)),
             shock:                 materials.add(hex(SHOCK_HEX)),
+            bleed:                 materials.add(hex(BLEED_HEX)),
             // Map tints: opaque pre-blended colors. Alpha-blended translucent
             // tints over a fan-triangulated mesh leave faint visible "rays"
             // along each fan-edge (the alpha math doesn't perfectly

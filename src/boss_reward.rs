@@ -93,18 +93,6 @@ pub struct SuperMod {
     pub effects: Vec<Buff>,
 }
 
-impl SuperMod {
-    /// Subtitle line that summarises the trade — "+60% TURRET DMG  /
-    /// -30 HP". Reads off the `Buff` deltas directly so a future
-    /// change to the catalog auto-updates the UI.
-    pub fn summary(&self) -> String {
-        self.effects
-            .iter()
-            .map(|b| b.label())
-            .collect::<Vec<_>>()
-            .join("   ")
-    }
-}
 
 fn super_mod_catalog() -> Vec<SuperMod> {
     vec![
@@ -367,24 +355,15 @@ fn spawn_overlay(commands: &mut Commands, offer: &BossRewardOffer, stats: &Playe
                     BackgroundColor(Color::NONE),
                 ))
                 .with_children(|row| {
-                    spawn_card(row, BossRewardButton::Recruit,
-                        "RECRUIT",
-                        boss_name,
-                        "Joins your fleet permanently. Respawns at full HP every stage.",
+                    spawn_value_card(
+                        row, BossRewardButton::Recruit, "RECRUIT", boss_name,
                     );
-                    spawn_card(row, BossRewardButton::Bounty,
-                        "BOUNTY",
+                    spawn_value_card(
+                        row, BossRewardButton::Bounty, "BOUNTY",
                         &format!("+{} SCRAP", bounty),
-                        "Currency for the shop — turrets, runes, and mods.",
                     );
-                    let (mod_name, mod_summary) = match &super_mod {
-                        Some(m) => (m.name, m.summary()),
-                        None    => ("???", String::new()),
-                    };
-                    spawn_card(row, BossRewardButton::SuperMod,
-                        "SUPER MOD",
-                        mod_name,
-                        &mod_summary,
+                    spawn_super_mod_card(
+                        row, BossRewardButton::SuperMod, super_mod.as_ref(),
                     );
                 });
 
@@ -394,62 +373,89 @@ fn spawn_overlay(commands: &mut Commands, offer: &BossRewardOffer, stats: &Playe
         });
 }
 
-/// One reward card — wider than the original 180px so the SuperMod's
-/// multi-stat summary doesn't wrap to a tiny column. Headers, the
-/// thing on offer, and the description each get their own line with
-/// room to breathe.
-fn spawn_card(
+/// Shared card chrome — fixed dimensions, gold border, dark surface.
+/// The two reward-card flavours (`value` and `super_mod`) build their
+/// content with the closure.
+fn spawn_card_frame(
+    parent: &mut ChildSpawnerCommands,
+    button: BossRewardButton,
+    build: impl FnOnce(&mut ChildSpawnerCommands),
+) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(240.0),
+                min_height: Val::Px(180.0),
+                border: UiRect::all(Val::Px(theme::BORDER_W)),
+                padding: UiRect::all(Val::Px(theme::PAD_LG)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                row_gap: Val::Px(theme::GAP_MD),
+                ..default()
+            },
+            BackgroundColor(theme::SURFACE_RAISED),
+            BorderColor(theme::ACCENT),
+            button,
+        ))
+        .with_children(build);
+}
+
+/// Recruit + Bounty cards — single big value under the header. No
+/// explanatory body line; the card is the choice.
+fn spawn_value_card(
     parent: &mut ChildSpawnerCommands,
     button: BossRewardButton,
     header: &str,
-    subtitle: &str,
-    body: &str,
+    value: &str,
 ) {
-    parent.spawn((
-        Button,
-        Node {
-            width: Val::Px(240.0),
-            min_height: Val::Px(180.0),
-            border: UiRect::all(Val::Px(theme::BORDER_W)),
-            padding: UiRect::all(Val::Px(theme::PAD_LG)),
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::FlexStart,
-            row_gap: Val::Px(theme::GAP_SM + 2.0),
-            ..default()
-        },
-        BackgroundColor(theme::SURFACE_RAISED),
-        BorderColor(theme::ACCENT),
-        button,
-    ))
-    .with_children(|card| {
+    spawn_card_frame(parent, button, |card| {
         card.spawn(ui_kit::label(header, theme::FONT_LG, theme::ACCENT));
-        if !subtitle.is_empty() {
-            // Centred subtitle inside the card; allowed to wrap if the
-            // SuperMod summary is wide. Bevy UI wraps Text nodes
-            // automatically when the parent has a constrained width.
-            card.spawn((
-                Text::new(subtitle.to_string()),
-                TextFont { font_size: theme::FONT_MD, ..default() },
-                TextColor(theme::ON_SURFACE),
-                TextLayout::new_with_justify(JustifyText::Center),
-                Node {
-                    max_width: Val::Px(220.0),
-                    ..default()
-                },
-            ));
-        }
-        if !body.is_empty() {
-            card.spawn((
-                Text::new(body.to_string()),
-                TextFont { font_size: theme::FONT_SM, ..default() },
-                TextColor(theme::ON_SURFACE_DIM),
-                TextLayout::new_with_justify(JustifyText::Center),
-                Node {
-                    max_width: Val::Px(220.0),
-                    ..default()
-                },
-            ));
+        card.spawn((
+            Text::new(value.to_string()),
+            TextFont { font_size: theme::FONT_LG, ..default() },
+            TextColor(theme::ON_SURFACE),
+            TextLayout::new_with_justify(JustifyText::Center),
+            Node {
+                max_width: Val::Px(220.0),
+                ..default()
+            },
+        ));
+    });
+}
+
+/// Super-mod card — header, mod name, then an itemised list of every
+/// effect (buff in green, nerf in red), matching the colour family
+/// of shop mod cards + the level-up overlay buffs/nerfs.
+fn spawn_super_mod_card(
+    parent: &mut ChildSpawnerCommands,
+    button: BossRewardButton,
+    mod_data: Option<&SuperMod>,
+) {
+    spawn_card_frame(parent, button, |card| {
+        card.spawn(ui_kit::label("SUPER MOD", theme::FONT_LG, theme::ACCENT));
+        let name = mod_data.map(|m| m.name).unwrap_or("???");
+        card.spawn((
+            Text::new(name.to_string()),
+            TextFont { font_size: theme::FONT_LG, ..default() },
+            TextColor(theme::ON_SURFACE),
+            TextLayout::new_with_justify(JustifyText::Center),
+        ));
+        if let Some(m) = mod_data {
+            for buff in &m.effects {
+                let color = if buff.delta >= 0.0 {
+                    theme::BUFF_FG // green: positive
+                } else {
+                    theme::NERF_FG // red: negative
+                };
+                card.spawn((
+                    Text::new(buff.label()),
+                    TextFont { font_size: theme::FONT_MD, ..default() },
+                    TextColor(color),
+                    TextLayout::new_with_justify(JustifyText::Center),
+                ));
+            }
         }
     });
 }
@@ -477,9 +483,9 @@ fn spawn_stats_panel(parent: &mut ChildSpawnerCommands, stats: &PlayerStats) {
             let cur = kind.stat(stats).effective();
             let base = kind.stat(&baseline).effective();
             let value_color = if cur > base + 0.001 {
-                Color::srgb(0.55, 0.95, 0.55) // buffed
+                theme::BUFF_FG // buffed
             } else if cur < base - 0.001 {
-                Color::srgb(1.00, 0.55, 0.55) // nerfed
+                theme::NERF_FG // nerfed
             } else {
                 theme::ON_SURFACE
             };

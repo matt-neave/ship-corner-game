@@ -21,7 +21,7 @@ pub const ARTILLERY_DESIRED_DIST: f32 = 110.0;
 pub const ARTILLERY_TELEGRAPH_TIME: f32 = 1.5;
 
 /// World-units radius of the splash AOE.
-pub const ARTILLERY_SPLASH_RADIUS: f32 = 8.0;
+pub const ARTILLERY_SPLASH_RADIUS: f32 = 9.6;
 
 /// Landing reticle drawn during the telegraph window. Visual only —
 /// `ArtilleryShell::reticle` holds the back-ref so the shell despawns

@@ -91,6 +91,18 @@ pub struct ShipRuneSocketPart {
     pub rune_idx: usize,
 }
 
+/// Tag on the diagonal-hash stripe overlay entities for a rune socket.
+/// Hidden by default; toggled visible by `update_customize_ui` when the
+/// socket is locked by a targeting rune in a sibling socket. Each
+/// stripe is its own entity (alternating light- and dark-red materials)
+/// so the result reads as a hatched "no-entry" pattern rather than a
+/// flat red fill.
+#[derive(Component, Clone, Copy)]
+pub struct ShipRuneSocketLockHash {
+    pub slot: usize,
+    pub rune_idx: usize,
+}
+
 #[derive(Component)]
 pub struct ShopTurretSlot;
 
@@ -743,6 +755,35 @@ fn spawn_socket_container(
             ShipRuneSocketPart { slot, rune_idx },
         ));
     }
+
+    // Diagonal hash overlay: 4 thin stripes alternating light/dark red,
+    // rotated 45°, centred on the socket. Initially Hidden — toggled
+    // visible by `update_customize_ui` when a sibling socket holds a
+    // targeting rune (targeting-rune exclusivity). Reads as a hatched
+    // "do not enter" pattern instead of a flat red fill.
+    let stripe_mesh = meshes.add(Rectangle::new(SOCKET * 1.4, 0.8));
+    let dark_mat  = materials.add(Color::srgb(0.30, 0.08, 0.10));
+    let light_mat = materials.add(Color::srgb(0.85, 0.42, 0.42));
+    let perps = [-3.0_f32, -1.0, 1.0, 3.0];
+    let mats  = [&dark_mat, &light_mat, &dark_mat, &light_mat];
+    // 45° rotation, perpendicular offset translated along the
+    // anti-diagonal so stripes parade across the socket evenly.
+    let cos45 = std::f32::consts::FRAC_1_SQRT_2;
+    for (perp, mat_ref) in perps.iter().zip(mats.iter()) {
+        let off = Vec2::new(-perp * cos45, perp * cos45);
+        commands.spawn((
+            Mesh2d(stripe_mesh.clone()),
+            MeshMaterial2d((*mat_ref).clone()),
+            Transform {
+                translation: (pos + off).extend(Z_TILE_FG),
+                rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_4),
+                ..default()
+            },
+            Visibility::Hidden,
+            RenderLayers::layer(CUSTOMIZE_LAYER),
+            ShipRuneSocketLockHash { slot, rune_idx },
+        ));
+    }
 }
 
 // ---------- Shop turret + rune tiles ----------
@@ -1068,16 +1109,18 @@ pub fn turret_barrel_color_for(weapon: WeaponType) -> Color {
 }
 
 pub fn rune_color_for(rune: Rune) -> Color {
-    use crate::palette::{FIRE_HEX, FROST_HEX, SHOCK_HEX};
+    use crate::palette::{BLEED_HEX, FIRE_HEX, FROST_HEX, SHOCK_HEX};
     match rune {
         Rune::Fire             => hex(FIRE_HEX),
         Rune::Frost            => hex(FROST_HEX),
         Rune::Shock            => hex(SHOCK_HEX),
-        Rune::Detonate         => Color::srgb(1.0, 0.45, 0.20),
         Rune::Echo             => Color::srgb(0.65, 0.40, 0.95),
         Rune::Cascade          => Color::srgb(0.45, 0.85, 0.50),
         Rune::Conduit          => Color::srgb(0.95, 0.40, 0.75),
         Rune::Resonate         => Color::srgb(0.95, 0.80, 0.45),
+        Rune::Vampire          => Color::srgb(0.70, 0.10, 0.20), // crimson lifesteal
+        Rune::Ward             => Color::srgb(0.65, 0.90, 0.98), // pale cyan shield
+        Rune::Bleed            => hex(BLEED_HEX),                // dark blood red
         // Targeting runes: cool/neutral palette so they read as
         // "modifier" rather than "elemental".
         Rune::TargetFurthest   => Color::srgb(0.50, 0.30, 0.80), // long-range purple

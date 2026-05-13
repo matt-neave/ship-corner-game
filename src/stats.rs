@@ -110,6 +110,10 @@ pub struct PlayerStats {
     pub crit_pct: Stat,
     pub range_pct: Stat,
     pub harvest_pct: Stat,
+    /// XP-per-kill bonus, percentage. Same shape as `harvest_pct`
+    /// but applied to XP rather than scrap drops. Effective XP
+    /// granted = base_xp × (1 + xp_harvest_pct/100), rounded.
+    pub xp_harvest_pct: Stat,
     pub shield_max: Stat,
     pub shield_recharge_rate_pct: Stat,
     pub shield_recharge_delay: Stat,
@@ -150,6 +154,7 @@ impl Default for PlayerStats {
             crit_pct: Stat::new(1.0),
             range_pct: Stat::new(100.0),
             harvest_pct: Stat::new(0.0),
+            xp_harvest_pct: Stat::new(0.0),
             shield_max: Stat::new(0.0),
             shield_recharge_rate_pct: Stat::new(5.0),
             shield_recharge_delay: Stat::new(3.0),
@@ -253,8 +258,13 @@ pub enum StatKind {
     Crit,
     Range,
     Harvest,
+    /// XP-per-kill bonus. 0% = base XP (1 per kill, 5 per boss);
+    /// +50% = 1.5× XP rolled into the granted amount. Computed at
+    /// kill time in `enemy_death_check` so the multiplier applies
+    /// before threshold checks.
+    XpHarvest,
     ShieldMax,
-    /// Multiplier on rune effects (Fire DoT, Detonate burst, Shock
+    /// Multiplier on rune effects (Fire DoT, Bleed DoT, Shock
     /// chain count).
     RuneDamage,
     /// Percentage modifier on every turret slot's base damage —
@@ -279,6 +289,7 @@ impl StatKind {
         StatKind::Luck,
         StatKind::ProcStrength,
         StatKind::Harvest,
+        StatKind::XpHarvest,
         StatKind::RuneDamage,
     ];
     /// Full label rendered in the panel. Plain words, no shorthand.
@@ -288,14 +299,15 @@ impl StatKind {
             StatKind::MoveSpeed => "MOVE SPEED",
             StatKind::TurnSpeed => "TURN SPEED",
             StatKind::TurretTurnSpeed => "TURRET TURN",
-            StatKind::TurretArcBonus => "TURRET ARC",
+            StatKind::TurretArcBonus => "TURRET ARC BONUS",
             StatKind::Luck => "LUCK",
             StatKind::ProcStrength => "PROC STRENGTH",
             StatKind::Crit => "CRIT CHANCE",
             StatKind::Range => "RANGE",
             StatKind::Harvest => "HARVEST",
+            StatKind::XpHarvest => "XP GAIN",
             StatKind::ShieldMax => "SHIELD",
-            StatKind::RuneDamage => "RUNE DAMAGE",
+            StatKind::RuneDamage => "RUNE EFFECT",
             StatKind::TurretDamage => "WEAPON DAMAGE",
         }
     }
@@ -336,8 +348,12 @@ impl StatKind {
                 format!("{}%", pct)
             }
             StatKind::TurretArcBonus => {
+                // Always-signed so the 0-baseline reads as a delta
+                // ("+0°"), not an absolute arc value of zero. The
+                // underlying number is a bonus on top of per-slot
+                // defaults that live in `balance::TURRET_ARC_HALVES`.
                 let v = stats.turret_arc_bonus_deg.effective();
-                if v > 0.0 { format!("+{:.0} deg", v) } else { format!("{:.0} deg", v) }
+                format!("{:+.0}°", v)
             }
             StatKind::Luck => format!("{:.0}%", stats.luck_pct.effective()),
             StatKind::ProcStrength => format!("{:.0}%", stats.proc_strength_pct.effective()),
@@ -359,6 +375,13 @@ impl StatKind {
                     .unwrap_or(1.0);
                 let total_pct = base_mult * pirate_mult * 100.0;
                 format!("{:.0}%", total_pct)
+            }
+            StatKind::XpHarvest => {
+                // XP multiplier expressed as a baseline-100%
+                // percentage. 100% = stock (1 XP per kill, 5 per
+                // boss); +50% reads as 150%.
+                let total = 100.0 + stats.xp_harvest_pct.effective();
+                format!("{:.0}%", total)
             }
             StatKind::ShieldMax => format!("{:.0}", stats.shield_max.effective()),
             StatKind::RuneDamage => {
@@ -411,6 +434,7 @@ impl StatKind {
             StatKind::Crit => crate::i18n::tr("stat_crit_desc"),
             StatKind::Range => crate::i18n::tr("stat_range_desc"),
             StatKind::Harvest => crate::i18n::tr("stat_harvest_desc"),
+            StatKind::XpHarvest => crate::i18n::tr("stat_xp_harvest_desc"),
             StatKind::ShieldMax => crate::i18n::tr("stat_shield_max_desc"),
             StatKind::RuneDamage => crate::i18n::tr("stat_rune_damage_desc"),
             StatKind::TurretDamage => crate::i18n::tr("stat_turret_damage_desc"),
@@ -420,7 +444,7 @@ impl StatKind {
     /// so each click is a meaningful nudge in that stat's natural unit.
     pub fn debug_step(self) -> f32 {
         match self {
-            StatKind::Hp => 25.0,
+            StatKind::Hp => 10.0,
             StatKind::MoveSpeed => 3.0,
             StatKind::TurnSpeed => 0.5,           // rad/s
             StatKind::TurretTurnSpeed => 0.5,     // rad/s
@@ -430,8 +454,9 @@ impl StatKind {
             StatKind::Crit => 25.0,
             StatKind::Range => 10.0,
             StatKind::Harvest => 25.0,
-            StatKind::ShieldMax => 10.0,
-            StatKind::RuneDamage => 0.5,
+            StatKind::XpHarvest => 10.0,
+            StatKind::ShieldMax => 5.0,
+            StatKind::RuneDamage => 0.1,
             StatKind::TurretDamage => 10.0, // +10 percentage points / step
         }
     }
@@ -451,7 +476,8 @@ impl StatKind {
             | StatKind::Luck
             | StatKind::ProcStrength
             | StatKind::Range
-            | StatKind::Harvest => format!("{:+.0}%", delta),
+            | StatKind::Harvest
+            | StatKind::XpHarvest => format!("{:+.0}%", delta),
             // Movement / turning are stored as raw world units but a
             // raw "+3" doesn't tell the player anything. Express as
             // a percentage of the baseline so "+3 SPEED" reads as
@@ -491,6 +517,7 @@ impl StatKind {
             StatKind::Crit => &stats.crit_pct,
             StatKind::Range => &stats.range_pct,
             StatKind::Harvest => &stats.harvest_pct,
+            StatKind::XpHarvest => &stats.xp_harvest_pct,
             StatKind::ShieldMax => &stats.shield_max,
             StatKind::RuneDamage => &stats.rune_damage,
             StatKind::TurretDamage => &stats.turret_damage_pct,
@@ -511,6 +538,7 @@ impl StatKind {
             StatKind::Crit => &mut stats.crit_pct,
             StatKind::Range => &mut stats.range_pct,
             StatKind::Harvest => &mut stats.harvest_pct,
+            StatKind::XpHarvest => &mut stats.xp_harvest_pct,
             StatKind::ShieldMax => &mut stats.shield_max,
             StatKind::RuneDamage => &mut stats.rune_damage,
             StatKind::TurretDamage => &mut stats.turret_damage_pct,

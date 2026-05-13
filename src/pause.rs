@@ -8,6 +8,7 @@
 use bevy::app::AppExit;
 use bevy::prelude::*;
 
+use crate::main_menu::{SettingsItem, SettingsItemLabel};
 use crate::modes::WindowMode;
 use crate::ui_kit::{self, theme};
 use crate::AppState;
@@ -84,6 +85,15 @@ pub fn setup_pause_menu(mut commands: Commands) {
                 b.spawn(ui_kit::label("RESUME", theme::FONT_LG, theme::ON_SURFACE));
             });
 
+            // Settings toggles, reusing the main-menu `SettingsItem`
+            // markers so `handle_settings_item_click` (registered by
+            // MainMenuPlugin, runs unconditionally) flips the matching
+            // mode resource, and `update_settings_labels` keeps the
+            // ON/OFF text current.
+            spawn_pause_settings_button(root, SettingsItem::Night, "NIGHT");
+            spawn_pause_settings_button(root, SettingsItem::Crt,   "CRT");
+            spawn_pause_settings_button(root, SettingsItem::Vsync, "VSYNC");
+
             root.spawn((
                 ui_kit::button(theme::SURFACE_RAISED),
                 MainMenuButton,
@@ -99,6 +109,25 @@ pub fn setup_pause_menu(mut commands: Commands) {
             .with_children(|b| {
                 b.spawn(ui_kit::label("QUIT", theme::FONT_LG, theme::ON_SURFACE));
             });
+        });
+}
+
+/// One toggle button in the pause overlay. Same `ui_kit` styling as
+/// RESUME / MAIN MENU / QUIT (so the column reads as one family), but
+/// carries `SettingsItem` + `SettingsItemLabel` so the existing
+/// main-menu click handler + label syncer drive its behaviour.
+fn spawn_pause_settings_button(
+    parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands,
+    item: SettingsItem,
+    base_label: &str,
+) {
+    parent
+        .spawn((ui_kit::button(theme::SURFACE_RAISED), item))
+        .with_children(|b| {
+            b.spawn((
+                ui_kit::label(base_label, theme::FONT_LG, theme::ON_SURFACE),
+                SettingsItemLabel(item),
+            ));
         });
 }
 

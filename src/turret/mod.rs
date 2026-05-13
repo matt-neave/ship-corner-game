@@ -482,11 +482,19 @@ pub fn turret_aim_fire(
                         let target_pos = best.unwrap_or(muzzle_pos);
                         // Each `Splash` rune slotted on this turret
                         // adds +50% to the AoE radius (additive — 2
-                        // runes = 200%, 3 = 250%).
+                        // runes = +100%, 3 = +150%). Rune Effect
+                        // scales the per-rune bonus, NOT the base
+                        // radius — a mortar without any Splash rune
+                        // must explode at its natural radius regardless
+                        // of Rune Effect upgrades; otherwise the player
+                        // sees the blast widen "for free" any time they
+                        // buy Rune Effect, which reads as a phantom
+                        // rune.
                         let splash_runes = slot.runes.iter()
                             .filter(|r| matches!(r, Some(Rune::Splash)))
                             .count() as f32;
-                        let splash = MORTAR_SPLASH_RADIUS * (1.0 + 0.5 * splash_runes);
+                        let splash = MORTAR_SPLASH_RADIUS
+                            * (1.0 + 0.5 * splash_runes * stats.rune_damage_mult());
                         spawn_mortar_shell(
                             &mut commands, &em, &outer_mat, &inner_mat,
                             muzzle_pos, target_pos, slot.weapon, slot.damage,

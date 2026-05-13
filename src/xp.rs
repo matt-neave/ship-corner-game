@@ -157,10 +157,19 @@ fn pick_buffs(n: usize) -> Vec<Buff> {
 
 // ---------- XP grant ----------
 
-/// Per-kill XP value. Call from `enemy_death_check`. `is_boss` triggers
-/// the 5x boss bonus.
-pub fn grant_kill_xp(xp: &mut Xp, pending: &mut LevelUpsPending, is_boss: bool) {
-    let amount = if is_boss { 5 } else { 1 };
+/// Per-kill XP value, scaled by the player's `XpHarvest` stat.
+/// Call from `enemy_death_check`. `is_boss` triggers the 5× boss
+/// bonus baseline. Effective amount = base × (1 + xp_harvest/100),
+/// rounded; minimum 1 so a kill always nets at least one point.
+pub fn grant_kill_xp(
+    xp: &mut Xp,
+    pending: &mut LevelUpsPending,
+    stats: &crate::stats::PlayerStats,
+    is_boss: bool,
+) {
+    let base = if is_boss { 5 } else { 1 } as f32;
+    let mult = 1.0 + stats.xp_harvest_pct.effective() / 100.0;
+    let amount = (base * mult).round().max(1.0) as u32;
     xp.grant(amount, pending);
 }
 
@@ -304,35 +313,44 @@ pub fn enter_level_up(
     spawn_level_up_overlay(&mut commands, &choices, &xp, &stats);
 }
 
-/// Frame-counter reveal: the overlay is spawned `Hidden` with a
-/// 1-frame countdown so Bevy UI's PostUpdate layout pass can place
-/// every child before the player ever sees the panel. Without this
-/// gate, the stats panel + buff cards briefly render at default
-/// (uncomputed) positions for one frame, then snap into place — the
-/// visible "blip" the user reported.
+/// Reveal the overlay only once Bevy UI has actually finished computing
+/// positions for it. Spawned `Hidden` + `HideUntilLayout`. Each Update:
+///   - If the root's `ComputedNode.size` is still zero → layout hasn't
+///     run yet, keep waiting.
+///   - Once `size > 0` we record it and require one additional frame
+///     before revealing, so text-glyph metrics get baked in and the
+///     final layout pass settles. (Otherwise we reveal on the frame
+///     layout first runs with default text sizes, then the next frame
+///     the text re-measures and rows shift — the visible "jump".)
 ///
-/// Why a counter and not "reveal on the first run": OnEnter runs
-/// during StateTransition, which is between PreUpdate and Update.
-/// If we revealed in this frame's Update, PostUpdate's layout pass
-/// hasn't computed yet → still flashes. Skipping one full frame
-/// gives layout a chance to run.
+/// More robust than a fixed frame counter: large overlays with lots of
+/// text can take >1 frame to stabilise on slow machines, and a counter
+/// can't tell whether layout actually converged.
 pub fn reveal_level_up_after_layout(
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Visibility, &mut HideUntilLayout)>,
+    mut q: Query<(Entity, &mut Visibility, &mut HideUntilLayout, &ComputedNode)>,
 ) {
-    for (e, mut vis, mut marker) in &mut q {
-        if marker.0 == 0 {
-            if *vis != Visibility::Inherited { *vis = Visibility::Inherited; }
-            commands.entity(e).remove::<HideUntilLayout>();
-        } else {
-            marker.0 -= 1;
+    for (e, mut vis, mut marker, computed) in &mut q {
+        let size = computed.size();
+        if size.x <= 0.0 || size.y <= 0.0 {
+            // Layout hasn't run yet — keep hidden, no countdown.
+            continue;
         }
+        if marker.0 > 0 {
+            // Layout ran. Burn one extra frame for text-glyph
+            // metrics to settle before flipping visible.
+            marker.0 -= 1;
+            continue;
+        }
+        if *vis != Visibility::Inherited { *vis = Visibility::Inherited; }
+        commands.entity(e).remove::<HideUntilLayout>();
     }
 }
 
-/// Frame-countdown marker. Spawned with `frames=1`; decremented each
-/// Update until 0, then `reveal_level_up_after_layout` flips the
-/// overlay visible and strips the marker.
+/// Stability counter consumed *after* the root's `ComputedNode.size`
+/// becomes non-zero. Spawn with `frames=1` so we wait one full Update
+/// past the first valid layout pass before revealing. See
+/// `reveal_level_up_after_layout`.
 #[derive(Component)]
 pub struct HideUntilLayout(pub u8);
 
@@ -410,10 +428,11 @@ fn spawn_level_up_overlay(
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
             // Below customize (200) and pause (180); above gameplay HUD.
             ZIndex(160),
-            // Hidden for one frame so flex layout computes before
-            // the overlay becomes visible (otherwise the stats panel
-            // + buff cards flash at default positions). Cleared by
-            // `reveal_level_up_after_layout` next tick.
+            // Hidden until bevy_ui has actually laid out the tree
+            // (otherwise the stats panel + buff cards flash at
+            // default/uncomputed positions, then snap into place).
+            // `reveal_level_up_after_layout` watches `ComputedNode`
+            // and reveals after one stable layout pass.
             Visibility::Hidden,
             HideUntilLayout(1),
             // Absorb clicks so they don't fall through to gameplay UI.

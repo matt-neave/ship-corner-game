@@ -1300,7 +1300,7 @@ pub fn enemy_death_check(
         // XP grant. Boss-tier detection by max_hp threshold (smallest
         // boss = 60 HP, largest variant = 15 HP).
         let is_boss = enemy.max_hp >= 50;
-        crate::xp::grant_kill_xp(&mut xp, &mut pending, is_boss);
+        crate::xp::grant_kill_xp(&mut xp, &mut pending, &player_stats, is_boss);
         let pos = tf.translation.truncate();
         spawn_hit_particles(&mut commands, &em, &pm.enemy, pos, 10, 60.0, &mut rng);
 

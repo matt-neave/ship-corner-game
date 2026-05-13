@@ -46,12 +46,6 @@ pub enum Rune {
     Fire,
     Frost,
     Shock,
-    /// Combo-popper. On hit, consumes any `OnFire` / `OnFrost` on the
-    /// target for a burst of damage scaled by what's left of the
-    /// status. Useless on a clean target — needs Fire/Frost from
-    /// another slot to be the primer. Forces "prime then pop"
-    /// gameplay across slots.
-    Detonate,
     /// Proc multiplier — schedules a delayed second damage event 0.3s
     /// after impact on the same target. Total throughput = ~2× damage
     /// per shot, with built-in spacing so the rhythm is visible. Pairs
@@ -68,7 +62,7 @@ pub enum Rune {
     /// target proc at `× CONDUIT_PROC_MULT` strength. Doesn't damage
     /// or chain itself — pure proc-strength enabler. Cross-slot
     /// synergy: Conduit slot primes the target, proc-heavy slot (Shock,
-    /// Detonate, Echo) reaps the boosted reliability.
+    /// Echo) reaps the boosted reliability.
     Conduit,
     /// On hit, applies / refreshes a stack of `OnResonate` (caps at
     /// `RESONATE_MAX_STACKS`). Each stack adds `+RESONATE_DAMAGE_PER_STACK`
@@ -101,6 +95,25 @@ pub enum Rune {
     /// Each socketed `Splash` rune contributes additively (+50% per
     /// rune) so stacks read cleanly.
     Splash,
+    /// Heal-on-hit. Each Vampire-tagged hit accumulates a fractional
+    /// HP into a global player accumulator; every time the
+    /// accumulator crosses 1.0 the player gains 1 HP (capped at
+    /// max). Per-hit fraction = `stacks × rune_effect / 10`, so 1
+    /// rune at 1× Rune Effect heals 1 HP per 10 hits, 2 runes at 2×
+    /// heals 1 HP per ~2.5 hits.
+    Vampire,
+    /// Shield-on-kill. Each kill landed by a bullet carrying Ward
+    /// grants `stacks × rune_effect` shield (capped at the player's
+    /// `shield_max`). Pairs cleanly with shield-tank hulls
+    /// (Revenant, Dreadnought) and any synergy that keeps the
+    /// shield up.
+    Ward,
+    /// Anti-tank DoT — ticks damage as a percentage of the target's
+    /// MAX HP rather than a flat number. Eight ticks over 4s at
+    /// `1.5% × stacks × rune_effect` per tick. Hard on bosses
+    /// (high max HP) and counter-design for the late-game tank
+    /// curve; only meh on swarms (small max HP per body).
+    Bleed,
 }
 
 impl Rune {
@@ -109,7 +122,6 @@ impl Rune {
             Rune::Fire             => tr("rune_fire"),
             Rune::Frost            => tr("rune_frost"),
             Rune::Shock            => tr("rune_shock"),
-            Rune::Detonate         => tr("rune_detonate"),
             Rune::Echo             => tr("rune_echo"),
             Rune::Cascade          => tr("rune_cascade"),
             Rune::Conduit          => tr("rune_conduit"),
@@ -119,6 +131,9 @@ impl Rune {
             Rune::TargetLowestHp   => tr("rune_target_min_hp"),
             Rune::TargetCarousel   => tr("rune_target_carousel"),
             Rune::Splash           => tr("rune_splash"),
+            Rune::Vampire          => tr("rune_vampire"),
+            Rune::Ward             => tr("rune_ward"),
+            Rune::Bleed            => tr("rune_bleed"),
         }
     }
 
@@ -128,7 +143,6 @@ impl Rune {
             Rune::Fire             => tr("rune_fire_desc"),
             Rune::Frost            => tr("rune_frost_desc"),
             Rune::Shock            => tr("rune_shock_desc"),
-            Rune::Detonate         => tr("rune_detonate_desc"),
             Rune::Echo             => tr("rune_echo_desc"),
             Rune::Cascade          => tr("rune_cascade_desc"),
             Rune::Conduit          => tr("rune_conduit_desc"),
@@ -138,7 +152,25 @@ impl Rune {
             Rune::TargetLowestHp   => tr("rune_target_min_hp_desc"),
             Rune::TargetCarousel   => tr("rune_target_carousel_desc"),
             Rune::Splash           => tr("rune_splash_desc"),
+            Rune::Vampire          => tr("rune_vampire_desc"),
+            Rune::Ward             => tr("rune_ward_desc"),
+            Rune::Bleed            => tr("rune_bleed_desc"),
         }
+    }
+
+    /// True for any rune that drives the turret's target-selection
+    /// rule. Used both by the gameplay picker and the customize UI
+    /// (exclusivity: at most one targeting rune per weapon, plus a
+    /// red lockout tint on the remaining sockets when one's
+    /// equipped).
+    pub fn is_targeting(self) -> bool {
+        matches!(
+            self,
+            Rune::TargetFurthest
+                | Rune::TargetHighestHp
+                | Rune::TargetLowestHp
+                | Rune::TargetCarousel,
+        )
     }
 
     /// If this rune overrides the host turret's target-selection rule,
@@ -167,9 +199,6 @@ impl Rune {
             Rune::Fire     => 0.0,
             Rune::Frost    => 0.0,
             Rune::Shock    => 0.5,
-            // Detonate's burst is a terminal effect — it's already a
-            // payoff from primer runes; chaining it would double-dip.
-            Rune::Detonate => 0.0,
             // Echo's delayed re-damage doesn't re-roll runes (the
             // second event runs through `tick_echoes`, not the proc
             // chain). 0 keeps semantics consistent with the
@@ -192,6 +221,15 @@ impl Rune {
             // Splash is a passive AoE-radius modifier read by the
             // mortar firing path; never procs.
             Rune::Splash          => 0.0,
+            // Vampire / Ward have no chain payload — once they fire
+            // (per-hit heal, per-kill shield) there's no secondary
+            // event to roll runes off of.
+            Rune::Vampire         => 0.0,
+            Rune::Ward            => 0.0,
+            // Bleed DoT ticks are like Fire — inert to further
+            // procs (otherwise a bleeding enemy would self-shock
+            // every half-second).
+            Rune::Bleed           => 0.0,
         }
     }
 }
@@ -202,8 +240,7 @@ pub fn cycle_next(current: Option<Rune>) -> Option<Rune> {
         None                       => Some(Rune::Fire),
         Some(Rune::Fire)           => Some(Rune::Frost),
         Some(Rune::Frost)          => Some(Rune::Shock),
-        Some(Rune::Shock)          => Some(Rune::Detonate),
-        Some(Rune::Detonate)       => Some(Rune::Echo),
+        Some(Rune::Shock)          => Some(Rune::Echo),
         Some(Rune::Echo)           => Some(Rune::Cascade),
         Some(Rune::Cascade)        => Some(Rune::Conduit),
         Some(Rune::Conduit)        => Some(Rune::Resonate),
@@ -212,14 +249,20 @@ pub fn cycle_next(current: Option<Rune>) -> Option<Rune> {
         Some(Rune::TargetHighestHp)=> Some(Rune::TargetLowestHp),
         Some(Rune::TargetLowestHp) => Some(Rune::TargetCarousel),
         Some(Rune::TargetCarousel) => Some(Rune::Splash),
-        Some(Rune::Splash)         => None,
+        Some(Rune::Splash)         => Some(Rune::Vampire),
+        Some(Rune::Vampire)        => Some(Rune::Ward),
+        Some(Rune::Ward)           => Some(Rune::Bleed),
+        Some(Rune::Bleed)          => None,
     }
 }
 
 /// Cycle backward — reverse of `cycle_next`.
 pub fn cycle_prev(current: Option<Rune>) -> Option<Rune> {
     match current {
-        None                       => Some(Rune::Splash),
+        None                       => Some(Rune::Bleed),
+        Some(Rune::Bleed)          => Some(Rune::Ward),
+        Some(Rune::Ward)           => Some(Rune::Vampire),
+        Some(Rune::Vampire)        => Some(Rune::Splash),
         Some(Rune::Splash)         => Some(Rune::TargetCarousel),
         Some(Rune::TargetCarousel) => Some(Rune::TargetLowestHp),
         Some(Rune::TargetLowestHp) => Some(Rune::TargetHighestHp),
@@ -228,8 +271,7 @@ pub fn cycle_prev(current: Option<Rune>) -> Option<Rune> {
         Some(Rune::Resonate)       => Some(Rune::Conduit),
         Some(Rune::Conduit)        => Some(Rune::Cascade),
         Some(Rune::Cascade)        => Some(Rune::Echo),
-        Some(Rune::Echo)           => Some(Rune::Detonate),
-        Some(Rune::Detonate)       => Some(Rune::Shock),
+        Some(Rune::Echo)           => Some(Rune::Shock),
         Some(Rune::Shock)          => Some(Rune::Frost),
         Some(Rune::Frost)          => Some(Rune::Fire),
         Some(Rune::Fire)           => None,
@@ -249,7 +291,7 @@ pub fn rune_display(rune: Option<Rune>) -> &'static str {
 /// Insert / refresh the *status*-style status component matching `rune` on
 /// `entity`. Bevy's `insert` overwrites, so re-applying a status just
 /// refreshes its duration. Does nothing for instant-effect runes
-/// (Shock / Detonate / Echo) — those are handled inline by the bullet
+/// (Shock / Echo) — those are handled inline by the bullet
 /// damage processor.
 /// Stack-aware variant of `apply_rune`. Caller passes the stack
 /// count so the bullet proc system can collapse duplicate runes
@@ -268,7 +310,6 @@ pub fn apply_rune_stacked(
         Rune::Fire     => { commands.entity(entity).insert(OnFire::new(stacks)); }
         Rune::Frost    => { commands.entity(entity).insert(OnFrost::new(stacks)); }
         Rune::Shock    => { /* no status — chain damage emitted by proc system */ }
-        Rune::Detonate => { /* no status — burst applied inline by proc system */ }
         Rune::Echo     => { /* no status — delayed event spawned by proc system */ }
         Rune::Cascade  => { /* no status — on-kill chain emitted inline */ }
         Rune::Conduit  => { commands.entity(entity).insert(OnConduit::new(stacks)); }
@@ -276,45 +317,22 @@ pub fn apply_rune_stacked(
             // Stack-aware insert handled inline by the proc system
             // because we need to read current stacks before writing.
         }
+        Rune::Bleed => {
+            commands.entity(entity).insert(OnBleed::new(stacks));
+        }
         // Targeting runes never reach `apply_rune` — they're passive
         // and `turret_aim_fire` reads them straight off the slot.
+        // Vampire / Ward fire inline inside `process_damage_events`
+        // (per-hit heal accumulator + on-kill shield) so there's
+        // nothing to attach to the target.
         Rune::TargetFurthest
         | Rune::TargetHighestHp
         | Rune::TargetLowestHp
         | Rune::TargetCarousel
-        | Rune::Splash => {}
+        | Rune::Splash
+        | Rune::Vampire
+        | Rune::Ward => {}
     }
-}
-
-/// Compute Detonate's burst damage from the target's current statuses
-/// and clear those statuses. Returns the burst HP to apply (0 if the
-/// target had nothing to detonate). The caller is responsible for
-/// applying the damage and any visual flair.
-///
-/// Tuning rationale:
-/// - Fire burst converts the *remaining* DoT into ~2× instant damage,
-///   so popping early (lots of duration left) is high-value, popping
-///   late is low-value.
-/// - Frost has no DoT, so the burst is a flat 3 + remaining-seconds,
-///   capped naturally by `FROST_DURATION`.
-pub fn detonate_consume(
-    commands: &mut Commands,
-    target: Entity,
-    on_fire: Option<&OnFire>,
-    on_frost: Option<&OnFrost>,
-) -> i32 {
-    let mut burst = 0;
-    if let Some(fire) = on_fire {
-        let remaining_ticks =
-            (fire.remaining / FIRE_DAMAGE_TICK_INTERVAL).max(0.0).floor() as i32;
-        burst += remaining_ticks * FIRE_DAMAGE_PER_TICK * 2;
-        commands.entity(target).remove::<OnFire>();
-    }
-    if let Some(frost) = on_frost {
-        burst += (3.0 + frost.remaining.max(0.0)).round() as i32;
-        commands.entity(target).remove::<OnFrost>();
-    }
-    burst
 }
 
 // ---------- Echo (delayed re-damage) ----------
@@ -469,6 +487,31 @@ impl OnFrost {
     pub fn speed_mult(&self) -> f32 {
         let m = crate::balance::FROST_SPEED_MULT.powi(self.stacks as i32);
         m.max(0.05)
+    }
+}
+
+// ---------- Bleed status ----------
+
+/// Bleed DoT — ticks damage proportional to the target's MAX HP
+/// rather than a flat number. Counters tank/boss curves (where a
+/// fixed Fire DoT is a drop in the bucket) and weak vs swarms
+/// (low max-HP per body = little damage per tick).
+#[derive(Component)]
+pub struct OnBleed {
+    pub remaining: f32,
+    pub damage_tick: f32,
+    pub particle_tick: f32,
+    pub stacks: u8,
+}
+
+impl OnBleed {
+    pub fn new(stacks: u8) -> Self {
+        Self {
+            remaining: crate::balance::BLEED_DURATION,
+            damage_tick: 0.0,
+            particle_tick: 0.0,
+            stacks: stacks.clamp(1, MAX_STATUS_STACKS),
+        }
     }
 }
 
@@ -634,12 +677,90 @@ impl OnConduit {
         }
     }
 
-    /// Effective proc-strength multiplier. Each stack adds half of
-    /// `CONDUIT_PROC_MULT - 1` over the base 1.0 — so 1 stack is the
-    /// original value, 2 stacks is ~+25% extra, etc.
-    pub fn proc_mult(&self) -> f32 {
+    /// Effective proc-strength multiplier. Each stack adds
+    /// `CONDUIT_PROC_MULT - 1` (currently +10%), scaled by the player's
+    /// Rune Effect stat — so 1 stack at 1× Rune Effect = +10%, 3 stacks
+    /// at 2× Rune Effect = +60%.
+    pub fn proc_mult(&self, rune_effect: f32) -> f32 {
         let extra = crate::balance::CONDUIT_PROC_MULT - 1.0;
-        1.0 + extra * self.stacks as f32
+        1.0 + extra * self.stacks as f32 * rune_effect
+    }
+}
+
+// ---------- Per-frame bleed driver ----------
+
+/// Tick bleed damage as a percentage of the target's MAX HP, plus
+/// the usual particle visual (small red drips). Mirrors
+/// `tick_on_fire`'s structure — separate damage / particle timers
+/// — but pulls `max_hp` from the `Enemy` component each tick so a
+/// max-HP-scaling effect lands here instead of in
+/// `apply_rune_stacked`.
+pub fn tick_on_bleed(
+    time: Res<Time>,
+    mut commands: Commands,
+    em: Option<Res<EffectMeshes>>,
+    pm: Option<Res<PaletteMaterials>>,
+    player_stats: Res<crate::stats::PlayerStats>,
+    mut q: Query<(
+        Entity,
+        &Transform,
+        &FireExtent,
+        &Enemy,
+        &mut OnBleed,
+        &mut Health,
+        &mut HitFx,
+    )>,
+) {
+    let Some(em) = em else { return; };
+    let Some(pm) = pm else { return; };
+    let dt = time.delta_secs();
+    let mut rng = rand::thread_rng();
+
+    for (entity, tf, extent, enemy, mut bleed, mut hp, mut fx) in &mut q {
+        bleed.remaining -= dt;
+        if bleed.remaining <= 0.0 {
+            commands.entity(entity).remove::<OnBleed>();
+            continue;
+        }
+
+        bleed.damage_tick -= dt;
+        if bleed.damage_tick <= 0.0 {
+            bleed.damage_tick = crate::balance::BLEED_DAMAGE_TICK_INTERVAL;
+            // Per-tick damage = max_hp × per-tick% × stacks ×
+            // Rune Effect. Anti-tank: scales linearly with the
+            // target's health pool, so the rune does meaningful
+            // work against the boss curve.
+            let raw = enemy.max_hp as f32
+                * crate::balance::BLEED_PCT_PER_TICK
+                * bleed.stacks as f32
+                * player_stats.rune_damage_mult();
+            apply_damage(&mut hp, &mut fx, raw.round().max(1.0) as i32);
+        }
+
+        bleed.particle_tick -= dt;
+        if bleed.particle_tick > 0.0 { continue; }
+        bleed.particle_tick = crate::balance::BLEED_PARTICLE_TICK_INTERVAL;
+
+        // Small red drips. Sink downward (unlike Fire's rising
+        // motes) so the visual reads as bleeding, not burning.
+        for _ in 0..crate::balance::BLEED_PARTICLES_PER_TICK {
+            let pos = random_body_point(tf, extent, &mut rng);
+            let vel = Vec2::new(rng.gen_range(-2.0..2.0), rng.gen_range(-12.0..-6.0));
+            let life = rng.gen_range(0.30..0.55);
+            let scale = rng.gen_range(0.4..0.7);
+            commands.spawn((
+                Mesh2d(em.particle.clone()),
+                MeshMaterial2d(pm.bleed.clone()),
+                Transform {
+                    translation: Vec3::new(pos.x, pos.y, 5.5),
+                    scale: Vec3::new(scale, scale, 1.0),
+                    ..default()
+                },
+                HitParticle { life, max_life: life, base_scale: scale },
+                Velocity(vel),
+                RenderLayers::layer(PLAY_LAYER),
+            ));
+        }
     }
 }
 

@@ -45,26 +45,37 @@ pub mod theme {
 
     // ---------- Surfaces (layered backgrounds) ----------
     //
-    // Three ground levels. The map view's popup is "raised" above the
-    // map by being SURFACE_RAISED on top of the camera clear; option
-    // buttons sit at SURFACE so they read as recessed within the popup.
-    // A minimal UI conveys hierarchy through these contrasts rather
-    // than outlines.
-    pub const SURFACE:        Color = Color::srgb(0.06, 0.07, 0.10);
-    pub const SURFACE_RAISED: Color = Color::srgb(0.13, 0.15, 0.19);
-    pub const SURFACE_HOVER:  Color = Color::srgb(0.20, 0.23, 0.30);
+    // Three ground levels, all drawn from the project's 16-colour
+    // palette. The map view's popup is "raised" above the map by
+    // being SURFACE_RAISED on top of the camera clear; option
+    // buttons sit at SURFACE so they read as recessed within the
+    // popup. A minimal UI conveys hierarchy through these contrasts
+    // rather than outlines.
+    pub const SURFACE:        Color = Color::srgb(0.102, 0.110, 0.173); // #1a1c2c
+    pub const SURFACE_RAISED: Color = Color::srgb(0.200, 0.235, 0.341); // #333c57
+    pub const SURFACE_HOVER:  Color = Color::srgb(0.337, 0.424, 0.525); // #566c86
 
     // ---------- Foreground (text/icons on a surface) ----------
-    pub const ON_SURFACE:     Color = Color::srgb(0.94, 0.95, 0.97);
-    pub const ON_SURFACE_DIM: Color = Color::srgb(0.55, 0.60, 0.70);
-    pub const ACCENT:         Color = Color::srgb(1.00, 0.82, 0.32);
+    pub const ON_SURFACE:     Color = Color::srgb(0.957, 0.957, 0.957); // #f4f4f4
+    pub const ON_SURFACE_DIM: Color = Color::srgb(0.580, 0.690, 0.761); // #94b0c2
+    pub const ACCENT:         Color = Color::srgb(1.000, 0.804, 0.459); // #ffcd75
+
+    // ---------- Stat-delta hues (buff / nerf bullet text) ----------
+    /// Bright lime — palette's saturated green; reads cleanly as a
+    /// stat buff against any of the surface tones.
+    pub const BUFF_FG: Color = Color::srgb(0.655, 0.941, 0.439); // #a7f070
+    /// Warm orange — chosen over palette-red (#b13e53) because the
+    /// red's luminance is too close to SURFACE_RAISED to read at
+    /// small font sizes. Orange is the next palette warm slot down
+    /// and stays distinct from ACCENT yellow.
+    pub const NERF_FG: Color = Color::srgb(0.937, 0.490, 0.341); // #ef7d57
 
     // ---------- Borders (when explicit outlines are wanted) ----------
-    pub const BORDER_SUBTLE: Color = Color::srgb(0.22, 0.25, 0.32);
+    pub const BORDER_SUBTLE: Color = Color::srgb(0.200, 0.235, 0.341); // #333c57
     /// Near-black outline. Use for chrome that needs to read as a
     /// strong frame against a saturated fill (e.g., the HP bar's fill
     /// is bright red — a soft border would dissolve into it).
-    pub const BORDER_DARK:   Color = Color::srgb(0.02, 0.02, 0.04);
+    pub const BORDER_DARK:   Color = Color::srgb(0.102, 0.110, 0.173); // #1a1c2c
 
     // ---------- Sizing ----------
     pub const FONT_XS: f32 = 7.0;

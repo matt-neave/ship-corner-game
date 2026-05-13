@@ -436,7 +436,7 @@ pub fn update_slot_labels(
                 let rate = s.fire_rate * boost;
                 **t = format!("{:.1}", rate);
                 let want = if boost > 1.0 {
-                    Color::srgb(0.55, 0.95, 0.55)
+                    crate::ui_kit::theme::BUFF_FG
                 } else {
                     UI_TEXT
                 };

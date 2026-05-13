@@ -43,8 +43,7 @@ use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
 use crate::rune::{
-    detonate_consume, resonate_multiplier, EchoPending, OnConduit, OnFire,
-    OnFrost, OnResonate, Rune, ECHO_DELAY,
+    resonate_multiplier, EchoPending, OnConduit, OnResonate, Rune, ECHO_DELAY,
 };
 use crate::ui::DamageStats;
 use crate::weapon::WeaponType;
@@ -176,6 +175,16 @@ pub struct DamageEvent {
 /// weapon, not just the ones that happen to fire bullets.
 #[derive(Resource, Default)]
 pub struct PendingDamageQueue(pub Vec<DamageEvent>);
+
+/// Fractional heal counter used by the Vampire rune. Each Vampire-
+/// carrying hit accumulates `stacks × rune_effect / 10` here; whenever
+/// the value crosses 1.0 the player gains 1 HP (and we subtract the
+/// integer part). Living in a Resource (not a Component on the ship)
+/// keeps the accounting global — every bullet from every turret
+/// contributes to the same pool, so partial heals add up cleanly
+/// across frames and shots.
+#[derive(Resource, Default)]
+pub struct VampireAccumulator(pub f32);
 
 impl PendingDamageQueue {
     /// Convenience helper — flatten a slot's `[Option<Rune>; 3]` into
@@ -363,12 +372,15 @@ pub fn process_damage_events(
     synergies: Res<crate::synergy::Synergies>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
+    mut vampire_acc: ResMut<VampireAccumulator>,
+    mut friendly: Query<
+        (&mut Health, Option<&mut crate::stats::Shield>),
+        (With<Friendly>, Without<Enemy>),
+    >,
     mut enemies: Query<
         (Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity),
         (With<Enemy>, Without<Friendly>),
     >,
-    on_fire: Query<&OnFire>,
-    on_frost: Query<&OnFrost>,
     on_conduit: Query<&OnConduit>,
     on_resonate: Query<&OnResonate>,
 ) {
@@ -397,7 +409,7 @@ pub fn process_damage_events(
             ev, &mut queue.0,
             &mut commands, &mut stats, &player_stats, &pm, &em,
             future_stun,
-            &enemy_snap, &mut enemies, &on_fire, &on_frost,
+            &enemy_snap, &mut enemies, &mut friendly, &mut vampire_acc,
             &on_conduit, &on_resonate, &mut rng,
         );
     }
@@ -414,8 +426,8 @@ fn process_damage_event(
     future_stun: f32,
     enemy_snap: &[(Entity, Vec2, f32)],
     enemies: &mut Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
-    on_fire: &Query<&OnFire>,
-    on_frost: &Query<&OnFrost>,
+    friendly: &mut Query<(&mut Health, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>)>,
+    vampire_acc: &mut VampireAccumulator,
     on_conduit: &Query<&OnConduit>,
     on_resonate: &Query<&OnResonate>,
     rng: &mut rand::rngs::ThreadRng,
@@ -436,7 +448,7 @@ fn process_damage_event(
 
     // Resonate damage amplifier — cross-slot debuff that boosts every
     // damage source on this target. Read once per event so all damage
-    // applied below (initial + Detonate burst) uses the same multiplier.
+    // applied below uses the same multiplier.
     let resonate_mult = resonate_multiplier(on_resonate.get(ev.target).ok());
     let amplify = |dmg: i32| -> i32 {
         (dmg as f32 * resonate_mult).round() as i32
@@ -444,6 +456,28 @@ fn process_damage_event(
 
     let dealt = apply_damage(&mut h, &mut fx, amplify(ev.amount));
     credit_damage(stats, ev.source, dealt);
+
+    // Vampire heal-on-hit (fires regardless of proc roll — no proc
+    // strength check). Per-hit fraction = stacks × rune_effect / 10.
+    // Accumulates globally; every time it crosses 1.0 the player
+    // gains 1 HP. With 1 Vampire and base Rune Effect (1.0), that's
+    // ~1 HP per 10 hits — small but constant; high stacks + Rune
+    // Effect scaling turns it into meaningful sustain.
+    let vampire_stacks = ev.runes.iter().filter(|&&r| r == Rune::Vampire).count();
+    if vampire_stacks > 0 {
+        let frac = vampire_stacks as f32 * player_stats.rune_damage_mult() / 10.0;
+        vampire_acc.0 += frac;
+        if vampire_acc.0 >= 1.0 {
+            let whole = vampire_acc.0.floor() as i32;
+            vampire_acc.0 -= whole as f32;
+            let hp_max = player_stats.hp.effective().round() as i32;
+            for (mut ph, _) in friendly.iter_mut() {
+                if ph.0 < hp_max {
+                    ph.0 = (ph.0 + whole).min(hp_max);
+                }
+            }
+        }
+    }
 
     // Weapon-color flair burst (more on lethal). The generic enemy-color
     // destruction burst is added by `enemy_death_check` once HP hits zero.
@@ -456,6 +490,21 @@ fn process_damage_event(
     // the target died. Other runes don't fan out from a kill (saves a
     // frame of FX on something already despawning).
     if h.0 <= 0 {
+        // Ward shield-on-kill (fires regardless of proc roll). Each
+        // Ward stack on the killing bullet grants `rune_effect`
+        // shield, capped at the player's `shield_max`. Lethal-branch
+        // sibling to Cascade, but pure sustain — no fan-out.
+        let ward_stacks = ev.runes.iter().filter(|&&r| r == Rune::Ward).count();
+        if ward_stacks > 0 {
+            let gain = ward_stacks as f32 * player_stats.rune_damage_mult();
+            let shield_max = player_stats.shield_max.effective().max(0.0);
+            for (_, sh_opt) in friendly.iter_mut() {
+                if let Some(mut sh) = sh_opt {
+                    sh.current = (sh.current + gain).min(shield_max);
+                }
+            }
+        }
+
         if ev.proc_strength <= 0.0 { return; }
         // Count Cascade stacks on this bullet — each stack hits one
         // additional nearest enemy. With 3 Cascade runes a kill
@@ -512,7 +561,7 @@ fn process_damage_event(
     // target's Conduit stack count (1 stack = original CONDUIT_PROC_MULT).
     let conduit_mult = on_conduit
         .get(ev.target)
-        .map(|c| c.proc_mult())
+        .map(|c| c.proc_mult(player_stats.rune_damage_mult()))
         .unwrap_or(1.0);
     let strength = (ev.proc_strength * conduit_mult + bonus).min(1.0);
 
@@ -538,7 +587,7 @@ fn process_damage_event(
         if !player_stats.proc_roll_with_luck(&mut *rng, strength) { continue; }
 
         match rune {
-            Rune::Fire | Rune::Frost => {
+            Rune::Fire | Rune::Frost | Rune::Bleed => {
                 crate::rune::apply_rune_stacked(commands, ev.target, rune, stacks);
             }
             Rune::Shock => {
@@ -582,23 +631,6 @@ fn process_damage_event(
                     });
                 }
             }
-            Rune::Detonate => {
-                // Pop primer statuses (Fire/Frost) once, scale the
-                // burst by stack count: 2 Detonate runes ⇒ 2× burst.
-                let fire_ref = on_fire.get(ev.target).ok();
-                let frost_ref = on_frost.get(ev.target).ok();
-                let burst = detonate_consume(commands, ev.target, fire_ref, frost_ref);
-                if burst > 0 {
-                    let scaled = (burst as f32
-                        * stacks as f32
-                        * player_stats.rune_damage_mult())
-                        .round() as i32;
-                    let dealt = apply_damage(&mut h, &mut fx, amplify(scaled));
-                    credit_damage(stats, ev.source, dealt);
-                    spawn_hit_particles(commands, em, spark_mat, ev.hit_pos, 8, 90.0, rng);
-                    spawn_hit_particles(commands, em, &pm.fire,  ev.hit_pos, 6, 70.0, rng);
-                }
-            }
             Rune::Echo => {
                 // One delayed event per Echo stack — 3 Echo runes ⇒
                 // 3 follow-up hits on the same target.
@@ -635,6 +667,8 @@ fn process_damage_event(
             | Rune::TargetLowestHp
             | Rune::TargetCarousel
             | Rune::Splash => {}
+            // Vampire/Ward fire inline (above), regardless of proc roll.
+            Rune::Vampire | Rune::Ward => {}
         }
     }
 }

@@ -81,7 +81,6 @@ const TENTACLE_SLAP_TIME:   f32 = 0.14;
 const TENTACLE_RETREAT_TIME: f32 = 0.22;
 /// Length (world units) of the visible tentacle when fully out.
 const TENTACLE_LENGTH: f32 = 6.0;
-const TENTACLE_WIDTH:  f32 = 1.4;
 /// Damage radius around the tentacle's spawn point when it slaps.
 /// Small — the slap is a focused strike, not an AOE.
 const TENTACLE_SLAP_RADIUS: f32 = 3.0;
@@ -102,11 +101,16 @@ pub enum TentaclePhase {
     Retreat,
 }
 
-/// One tentacle bursting out of the water. Free entity in world
-/// space — visually disconnected from the octopus body (which lurks
-/// below the surface). Each tentacle homes on a specific enemy
-/// (`target`), so a fast-moving enemy can't outrun the strike by
-/// stepping out of the spawn radius before the slap connects.
+/// One tentacle bursting out of the water. The visual is a chain
+/// of N segment circles — children of this entity — laid out along
+/// a hand-tuned question-mark / J curve in the Emerge phase, then
+/// linearly interpolated toward a straight line during Slap so the
+/// motion reads as an actual *whip-and-strike* rather than a pole
+/// pivoting on its base.
+///
+/// Each tentacle homes on a specific enemy (`target`), so a fast-
+/// moving enemy can't outrun the strike by stepping out of the
+/// spawn radius before the slap connects.
 #[derive(Component)]
 pub struct OctopusTentacle {
     /// Owning octopus — used to credit damage to the right slot.
@@ -127,19 +131,55 @@ pub struct OctopusTentacle {
     /// keeps its rune loadout even if the source slot's weapon is
     /// swapped during the 0.6s lifecycle.
     pub runes: [Option<crate::rune::Rune>; 3],
-    /// Resting rotation (in radians) the tentacle holds during the
-    /// Emerge phase — slight per-spawn tilt so multiple tentacles
-    /// don't read as identical pillars. The Slap phase whips
-    /// `whip_from + WHIP_ARC` so the tip arcs through the strike,
-    /// then snaps back for Retreat.
+    /// Resting rotation (in radians) the tentacle holds. Small
+    /// per-spawn jitter so multiple tentacles striking the same
+    /// target don't read as identical poses.
     pub whip_from: f32,
 }
 
-/// Whip arc in radians — how far the tentacle rotates through the
-/// Slap phase. Big enough that the tip motion reads as a strike
-/// rather than a static pole, small enough that the silhouette
-/// still reads as the same tentacle through the action.
-const TENTACLE_WHIP_ARC: f32 = 0.9;
+/// Number of segment circles per tentacle. Six is enough for a
+/// readable question-mark curl in the Emerge phase without making
+/// the chain feel beadier than tentacular.
+const TENTACLE_SEGMENTS: usize = 6;
+/// Per-segment circle radius. Slightly smaller than half the
+/// historical `TENTACLE_WIDTH` so adjacent segments overlap a
+/// touch and the chain reads as one continuous shape, not a row
+/// of beads.
+const TENTACLE_SEG_RADIUS: f32 = 0.85;
+
+/// Tag on each child segment circle so the per-frame pose update
+/// can index into the curled/straight tables and place it.
+#[derive(Component, Clone, Copy)]
+pub struct TentacleSegment {
+    pub idx: u8,
+}
+
+/// Hand-tuned local positions for each segment when the tentacle is
+/// fully curled (Emerge / Retreat poses). Forms a question-mark / J
+/// shape: stalk rises along +Y, then the tip hooks right-and-back.
+/// In tentacle-local space; the parent transform rotates / scales
+/// the whole chain.
+const CURLED_SEGMENTS: [(f32, f32); TENTACLE_SEGMENTS] = [
+    (0.0, 0.0),
+    (0.4, 1.1),
+    (1.4, 2.0),
+    (2.4, 2.6),
+    (2.4, 3.4),
+    (1.4, 3.9),
+];
+
+/// Local positions for each segment when the tentacle is fully
+/// extended (end of Slap). Straight column along +Y, slightly
+/// longer than the curled height so the strike covers more reach
+/// than the rest pose suggests.
+const STRAIGHT_SEGMENTS: [(f32, f32); TENTACLE_SEGMENTS] = [
+    (0.0, 0.0),
+    (0.0, 1.2),
+    (0.0, 2.4),
+    (0.0, 3.6),
+    (0.0, 4.8),
+    (0.0, 6.0),
+];
 
 /// Marker on the deck-side cage decoration child. `sync_cage_decor`
 /// owns its lifecycle.
@@ -172,9 +212,46 @@ impl Plugin for OctopusPlugin {
                 octopus_ai,
                 octopus_spawn_tentacles,
                 tentacle_tick,
+                // Must run after `tentacle_tick` so segments read
+                // the just-decremented timer + phase to compute the
+                // current extension — without `.after`, Bevy can
+                // freely run them in parallel and segment poses lag
+                // a frame behind the phase transition.
+                update_tentacle_segments.after(tentacle_tick),
                 update_octopus_trail,
             ),
         );
+    }
+}
+
+/// Per-frame: place every tentacle segment along the curled →
+/// straight interpolation based on its parent tentacle's current
+/// phase. Emerge holds curled; Slap lerps to straight; Retreat
+/// holds straight. The lerp IS the strike animation — the chain
+/// uncurls and lashes out at the target.
+pub fn update_tentacle_segments(
+    tentacles: Query<&OctopusTentacle, Without<TentacleSegment>>,
+    mut segments: Query<(&TentacleSegment, &ChildOf, &mut Transform)>,
+) {
+    for (seg, parent, mut tf) in &mut segments {
+        let Ok(tent) = tentacles.get(parent.parent()) else { continue; };
+        let ext = match tent.phase {
+            TentaclePhase::Emerge => 0.0,
+            // 0.0 at slap-phase start → 1.0 at end. Linear is
+            // fine; the slap is short (~0.14s) so easing wouldn't
+            // read anyway.
+            TentaclePhase::Slap => {
+                1.0 - (tent.timer / TENTACLE_SLAP_TIME).clamp(0.0, 1.0)
+            }
+            TentaclePhase::Retreat => 1.0,
+        };
+        let idx = seg.idx as usize;
+        let (cx, cy) = CURLED_SEGMENTS[idx];
+        let (sx, sy) = STRAIGHT_SEGMENTS[idx];
+        let x = cx + (sx - cx) * ext;
+        let y = cy + (sy - cy) * ext;
+        tf.translation.x = x;
+        tf.translation.y = y;
     }
 }
 
@@ -368,6 +445,14 @@ pub fn octopus_ai(
         let step = dir * step_len;
         tf.translation.x += step.x;
         tf.translation.y += step.y;
+        // Clamp to the visible viewport so an octopus chasing an
+        // edge-spawned enemy can't slip into the off-camera buffer
+        // (especially relevant with `big_arena`). Body radius
+        // margin keeps the blob fully on-screen, not half-clipped.
+        let half_w = crate::balance::PLAY_WORLD_W * 0.5 - OCTOPUS_BODY_RADIUS - 1.0;
+        let half_h = crate::balance::PLAY_WORLD_H * 0.5 - OCTOPUS_BODY_RADIUS - 1.0;
+        tf.translation.x = tf.translation.x.clamp(-half_w, half_w);
+        tf.translation.y = tf.translation.y.clamp(-half_h, half_h);
     }
 }
 
@@ -382,7 +467,6 @@ pub fn octopus_spawn_tentacles(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
     ship_q: Query<&Transform, (With<Friendly>, Without<Octopus>, Without<Enemy>)>,
     enemies: Query<(Entity, &Transform, &crate::components::Health), (With<Enemy>, Without<Octopus>)>,
     tentacles: Query<&OctopusTentacle>,
@@ -392,20 +476,12 @@ pub fn octopus_spawn_tentacles(
     let Some(em) = em else { return; };
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
-    // Tapered capsule shape reads as a "tentacle column rising out
-    // of the water" much better than a flat rectangle. Half-width =
-    // TENTACLE_WIDTH/2, body length = TENTACLE_LENGTH - WIDTH so
-    // the rounded ends are factored in (Capsule2d adds them on top
-    // of the body height).
-    let tentacle_mesh = meshes.add(Capsule2d::new(
-        TENTACLE_WIDTH * 0.5,
-        (TENTACLE_LENGTH - TENTACLE_WIDTH).max(0.0),
-    ));
-    // Suction-cup dots — small white circles spaced along the
-    // tentacle to suggest segmentation / underside texture. Children
-    // of the tentacle so they inherit the whip rotation.
-    let cup_mesh = meshes.add(Circle::new(0.45));
-    let cup_mat = materials.add(Color::srgb(0.95, 0.92, 0.86));
+    // Tentacle visual is a chain of `TENTACLE_SEGMENTS` small
+    // circles, arranged along a question-mark curl during Emerge
+    // and linearly interpolated to a straight column over Slap.
+    // The chain reads as a real tentacle silhouette (curl + strike)
+    // far better than a single capsule pivoting on its base.
+    let seg_mesh = meshes.add(Circle::new(TENTACLE_SEG_RADIUS));
     let ship_pos = ship_q.single()
         .map(|t| t.translation.truncate())
         .unwrap_or(Vec2::ZERO);
@@ -469,16 +545,23 @@ pub fn octopus_spawn_tentacles(
         let spawn_pos = target_pos + jitter;
         let whip_from = rng.gen_range(-0.6_f32..0.6);
 
+        // Parent is the logical tentacle — invisible itself (no
+        // mesh of its own), it just anchors world position +
+        // rotation and propagates Y-scale to its segment children
+        // for the rise/sink animation. Per-segment in-frame
+        // positions are driven each tick by
+        // `update_tentacle_segments`.
         let tentacle_entity = commands.spawn((
-            Mesh2d(tentacle_mesh.clone()),
-            MeshMaterial2d(pm.octopus_leg.clone()),
             Transform {
                 translation: Vec3::new(spawn_pos.x, spawn_pos.y, 1.6),
                 rotation: Quat::from_rotation_z(whip_from),
                 // Start "underwater" — Y scale 0 grows to 1 during
-                // the Emerge phase via `tentacle_tick`.
+                // Emerge so the chain seems to rise from below.
                 scale: Vec3::new(1.0, 0.0, 1.0),
             },
+            // Required for child-transform propagation on entities
+            // that don't carry a mesh of their own.
+            Visibility::Inherited,
             OctopusTentacle {
                 source: oct_entity,
                 target: Some(target_entity),
@@ -489,27 +572,30 @@ pub fn octopus_spawn_tentacles(
                 runes: s.runes,
                 whip_from,
             },
-            RenderLayers::layer(PLAY_LAYER),
         )).id();
 
-        // Suction-cup dots — two small white circles along the
-        // upper half of the tentacle. Children so the whip rotation
-        // takes them along. Local Y offsets are in tentacle-frame
-        // (the +Y of the capsule is "up"), so the cups sit toward
-        // the tip where the eye looks during a strike.
-        for cup_y in [TENTACLE_LENGTH * 0.18, TENTACLE_LENGTH * 0.36] {
-            let cup = commands.spawn((
-                Mesh2d(cup_mesh.clone()),
-                MeshMaterial2d(cup_mat.clone()),
-                Transform::from_xyz(0.0, cup_y, 0.02),
+        // Segment circles. Each starts in its CURLED pose; the
+        // per-tick segment updater lerps toward STRAIGHT during the
+        // Slap phase. Shared mesh + material so spawning all 6 is
+        // cheap.
+        for idx in 0..TENTACLE_SEGMENTS {
+            let (cx, cy) = CURLED_SEGMENTS[idx];
+            let seg = commands.spawn((
+                Mesh2d(seg_mesh.clone()),
+                MeshMaterial2d(pm.octopus_leg.clone()),
+                Transform::from_xyz(cx, cy, 0.0),
                 RenderLayers::layer(PLAY_LAYER),
+                TentacleSegment { idx: idx as u8 },
             )).id();
-            commands.entity(cup).insert(ChildOf(tentacle_entity));
+            commands.entity(seg).insert(ChildOf(tentacle_entity));
         }
 
-        // Splash burst at the spawn point — a small pink puff
-        // sells "something just came out of the water near you".
-        spawn_hit_particles(&mut commands, &em, &pm.octopus_leg, spawn_pos, 6, 35.0, &mut rng);
+        // Light water-bubble cue at the emerge point — kept small
+        // (3 motes at low speed) so it reads as "something's
+        // surfacing" not "an explosion just went off". The real
+        // impact-burst happens later in `tentacle_tick` on the
+        // slap-damage frame.
+        spawn_hit_particles(&mut commands, &em, &pm.splash, spawn_pos, 3, 20.0, &mut rng);
 
         // Cooldown scales with cap so total throughput stays linear:
         // `slaps/sec ≈ fire_rate × cap`. With cap=2 + fire_rate=1.5:
@@ -528,6 +614,8 @@ pub fn tentacle_tick(
     time: Res<Time>,
     mut commands: Commands,
     mut queue: ResMut<PendingDamageQueue>,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<EffectMeshes>>,
     octopus_q: Query<&Octopus, Without<OctopusTentacle>>,
     mut tentacles: Query<(Entity, &mut Transform, &mut OctopusTentacle), Without<Enemy>>,
     enemies: Query<
@@ -536,6 +624,7 @@ pub fn tentacle_tick(
     >,
 ) {
     let dt = time.delta_secs();
+    let mut rng = rand::thread_rng();
     for (e, mut tf, mut tent) in &mut tentacles {
         tent.timer -= dt;
 
@@ -561,8 +650,14 @@ pub fn tentacle_tick(
             }
         }
 
-        // Per-phase emerge/retreat Y-scale (0..1). Slap holds at
-        // full extension while the rotation whip plays out below.
+        // Per-phase Y-scale on the parent (children inherit).
+        // Emerge stretches from underwater (scale 0) to full
+        // height (scale 1) WHILE the segments stay in the curled
+        // pose. Slap holds the height steady — the visual whip
+        // comes from segments lerping to STRAIGHT, driven by
+        // `update_tentacle_segments`. Retreat retracts back to 0
+        // with segments held straight, like the tentacle's diving
+        // back under after the strike.
         let s = match tent.phase {
             TentaclePhase::Emerge =>
                 (1.0 - tent.timer / TENTACLE_EMERGE_TIME).clamp(0.0, 1.0),
@@ -571,24 +666,9 @@ pub fn tentacle_tick(
                 (tent.timer / TENTACLE_RETREAT_TIME).clamp(0.0, 1.0),
         };
         tf.scale.y = s;
-
-        // Rotation whip — the headline visual cue that this is a
-        // *strike*, not just a column rising and falling. Emerge
-        // holds `whip_from`; Slap arcs through `WHIP_ARC` to
-        // produce a clean tip swing; Retreat holds the end of the
-        // arc as the tentacle retracts mid-strike-pose. Without
-        // this, the slap phase had zero visible motion (just a
-        // 0.14s static frame), which is why the attack didn't read.
-        let rot = match tent.phase {
-            TentaclePhase::Emerge => tent.whip_from,
-            TentaclePhase::Slap => {
-                // 1.0 at phase start → 0.0 at end.
-                let progress = 1.0 - (tent.timer / TENTACLE_SLAP_TIME).clamp(0.0, 1.0);
-                tent.whip_from + TENTACLE_WHIP_ARC * progress
-            }
-            TentaclePhase::Retreat => tent.whip_from + TENTACLE_WHIP_ARC,
-        };
-        tf.rotation = Quat::from_rotation_z(rot);
+        // Rotation pinned to the per-spawn jitter — segment
+        // straightening replaces the old rotation-whip animation.
+        tf.rotation = Quat::from_rotation_z(tent.whip_from);
 
         // Phase transitions + damage hit.
         if tent.timer <= 0.0 {
@@ -613,6 +693,18 @@ pub fn tentacle_tick(
                                     let ep = etf.translation.truncate();
                                     let reach = TENTACLE_SLAP_RADIUS + TENTACLE_LENGTH;
                                     if ep.distance_squared(slap_pos) <= reach * reach {
+                                        // Impact burst — the actual
+                                        // moment of the slap. Small
+                                        // directional flick (8 motes
+                                        // at moderate speed) reads as
+                                        // a strike connecting, not a
+                                        // generic explosion.
+                                        if let (Some(pm), Some(em)) = (pm.as_deref(), em.as_deref()) {
+                                            spawn_hit_particles(
+                                                &mut commands, em, &pm.octopus_leg,
+                                                ep, 8, 55.0, &mut rng,
+                                            );
+                                        }
                                         queue.push_initial(
                                             target, tent.damage, slap_pos,
                                             WeaponType::Cage, source, &tent.runes,

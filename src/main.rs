@@ -53,7 +53,7 @@ use ally::{
 };
 use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
-use bullet::{bullet_collisions, bullet_update, process_damage_events, PendingDamageQueue};
+use bullet::{bullet_collisions, bullet_update, process_damage_events, PendingDamageQueue, VampireAccumulator};
 use effects::{
     apply_hit_fx_visuals, tick_hit_fx, update_hit_particles, update_muzzle_flashes,
 };
@@ -91,7 +91,7 @@ use rendering::{
     resize_upscale_sprite, setup_render, update_hash_image, update_hud_camera_viewport,
 };
 use settings::{apply_loaded_settings, persist_settings_on_change};
-use rune::{tick_echoes, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_resonate};
+use rune::{tick_echoes, tick_on_bleed, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_resonate};
 use ship::{apply_velocity, friendly_movement, friendly_ram_damage, setup_world, tick_stunned};
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{
@@ -297,6 +297,7 @@ fn main() {
         .insert_resource(DebugUiVisible::default())
         .insert_resource(synergy::Synergies::default())
         .insert_resource(PendingDamageQueue::default())
+        .insert_resource(VampireAccumulator::default())
         .insert_resource(modes::ScreenShake::default())
         .insert_resource(RunTimer::default())
         .init_state::<AppState>()
@@ -395,7 +396,7 @@ fn main() {
             (
                 bullet_collisions, tick_echoes,
                 process_damage_events,
-                tick_on_fire, tick_on_frost,
+                tick_on_fire, tick_on_frost, tick_on_bleed,
                 tick_on_conduit, tick_on_resonate,
                 enemy_death_check,
             ).chain(),

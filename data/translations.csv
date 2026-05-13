@@ -38,10 +38,10 @@ weapon_blade,BLADE
 weapon_cage,CAGE
 weapon_harpoon,HARPOON
 weapon_cannon_desc,Heavy cannonball. Knocks enemies back on hit.
-weapon_booster_desc,Does not fire. Boosts each adjacent turret's fire rate by +30%.
+weapon_booster_desc,Does not fire. Boosts the fire rate of every adjacent turret.
 weapon_blade_desc,Spinning blade on an extending arm. Damages anything it touches near the ship.
 weapon_cage_desc,Releases an octopus that hunts enemies in the water and slaps them with tentacles.
-weapon_harpoon_desc,Long-range melee. Lances out at 150% range for 1 damage and reels the target into the hull.
+weapon_harpoon_desc,Long-range melee. Lances out and reels the target into the hull.
 weapon_tag_naval,NAVAL
 weapon_tag_future,FUTURE
 weapon_tag_autonomous,AUTONOMOUS
@@ -64,19 +64,23 @@ rune_none,NONE
 rune_fire,FIRE
 rune_frost,FROST
 rune_shock,SHOCK
-rune_detonate,DETONATE
 rune_echo,ECHO
 rune_cascade,CASCADE
 rune_conduit,CONDUIT
 rune_resonate,RESONATE
-rune_fire_desc,Sets enemies ablaze. Burns over 4 seconds. Stack to burn harder.
+rune_vampire,VAMPIRE
+rune_ward,WARD
+rune_bleed,BLEED
+rune_fire_desc,Sets enemies ablaze, dealing 1 every 0.5s for 4 seconds.
 rune_frost_desc,Freezes enemies in place. Movement crawls. Stack to deepen the chill.
 rune_shock_desc,Chains lightning to nearby enemies. Stack to add more arcs.
-rune_detonate_desc,Pops Fire and Frost on the target for a damage burst. Bigger with stacks.
 rune_echo_desc,Fires a second shot at the same target moments later. Stack for more echoes.
 rune_cascade_desc,Killing blows leap to a nearby enemy. Stack for longer chains.
-rune_conduit_desc,Tags the target. Future hits proc runes harder while the tag holds.
+rune_conduit_desc,Marks the target. Other runes are 10% more likely to trigger on marked enemies. Stack to deepen the mark. Rune Effect scales the bonus.
 rune_resonate_desc,Hits weaken the target. Up to 5 stacks. Stacks fade without fire.
+rune_vampire_desc,Heal a sliver of HP every few hits. Stack to drink faster.
+rune_ward_desc,Killing blows refill some shield. Stack for bigger refills.
+rune_bleed_desc,Anti-tank DoT. Ticks a percent of the target's max HP for 4 seconds. Stack to bleed faster.
 rune_target_furthest,FURTHEST
 rune_target_max_hp,MAX HP
 rune_target_min_hp,MIN HP
@@ -97,10 +101,11 @@ stat_proc_strength_desc,Raises the chance every rune procs on hit.
 stat_crit_desc,Chance to crit on hit. 100% always crits for 2x damage. 200% always for 3x.
 stat_range_desc,Bonus to turret firing range.
 stat_harvest_desc,Expected scrap per kill. 100% is baseline; harvest mods and the Pirate synergy stack on top.
+stat_xp_harvest_desc,XP gained from each kill. 100% is baseline (1 XP per kill, 5 per boss); mods stack on top.
 stat_shield_max_desc,Recharging shield that absorbs damage before HP takes any.
 stat_shield_rate_desc,How fast the shield refills after a delay.
 stat_shield_delay_desc,Pause after a hit before the shield starts refilling.
-stat_rune_damage_desc,Scales rune effects. Boosts Fire and Detonate damage. Adds chain bolts to Shock.
+stat_rune_damage_desc,Scales rune effects. Boosts Fire and Detonate damage. Adds chain bolts to Shock. Widens AOE-rune radius.
 stat_turret_damage_desc,Total damage multiplier on every weapon. 100% is baseline; mods and Naval synergy stack on top.
 map_popup_build,BUILD
 map_building_weaponry,WEAPONRY

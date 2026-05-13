@@ -163,9 +163,9 @@ pub fn sync_stats_panel(
             _ => (sv.0.stat(&stats).effective(), sv.0.stat(&baseline).effective()),
         };
         let want = if cur > base + 0.001 {
-            Color::srgb(0.55, 0.95, 0.55) // green: buffed
+            crate::ui_kit::theme::BUFF_FG // green: buffed
         } else if cur < base - 0.001 {
-            Color::srgb(1.00, 0.55, 0.55) // red: nerfed
+            crate::ui_kit::theme::NERF_FG // red: nerfed
         } else {
             Color::srgb(0.70, 0.72, 0.78) // grey: baseline
         };

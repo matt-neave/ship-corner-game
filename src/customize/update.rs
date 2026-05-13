@@ -18,7 +18,8 @@ use super::drag::{
 };
 use super::setup::{
     empty_slot_color, empty_socket_color, rune_color_for, turret_barrel_color_for,
-    turret_color_for, CustomizeScrapText, SellPricePreview, ShipRuneSocketPart, ShipSlotBadgeText,
+    turret_color_for, CustomizeScrapText, SellPricePreview, ShipRuneSocketLockHash,
+    ShipRuneSocketPart, ShipSlotBadgeText,
     ShipSlotBase, ShopRerollBg, ShopRerollBtn, ShopRerollCostText, ShopRuneAoeTag,
     ShopRuneAoeTagText, ShopRuneCostText, ShopRuneNameText, ShopRuneVisual,
     ShopTurretAoeTag, ShopTurretAoeTagText, ShopTurretBadgeText, ShopTurretBase,
@@ -49,6 +50,7 @@ pub fn update_customize_ship(
     mut materials: ResMut<Assets<ColorMaterial>>,
     bases: Query<(&ShipSlotBase, &MeshMaterial2d<ColorMaterial>)>,
     socket_parts: Query<(&ShipRuneSocketPart, &MeshMaterial2d<ColorMaterial>)>,
+    mut hash_overlays: Query<(&ShipRuneSocketLockHash, &mut Visibility)>,
     mut badge_texts: Query<(&ShipSlotBadgeText, &mut Text2d)>,
 ) {
     if !open.open {
@@ -85,8 +87,23 @@ pub fn update_customize_ship(
     }
 
     // Rune sockets — colour by the equipped rune (or empty tint). A
-    // socket whose rune is being dragged renders as empty; sockets on a
-    // turret-being-dragged also empty out (the whole slot is "in transit").
+    // socket whose rune is being dragged renders as empty; sockets
+    // on a turret-being-dragged also empty out (the whole slot is
+    // "in transit"). Empty sockets get a diagonal hash overlay
+    // (light + dark red stripes, spawned in `spawn_socket_container`)
+    // when the slot already holds a targeting rune in another socket
+    // — targeting-rune exclusivity: one per weapon. The base material
+    // stays the regular empty-socket tint so the hash reads cleanly.
+    let lock_state = |slot_idx: usize, rune_idx: usize| -> bool {
+        let s = cfg.slots[slot_idx];
+        if !s.equipped { return false; }
+        if dragged_slot == Some(slot_idx) { return false; }
+        if dragged_socket == Some((slot_idx, rune_idx)) { return false; }
+        if s.runes[rune_idx].is_some() { return false; }
+        s.runes.iter().enumerate().any(|(i, r)| {
+            i != rune_idx && r.map_or(false, |rune| rune.is_targeting())
+        })
+    };
     for (part, mat_handle) in &socket_parts {
         let s = cfg.slots[part.slot];
         let slot_dragged = dragged_slot == Some(part.slot);
@@ -104,6 +121,14 @@ pub fn update_customize_ship(
                 mat.color = want;
             }
         }
+    }
+    for (hash, mut vis) in &mut hash_overlays {
+        let want = if lock_state(hash.slot, hash.rune_idx) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want { *vis = want; }
     }
 
     // Barrel-level number on each slot — single digit centred on the

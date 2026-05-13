@@ -225,9 +225,9 @@ pub fn update_shop_mod_cards(
                             // for `-`, neutral for everything
                             // else (the stat-name lines).
                             let line_color = if line.starts_with('+') {
-                                Color::srgb(0.55, 0.95, 0.55)
+                                crate::ui_kit::theme::BUFF_FG
                             } else if line.starts_with('-') {
-                                Color::srgb(1.00, 0.55, 0.55)
+                                crate::ui_kit::theme::NERF_FG
                             } else {
                                 Color::srgb(0.85, 0.88, 0.94)
                             };

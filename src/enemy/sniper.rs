@@ -230,8 +230,16 @@ pub fn sniper_aim_line_tick(
 
         let pos = sniper_tf.translation.truncate();
         let to = line.target_world - pos;
-        let mid = (pos + line.target_world) * 0.5;
-        let length = to.length().max(1.0);
+        // Render the aim-line at 3× the sniper-to-target distance,
+        // extending past the target. The intent is to telegraph the
+        // shot direction, not just the impact point, so a player
+        // who's about to walk into the line sees it sooner.
+        const AIM_LINE_LENGTH_MULT: f32 = 3.0;
+        let length = to.length().max(1.0) * AIM_LINE_LENGTH_MULT;
+        // Mid-point of the elongated line — sniper is the start,
+        // the far end sits `AIM_LINE_LENGTH_MULT × distance` along
+        // the direction-to-target.
+        let mid = pos + to * (AIM_LINE_LENGTH_MULT * 0.5);
         let angle = (-(to.x)).atan2(to.y);
         tf.translation.x = mid.x;
         tf.translation.y = mid.y;

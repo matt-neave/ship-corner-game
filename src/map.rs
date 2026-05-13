@@ -385,13 +385,6 @@ impl MapSize {
             MapSize::Large => "LARGE",
         }
     }
-    pub fn detail(self) -> &'static str {
-        match self {
-            MapSize::Small => "10 sections — tight campaign.",
-            MapSize::Medium => "15 sections — balanced.",
-            MapSize::Large => "20 sections — long voyage.",
-        }
-    }
     pub const ALL: &'static [MapSize] = &[
         MapSize::Small,
         MapSize::Medium,

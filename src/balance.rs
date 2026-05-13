@@ -101,18 +101,18 @@ pub const HUD_LAYER:     usize = 4;
 /// scaled up.
 pub const CUSTOMIZE_LAYER: usize = 5;
 
-/// Layer for the hull-select dockyard scene — water, wooden piers,
-/// and one parked-ship mesh per hull variant. Mirrors the customize
-/// pipeline (own camera → low-res image → nearest-neighbor upscale)
-/// so the chunky-pixel look matches in-game combat. Active only while
-/// `AppState::HullSelect`.
-pub const DOCKYARD_LAYER: usize = 6;
+/// Layer for the hull-select ship-preview scene. Mirrors the customize
+/// pipeline (own camera → low-res image → bevy_ui ImageNode display)
+/// so the previewed hull reads with the same chunky-pixel rasterisation
+/// as the in-game ship.
+pub const HULL_PREVIEW_LAYER: usize = 6;
 
-/// Internal render-target resolution for the dockyard. Wider than tall
-/// so the 4-column berth grid fits comfortably without crowding the
-/// RHS Bevy UI manifest panel that overlays the right portion.
-pub const DOCKYARD_INTERNAL_W: u32 = 320;
-pub const DOCKYARD_INTERNAL_H: u32 = 200;
+/// Internal render-target resolution for the hull-select ship preview.
+/// Sized so the in-game `HULL_LEN`×`HULL_WIDTH` capsule + the eight
+/// `TURRET_POSITIONS` slots all fit comfortably with a few spec pixels
+/// of margin.
+pub const HULL_PREVIEW_INTERNAL_W: u32 = 32;
+pub const HULL_PREVIEW_INTERNAL_H: u32 = 48;
 
 /// Internal resolution of the customize render target. Picked so 4×
 /// upscale equals the default 1280×800 window — keeps things pixel-
@@ -262,6 +262,16 @@ pub const FIRE_DAMAGE_PER_TICK:        i32 = 1;     // 1 dmg every 0.5 s → 8 d
 pub const FIRE_PARTICLE_TICK_INTERVAL: f32 = 0.15;  // visual particle spawn rate
 pub const FIRE_PARTICLES_PER_TICK:     u32 = 3;     // particles per visual tick
 
+// Bleed DoT — anti-tank scaler. Damage per tick is a percentage of
+// the target's MAX HP, so a 200-HP boss bleeds for ~3 / tick where
+// a 20-HP scout bleeds for ~0.3. 8 ticks over 4 s, same cadence as
+// Fire so visuals don't fight.
+pub const BLEED_DURATION:              f32 = 4.0;
+pub const BLEED_DAMAGE_TICK_INTERVAL:  f32 = 0.5;
+pub const BLEED_PCT_PER_TICK:          f32 = 0.015; // 1.5% max-HP per stack per tick
+pub const BLEED_PARTICLE_TICK_INTERVAL: f32 = 0.2;
+pub const BLEED_PARTICLES_PER_TICK:    u32 = 2;
+
 pub const FROST_DURATION:               f32 = 3.0;   // total slow duration
 pub const FROST_SPEED_MULT:             f32 = 0.4;   // 60% slow
 pub const FROST_PARTICLE_TICK_INTERVAL: f32 = 0.20;  // slower than fire — frost is calm
@@ -284,7 +294,7 @@ pub const CONDUIT_DURATION:     f32 = 3.0;
 /// is conducted. Caps at 1.0 in the rolled comparison, so the visible
 /// effect is "chain hops at full strength" rather than "initial hits
 /// have super-procs".
-pub const CONDUIT_PROC_MULT:    f32 = 1.5;
+pub const CONDUIT_PROC_MULT:    f32 = 1.1;
 /// How long `OnResonate` stacks linger after the most recent hit.
 /// Short enough that you have to keep hitting the same target to
 /// stack up; long enough that bursty weapons (Shotgun) still benefit.

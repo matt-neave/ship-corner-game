@@ -78,6 +78,10 @@ pub struct TooltipDataCtx<'w> {
     /// to substitute the current TurretDamage / RuneDamage / etc.
     /// modifiers into weapon and rune tooltip bodies.
     pub stats: Res<'w, crate::stats::PlayerStats>,
+    /// Live synergies — the weapon-damage line folds Naval + Support
+    /// multipliers in so the tooltip number matches the damage the
+    /// shot actually deals.
+    pub synergies: Res<'w, crate::synergy::Synergies>,
 }
 
 /// Layout snapshot for the main tooltip. Written by
@@ -124,7 +128,12 @@ const TOOLTIP_BODY_FONT: f32 = 14.0;
 const TOOLTIP_BODY_MAX_W: f32 = 280.0;
 /// Approx char width (chars × font_size × this ≈ rendered native width).
 /// Used both for the title's auto-fit and the body's line-count estimate.
-const TOOLTIP_CHAR_W: f32 = 0.55;
+/// The default font has variable glyph width — capitals like "M" and
+/// "W" exceed this average — so an over-conservative value is better
+/// than a tight one: it prevents body text overrunning the fill on
+/// long descriptions (e.g. "Min HP", "Frost", "Furthest") at the cost
+/// of slightly wider tooltips than strictly needed.
+const TOOLTIP_CHAR_W: f32 = 0.62;
 /// Vertical line-height multiplier for the wrapped body — turns
 /// `body_font * lines` into the total body block height.
 const TOOLTIP_LINE_HEIGHT_MULT: f32 = 1.25;
@@ -364,7 +373,7 @@ pub fn update_customize_tooltip(
             continue;
         }
         if let Some((title, body)) = describe_source(
-            marker.0, &data.cfg, shop_ref, &data.discovered, &data.stats,
+            marker.0, &data.cfg, shop_ref, &data.discovered, &data.stats, &data.synergies,
         ) {
             info = Some((title, body, centre, half));
             info_tags = turret_tags_for_source(marker.0, &data.cfg, shop_ref);
@@ -884,9 +893,9 @@ fn turret_tags_for_source(
 /// Default body color (matches the root `Text2d`'s `TextColor`).
 const TOOLTIP_BODY_COLOR: Color = Color::srgb(0.85, 0.88, 0.94);
 /// Tint for positive numeric tokens (`+30%`, `+1`).
-const TOOLTIP_BUFF_COLOR: Color = Color::srgb(0.55, 0.95, 0.55);
+const TOOLTIP_BUFF_COLOR: Color = crate::ui_kit::theme::BUFF_FG;
 /// Tint for negative numeric tokens (`-50`, `-70%`).
-const TOOLTIP_NERF_COLOR: Color = Color::srgb(1.00, 0.55, 0.55);
+const TOOLTIP_NERF_COLOR: Color = crate::ui_kit::theme::NERF_FG;
 /// Tint for bare numeric tokens (`5`, `4.0/s`, `100%`) so stat values
 /// pop against their labels in weapon / rune descriptions. Gold to
 /// match the scrap accent the player already associates with
@@ -949,6 +958,12 @@ fn tag_chip_color(name: &str) -> Option<Color> {
     }
     if name == "AOE" {
         return Some(TOOLTIP_AOE_TAG_COLOR);
+    }
+    // Targeting-rune chip — informational tag underneath the rune
+    // name. Cool slate-grey so it reads as a meta-category, distinct
+    // from elemental colours used by Fire/Frost/Shock.
+    if name == "TARGETING" {
+        return Some(Color::srgb(0.70, 0.80, 0.95));
     }
     // `[???]` is rendered in dim grey — it's the "synergy not yet
     // discovered" placeholder used by `turret_tooltip` when the
@@ -1143,6 +1158,7 @@ fn describe_source(
     shop: Option<&CustomizeShop>,
     discovered: &crate::onboarding::DiscoveredSynergies,
     stats: &crate::stats::PlayerStats,
+    synergies: &Synergies,
 ) -> Option<(String, String)> {
     match source {
         DragSourceKind::ShipSlot(slot) => {
@@ -1153,7 +1169,9 @@ fn describe_source(
             // `turret_tooltip` iterates each tag and renders a chip
             // for each one, gated by per-tag discovery. So a Harpoon
             // with only Pirate discovered shows `[PIRATE][???]`.
-            Some(turret_tooltip(s.weapon, s.barrels.max(1), discovered, stats))
+            Some(turret_tooltip(
+                s.weapon, s.barrels.max(1), discovered, stats, synergies,
+            ))
         }
         DragSourceKind::ShipRune { slot, rune_idx } => {
             let s = cfg.slots[slot];
@@ -1165,7 +1183,9 @@ fn describe_source(
         DragSourceKind::ShopTurret(idx) => shop
             .and_then(|s| s.turrets.get(idx))
             .and_then(|o| o.as_ref())
-            .map(|o| turret_tooltip(o.weapon, o.barrels.max(1), discovered, stats)),
+            .map(|o| turret_tooltip(
+                o.weapon, o.barrels.max(1), discovered, stats, synergies,
+            )),
         DragSourceKind::ShopRune(idx) => shop
             .and_then(|s| s.runes.get(idx))
             .and_then(|o| o.as_ref())
@@ -1241,6 +1261,7 @@ fn turret_tooltip(
     barrels: u8,
     discovered: &crate::onboarding::DiscoveredSynergies,
     stats: &crate::stats::PlayerStats,
+    synergies: &Synergies,
 ) -> (String, String) {
     let title = weapon.label().to_string();
     // Multi-tag weapons render one chip per tag, gated individually
@@ -1262,7 +1283,7 @@ fn turret_tooltip(
     // Brotato-style dynamic stat lines below the flavour. Show base
     // damage × current TurretDamage modifier, plus weapon-specific
     // notes (knockback / splash / pierce) where relevant.
-    body.push_str(&weapon_damage_line(weapon, stats));
+    body.push_str(&weapon_damage_line(weapon, stats, synergies));
     if let Some(rate_line) = weapon_rate_line(weapon, barrels) {
         body.push('\n');
         body.push_str(&rate_line);
@@ -1276,6 +1297,16 @@ fn turret_tooltip(
 
 fn rune_tooltip(rune: Rune, stats: &crate::stats::PlayerStats) -> (String, String) {
     let mut body = String::new();
+    // Targeting runes carry a `[Targeting Mode]` chip on the line
+    // beneath the name so the player can tell at a glance that
+    // they're picking a target-selection rule, not an effect rune.
+    // Colorised via the same `[chip]` token logic as weapon tag
+    // chips — falls back to plain text when `colorize_bonuses` can't
+    // resolve the chip name (which is fine here since the tag is
+    // informational, not gameplay).
+    if rune.target_priority().is_some() || matches!(rune, Rune::TargetCarousel) {
+        body.push_str("[TARGETING]\n");
+    }
     if matches!(rune, Rune::Splash) {
         body.push_str(AOE_TAG);
     }
@@ -1288,9 +1319,22 @@ fn rune_tooltip(rune: Rune, stats: &crate::stats::PlayerStats) -> (String, Strin
 /// place so a fractional final (e.g. 4 base x 33% = 5.32 -> 5.3)
 /// reads accurately instead of rounding to the same integer as a
 /// neighbouring weapon. Base is integer-typed so it shows whole.
-fn weapon_damage_line(weapon: WeaponType, stats: &crate::stats::PlayerStats) -> String {
+fn weapon_damage_line(
+    weapon: WeaponType,
+    stats: &crate::stats::PlayerStats,
+    synergies: &Synergies,
+) -> String {
     let (base_dmg, _rate) = weapon.defaults();
-    let mult = stats.turret_damage_mult();
+    // Fold every multiplier that actually applies in combat — the
+    // player's Weapon Damage stat AND any active Naval / Support
+    // synergies (Support opts out for Support-tagged weapons via
+    // `damage_mult_for`, same logic as `sync_turret_config`). The
+    // user's "I have 130% weapon damage but tooltip says 1 damage"
+    // bug came from this line only multiplying by
+    // `turret_damage_mult` while the panel's headline percentage
+    // folded synergies in — the two numbers drifted apart.
+    let mult = stats.turret_damage_mult()
+        * synergies.damage_mult_for(weapon.tags());
     let final_dmg = base_dmg as f32 * mult;
     let pct_bonus = ((mult - 1.0) * 100.0).round() as i32;
     if pct_bonus == 0 {
@@ -1298,7 +1342,7 @@ fn weapon_damage_line(weapon: WeaponType, stats: &crate::stats::PlayerStats) -> 
     } else {
         let sign = if pct_bonus > 0 { "+" } else { "" };
         format!(
-            "Damage {:.1} from {} base and {}{}% Turret Damage",
+            "Damage {:.1} ({} base, {}{}% bonus)",
             final_dmg, base_dmg, sign, pct_bonus,
         )
     }
@@ -1333,30 +1377,97 @@ fn weapon_extra_line(
 }
 
 /// Plain-English description for a rune with current `PlayerStats`
-/// substituted in. Mirrors the static `Rune::description()` text
-/// but with the dynamic numbers baked in (Fire's per-tick damage
-/// after rune-damage scaling, Shock's chain count from rune-damage
-/// rounded, etc.). Static-only runes (Frost, Echo, etc.) fall
-/// through to `rune.description()`.
+/// substituted in. Mirrors the static `Rune::description()` text but
+/// with the live values baked in (per-tick damage, chain count, etc.).
+/// Numbers reflect the current Rune Effect multiplier so the player
+/// sees the exact value the rune will produce at fire time. Passive
+/// targeting runes fall through to the static description.
 fn rune_dynamic_description(rune: Rune, stats: &crate::stats::PlayerStats) -> String {
     let rune_dmg = stats.rune_damage_mult();
     let chain_count = rune_dmg.round().max(1.0) as i32;
     match rune {
         Rune::Fire => {
             let per_tick = (1.0 * rune_dmg).max(0.1);
-            let total = (8.0 * rune_dmg).max(0.0);
             format!(
-                "Sets enemies ablaze. {:.1} damage every 0.5s for 4 seconds. {:.0} total. Stack to burn harder.",
-                per_tick, total,
+                "Sets enemies ablaze, dealing {:.1} every 0.5s for 4 seconds.",
+                per_tick,
+            )
+        }
+        Rune::Frost => {
+            // Compounded slow per stack. 1 stack at base = 60% slow,
+            // 2 stacks = 84%, etc. Frost doesn't scale with Rune Effect.
+            let slow_pct = (1.0 - crate::balance::FROST_SPEED_MULT) * 100.0;
+            format!(
+                "Freezes enemies for {:.1}s. {:.0}% slow per stack (compounds).",
+                crate::balance::FROST_DURATION, slow_pct,
             )
         }
         Rune::Shock => format!(
-            "Chains lightning to {} nearby enemies. 100% weapon damage each. Stack to add more arcs.",
+            "Chains lightning to {} nearby enemies for 100% weapon damage each. Stack to add more arcs.",
             chain_count,
         ),
-        Rune::Detonate => {
-            "Pops Fire and Frost on the target for a damage burst. Bigger with stacks. Rune Damage scales the burst.".to_string()
+        Rune::Echo => format!(
+            "Fires a second hit on the same target {:.1}s later. Stack for more echoes.",
+            crate::rune::ECHO_DELAY,
+        ),
+        Rune::Cascade => {
+            // Per-stack leap. Each Cascade rune on the bullet adds one
+            // nearest-enemy hop on kill. Chain damage at 70% strength.
+            "Killing blows leap to a nearby enemy at 70% proc strength. Each stack adds another leap.".to_string()
         }
-        _ => rune.description().to_string(),
+        Rune::Conduit => {
+            // Per-stack bonus = (CONDUIT_PROC_MULT - 1) × rune_effect,
+            // shown as a percentage. Mirrors `OnConduit::proc_mult`.
+            let pct = (crate::balance::CONDUIT_PROC_MULT - 1.0) * rune_dmg * 100.0;
+            format!(
+                "Marks the target. Each stack makes other runes {:+.0}% more likely to trigger on marked enemies.",
+                pct,
+            )
+        }
+        Rune::Resonate => {
+            // +20% damage per stack on the target, up to 5 stacks.
+            let per_stack = crate::balance::RESONATE_DAMAGE_PER_STACK * 100.0;
+            format!(
+                "Hits weaken the target: +{:.0}% damage taken per stack (up to {}). Stacks fade after {:.0}s without a hit.",
+                per_stack,
+                crate::balance::RESONATE_MAX_STACKS,
+                crate::balance::RESONATE_DECAY,
+            )
+        }
+        Rune::Vampire => {
+            // Hits to heal 1 HP at base = 10 / rune_effect. Floor so
+            // we don't promise sub-hit precision in the tooltip.
+            let hits_per_hp = (10.0 / rune_dmg.max(0.001)).max(1.0).round() as i32;
+            format!(
+                "Heal 1 HP every {} hits. Stack to drink faster.",
+                hits_per_hp,
+            )
+        }
+        Rune::Ward => format!(
+            "Killing blows refill {:.0} shield per stack (capped at Shield Max).",
+            rune_dmg,
+        ),
+        Rune::Bleed => {
+            // Per-tick % of MAX HP at base = BLEED_PCT_PER_TICK ×
+            // rune_effect. Display as percent with one decimal.
+            let pct = crate::balance::BLEED_PCT_PER_TICK * 100.0 * rune_dmg;
+            format!(
+                "Anti-tank DoT. Each tick chips {:.1}% of the target's max HP for 4 seconds. Stack to bleed faster.",
+                pct,
+            )
+        }
+        Rune::Splash => {
+            // Per-stack radius bonus on AoE weapons (currently Mortar).
+            let per_stack = 0.5 * rune_dmg * 100.0;
+            format!(
+                "Widens this turret's blast radius by {:+.0}% per stack.",
+                per_stack,
+            )
+        }
+        // Targeting runes have no value to show — pure aim modifiers.
+        Rune::TargetFurthest
+        | Rune::TargetHighestHp
+        | Rune::TargetLowestHp
+        | Rune::TargetCarousel => rune.description().to_string(),
     }
 }

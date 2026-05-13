@@ -157,7 +157,8 @@ fn short_stat_label(kind: StatKind) -> &'static str {
         StatKind::Luck              => "LUCK",
         StatKind::ProcStrength      => "PROC STRENGTH",
         StatKind::Harvest           => "HARVEST",
-        StatKind::RuneDamage        => "RUNE DAMAGE",
+        StatKind::XpHarvest         => "XP GAIN",
+        StatKind::RuneDamage        => "RUNE EFFECT",
         StatKind::TurretDamage      => "TURRET DAMAGE",
     }
 }
@@ -202,11 +203,13 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         Rune::Fire,
         Rune::Frost,
         Rune::Shock,
-        Rune::Detonate,
         Rune::Echo,
         Rune::Cascade,
         Rune::Conduit,
         Rune::Resonate,
+        Rune::Vampire,
+        Rune::Ward,
+        Rune::Bleed,
         Rune::TargetFurthest,
         Rune::TargetHighestHp,
         Rune::TargetLowestHp,
@@ -760,6 +763,22 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
             if let DragSourceKind::ShipRune { slot: s, rune_idx: r } = picked.source {
                 if s == slot && r == rune_idx {
                     return false;
+                }
+            }
+            // Targeting-rune exclusivity: at most one targeting rune
+            // per weapon. If the dropped rune is a targeting rune
+            // and the destination slot already carries one in
+            // *another* socket, reject the drop. Same-socket
+            // overwrite is fine (replacing the existing targeting
+            // rune with a different targeting rune).
+            if rune.is_targeting() {
+                for (i, r) in cfg.slots[slot].runes.iter().enumerate() {
+                    if i == rune_idx { continue; }
+                    if let Some(other) = r {
+                        if other.is_targeting() {
+                            return false;
+                        }
+                    }
                 }
             }
             cfg.slots[slot].runes[rune_idx] = Some(rune);
