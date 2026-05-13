@@ -56,7 +56,7 @@ Every damage source pushes a `DamageEvent` onto `PendingDamageQueue::push_initia
 Touch every spot or you'll get a non-exhaustive-match build error:
 
 - `Rune` enum variant in `src/rune.rs`
-- `label()` / `description()` / `proc_coefficient()` / `cycle_next()` / `cycle_prev()` / `apply_rune_stacked()` arms
+- `label()` / `description()` / `proc_coefficient()` / `apply_rune_stacked()` arms
 - `rune_color_for()` in `src/customize/setup.rs`
 - `runes_pool` in `src/customize/drag.rs`
 - `rune_dynamic_description()` in `src/customize/tooltip.rs` (for live numbers in the tooltip)
