@@ -65,13 +65,21 @@ impl Plugin for CustomizePlugin {
                 (init_customize_shop, crate::enemy::clear_spawn_indicators),
             )
             .add_systems(OnExit(AppState::Customize), crate::ui::reset_damage_stats)
+            // Cursor tracker is registered FIRST and on its own so
+            // every downstream click / drag system can `.after()` it.
+            // Without this explicit ordering, Bevy is free to run
+            // click handlers (close, reroll, mod purchase, drag
+            // start) BEFORE the cursor is refreshed for the frame
+            // — they'd read the previous frame's `spec_cursor` and
+            // fire on stale positions, producing "random" closes
+            // and ghost purchases.
+            .add_systems(Update, track_customize_cursor)
             .add_systems(
                 Update,
                 (
                     // Every customize system self-gates on `CustomizeOpen`.
                     toggle_customize_render,
                     resize_customize_display,
-                    track_customize_cursor,
                     sync_customize_text,
                     update_customize_ui,
                     update_customize_ship,
@@ -87,7 +95,7 @@ impl Plugin for CustomizePlugin {
                     handle_shop_mod_click,
                     handle_close_click,
                     handle_reroll_button,
-                ),
+                ).after(track_customize_cursor),
             )
             // Drag chain in its own add_systems — chained tuples
             // nested inside the block above hit a Bevy trait-impl
@@ -98,7 +106,8 @@ impl Plugin for CustomizePlugin {
                 Update,
                 (start_drag, update_drag_ghost, complete_drag, update_sell_label)
                     .chain()
-                    .after(sync_customize_text),
+                    .after(sync_customize_text)
+                    .after(track_customize_cursor),
             )
             // Unconditional synergy chain — discovery must fire while
             // customize is open so equipping a 2nd tagged turret pops

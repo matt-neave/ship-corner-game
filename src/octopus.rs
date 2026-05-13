@@ -103,13 +103,20 @@ pub enum TentaclePhase {
 }
 
 /// One tentacle bursting out of the water. Free entity in world
-/// space — stays put at its spawn location through the whole
-/// emerge → slap → retreat lifecycle. Visually disconnected from
-/// the octopus body (which is "below the water" lurking).
+/// space — visually disconnected from the octopus body (which lurks
+/// below the surface). Each tentacle homes on a specific enemy
+/// (`target`), so a fast-moving enemy can't outrun the strike by
+/// stepping out of the spawn radius before the slap connects.
 #[derive(Component)]
 pub struct OctopusTentacle {
     /// Owning octopus — used to credit damage to the right slot.
     pub source: Entity,
+    /// The enemy this tentacle is locked onto. The tentacle's world
+    /// position tracks the target each frame, so it doesn't slap
+    /// empty water if the enemy moved during the Emerge phase. Set
+    /// to `None` once the target despawns; the tentacle then
+    /// finishes its phase in place and despawns.
+    pub target: Option<Entity>,
     pub phase: TentaclePhase,
     pub timer: f32,
     pub damage: i32,
@@ -120,7 +127,19 @@ pub struct OctopusTentacle {
     /// keeps its rune loadout even if the source slot's weapon is
     /// swapped during the 0.6s lifecycle.
     pub runes: [Option<crate::rune::Rune>; 3],
+    /// Resting rotation (in radians) the tentacle holds during the
+    /// Emerge phase — slight per-spawn tilt so multiple tentacles
+    /// don't read as identical pillars. The Slap phase whips
+    /// `whip_from + WHIP_ARC` so the tip arcs through the strike,
+    /// then snaps back for Retreat.
+    pub whip_from: f32,
 }
+
+/// Whip arc in radians — how far the tentacle rotates through the
+/// Slap phase. Big enough that the tip motion reads as a strike
+/// rather than a static pole, small enough that the silhouette
+/// still reads as the same tentacle through the action.
+const TENTACLE_WHIP_ARC: f32 = 0.9;
 
 /// Marker on the deck-side cage decoration child. `sync_cage_decor`
 /// owns its lifecycle.
@@ -363,8 +382,9 @@ pub fn octopus_spawn_tentacles(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     ship_q: Query<&Transform, (With<Friendly>, Without<Octopus>, Without<Enemy>)>,
-    enemies: Query<(&Transform, &crate::components::Health), (With<Enemy>, Without<Octopus>)>,
+    enemies: Query<(Entity, &Transform, &crate::components::Health), (With<Enemy>, Without<Octopus>)>,
     tentacles: Query<&OctopusTentacle>,
     mut octopuses: Query<(Entity, &Transform, &mut Octopus)>,
 ) {
@@ -372,7 +392,20 @@ pub fn octopus_spawn_tentacles(
     let Some(em) = em else { return; };
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
-    let tentacle_mesh = meshes.add(Rectangle::new(TENTACLE_WIDTH, TENTACLE_LENGTH));
+    // Tapered capsule shape reads as a "tentacle column rising out
+    // of the water" much better than a flat rectangle. Half-width =
+    // TENTACLE_WIDTH/2, body length = TENTACLE_LENGTH - WIDTH so
+    // the rounded ends are factored in (Capsule2d adds them on top
+    // of the body height).
+    let tentacle_mesh = meshes.add(Capsule2d::new(
+        TENTACLE_WIDTH * 0.5,
+        (TENTACLE_LENGTH - TENTACLE_WIDTH).max(0.0),
+    ));
+    // Suction-cup dots — small white circles spaced along the
+    // tentacle to suggest segmentation / underside texture. Children
+    // of the tentacle so they inherit the whip rotation.
+    let cup_mesh = meshes.add(Circle::new(0.45));
+    let cup_mat = materials.add(Color::srgb(0.95, 0.92, 0.86));
     let ship_pos = ship_q.single()
         .map(|t| t.translation.truncate())
         .unwrap_or(Vec2::ZERO);
@@ -394,47 +427,85 @@ pub fn octopus_spawn_tentacles(
         // Furthest/HighestHp/LowestHp runes choose WHICH in-range
         // enemy to hit.
         let engage = engage_range_for(s.barrels);
-        let in_range: Vec<(Vec2, i32)> = enemies
+        // Snapshot in-range enemies WITH their entity so the picked
+        // target can be tracked across frames — previously the
+        // tentacle only knew the target's spawn-time position, so
+        // a fast enemy moving away during the 0.18s Emerge phase
+        // would step out of the slap radius and the strike landed
+        // on empty water.
+        let in_range: Vec<(Entity, Vec2, i32)> = enemies
             .iter()
-            .filter(|(t, _)| {
-                t.translation.truncate().distance_squared(body_pos) < engage * engage
+            .filter(|(_, t, h)| {
+                h.0 > 0
+                    && t.translation.truncate().distance_squared(body_pos) < engage * engage
             })
-            .map(|(t, h)| (t.translation.truncate(), h.0))
+            .map(|(e, t, h)| (e, t.translation.truncate(), h.0))
+            .collect();
+        // Reuse the shared rune-aware picker by handing it a
+        // position-only view, then map the picked position back to
+        // its source entity. Positions came directly from the
+        // snapshot above so an exact `==` compare resolves the
+        // entity unambiguously.
+        let positions_only: Vec<(Vec2, i32)> = in_range
+            .iter()
+            .map(|(_, p, h)| (*p, *h))
             .collect();
         let Some(target_pos) = crate::weapon::pick_target(
-            &in_range, ship_pos, body_pos, &s.runes, None,
-        )
-        .map(|t| t + crate::weapon::offset_for_slot(oct.owner_slot))
+            &positions_only, ship_pos, body_pos, &s.runes, None,
+        ) else { continue; };
+        let Some(target_entity) = in_range
+            .iter()
+            .find(|(_, p, _)| *p == target_pos)
+            .map(|(e, _, _)| *e)
         else { continue; };
 
-        // Tentacle EMERGES FROM THE WATER right next to the enemy
-        // — no visual line back to the body. Random tilt for
-        // organic variety; small jitter so multiple tentacles on
-        // the same target don't perfectly stack.
+        // Tentacle EMERGES FROM THE WATER right next to the enemy.
+        // Small jitter avoids perfect stacking when multiple
+        // tentacles converge on the same target. Whip-from angle is
+        // randomized so the strike doesn't always swing the same
+        // way — `tentacle_tick` then arcs through `WHIP_ARC` during
+        // the Slap phase.
         let jitter = Vec2::new(rng.gen_range(-1.5..1.5), rng.gen_range(-1.5..1.5));
         let spawn_pos = target_pos + jitter;
-        let tilt = rng.gen_range(-0.6_f32..0.6);
+        let whip_from = rng.gen_range(-0.6_f32..0.6);
 
-        commands.spawn((
+        let tentacle_entity = commands.spawn((
             Mesh2d(tentacle_mesh.clone()),
             MeshMaterial2d(pm.octopus_leg.clone()),
             Transform {
                 translation: Vec3::new(spawn_pos.x, spawn_pos.y, 1.6),
-                rotation: Quat::from_rotation_z(tilt),
+                rotation: Quat::from_rotation_z(whip_from),
                 // Start "underwater" — Y scale 0 grows to 1 during
                 // the Emerge phase via `tentacle_tick`.
                 scale: Vec3::new(1.0, 0.0, 1.0),
             },
             OctopusTentacle {
                 source: oct_entity,
+                target: Some(target_entity),
                 phase: TentaclePhase::Emerge,
                 timer: TENTACLE_EMERGE_TIME,
                 damage: s.damage.max(1),
                 damage_dealt: false,
                 runes: s.runes,
+                whip_from,
             },
             RenderLayers::layer(PLAY_LAYER),
-        ));
+        )).id();
+
+        // Suction-cup dots — two small white circles along the
+        // upper half of the tentacle. Children so the whip rotation
+        // takes them along. Local Y offsets are in tentacle-frame
+        // (the +Y of the capsule is "up"), so the cups sit toward
+        // the tip where the eye looks during a strike.
+        for cup_y in [TENTACLE_LENGTH * 0.18, TENTACLE_LENGTH * 0.36] {
+            let cup = commands.spawn((
+                Mesh2d(cup_mesh.clone()),
+                MeshMaterial2d(cup_mat.clone()),
+                Transform::from_xyz(0.0, cup_y, 0.02),
+                RenderLayers::layer(PLAY_LAYER),
+            )).id();
+            commands.entity(cup).insert(ChildOf(tentacle_entity));
+        }
 
         // Splash burst at the spawn point — a small pink puff
         // sells "something just came out of the water near you".
@@ -460,7 +531,7 @@ pub fn tentacle_tick(
     octopus_q: Query<&Octopus, Without<OctopusTentacle>>,
     mut tentacles: Query<(Entity, &mut Transform, &mut OctopusTentacle), Without<Enemy>>,
     enemies: Query<
-        (Entity, &Transform, &Enemy, &crate::components::Health),
+        (&Transform, &crate::components::Health),
         (With<Enemy>, Without<OctopusTentacle>, Without<Octopus>),
     >,
 ) {
@@ -468,7 +539,30 @@ pub fn tentacle_tick(
     for (e, mut tf, mut tent) in &mut tentacles {
         tent.timer -= dt;
 
-        // Per-phase emerge/retreat scale (0..1).
+        // Follow the target during Emerge + Slap so the visual sits
+        // on the enemy through the strike. Retreat phase locks the
+        // last position (target may have died — keep retracting
+        // from where the slap landed). If the target despawned
+        // mid-Emerge, clear the lock so the tentacle finishes its
+        // current phase in place.
+        if matches!(tent.phase, TentaclePhase::Emerge | TentaclePhase::Slap) {
+            if let Some(t) = tent.target {
+                if let Ok((etf, h)) = enemies.get(t) {
+                    if h.0 > 0 {
+                        let p = etf.translation.truncate();
+                        tf.translation.x = p.x;
+                        tf.translation.y = p.y;
+                    } else {
+                        tent.target = None;
+                    }
+                } else {
+                    tent.target = None;
+                }
+            }
+        }
+
+        // Per-phase emerge/retreat Y-scale (0..1). Slap holds at
+        // full extension while the rotation whip plays out below.
         let s = match tent.phase {
             TentaclePhase::Emerge =>
                 (1.0 - tent.timer / TENTACLE_EMERGE_TIME).clamp(0.0, 1.0),
@@ -477,6 +571,24 @@ pub fn tentacle_tick(
                 (tent.timer / TENTACLE_RETREAT_TIME).clamp(0.0, 1.0),
         };
         tf.scale.y = s;
+
+        // Rotation whip — the headline visual cue that this is a
+        // *strike*, not just a column rising and falling. Emerge
+        // holds `whip_from`; Slap arcs through `WHIP_ARC` to
+        // produce a clean tip swing; Retreat holds the end of the
+        // arc as the tentacle retracts mid-strike-pose. Without
+        // this, the slap phase had zero visible motion (just a
+        // 0.14s static frame), which is why the attack didn't read.
+        let rot = match tent.phase {
+            TentaclePhase::Emerge => tent.whip_from,
+            TentaclePhase::Slap => {
+                // 1.0 at phase start → 0.0 at end.
+                let progress = 1.0 - (tent.timer / TENTACLE_SLAP_TIME).clamp(0.0, 1.0);
+                tent.whip_from + TENTACLE_WHIP_ARC * progress
+            }
+            TentaclePhase::Retreat => tent.whip_from + TENTACLE_WHIP_ARC,
+        };
+        tf.rotation = Quat::from_rotation_z(rot);
 
         // Phase transitions + damage hit.
         if tent.timer <= 0.0 {
@@ -489,19 +601,26 @@ pub fn tentacle_tick(
                             .get(tent.source)
                             .ok()
                             .map(|o| DamageSource::PlayerSlot(o.owner_slot as u8));
-                        let slap_pos = tf.translation.truncate();
-                        for (e, etf, en, h) in &enemies {
-                            if h.0 <= 0 { continue; }
-                            let ep = etf.translation.truncate();
-                            let er = 3.5 * en.variant.scale();
-                            let reach = TENTACLE_SLAP_RADIUS + er;
-                            if ep.distance_squared(slap_pos) > reach * reach { continue; }
-                            queue.push_initial(
-                                e, tent.damage, slap_pos,
-                                WeaponType::Cage, source, &tent.runes,
-                            );
-                            tent.damage_dealt = true;
-                            break;
+                        // Damage the tracked target entity directly
+                        // — no radius check at the slap position
+                        // anymore. A small reach guard still applies
+                        // so a target that teleported (e.g. boss
+                        // ability) doesn't get hit from off-screen.
+                        if let Some(target) = tent.target {
+                            if let Ok((etf, h)) = enemies.get(target) {
+                                if h.0 > 0 {
+                                    let slap_pos = tf.translation.truncate();
+                                    let ep = etf.translation.truncate();
+                                    let reach = TENTACLE_SLAP_RADIUS + TENTACLE_LENGTH;
+                                    if ep.distance_squared(slap_pos) <= reach * reach {
+                                        queue.push_initial(
+                                            target, tent.damage, slap_pos,
+                                            WeaponType::Cage, source, &tent.runes,
+                                        );
+                                        tent.damage_dealt = true;
+                                    }
+                                }
+                            }
                         }
                     }
                 }

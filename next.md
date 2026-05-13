@@ -1,1 +1,21 @@
 Next steps (agentically where possible)
+
+- Some weapons mention stats inline. Generally perfer to put stats in their stat lists than inline.
+- It's not clear if stats (in particular damage) is properly reflective of the modifier. I had 130% weapon damage, and my tooltip still said 1 damage.
+- Em-dash does not render. Please don't use it (currently in the boss selection card, scraps uses one)
+- Boss selection triple doesn't need descriptions, and text is too small. For recruit, just put recruit and name. For scraps, just put the amount. For modifier, put the mod name and itemise list of the changes, coloured as per usual
+- 'turret arc' says 0 when I think default is not 0
+- Can we have a 'harvest' as is, and a similar harvest for XP amount?
+- Fire rune should be more like 'Sets enemies ablaze, dealing (dmg) every 0.5s for 4 seconds'.
+- Min HP tooltip overruns container.
+- Can targetting tooltips come with a tag below the name '[Targetting Mode]'
+- Can targetting modes be exclusive to a weapon. 1 per. Red-hash out rune slots if a targetting rune already sits on that weapon.
+- Harpoon another weapon example that has 'in line' stats
+- Frost rune tooltip overuruns bbox. SAme with furthest and some other runes.
+- Octopus now spawns off screen?
+- For octopus tentacles, can we give an actual slap animation, instead of current which looks like explosion in the water?
+- The weapon damage UI on the LHS should have weapons that look like theyre actualy from the game, with the same pixelation applied.
+- Can enemy sniper indicators be 3x current length?
+- Can enemy artileryy damage zone be about 20% bigger?
+- Instead of 'rune damage' can it be 'rune effect'
+- Can 'rune effect' effect the AOE rune's area please?
