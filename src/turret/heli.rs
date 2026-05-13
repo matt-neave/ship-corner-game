@@ -308,7 +308,15 @@ pub fn helicopter_ai(
             (-move_dir.x).atan2(move_dir.y)
         };
         heli.heading = approach_angle(heli.heading, desired_heading, HELI_TURN_RATE * dt);
-        let speed = HELI_SPEED * synergies.autonomous_speed_mult();
+        // Hustle rune: per-slot speed bonus on top of the global
+        // Autonomous synergy. Multiplies with the synergy mult, so
+        // a 1-Hustle (+100%) HeliPad inside a 4-Autonomous synergy
+        // (+40%) ends up at 1.4 × 2.0 = 2.8× speed.
+        let hustle = crate::rune::hustle_speed_mult(
+            &slot_cfg.runes,
+            stats.rune_damage_mult(),
+        );
+        let speed = HELI_SPEED * synergies.autonomous_speed_mult() * hustle;
         let new_pos = cur + move_dir * speed * dt;
         tf.translation.x = new_pos.x;
         tf.translation.y = new_pos.y;

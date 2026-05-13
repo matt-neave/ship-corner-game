@@ -20,6 +20,7 @@ use bevy::text::FontSmoothing;
 use crate::ally::ShipClass;
 use crate::effects::EffectMeshes;
 use crate::palette::PaletteMaterials;
+use crate::ui_kit::theme;
 use crate::AppState;
 
 /// Owns everything the boss-intro screen needs: its two resources, the
@@ -49,8 +50,16 @@ pub const DURATION: f32 = 2.8;
 /// they hold their resting positions for the rest of the intro.
 const SWEEP_IN_TIME: f32 = 0.45;
 
-/// Fraction of the screen height each streak bar covers vertically.
-const STREAK_HEIGHT_FRAC: f32 = 0.085;
+/// Vertical % of the viewport each accent streak occupies. Thin — they
+/// frame the text band rather than dominate it. Bigger numbers turn
+/// the screen into white-on-white and swallow the class label.
+const STREAK_HEIGHT_PCT: f32 = 1.6;
+
+/// Vertical positions (in viewport %) of the top and bottom accent
+/// streaks. Chosen so the BOSS subtitle + big class label sit
+/// comfortably in the gap between them.
+const TOP_STREAK_Y_PCT: f32    = 36.0;
+const BOTTOM_STREAK_Y_PCT: f32 = 60.0;
 
 /// Held data for the boss that's about to spawn. `spawn_enemies` writes
 /// it when it would have called `spawn_boss`; `exit_boss_intro` consumes
@@ -100,47 +109,56 @@ pub fn enter_boss_intro(
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
+                row_gap: Val::Px(6.0),
                 ..default()
             },
-            // Light dim so the arena still reads through but the intro
-            // text and bars dominate the eye.
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            // Heavier dim so the bars + text dominate. The previous
+            // 0.55 alpha let the arena bleed through enough to make
+            // the class label hard to read on busy backgrounds.
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.78)),
             ZIndex(220),
             Visibility::Inherited,
             BossIntroUi,
         ))
         .with_children(|root| {
-            // Two horizontal white bars that sweep in from opposite
-            // sides — the visual signature of the intro.
+            // Two thin horizontal accent streaks that FRAME the text
+            // band — top streak above the BOSS subtitle, bottom streak
+            // below the class label. Sweep in from opposite sides
+            // (Borderlands-style swipe). Previously they were thick
+            // white bars sitting ON TOP of the text, which made the
+            // white class label invisible.
             root.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    top: Val::Percent(38.0),
+                    top: Val::Percent(TOP_STREAK_Y_PCT),
                     left: Val::Percent(-110.0),
                     width: Val::Percent(110.0),
-                    height: Val::Percent(STREAK_HEIGHT_FRAC * 100.0),
+                    height: Val::Percent(STREAK_HEIGHT_PCT),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.95)),
+                BackgroundColor(theme::ACCENT),
                 BossIntroStreak { from_left: true, target_left_pct: -5.0 },
                 BossIntroUi,
             ));
             root.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    top: Val::Percent(54.0),
+                    top: Val::Percent(BOTTOM_STREAK_Y_PCT),
                     left: Val::Percent(100.0),
                     width: Val::Percent(110.0),
-                    height: Val::Percent(STREAK_HEIGHT_FRAC * 100.0),
+                    height: Val::Percent(STREAK_HEIGHT_PCT),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.95)),
+                BackgroundColor(theme::ACCENT),
                 BossIntroStreak { from_left: false, target_left_pct: -5.0 },
                 BossIntroUi,
             ));
 
-            // "BOSS" subtitle above the class name. Lives on top of the
-            // streaks via z-stacking from declaration order.
+            // Text block in the middle — flex children of the root so
+            // their vertical positions auto-centre and stay stable
+            // regardless of font size or window dimensions. Previously
+            // each was absolute-positioned via `top: %`, which let the
+            // class label drift into the bars.
             root.spawn((
                 Text::new("BOSS"),
                 TextFont {
@@ -148,27 +166,17 @@ pub fn enter_boss_intro(
                     font_smoothing: FontSmoothing::None,
                     ..default()
                 },
-                TextColor(Color::srgba(1.0, 0.25, 0.25, 0.95)),
-                Node {
-                    position_type: PositionType::Absolute,
-                    top: Val::Percent(33.0),
-                    ..default()
-                },
+                TextColor(theme::NERF_FG),
                 BossIntroUi,
             ));
             root.spawn((
                 Text::new(class_label),
                 TextFont {
-                    font_size: 64.0,
+                    font_size: 60.0,
                     font_smoothing: FontSmoothing::None,
                     ..default()
                 },
-                TextColor(Color::WHITE),
-                Node {
-                    position_type: PositionType::Absolute,
-                    top: Val::Percent(44.0),
-                    ..default()
-                },
+                TextColor(theme::ON_SURFACE),
                 BossIntroUi,
             ));
         });

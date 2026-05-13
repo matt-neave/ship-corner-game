@@ -1128,6 +1128,8 @@ pub fn rune_color_for(rune: Rune) -> Color {
         Rune::TargetLowestHp   => Color::srgb(0.30, 0.85, 0.40), // execute green
         Rune::TargetCarousel   => Color::srgb(0.95, 0.85, 0.35), // rotating gold
         Rune::Splash           => Color::srgb(0.95, 0.55, 0.20), // explosive orange
+        Rune::Blast            => Color::srgb(1.00, 0.42, 0.10), // hotter blast orange
+        Rune::Hustle           => Color::srgb(0.45, 0.85, 0.40), // autonomous-speed green
     }
 }
 

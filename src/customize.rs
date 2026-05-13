@@ -115,7 +115,11 @@ impl Plugin for CustomizePlugin {
             .add_systems(
                 Update,
                 (crate::synergy::compute_synergies, crate::synergy::discover_synergies).chain(),
-            );
+            )
+            // Purchase confirmation particles. Unconditional so any
+            // in-flight burst finishes its short life even if the
+            // player closes the panel mid-fade.
+            .add_systems(Update, tick_purchase_particles);
     }
 }
 
@@ -126,8 +130,8 @@ pub use setup::{
     setup_customize_ui, sync_customize_text, turret_barrel_color_for, turret_color_for,
 };
 pub use drag::{
-    complete_drag, init_customize_shop, start_drag, track_customize_cursor,
-    update_drag_ghost, DragState,
+    complete_drag, init_customize_shop, start_drag, tick_purchase_particles,
+    track_customize_cursor, update_drag_ghost, DragState,
 };
 pub use shop_mods::{handle_shop_mod_click, update_shop_mod_cards};
 pub use stats_panel::{handle_stat_debug_buttons, sync_stat_debug_visibility, sync_stats_panel};

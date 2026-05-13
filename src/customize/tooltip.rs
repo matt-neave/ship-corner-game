@@ -1307,7 +1307,7 @@ fn rune_tooltip(rune: Rune, stats: &crate::stats::PlayerStats) -> (String, Strin
     if rune.target_priority().is_some() || matches!(rune, Rune::TargetCarousel) {
         body.push_str("[TARGETING]\n");
     }
-    if matches!(rune, Rune::Splash) {
+    if matches!(rune, Rune::Splash | Rune::Blast) {
         body.push_str(AOE_TAG);
     }
     body.push_str(&rune_dynamic_description(rune, stats));
@@ -1461,6 +1461,24 @@ fn rune_dynamic_description(rune: Rune, stats: &crate::stats::PlayerStats) -> St
             let per_stack = 0.5 * rune_dmg * 100.0;
             format!(
                 "Widens this turret's blast radius by {:+.0}% per stack.",
+                per_stack,
+            )
+        }
+        Rune::Blast => {
+            let radius = crate::balance::BLAST_RADIUS_PER_STACK * rune_dmg;
+            let pct = crate::balance::BLAST_SPLASH_FRAC * 100.0;
+            format!(
+                "Bullets explode on impact, hitting enemies within {:.1} px for {:.0}% damage per stack. Stack to widen.",
+                radius, pct,
+            )
+        }
+        Rune::Hustle => {
+            // Per-stack speed bonus = +100% × rune_effect. Only matters
+            // on an [Autonomous] turret; show the live number so the
+            // player can predict the boost.
+            let per_stack = rune_dmg * 100.0;
+            format!(
+                "Autonomous units (helicopter, octopus) get +{:.0}% move speed per stack. No effect on regular turrets.",
                 per_stack,
             )
         }

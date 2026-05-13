@@ -403,6 +403,7 @@ pub fn octopus_ai(
     time: Res<Time>,
     cfg: Res<TurretConfig>,
     synergies: Res<crate::synergy::Synergies>,
+    stats: Res<crate::stats::PlayerStats>,
     ship_q: Query<&Transform, (With<Friendly>, Without<Octopus>, Without<Enemy>)>,
     enemies: Query<(&Transform, &crate::components::Health), (With<Enemy>, Without<Octopus>)>,
     mut octopuses: Query<(&mut Transform, &Octopus)>,
@@ -410,6 +411,7 @@ pub fn octopus_ai(
     let dt = time.delta_secs();
     let ship_pos = ship_q.single().map(|t| t.translation.truncate()).unwrap_or(Vec2::ZERO);
     let speed_mult = synergies.autonomous_speed_mult();
+    let rune_effect = stats.rune_damage_mult();
     let snapshot: Vec<(Vec2, i32)> = enemies
         .iter()
         .map(|(t, h)| (t.translation.truncate(), h.0))
@@ -437,8 +439,10 @@ pub fn octopus_ai(
         let dir = to / dist;
         // Autonomous synergy multiplies swim speed — octopuses
         // close the gap to their target faster with more equipped
-        // Autonomous-tagged turrets.
-        let max_step = OCTOPUS_HUNT_SPEED * speed_mult * dt;
+        // Autonomous-tagged turrets. Hustle rune adds per-slot
+        // speed on top.
+        let hustle = crate::rune::hustle_speed_mult(&runes, rune_effect);
+        let max_step = OCTOPUS_HUNT_SPEED * speed_mult * hustle * dt;
         // Stop at the standoff ring, not at the enemy itself.
         let close_to = (dist - OCTOPUS_STANDOFF).max(0.0);
         let step_len = close_to.min(max_step);

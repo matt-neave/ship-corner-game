@@ -38,15 +38,31 @@ pub struct ShipPath {
     pub sample_timer: f32,
 }
 
-/// Empty mesh skeleton with all the attribute buffers a ribbon needs, ready
+/// Mesh skeleton with all the attribute buffers a ribbon needs, ready
 /// to be rewritten in place by `rebuild_ribbon_mesh` each frame.
+///
+/// Seeded with a *degenerate* triangle (3 coincident vertices at the
+/// origin) rather than truly-empty buffers. Truly-empty buffers
+/// trigger a Bevy 0.16 + WebGL/ANGLE bug: the mesh allocator panics
+/// inside `wgpu::api::buffer::check_buffer_bounds` ("slice offset 0
+/// is out of range for buffer of size 0") because zero-byte wgpu
+/// buffers don't survive a slice. The degenerate triangle keeps
+/// buffer size > 0 while rendering nothing (zero area).
 pub fn empty_dynamic_mesh() -> Mesh {
     let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
-    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, Vec::<[f32; 3]>::new());
-    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, Vec::<[f32; 2]>::new());
-    m.insert_indices(Indices::U32(Vec::new()));
+    seed_degenerate(&mut m);
     m
+}
+
+/// Write a degenerate triangle (3 coincident verts) into `mesh`.
+/// Used for both the initial skeleton and the "not enough points yet"
+/// branch of `rebuild_ribbon_mesh` — both paths previously left the
+/// buffers empty, which panicked on WebGL.
+fn seed_degenerate(mesh: &mut Mesh) {
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32, 0.0, 0.0]; 3]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL,   vec![[0.0f32, 0.0, 1.0]; 3]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0,     vec![[0.0f32, 0.0]; 3]);
+    mesh.insert_indices(Indices::U32(vec![0, 1, 2]));
 }
 
 /// Rewrite `mesh` in place as a tapering ribbon through `points`. Index 0 is
@@ -54,10 +70,9 @@ pub fn empty_dynamic_mesh() -> Mesh {
 pub fn rebuild_ribbon_mesh(mesh: &mut Mesh, points: &VecDeque<Vec2>, head_width: f32) {
     let n = points.len();
     if n < 2 {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, Vec::<[f32; 3]>::new());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, Vec::<[f32; 2]>::new());
-        mesh.insert_indices(Indices::U32(Vec::new()));
+        // Same WebGL guard as `empty_dynamic_mesh`: never let the
+        // buffers drop to zero size.
+        seed_degenerate(mesh);
         return;
     }
 

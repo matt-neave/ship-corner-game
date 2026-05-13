@@ -501,51 +501,9 @@ fn spawn_level_up_overlay(
                 });
 
                 // ---- RIGHT: current-stats panel ----
-                // Wider + bigger font than before so the 13-row list
-                // doesn't compress into an unreadable column. Panel
-                // height grows naturally to fit the rows.
-                cols.spawn((
-                    Node {
-                        width: Val::Px(260.0),
-                        padding: UiRect::all(Val::Px(theme::PAD_LG)),
-                        flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(theme::GAP_SM + 2.0),
-                        ..default()
-                    },
-                    BackgroundColor(theme::SURFACE_RAISED),
-                    BorderColor(theme::BORDER_SUBTLE),
-                ))
-                .with_children(|panel| {
-                    panel.spawn(ui_kit::label(
-                        "CURRENT STATS",
-                        theme::FONT_LG,
-                        theme::ACCENT,
-                    ));
-                    for kind in crate::stats::StatKind::ALL {
-                        panel
-                            .spawn((
-                                Node {
-                                    flex_direction: FlexDirection::Row,
-                                    justify_content: JustifyContent::SpaceBetween,
-                                    column_gap: Val::Px(theme::GAP_MD),
-                                    ..default()
-                                },
-                                BackgroundColor(Color::NONE),
-                            ))
-                            .with_children(|stat_row| {
-                                stat_row.spawn(ui_kit::label(
-                                    kind.label(),
-                                    theme::FONT_MD,
-                                    theme::ON_SURFACE_DIM,
-                                ));
-                                stat_row.spawn(ui_kit::label(
-                                    kind.format_value(stats, None),
-                                    theme::FONT_MD,
-                                    theme::ON_SURFACE,
-                                ));
-                            });
-                    }
-                });
+                // Shared helper — same panel as the boss-defeat screen
+                // (buff/nerf tinting, hover tooltips, fixed width).
+                crate::stats_panel_overlay::spawn_stats_panel(cols, stats);
             });
         });
 }

@@ -53,8 +53,7 @@ impl Plugin for BossRewardPlugin {
             .add_systems(OnExit(AppState::BossReward), exit_boss_reward)
             .add_systems(
                 Update,
-                (handle_boss_reward_click, update_boss_reward_stat_tooltip)
-                    .run_if(in_state(AppState::BossReward)),
+                handle_boss_reward_click.run_if(in_state(AppState::BossReward)),
             );
     }
 }
@@ -185,16 +184,6 @@ pub enum BossRewardButton {
     SuperMod,
 }
 
-/// Marker on each stat row — driven by `update_boss_reward_stat_tooltip`
-/// to show the row's description in the tooltip area on hover.
-#[derive(Component, Clone, Copy)]
-pub struct BossRewardStatRow(pub StatKind);
-
-/// Single tooltip text node at the bottom of the stats panel. Picks
-/// up the hovered row's description; hidden when nothing is hovered.
-#[derive(Component)]
-pub struct BossRewardStatTooltip;
-
 pub fn enter_boss_reward(
     mut commands: Commands,
     mut pending: ResMut<BossRewardPending>,
@@ -263,29 +252,6 @@ pub fn handle_boss_reward_click(
         };
         next.set(dest);
         return;
-    }
-}
-
-/// Watch stat-row hovers and write the hovered row's description into
-/// the tooltip text. `Changed<Interaction>` keeps the system idle most
-/// frames — only fires on entry/exit, not while held.
-pub fn update_boss_reward_stat_tooltip(
-    rows: Query<(&Interaction, &BossRewardStatRow), Changed<Interaction>>,
-    mut tooltip: Query<(&mut Text, &mut Visibility), With<BossRewardStatTooltip>>,
-) {
-    let Ok((mut text, mut vis)) = tooltip.single_mut() else { return; };
-    for (interaction, row) in &rows {
-        match *interaction {
-            Interaction::Hovered | Interaction::Pressed => {
-                let new_text = format!("{}: {}", row.0.label(), row.0.description());
-                if text.0 != new_text { text.0 = new_text; }
-                if *vis != Visibility::Inherited { *vis = Visibility::Inherited; }
-            }
-            Interaction::None => {
-                if !text.0.is_empty() { text.0.clear(); }
-                if *vis != Visibility::Hidden { *vis = Visibility::Hidden; }
-            }
-        }
     }
 }
 
@@ -368,7 +334,7 @@ fn spawn_overlay(commands: &mut Commands, offer: &BossRewardOffer, stats: &Playe
                 });
 
                 // ---- RIGHT: stats panel with hover tooltips ----
-                spawn_stats_panel(cols, stats);
+                crate::stats_panel_overlay::spawn_stats_panel(cols, stats);
             });
         });
 }
@@ -457,88 +423,6 @@ fn spawn_super_mod_card(
                 ));
             }
         }
-    });
-}
-
-/// Stats panel mirroring the shop's RHS readout — each row labels the
-/// stat, shows the current value tinted by buff/nerf vs baseline, and
-/// drives the bottom-of-panel tooltip on hover.
-fn spawn_stats_panel(parent: &mut ChildSpawnerCommands, stats: &PlayerStats) {
-    let baseline = PlayerStats::default();
-    parent.spawn((
-        Node {
-            width: Val::Px(280.0),
-            padding: UiRect::all(Val::Px(theme::PAD_LG)),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(theme::GAP_SM + 2.0),
-            ..default()
-        },
-        BackgroundColor(theme::SURFACE_RAISED),
-        BorderColor(theme::BORDER_SUBTLE),
-    ))
-    .with_children(|panel| {
-        panel.spawn(ui_kit::label("CURRENT STATS", theme::FONT_LG, theme::ACCENT));
-
-        for &kind in StatKind::ALL {
-            let cur = kind.stat(stats).effective();
-            let base = kind.stat(&baseline).effective();
-            let value_color = if cur > base + 0.001 {
-                theme::BUFF_FG // buffed
-            } else if cur < base - 0.001 {
-                theme::NERF_FG // nerfed
-            } else {
-                theme::ON_SURFACE
-            };
-            panel.spawn((
-                // `Button` so this row receives `Interaction::Hovered`
-                // events — used by `update_boss_reward_stat_tooltip`.
-                Button,
-                Node {
-                    flex_direction: FlexDirection::Row,
-                    justify_content: JustifyContent::SpaceBetween,
-                    column_gap: Val::Px(theme::GAP_MD),
-                    padding: UiRect::vertical(Val::Px(1.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::NONE),
-                BossRewardStatRow(kind),
-            ))
-            .with_children(|stat_row| {
-                stat_row.spawn(ui_kit::label(
-                    kind.label(),
-                    theme::FONT_MD,
-                    theme::ON_SURFACE_DIM,
-                ));
-                stat_row.spawn((
-                    Text::new(kind.format_value(stats, None)),
-                    TextFont { font_size: theme::FONT_MD, ..default() },
-                    TextColor(value_color),
-                ));
-            });
-        }
-
-        // Tooltip slot — sits at the bottom of the panel. Hidden until
-        // the player hovers a stat row.
-        panel.spawn((
-            Node {
-                width: Val::Percent(100.0),
-                min_height: Val::Px(36.0),
-                padding: UiRect::top(Val::Px(theme::GAP_MD)),
-                ..default()
-            },
-            BackgroundColor(Color::NONE),
-        ))
-        .with_children(|hint| {
-            hint.spawn((
-                Text::new(""),
-                TextFont { font_size: theme::FONT_SM, ..default() },
-                TextColor(theme::ON_SURFACE_DIM),
-                TextLayout::new_with_justify(JustifyText::Left),
-                Node { max_width: Val::Px(260.0), ..default() },
-                Visibility::Hidden,
-                BossRewardStatTooltip,
-            ));
-        });
     });
 }
 

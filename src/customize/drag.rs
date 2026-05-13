@@ -210,6 +210,8 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         Rune::Vampire,
         Rune::Ward,
         Rune::Bleed,
+        Rune::Blast,
+        Rune::Hustle,
         Rune::TargetFurthest,
         Rune::TargetHighestHp,
         Rune::TargetLowestHp,
@@ -556,7 +558,10 @@ pub fn complete_drag(
     mut cfg: ResMut<TurretConfig>,
     mut shop: Option<ResMut<CustomizeShop>>,
     mut scrap: ResMut<crate::Scrap>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     targets: Query<(&Transform, &HitArea, &DropTargetMarker)>,
+    ship_slots: Query<(&Transform, &super::setup::ShipSlotBase)>,
     ghosts: Query<Entity, With<DragGhost>>,
 ) {
     if !mouse.just_released(MouseButton::Left) {
@@ -614,11 +619,23 @@ pub fn complete_drag(
             if from_shop && scrap.0 < shop_cost {
                 return; // can't afford — leave shop + cfg untouched
             }
+            let shop_ref = shop.as_deref();
+            let burst_color = if from_shop {
+                purchase_burst_color(&picked.source, shop_ref)
+            } else {
+                None
+            };
             if resolve_drop(&picked, target, &mut cfg) {
                 if from_shop {
                     scrap.0 = scrap.0.saturating_sub(shop_cost);
                     if let Some(shop) = shop.as_mut() {
                         consume_shop_slot(&picked.source, shop);
+                    }
+                    if let Some(color) = burst_color {
+                        let pos = drop_burst_position(target, cursor, &ship_slots);
+                        spawn_purchase_burst(
+                            &mut commands, &mut meshes, &mut materials, pos, color,
+                        );
                     }
                 }
             }
@@ -629,11 +646,68 @@ pub fn complete_drag(
             // first empty target. Keeps the quick-click UX even
             // though we always spawn a ghost on mouse-down now.
             if from_shop {
+                let burst_color = purchase_burst_color(
+                    &picked.source,
+                    shop.as_deref(),
+                );
                 if let Some(mut shop_ref) = shop {
-                    click_buy_shop(picked.source, &mut cfg, &mut shop_ref, &mut scrap);
+                    if click_buy_shop(picked.source, &mut cfg, &mut shop_ref, &mut scrap) {
+                        if let Some(color) = burst_color {
+                            spawn_purchase_burst(
+                                &mut commands, &mut meshes, &mut materials, cursor, color,
+                            );
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+/// World-space spec coord to drop the particle burst on. Drag-drops
+/// snap to the centre of the resolved slot (so the visual sits on
+/// the freshly-equipped turret) rather than the cursor — looks
+/// cleaner than a burst that lands wherever the player happened
+/// to release.
+fn drop_burst_position(
+    target: DropTargetKind,
+    cursor: Vec2,
+    ship_slots: &Query<(&Transform, &super::setup::ShipSlotBase)>,
+) -> Vec2 {
+    let slot_idx = match target {
+        DropTargetKind::ShipSlot(i) => Some(i),
+        DropTargetKind::ShipRune { slot, .. } => Some(slot),
+        DropTargetKind::Sell => None,
+    };
+    if let Some(idx) = slot_idx {
+        for (tf, base) in ship_slots.iter() {
+            if base.slot == idx {
+                return tf.translation.truncate();
+            }
+        }
+    }
+    cursor
+}
+
+/// Resolve the burst colour for a shop-sourced drag — the turret's
+/// or rune's own tint, so the particles read as "this thing arrived
+/// here". Returns `None` for non-shop sources (ship-to-ship moves
+/// don't get a burst).
+fn purchase_burst_color(
+    source: &DragSourceKind,
+    shop: Option<&CustomizeShop>,
+) -> Option<Color> {
+    let shop = shop?;
+    match *source {
+        DragSourceKind::ShopTurret(idx) => {
+            let offer = shop.turrets.get(idx).copied().flatten()?;
+            Some(turret_color_for(offer.weapon))
+        }
+        DragSourceKind::ShopRune(idx) => {
+            let rune = shop.runes.get(idx).copied().flatten()?;
+            Some(rune_color_for(rune))
+        }
+        _ => None,
     }
 }
 
@@ -794,5 +868,81 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
 fn clear_source_if_ship(picked: &Picked, cfg: &mut TurretConfig) {
     if let DragSourceKind::ShipSlot(s) = picked.source {
         cfg.slots[s] = SlotCfg::default();
+    }
+}
+
+// ---------- Purchase-confirmation particles ----------
+
+/// Short-lived sparkle spawned when a shop turret / rune is successfully
+/// bought. Lives on `CUSTOMIZE_LAYER` so it renders inside the shop's
+/// chunky-pixel render target alongside everything else.
+#[derive(Component)]
+pub struct PurchaseBurstParticle {
+    pub life: f32,
+    pub max_life: f32,
+    pub velocity: Vec2,
+}
+
+/// Burst size + speed — tuned for a "subtle confirm" feel rather than
+/// a kill explosion. Particles fly outward radially, fade as they
+/// shrink, and despawn in well under half a second.
+const BURST_COUNT: u32 = 10;
+const BURST_LIFE_MIN: f32 = 0.18;
+const BURST_LIFE_MAX: f32 = 0.36;
+const BURST_SPEED_MIN: f32 = 10.0;
+const BURST_SPEED_MAX: f32 = 22.0;
+/// Z high enough to sit above the just-placed turret base but below
+/// any popped-up tooltip text.
+const BURST_Z: f32 = 6.0;
+
+pub fn spawn_purchase_burst(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    pos: Vec2,
+    color: Color,
+) {
+    let mesh = meshes.add(Rectangle::new(0.9, 0.9));
+    let mat = materials.add(color);
+    let mut rng = rand::thread_rng();
+    for _ in 0..BURST_COUNT {
+        let angle = rng.gen::<f32>() * std::f32::consts::TAU;
+        let speed = rng.gen_range(BURST_SPEED_MIN..BURST_SPEED_MAX);
+        let velocity = Vec2::new(angle.cos(), angle.sin()) * speed;
+        let life = rng.gen_range(BURST_LIFE_MIN..BURST_LIFE_MAX);
+        commands.spawn((
+            Mesh2d(mesh.clone()),
+            MeshMaterial2d(mat.clone()),
+            Transform::from_translation(pos.extend(BURST_Z)),
+            RenderLayers::layer(CUSTOMIZE_LAYER),
+            PurchaseBurstParticle { life, max_life: life, velocity },
+        ));
+    }
+}
+
+/// Advance every `PurchaseBurstParticle`: drift outward, shrink by
+/// life fraction, despawn when expired. Independent of `CustomizeOpen`
+/// (particles already in flight when the panel closes finish their
+/// short life rather than hanging in zombie state).
+pub fn tick_purchase_particles(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut Transform, &mut PurchaseBurstParticle)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut tf, mut p) in &mut q {
+        p.life -= dt;
+        if p.life <= 0.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        tf.translation.x += p.velocity.x * dt;
+        tf.translation.y += p.velocity.y * dt;
+        // Decelerate so the burst settles instead of flying linearly
+        // to the edge of the panel.
+        p.velocity *= (1.0 - dt * 4.0).max(0.0);
+        let t = (p.life / p.max_life).clamp(0.0, 1.0);
+        let s = t * 1.1;
+        tf.scale = Vec3::new(s, s, 1.0);
     }
 }

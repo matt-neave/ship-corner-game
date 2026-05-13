@@ -71,6 +71,8 @@ rune_resonate,RESONATE
 rune_vampire,VAMPIRE
 rune_ward,WARD
 rune_bleed,BLEED
+rune_blast,BLAST
+rune_hustle,HUSTLE
 rune_fire_desc,Sets enemies ablaze, dealing 1 every 0.5s for 4 seconds.
 rune_frost_desc,Freezes enemies in place. Movement crawls. Stack to deepen the chill.
 rune_shock_desc,Chains lightning to nearby enemies. Stack to add more arcs.
@@ -81,6 +83,8 @@ rune_resonate_desc,Hits weaken the target. Up to 5 stacks. Stacks fade without f
 rune_vampire_desc,Heal a sliver of HP every few hits. Stack to drink faster.
 rune_ward_desc,Killing blows refill some shield. Stack for bigger refills.
 rune_bleed_desc,Anti-tank DoT. Ticks a percent of the target's max HP for 4 seconds. Stack to bleed faster.
+rune_blast_desc,Bullets explode on impact, hitting enemies in a small radius. Stack to widen.
+rune_hustle_desc,Autonomous units (helicopter, octopus) get +100% move speed per stack. No effect on regular turrets.
 rune_target_furthest,FURTHEST
 rune_target_max_hp,MAX HP
 rune_target_min_hp,MIN HP

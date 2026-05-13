@@ -486,6 +486,45 @@ fn process_damage_event(
     let speed = if h.0 <= 0 { 75.0 } else { 45.0 };
     spawn_hit_particles(commands, em, spark_mat, ev.hit_pos, count, speed, rng);
 
+    // Blast on-impact AOE — turns any bullet into a mini explosion.
+    // Fires on every hit (no proc roll). Guarded by `procced` so a
+    // splash event can't re-trigger Blast on its own splash victims
+    // (infinite recursion). Splash damage = bullet damage × frac;
+    // splash victims receive NO further rune procs (events pushed
+    // with empty `runes`) so a heavy-rune bullet doesn't pepper
+    // half the screen with Fire/Frost/Shock.
+    let blast_stacks = ev.runes.iter().filter(|&&r| r == Rune::Blast).count() as f32;
+    if blast_stacks > 0.0 && !ev.procced.contains(&Rune::Blast) {
+        let radius = blast_stacks
+            * crate::balance::BLAST_RADIUS_PER_STACK
+            * player_stats.rune_damage_mult();
+        let splash_dmg = (ev.amount as f32 * crate::balance::BLAST_SPLASH_FRAC)
+            .round()
+            .max(1.0) as i32;
+        let mut next_procced = ev.procced.clone();
+        next_procced.push(Rune::Blast);
+        for &(e, ep, er) in enemy_snap.iter() {
+            if e == ev.target { continue; }
+            let reach = radius + er;
+            if ep.distance_squared(ev.hit_pos) > reach * reach { continue; }
+            chain.push(DamageEvent {
+                target: e,
+                amount: splash_dmg,
+                hit_pos: ep,
+                weapon: ev.weapon,
+                source: ev.source,
+                runes: Vec::new(),
+                procced: next_procced.clone(),
+                proc_strength: 0.0,
+            });
+        }
+        // Visible flair so the player sees the splash. A handful of
+        // bullet-color motes around the hit point at low speed reads
+        // as "this bullet exploded a little" without competing with
+        // the hit-flash from the primary target.
+        spawn_hit_particles(commands, em, spark_mat, ev.hit_pos, 8, 65.0, rng);
+    }
+
     // Lethal-only branch: Cascade is the one rune that fires *because*
     // the target died. Other runes don't fan out from a kill (saves a
     // frame of FX on something already despawning).
@@ -667,8 +706,10 @@ fn process_damage_event(
             | Rune::TargetLowestHp
             | Rune::TargetCarousel
             | Rune::Splash => {}
-            // Vampire/Ward fire inline (above), regardless of proc roll.
-            Rune::Vampire | Rune::Ward => {}
+            // Vampire/Ward/Blast fire inline (above), regardless of
+            // proc roll. Hustle is a passive autonomous-unit speed
+            // buff — never reaches the proc loop.
+            Rune::Vampire | Rune::Ward | Rune::Blast | Rune::Hustle => {}
         }
     }
 }

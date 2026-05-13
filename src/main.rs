@@ -35,6 +35,7 @@ mod rune;
 mod ship;
 mod stage_complete;
 mod stats;
+mod stats_panel_overlay;
 mod synergy;
 mod trails;
 mod turret;
@@ -282,6 +283,36 @@ fn main() {
             customize::CustomizePlugin,
             hull::HullSelectPlugin,
         ))
+        .add_plugins(stats_panel_overlay::StatsPanelOverlayPlugin)
+        // Workaround for a Bevy 0.16 + WebGL2/ANGLE bug: the default
+        // mesh allocator packs many small meshes into shared "slab"
+        // buffers and resizes them as meshes are added/freed. On
+        // WebGL the resize path can leave a slab at size 0 while a
+        // slice still references offset 0 — panicking inside
+        // `wgpu::api::buffer::check_buffer_bounds`. Setting
+        // `large_threshold = 0` forces every mesh into its own
+        // dedicated buffer, skipping the slab path entirely. Tiny
+        // perf cost on native (where the panic doesn't fire) — only
+        // applied on wasm so the desktop build keeps the original
+        // batching.
+        //
+        // Reference: panic seen as
+        //   "slice offset 0 is out of range for buffer of size 0"
+        //   from bevy_render::mesh::allocator::allocate_and_free_meshes
+        // on Chrome / ANGLE on itch.io.
+        .insert_resource({
+            #[cfg(target_arch = "wasm32")]
+            {
+                bevy::render::mesh::allocator::MeshAllocatorSettings {
+                    large_threshold: 0,
+                    ..Default::default()
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                bevy::render::mesh::allocator::MeshAllocatorSettings::default()
+            }
+        })
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
         .insert_resource(Score(0))
         .insert_resource(CampaignProgress::default())

@@ -114,6 +114,20 @@ pub enum Rune {
     /// (high max HP) and counter-design for the late-game tank
     /// curve; only meh on swarms (small max HP per body).
     Bleed,
+    /// Converts any bullet weapon into [AOE]. On impact, splashes
+    /// `BLAST_SPLASH_FRAC` of the bullet's damage to every enemy
+    /// within `stacks × BLAST_RADIUS_PER_STACK × rune_effect` of the
+    /// hit point. Doesn't itself stack the bullet's other runes onto
+    /// the splash victims — the primary target still gets the full
+    /// rune chain, while splash targets get just the damage. Plays
+    /// well with Standard / MG; transformative on single-target
+    /// weapons like Sniper.
+    Blast,
+    /// +100% × stacks × rune_effect movement speed to the deployed
+    /// unit of an [Autonomous] turret (HeliPad's helicopter, Cage's
+    /// octopus). No effect on non-autonomous slots. Stacks with the
+    /// Autonomous synergy's per-tier speed bonus.
+    Hustle,
 }
 
 impl Rune {
@@ -134,6 +148,8 @@ impl Rune {
             Rune::Vampire          => tr("rune_vampire"),
             Rune::Ward             => tr("rune_ward"),
             Rune::Bleed            => tr("rune_bleed"),
+            Rune::Blast            => tr("rune_blast"),
+            Rune::Hustle           => tr("rune_hustle"),
         }
     }
 
@@ -155,6 +171,8 @@ impl Rune {
             Rune::Vampire          => tr("rune_vampire_desc"),
             Rune::Ward             => tr("rune_ward_desc"),
             Rune::Bleed            => tr("rune_bleed_desc"),
+            Rune::Blast            => tr("rune_blast_desc"),
+            Rune::Hustle           => tr("rune_hustle_desc"),
         }
     }
 
@@ -230,8 +248,24 @@ impl Rune {
             // procs (otherwise a bleeding enemy would self-shock
             // every half-second).
             Rune::Bleed           => 0.0,
+            // Blast splash hits don't re-trigger runes — the primary
+            // target already ran the full proc chain, splash targets
+            // get raw damage only.
+            Rune::Blast           => 0.0,
+            // Hustle is a passive autonomous-unit speed buff; never
+            // procs.
+            Rune::Hustle          => 0.0,
         }
     }
+}
+
+/// Per-slot autonomous-unit speed multiplier from `Hustle` runes on
+/// the same socket. Returns 1.0 (no change) if none equipped; each
+/// stack adds +1.0 × `rune_effect`. Read by `heli.rs` and
+/// `octopus.rs` at the speed calculation site.
+pub fn hustle_speed_mult(runes: &[Option<Rune>; 3], rune_effect: f32) -> f32 {
+    let stacks = runes.iter().filter(|r| matches!(r, Some(Rune::Hustle))).count() as f32;
+    1.0 + stacks * rune_effect
 }
 
 /// Cycle a slot's rune forward.
@@ -252,14 +286,18 @@ pub fn cycle_next(current: Option<Rune>) -> Option<Rune> {
         Some(Rune::Splash)         => Some(Rune::Vampire),
         Some(Rune::Vampire)        => Some(Rune::Ward),
         Some(Rune::Ward)           => Some(Rune::Bleed),
-        Some(Rune::Bleed)          => None,
+        Some(Rune::Bleed)          => Some(Rune::Blast),
+        Some(Rune::Blast)          => Some(Rune::Hustle),
+        Some(Rune::Hustle)         => None,
     }
 }
 
 /// Cycle backward — reverse of `cycle_next`.
 pub fn cycle_prev(current: Option<Rune>) -> Option<Rune> {
     match current {
-        None                       => Some(Rune::Bleed),
+        None                       => Some(Rune::Hustle),
+        Some(Rune::Hustle)         => Some(Rune::Blast),
+        Some(Rune::Blast)          => Some(Rune::Bleed),
         Some(Rune::Bleed)          => Some(Rune::Ward),
         Some(Rune::Ward)           => Some(Rune::Vampire),
         Some(Rune::Vampire)        => Some(Rune::Splash),
@@ -331,7 +369,9 @@ pub fn apply_rune_stacked(
         | Rune::TargetCarousel
         | Rune::Splash
         | Rune::Vampire
-        | Rune::Ward => {}
+        | Rune::Ward
+        | Rune::Blast
+        | Rune::Hustle => {}
     }
 }
 
