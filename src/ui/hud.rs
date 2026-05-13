@@ -12,14 +12,10 @@ use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::balance::PLAY_INTERNAL;
 use crate::ally::Ally;
 use crate::components::{Friendly, Health};
 use crate::i18n::tr;
-use crate::modes::{
-    effective_ui_width, play_area_screen_rect,
-    DesktopHint, VsyncMode, WindowMode,
-};
+use crate::modes::{play_area_screen_rect, VsyncMode};
 use crate::map::ViewMode;
 use crate::palette::{UI_TEXT, UI_TEXT_DIM, UI_VALUE};
 use crate::ui_kit::theme;
@@ -312,22 +308,6 @@ pub fn setup_hud(commands: &mut Commands) {
         ));
     });
 
-    // Desktop-mode hint — small grey text at top-center, hidden by default.
-    commands.spawn((
-        Text::new(tr("btn_press_esc")),
-        TextFont { font_size: 8.0, ..default() },
-        TextColor(Color::srgb(0.7, 0.72, 0.78)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(3.0),
-            left: Val::Px(0.0),
-            right: Val::Px(0.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        Visibility::Hidden,
-        DesktopHint,
-    ));
 }
 
 // ---------- Update systems ----------
@@ -606,93 +586,37 @@ pub fn update_ally_hp_values(
     }
 }
 
-/// Anchor the HP bar inside the play square's top-left and match its
-/// chrome (border + tick widths) to one game pixel so it lives on the
-/// same grid as the upscaled play sprite.
+/// Anchor the HP bar to the play area's top-left every frame. The bar's
+/// own dimensions (width, height, border thickness, subdivider widths)
+/// are now governed entirely by `UiScale` — they're authored as fixed
+/// `Val::Px` values at spawn time and multiplied by the scale-with-
+/// window factor in `sync_ui_scale`. Previously this system wrote a
+/// per-frame `upscale` value into every border / subdivider, which
+/// stacked with `UiScale`'s own multiplication and produced
+/// double-scaled chrome (huge borders on big windows, invisible-thin
+/// borders on small ones).
+///
+/// Positions are screen-pixel coordinates (from `play_area_screen_rect`,
+/// which already returns the right values for the live window). We
+/// divide by `UiScale` so that when the bevy_ui layout pass multiplies
+/// the `Val::Px` back up, we end up at the exact screen pixel we wanted.
 pub fn update_hp_bar_pixel_scale(
     windows: Query<&Window, With<PrimaryWindow>>,
-    window_mode: Res<WindowMode>,
-    mut root_q: Query<
-        &mut Node,
-        (
-            With<WaveHpUi>,
-            Without<WaveHpTrack>,
-            Without<HpBarSubdivider>,
-            Without<AllyHpBar>,
-            Without<crate::xp::XpBarRoot>,
-        ),
-    >,
-    mut track_q: Query<
-        &mut Node,
-        (
-            With<WaveHpTrack>,
-            Without<WaveHpUi>,
-            Without<HpBarSubdivider>,
-            Without<AllyHpBar>,
-            Without<crate::xp::XpBarRoot>,
-        ),
-    >,
-    mut subdivider_q: Query<
-        &mut Node,
-        (
-            With<HpBarSubdivider>,
-            Without<WaveHpUi>,
-            Without<WaveHpTrack>,
-            Without<AllyHpBar>,
-            Without<crate::xp::XpBarRoot>,
-        ),
-    >,
-    mut ally_bar_q: Query<
-        &mut Node,
-        (
-            With<AllyHpBar>,
-            Without<WaveHpUi>,
-            Without<WaveHpTrack>,
-            Without<HpBarSubdivider>,
-            Without<crate::xp::XpBarRoot>,
-        ),
-    >,
-    mut xp_track_q: Query<
-        &mut Node,
-        (
-            With<crate::xp::XpBarRoot>,
-            Without<WaveHpUi>,
-            Without<WaveHpTrack>,
-            Without<HpBarSubdivider>,
-            Without<AllyHpBar>,
-        ),
-    >,
+    ui_scale: Res<UiScale>,
+    mut root_q: Query<&mut Node, With<WaveHpUi>>,
 ) {
     let Ok(win) = windows.single() else { return; };
-    let (play_left, play_top, _play_w, play_h) = play_area_screen_rect(
-        win.width(), win.height(), effective_ui_width(&window_mode),
-    );
-    let upscale = (play_h / PLAY_INTERNAL as f32).max(1.0);
-    let px = Val::Px(upscale);
-    let border = UiRect::all(px);
-
-    let margin = upscale * 4.0;
-    // `WaveHpUi` is the column root holding both the XP and HP
-    // tracks. Pin it to the play area's top-left; both bars come
-    // along for the ride. Each bar's border is scaled below so they
-    // stay pixel-aligned with the play-area's grey frame.
-    let want_left = Val::Px(play_left + margin);
-    let want_top  = Val::Px(play_top + margin);
+    let (play_left, play_top, _play_w, _play_h) =
+        play_area_screen_rect(win.width(), win.height());
+    let s = ui_scale.0.max(0.0001);
+    // 4 design pixels of inset from the play-area corner — matches the
+    // pre-UiScale `upscale * 4.0` intent (4 game-pixels of margin).
+    // Authored in design pixels so UiScale handles the scaling.
+    let margin_design = 4.0;
+    let want_left = Val::Px(play_left / s + margin_design);
+    let want_top  = Val::Px(play_top  / s + margin_design);
     for mut node in &mut root_q {
         if node.left != want_left { node.left = want_left; }
         if node.top  != want_top  { node.top  = want_top;  }
-    }
-
-    for mut node in &mut track_q {
-        if node.border != border { node.border = border; }
-    }
-    for mut node in &mut xp_track_q {
-        if node.border != border { node.border = border; }
-    }
-    for mut node in &mut subdivider_q {
-        if node.width != px { node.width = px; }
-    }
-    for mut node in &mut ally_bar_q {
-        if node.border != border { node.border = border; }
     }
 }

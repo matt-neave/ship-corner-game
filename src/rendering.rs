@@ -19,12 +19,10 @@ use bevy::window::PrimaryWindow;
 
 use crate::balance::{
     HUD_LAYER, PLAY_INTERNAL_H, PLAY_INTERNAL_W, PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W,
-    UI_WIDTH, UPSCALE_LAYER, WINDOW_H, WINDOW_W,
+    UPSCALE_LAYER, WINDOW_H, WINDOW_W,
 };
 use crate::map::MAP_LAYER;
-use crate::modes::{
-    effective_ui_width, play_area_screen_rect, NightMode, ScanlineSprite, WindowMode,
-};
+use crate::modes::{play_area_screen_rect, NightMode, ScanlineSprite};
 use crate::palette::{darken, hex, HudCamera, MapCamera, Palette, PlayCamera, UpscaleCamera};
 
 use bevy::render::camera::Viewport;
@@ -245,7 +243,7 @@ pub fn setup_render(
     // Sprite that displays the play render target, on UPSCALE_LAYER, positioned
     // in screen space. Initial size/position for frame 0; `resize_upscale_sprite`
     // refines it every frame using the actual window size.
-    let (left0, _top0, w0, h0) = play_area_screen_rect(WINDOW_W, WINDOW_H, UI_WIDTH);
+    let (left0, _top0, w0, h0) = play_area_screen_rect(WINDOW_W, WINDOW_H);
     let world_x0 = left0 + w0 / 2.0 - WINDOW_W / 2.0;
     commands.spawn((
         Sprite {
@@ -298,12 +296,52 @@ pub fn update_hash_image(
     }
 }
 
+/// Per-frame: scale every bevy_ui `Val::Px` value to the live window
+/// size by writing `bevy_ui::UiScale`. Bevy's layout pass multiplies
+/// fixed `Val::Px` by this resource — so all our `ui_kit::theme`
+/// constants (`GAP_SM/MD/LG`, `PAD_*`, `FONT_*`, `BORDER_W`) scale
+/// uniformly as the window resizes, and CHROME overlays
+/// (level-up cards, boss-reward panel, hull-select panel, pause menu,
+/// HP/XP bars, etc.) stay proportional instead of overflowing on a
+/// small window or floating in a sea of margin on a big one.
+///
+/// Fit-mode math: `min(w / DESIGN_W, h / DESIGN_H)` — the design
+/// layout (`WINDOW_W × WINDOW_H`) never overflows the window edges,
+/// regardless of aspect. Clamped so very-small windows stay readable
+/// and very-large ones don't make a button fill half the screen.
+///
+/// Note: `Val::Percent` is unaffected — only `Val::Px` is multiplied.
+/// `Val::Px` callsites *inside* a render-target pipeline (the shop's
+/// `Text2d` on `CUSTOMIZE_LAYER`) are not bevy_ui at all and stay at
+/// their internal-resolution sizes — those want to look chunky-pixel,
+/// not window-scaled.
+pub fn sync_ui_scale(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut ui_scale: ResMut<UiScale>,
+) {
+    let Ok(window) = windows.single() else { return; };
+    let w = window.width();
+    let h = window.height();
+    if w <= 0.0 || h <= 0.0 { return; }
+    // Fit (not fill) so the design layout fits both axes; never
+    // clipped on the short axis if the player's window is wider than
+    // the design ratio (or vice versa).
+    let raw = (w / WINDOW_W).min(h / WINDOW_H);
+    // Floors at 0.5 so a tiny 640×400 window doesn't render
+    // microscopic; ceiling at 3.0 so a 4K window doesn't blow buttons
+    // up to filling the viewport. Tuned conservatively — we can lift
+    // the ceiling later once we're sure the layouts adapt cleanly.
+    let want = raw.clamp(0.5, 3.0);
+    if (ui_scale.0 - want).abs() > 0.001 {
+        ui_scale.0 = want;
+    }
+}
+
 /// Snap the upscale sprite to an integer multiple of the internal resolution
 /// AND reposition it within the window each frame. Without integer snapping,
 /// one internal pixel can map to 3.5 screen pixels and shimmer as things move.
 pub fn resize_upscale_sprite(
     windows: Query<&Window, With<PrimaryWindow>>,
-    mode: Res<WindowMode>,
     mut play_sprites: Query<
         (&mut Sprite, &mut Transform),
         (With<UpscaleSprite>, Without<HashSprite>, Without<ScanlineSprite>),
@@ -320,8 +358,7 @@ pub fn resize_upscale_sprite(
     let Ok(window) = windows.single() else { return; };
     let logical_w = window.width();
     let logical_h = window.height();
-    let (left, _top, play_w, play_h) =
-        play_area_screen_rect(logical_w, logical_h, effective_ui_width(&mode));
+    let (left, _top, play_w, play_h) = play_area_screen_rect(logical_w, logical_h);
     // Play sprite — centred in the available area to the right of the UI.
     let world_x = left + play_w / 2.0 - logical_w / 2.0;
     let target = Vec2::new(play_w, play_h);
@@ -349,15 +386,13 @@ pub fn resize_upscale_sprite(
 /// — they consume the same `play_area_screen_rect` and must stay aligned.
 pub fn update_hud_camera_viewport(
     windows: Query<&Window, With<PrimaryWindow>>,
-    mode: Res<WindowMode>,
     mut hud: Query<&mut Camera, With<HudCamera>>,
 ) {
     let Ok(window) = windows.single() else { return; };
     let logical_w = window.width();
     let logical_h = window.height();
     let scale = window.scale_factor();
-    let (left, top, play_w, play_h) =
-        play_area_screen_rect(logical_w, logical_h, effective_ui_width(&mode));
+    let (left, top, play_w, play_h) = play_area_screen_rect(logical_w, logical_h);
 
     let phys_pos = UVec2::new(
         (left * scale).round() as u32,

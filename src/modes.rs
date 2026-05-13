@@ -1,26 +1,20 @@
 //! Top-level mode toggles and their visual side-effects:
 //!
 //! - **`GameMode`** — Sandbox vs Wave (read by lots of systems).
-//! - **`WindowMode`** — desktop overlay vs windowed UI.
 //! - **`NightMode`** — overrides `Palette.ocean` with a near-black tone.
 //! - **`CrtMode`** — toggles the scanline overlay sprite.
+//! - **`VsyncMode`** — toggles the window's present mode.
+//! - **`WindowModeSetting`** — Windowed vs Fullscreen.
+//! - **`ResolutionSetting`** — windowed-mode resolution preset.
 //!
 //! Each toggle holds a `last_applied` field so its `apply_*_mode` system can
 //! flip-detect and only do work when the resource actually changes.
 
 use bevy::prelude::*;
 use bevy::window::{PresentMode, PrimaryWindow};
-// Direct winit imports are only used by the borderless-desktop window
-// systems below, which are cfg-gated off the wasm target (a browser
-// embed has no movable / resizable OS window for these to drive).
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::winit::WinitWindows;
-#[cfg(not(target_arch = "wasm32"))]
-use winit::window::ResizeDirection;
 
-use crate::balance::{PLAY_INTERNAL_H, PLAY_INTERNAL_W, WINDOW_H, WINDOW_W};
+use crate::balance::{PLAY_INTERNAL_H, PLAY_INTERNAL_W};
 use crate::palette::{hex, Palette};
-use crate::ui::{ScoreText, UiPanel};
 
 // ---------- Resources ----------
 
@@ -30,15 +24,6 @@ use crate::ui::{ScoreText, UiPanel};
 pub enum GameMode {
     #[default]
     Sandbox,
-}
-
-/// Toggled by the DESKTOP button. `desktop = true` hides the LHS UI panel,
-/// shrinks the window to play-area-only, and snaps to the bottom-right of
-/// the monitor the window is currently on.
-#[derive(Resource, Default, Clone, Copy)]
-pub struct WindowMode {
-    pub desktop: bool,
-    pub last_applied: Option<bool>,
 }
 
 /// Toggled by the NIGHT button. When active, swaps `Palette.ocean` to a
@@ -88,6 +73,123 @@ pub struct CameraFollow {
     pub active: bool,
 }
 
+// ---------- Window mode / resolution (user-facing settings) ----------
+
+/// Two-state window mode driven by the settings panel. Borderless
+/// fullscreen (rather than exclusive) so alt-tab is fast and the
+/// browser-iframe (wasm) build remains the no-op default.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum WindowModeKind {
+    #[default]
+    Windowed,
+    Fullscreen,
+}
+
+impl WindowModeKind {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Windowed   => Self::Fullscreen,
+            Self::Fullscreen => Self::Windowed,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Windowed   => "WINDOWED",
+            Self::Fullscreen => "FULLSCREEN",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "windowed"   => Some(Self::Windowed),
+            "fullscreen" => Some(Self::Fullscreen),
+            _ => None,
+        }
+    }
+    pub fn serialize(self) -> &'static str {
+        match self {
+            Self::Windowed   => "windowed",
+            Self::Fullscreen => "fullscreen",
+        }
+    }
+}
+
+/// User's chosen window mode. `last_applied` lets the apply system
+/// flip-detect and only push to the bevy_window resource on change.
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct WindowModeSetting {
+    pub mode: WindowModeKind,
+    pub last_applied: Option<WindowModeKind>,
+}
+
+/// Fixed-size resolution presets for the windowed-mode dropdown.
+/// `Native` means "use the monitor's reported size minus a small
+/// margin"; it's the closest thing to "auto-fit" without going
+/// borderless-fullscreen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResolutionKind {
+    R1280x800,
+    R1600x1000,
+    R1920x1200,
+    Native,
+}
+
+impl Default for ResolutionKind {
+    fn default() -> Self { Self::R1280x800 }
+}
+
+impl ResolutionKind {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::R1280x800  => Self::R1600x1000,
+            Self::R1600x1000 => Self::R1920x1200,
+            Self::R1920x1200 => Self::Native,
+            Self::Native     => Self::R1280x800,
+        }
+    }
+    /// Concrete `(w, h)` for the preset. `Native` returns `None`
+    /// because the actual size has to come from the monitor at
+    /// apply time.
+    pub fn dimensions(self) -> Option<(f32, f32)> {
+        match self {
+            Self::R1280x800  => Some((1280.0, 800.0)),
+            Self::R1600x1000 => Some((1600.0, 1000.0)),
+            Self::R1920x1200 => Some((1920.0, 1200.0)),
+            Self::Native     => None,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::R1280x800  => "1280X800",
+            Self::R1600x1000 => "1600X1000",
+            Self::R1920x1200 => "1920X1200",
+            Self::Native     => "NATIVE",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "1280x800"  => Some(Self::R1280x800),
+            "1600x1000" => Some(Self::R1600x1000),
+            "1920x1200" => Some(Self::R1920x1200),
+            "native"    => Some(Self::Native),
+            _ => None,
+        }
+    }
+    pub fn serialize(self) -> &'static str {
+        match self {
+            Self::R1280x800  => "1280x800",
+            Self::R1600x1000 => "1600x1000",
+            Self::R1920x1200 => "1920x1200",
+            Self::Native     => "native",
+        }
+    }
+}
+
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct ResolutionSetting {
+    pub res: ResolutionKind,
+    pub last_applied: Option<ResolutionKind>,
+}
+
 // ---------- Marker components ----------
 
 /// CRT scanline overlay sprite — sized to match the play sprite, hidden
@@ -95,95 +197,38 @@ pub struct CameraFollow {
 #[derive(Component)]
 pub struct ScanlineSprite;
 
-/// Hint text shown only in desktop mode. Player presses Escape to return.
-#[derive(Component)]
-pub struct DesktopHint;
-
 // ---------- Layout helpers (used by mode + UI + ship systems) ----------
 
 /// Authoritative play-area screen rect for the current window size. Both
 /// the upscale sprite placement and cursor→world mapping read this so
-/// they can't drift out of sync as the window resizes. `ui_width` is 0
-/// in desktop mode. Returns `(left, top, width, height)`.
-pub fn play_area_screen_rect(logical_w: f32, logical_h: f32, ui_width: f32) -> (f32, f32, f32, f32) {
-    let avail_w = (logical_w - ui_width).max(0.0);
-    let scale_x = (avail_w / PLAY_INTERNAL_W as f32).floor();
-    let scale_y = (logical_h / PLAY_INTERNAL_H as f32).floor();
-    let scale = scale_x.min(scale_y).max(1.0);
+/// they can't drift out of sync as the window resizes. Returns
+/// `(left, top, width, height)`.
+///
+/// Fractional fit-scale: the play area grows / shrinks smoothly with
+/// the window instead of snapping to integer multiples of the internal
+/// resolution. The previous `.floor()` math was correct in principle
+/// (one internal pixel = N screen pixels, crisp) but produced a hard
+/// "snap" at every threshold — drag the window 1 px past a boundary
+/// and the play area would jump 200 px. With nearest-neighbour sampling
+/// on the underlying play-render-target image (set in `setup_render`),
+/// fractional scales still preserve the chunky-pixel look; some screen
+/// pixels just double-up while others single, which is virtually
+/// invisible during gameplay and a clear win over leaving large
+/// letterbox gutters.
+pub fn play_area_screen_rect(logical_w: f32, logical_h: f32) -> (f32, f32, f32, f32) {
+    let scale_x = logical_w / PLAY_INTERNAL_W as f32;
+    let scale_y = logical_h / PLAY_INTERNAL_H as f32;
+    // Floor at 0.5 so a very small window still shows a usable play
+    // area rather than collapsing to nothing. Otherwise pure fit.
+    let scale = scale_x.min(scale_y).max(0.5);
     let w = PLAY_INTERNAL_W as f32 * scale;
     let h = PLAY_INTERNAL_H as f32 * scale;
-    let left = ui_width + (avail_w - w) / 2.0;
+    let left = (logical_w - w) / 2.0;
     let top = (logical_h - h) / 2.0;
     (left, top, w, h)
 }
 
-pub fn effective_ui_width(_mode: &WindowMode) -> f32 {
-    // LHS UI panel is hidden for the prototype — keep the play area
-    // centered in the window rather than nudged right by a phantom
-    // panel. Restoring the panel = revert this to the desktop-vs-
-    // windowed branch on `mode.desktop`.
-    0.0
-}
-
 // ---------- Systems ----------
-
-/// Esc exits desktop mode back to the windowed UI. No-op in windowed mode.
-pub fn handle_desktop_escape(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut mode: ResMut<WindowMode>,
-) {
-    if mode.desktop && keys.just_pressed(KeyCode::Escape) {
-        mode.desktop = false;
-    }
-}
-
-/// In desktop mode the window has no decorations, so the OS won't drag or
-/// resize it for us. On LMB press we hand the gesture off to winit:
-/// near a corner / edge → start a system-resize; anywhere else → drag.
-///
-/// WASM build provides a no-op stub: a browser-embedded canvas can't
-/// be dragged/resized via winit's API, and the surrounding desktop
-/// chrome (decorations, monitor positioning) doesn't exist there.
-#[cfg(target_arch = "wasm32")]
-pub fn handle_desktop_drag_resize() {}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn handle_desktop_drag_resize(
-    mode: Res<WindowMode>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<(Entity, &Window), With<PrimaryWindow>>,
-    winit_windows: NonSend<WinitWindows>,
-) {
-    if !mode.desktop { return; }
-    if !mouse.just_pressed(MouseButton::Left) { return; }
-    let Ok((entity, window)) = windows.single() else { return; };
-    let Some(cursor) = window.cursor_position() else { return; };
-    let Some(winit_win) = winit_windows.get_window(entity) else { return; };
-
-    let w = window.width();
-    let h = window.height();
-    let m = 8.0;
-    let near_left   = cursor.x < m;
-    let near_right  = cursor.x > w - m;
-    let near_top    = cursor.y < m;
-    let near_bottom = cursor.y > h - m;
-
-    let dir = match (near_left, near_right, near_top, near_bottom) {
-        (true,  false, true,  false) => Some(ResizeDirection::NorthWest),
-        (false, true,  true,  false) => Some(ResizeDirection::NorthEast),
-        (true,  false, false, true ) => Some(ResizeDirection::SouthWest),
-        (false, true,  false, true ) => Some(ResizeDirection::SouthEast),
-        (true,  false, false, false) => Some(ResizeDirection::West),
-        (false, true,  false, false) => Some(ResizeDirection::East),
-        (false, false, true,  false) => Some(ResizeDirection::North),
-        (false, false, false, true ) => Some(ResizeDirection::South),
-        _ => None,
-    };
-    let _ = match dir {
-        Some(d) => winit_win.drag_resize_window(d),
-        None    => winit_win.drag_window(),
-    };
-}
 
 /// Show / hide the scanline overlay when `CrtMode` flips. Uses `last_applied`
 /// so we don't write the Visibility component every frame.
@@ -233,79 +278,44 @@ pub fn apply_night_mode(
     }
 }
 
-/// Toggle between full-window mode (UI panel + play area) and "desktop"
-/// mode (play area only, no decorations, snapped to bottom-right of the
-/// current monitor). Runs only when `WindowMode` flips.
-///
-/// WASM build is a no-op stub for the same reason as
-/// `handle_desktop_drag_resize` above — the canvas is whatever size
-/// the embedding page allows, no monitor metrics, no decorations to
-/// strip.
+/// Push the user's chosen window mode + resolution into the live
+/// `Window`. Two settings are folded into one apply system because
+/// they interact: switching to fullscreen ignores the resolution
+/// pick, and switching back to windowed has to re-apply the cached
+/// dimensions. On wasm this is a no-op stub — browser iframes own
+/// the canvas size and the user's resolution setting is irrelevant.
 #[cfg(target_arch = "wasm32")]
-pub fn apply_window_mode() {}
+pub fn apply_window_mode_setting() {}
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn apply_window_mode(
-    mut mode: ResMut<WindowMode>,
-    mut windows: Query<(Entity, &mut Window), With<PrimaryWindow>>,
-    winit_windows: NonSend<WinitWindows>,
-    mut panels: Query<&mut Visibility, (With<UiPanel>, Without<ScoreText>, Without<DesktopHint>)>,
-    mut score:  Query<&mut Visibility, (With<ScoreText>, Without<UiPanel>, Without<DesktopHint>)>,
-    mut hint:   Query<&mut Visibility, (With<DesktopHint>, Without<UiPanel>, Without<ScoreText>)>,
+pub fn apply_window_mode_setting(
+    mut win_mode: ResMut<WindowModeSetting>,
+    mut res: ResMut<ResolutionSetting>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
-    if mode.last_applied == Some(mode.desktop) { return; }
-    mode.last_applied = Some(mode.desktop);
-    let Ok((entity, mut window)) = windows.single_mut() else { return; };
-
-    if mode.desktop {
-        for mut v in &mut panels { *v = Visibility::Hidden; }
-        for mut v in &mut score  { *v = Visibility::Hidden; }
-        for mut v in &mut hint   { *v = Visibility::Inherited; }
-
-        // Borderless desktop window sized to fit the largest integer
-        // multiple of PLAY_INTERNAL_H (the shorter axis) ≤ ~480 px,
-        // then widened proportionally for the wide-play feature flag.
-        let target_logical: u32 = 480;
-        let scale_int = (target_logical as f32 / PLAY_INTERNAL_H as f32).floor().max(1.0) as u32;
-        let logical_h = (PLAY_INTERNAL_H * scale_int) as f32;
-        let logical_w = (PLAY_INTERNAL_W * scale_int) as f32;
-
-        // Drop decorations FIRST so the size we set is the actual content
-        // size — otherwise winit shrinks the content to fit a phantom title bar.
-        window.decorations = false;
-        window.resolution.set(logical_w, logical_h);
-        window.window_level = bevy::window::WindowLevel::AlwaysOnTop;
-        window.resizable = true;
-
-        // Snap to the bottom-right of the current monitor in physical pixels —
-        // Bevy's `MonitorSelection::Current` only works for `Centered`, not
-        // for absolute placement, and we need physical pixels anyway.
-        if let Some(winit_win) = winit_windows.get_window(entity) {
-            let monitor = winit_win.current_monitor()
-                .or_else(|| winit_win.primary_monitor());
-            if let Some(monitor) = monitor {
-                let mon_pos  = monitor.position();
-                let mon_size = monitor.size();
-                let scale_f  = winit_win.scale_factor() as f32;
-                let phys_w   = (logical_w * scale_f).round() as i32;
-                let phys_h   = (logical_h * scale_f).round() as i32;
-                const MARGIN: i32 = 16;
-                let x = mon_pos.x + mon_size.width  as i32 - phys_w - MARGIN;
-                let y = mon_pos.y + mon_size.height as i32 - phys_h - MARGIN;
-                window.position = bevy::window::WindowPosition::At(IVec2::new(x, y));
+    let mode_changed = win_mode.last_applied != Some(win_mode.mode);
+    let res_changed  = res.last_applied != Some(res.res);
+    if !mode_changed && !res_changed { return; }
+    win_mode.last_applied = Some(win_mode.mode);
+    res.last_applied = Some(res.res);
+    let Ok(mut window) = windows.single_mut() else { return; };
+    match win_mode.mode {
+        WindowModeKind::Windowed => {
+            window.mode = bevy::window::WindowMode::Windowed;
+            // Apply the user's chosen preset. `Native` falls through
+            // to whatever the OS hands back; we leave the current
+            // resolution alone because we can't read the monitor size
+            // cheaply from inside an ECS system. The user can pick a
+            // specific preset to force a known size.
+            if let Some((w, h)) = res.res.dimensions() {
+                window.resolution.set(w, h);
             }
         }
-    } else {
-        for mut v in &mut panels { *v = Visibility::Inherited; }
-        for mut v in &mut score  { *v = Visibility::Inherited; }
-        for mut v in &mut hint   { *v = Visibility::Hidden; }
-        window.resolution.set(WINDOW_W, WINDOW_H);
-        window.decorations = true;
-        window.window_level = bevy::window::WindowLevel::Normal;
-        // Stay on the monitor the user is on rather than jumping to Primary.
-        window.position = bevy::window::WindowPosition::Centered(
-            bevy::window::MonitorSelection::Current,
-        );
+        WindowModeKind::Fullscreen => {
+            window.mode = bevy::window::WindowMode::BorderlessFullscreen(
+                bevy::window::MonitorSelection::Current,
+            );
+        }
     }
 }
 

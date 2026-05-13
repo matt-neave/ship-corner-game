@@ -17,7 +17,7 @@ use bevy::window::PrimaryWindow;
 use crate::balance::PLAY_WORLD;
 use crate::components::Heading;
 use crate::effects::{spawn_particles_on_layer, EffectMeshes};
-use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
+use crate::modes::play_area_screen_rect;
 use crate::palette::PaletteMaterials;
 use crate::ship::approach_angle;
 
@@ -30,7 +30,6 @@ use super::{
 pub fn map_click_input(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    window_mode: Res<WindowMode>,
     view: Res<ViewMode>,
     claim_mode: Res<DebugClaimMode>,
     mut state: ResMut<MapState>,
@@ -50,8 +49,7 @@ pub fn map_click_input(
     let Ok(win) = windows.single() else { return; };
     let Some(c) = win.cursor_position() else { return; };
 
-    let (left, top, play_w, play_h) =
-        play_area_screen_rect(win.width(), win.height(), effective_ui_width(&window_mode));
+    let (left, top, play_w, play_h) = play_area_screen_rect(win.width(), win.height());
     // Map sits in a square centered in the play screen rect — pad
     // horizontally in wide_play mode so cursor math stays correct.
     let map_size = play_w.min(play_h);

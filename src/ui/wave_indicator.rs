@@ -13,7 +13,7 @@ use bevy::text::FontSmoothing;
 use bevy::window::PrimaryWindow;
 
 use crate::map::{CombatContext, ViewMode};
-use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
+use crate::modes::play_area_screen_rect;
 use crate::ui_kit::theme;
 
 #[derive(Component)]
@@ -49,7 +49,7 @@ pub fn update_wave_indicator(
     view: Res<ViewMode>,
     ctx: Res<CombatContext>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    window_mode: Res<WindowMode>,
+    ui_scale: Res<bevy::ui::UiScale>,
     mut q: Query<(&mut Visibility, &mut Text, &mut TextColor, &mut Node), With<WaveIndicator>>,
 ) {
     let s = *state.get();
@@ -71,22 +71,24 @@ pub fn update_wave_indicator(
     // Anchor to the play area's top-right corner. With the LHS panel
     // hidden, the play area is centered horizontally — there's
     // letterbox space to either side that we don't want to cover.
+    // UiScale-compensated layout. Screen-pixel insets get divided by
+    // the scale so the layout pass multiplies them back to actual
+    // screen positions. XP bar dimensions are already in design pixels
+    // (UiScale handles them), so we add them in design space.
+    let s = ui_scale.0.max(0.0001);
     let (anchor_top, anchor_right) = windows
         .single()
         .ok()
         .map(|w| {
-            let (left, top, play_w, _play_h) = play_area_screen_rect(
-                w.width(),
-                w.height(),
-                effective_ui_width(&window_mode),
-            );
+            let (left, top, play_w, _play_h) = play_area_screen_rect(w.width(), w.height());
             // Distance from the window's right edge to the play area's
-            // right edge.
-            let right_inset = (w.width() - (left + play_w)).max(0.0);
+            // right edge, expressed in design pixels.
+            let right_inset = ((w.width() - (left + play_w)).max(0.0)) / s;
             // Sit BELOW the XP bar that runs across the play-area top.
-            // Inset (6 px) + XP bar height (22 px) + small gap (4 px).
+            // Inset (6 px) + XP bar height (22 px) + small gap (4 px),
+            // all design pixels.
             let below_xp = crate::xp::XP_BAR_TOP_INSET + crate::xp::XP_BAR_HEIGHT + 4.0;
-            (top + below_xp, right_inset + 8.0)
+            (top / s + below_xp, right_inset + 8.0)
         })
         .unwrap_or((32.0, 8.0));
 

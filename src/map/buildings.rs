@@ -22,7 +22,7 @@ use crate::balance::{
 };
 use crate::enemy::Enemy;
 use crate::i18n::tr;
-use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
+use crate::modes::play_area_screen_rect;
 use crate::ui_kit::{self, theme};
 use crate::{RefinedSteel, Scrap, Steel};
 
@@ -137,7 +137,6 @@ pub fn update_building_hover_tooltip(
     view: Res<ViewMode>,
     state: Res<MapState>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    window_mode: Res<WindowMode>,
     popups: Query<&BuildingPopup>,
     existing: Query<(Entity, &BuildingTooltip, &mut Node)>,
 ) {
@@ -146,9 +145,7 @@ pub fn update_building_hover_tooltip(
         if !popups.is_empty() { return None; }
         let win = windows.single().ok()?;
         let c = win.cursor_position()?;
-        let (left, top, play_w, play_h) = play_area_screen_rect(
-            win.width(), win.height(), effective_ui_width(&window_mode),
-        );
+        let (left, top, play_w, play_h) = play_area_screen_rect(win.width(), win.height());
         // Map view is rendered as a square centered in the (possibly
         // wider) play area, sized to the shorter screen axis.
         let map_size = play_w.min(play_h);

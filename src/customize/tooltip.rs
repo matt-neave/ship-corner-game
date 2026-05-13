@@ -290,6 +290,7 @@ pub fn update_customize_tooltip(
     drag: Res<DragState>,
     data: TooltipDataCtx,
     viewport: Res<CustomizeViewport>,
+    ui_scale: Res<bevy::ui::UiScale>,
     mut layout: ResMut<TooltipLayout>,
     mut body_cache: Local<String>,
     body_entity_q: Query<Entity, With<CustomizeTooltipBody>>,
@@ -478,12 +479,20 @@ pub fn update_customize_tooltip(
     // sits directly below it. Top-of-fill y = native_centre.y + h/2 -
     // pad; body starts at top_y - title_block_h.
     let fill_top_native = native_centre.y + fill_h_native * 0.5 - TOOLTIP_TEXT_PAD;
+    // Glyph scale follows `UiScale` (window-relative, matches bevy_ui
+    // chrome). Positions are pre-multiplied by `display_scale`
+    // (~4× at design) to land in the customize sprite's screen rect,
+    // but glyphs use `UiScale` (1.0 at design) so they don't render
+    // four times too big.
+    let glyph_scale = ui_scale.0;
+    let want_text_scale = Vec3::new(glyph_scale, glyph_scale, 1.0);
     if let Ok((mut v, mut tf, mut text)) = title_q.single_mut() {
         if *v != Visibility::Inherited {
             *v = Visibility::Inherited;
         }
         tf.translation.x = native_centre.x;
         tf.translation.y = fill_top_native;
+        if tf.scale != want_text_scale { tf.scale = want_text_scale; }
         if text.0 != title {
             text.0 = title;
         }
@@ -494,6 +503,7 @@ pub fn update_customize_tooltip(
         }
         tf.translation.x = native_centre.x;
         tf.translation.y = fill_top_native - title_block_h;
+        if tf.scale != want_text_scale { tf.scale = want_text_scale; }
         // Clear the root section text — all visible text lives in
         // colored `TextSpan` children spawned below. The root stays
         // as the layout/anchor host.
@@ -549,6 +559,7 @@ pub fn update_synergy_banner(
     mut commands: Commands,
     layout: Res<TooltipLayout>,
     viewport: Res<CustomizeViewport>,
+    ui_scale: Res<bevy::ui::UiScale>,
     synergies: Res<Synergies>,
     discovered: Res<crate::onboarding::DiscoveredSynergies>,
     mut banner_cache: Local<String>,
@@ -767,6 +778,11 @@ pub fn update_synergy_banner(
         if *v != Visibility::Inherited { *v = Visibility::Inherited; }
         tf.translation.x = banner_native_centre.x;
         tf.translation.y = banner_native_centre.y;
+        // Glyph scale follows `UiScale` (matches bevy_ui chrome) —
+        // see comment in `sync_customize_text`.
+        let glyph = ui_scale.0;
+        let want_scale = Vec3::new(glyph, glyph, 1.0);
+        if tf.scale != want_scale { tf.scale = want_scale; }
         if !text.0.is_empty() { text.0 = String::new(); }
     }
 

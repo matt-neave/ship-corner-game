@@ -35,7 +35,7 @@ pub use panel::{update_damage_bars, update_slot_labels, UiPanel};
 pub use wave_indicator::{setup_wave_indicator, update_wave_indicator};
 
 use crate::map::ViewMode;
-use crate::modes::{CrtMode, NightMode, VsyncMode, WindowMode};
+use crate::modes::{CrtMode, NightMode, VsyncMode};
 use crate::rune::{cycle_next, cycle_prev};
 use crate::turret::TurretConfig;
 use crate::weapon::WeaponType;
@@ -57,7 +57,6 @@ pub enum ButtonKind {
     BarrelsUp, BarrelsDown,
     RuneUp, RuneDown,
     // Panel-header toggles
-    ToggleDesktopMode,
     ToggleNightMode,
     ToggleCrtMode,
     // HUD corner toggles
@@ -110,7 +109,6 @@ pub fn force_hide_ui_panel(
 pub fn ui_button_system(
     mut interactions: Query<(&Interaction, &SlotButton), Changed<Interaction>>,
     mut cfg: ResMut<TurretConfig>,
-    mut window_mode: ResMut<WindowMode>,
     mut night: ResMut<NightMode>,
     mut crt: ResMut<CrtMode>,
     mut vsync: ResMut<VsyncMode>,
@@ -120,10 +118,6 @@ pub fn ui_button_system(
     for (interaction, btn) in &mut interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
         match btn.kind {
-            ButtonKind::ToggleDesktopMode => {
-                window_mode.desktop = !window_mode.desktop;
-                continue;
-            }
             ButtonKind::ToggleNightMode => {
                 night.active = !night.active;
                 continue;
@@ -148,7 +142,7 @@ pub fn ui_button_system(
         }
         let s = &mut cfg.slots[btn.slot];
         match btn.kind {
-            ButtonKind::ToggleDesktopMode | ButtonKind::ToggleNightMode
+            ButtonKind::ToggleNightMode
             | ButtonKind::ToggleCrtMode
             | ButtonKind::ToggleVsync    | ButtonKind::ReturnToMap
             | ButtonKind::ToggleCameraFollow => unreachable!(),

@@ -119,12 +119,14 @@ pub struct SettingsButtons;
 
 /// Tag on each button inside the settings sub-panel. Drives both the
 /// click handler (toggle the matching mode) and the per-frame label
-/// updater (show ON/OFF).
+/// updater (show ON/OFF or current value).
 #[derive(Component, Clone, Copy)]
 pub enum SettingsItem {
     Night,
     Crt,
     Vsync,
+    WindowMode,
+    Resolution,
     Back,
 }
 
@@ -209,6 +211,8 @@ pub fn setup_main_menu(mut commands: Commands) {
                 spawn_settings_button(col, SettingsItem::Night, "NIGHT");
                 spawn_settings_button(col, SettingsItem::Crt, "CRT");
                 spawn_settings_button(col, SettingsItem::Vsync, "VSYNC");
+                spawn_settings_button(col, SettingsItem::WindowMode, "WINDOW");
+                spawn_settings_button(col, SettingsItem::Resolution, "RES");
                 spawn_settings_button(col, SettingsItem::Back, "BACK");
             });
         });
@@ -323,23 +327,27 @@ pub fn handle_settings_click(
     }
 }
 
-/// Click router for the four settings buttons (NIGHT / CRT / VSYNC /
-/// BACK). Each toggles its mode resource; BACK returns to the root
-/// view.
+/// Click router for the settings buttons. Boolean toggles flip;
+/// `WindowMode` and `Resolution` cycle through their preset list;
+/// `BACK` returns to the root view.
 pub fn handle_settings_item_click(
     interactions: Query<(&Interaction, &SettingsItem), Changed<Interaction>>,
     mut view: ResMut<MainMenuView>,
     mut night: ResMut<NightMode>,
     mut crt: ResMut<CrtMode>,
     mut vsync: ResMut<VsyncMode>,
+    mut win_mode: ResMut<crate::modes::WindowModeSetting>,
+    mut res: ResMut<crate::modes::ResolutionSetting>,
 ) {
     for (interaction, item) in &interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
         match *item {
-            SettingsItem::Night => night.active = !night.active,
-            SettingsItem::Crt   => crt.active = !crt.active,
-            SettingsItem::Vsync => vsync.enabled = !vsync.enabled,
-            SettingsItem::Back  => *view = MainMenuView::Root,
+            SettingsItem::Night      => night.active = !night.active,
+            SettingsItem::Crt        => crt.active = !crt.active,
+            SettingsItem::Vsync      => vsync.enabled = !vsync.enabled,
+            SettingsItem::WindowMode => win_mode.mode = win_mode.mode.cycle(),
+            SettingsItem::Resolution => res.res = res.res.cycle(),
+            SettingsItem::Back       => *view = MainMenuView::Root,
         }
     }
 }
@@ -376,14 +384,18 @@ pub fn update_settings_labels(
     night: Res<NightMode>,
     crt: Res<CrtMode>,
     vsync: Res<VsyncMode>,
+    win_mode: Res<crate::modes::WindowModeSetting>,
+    res: Res<crate::modes::ResolutionSetting>,
     mut q: Query<(&SettingsItemLabel, &mut Text)>,
 ) {
     for (label, mut text) in &mut q {
         let s = match label.0 {
-            SettingsItem::Night => format!("NIGHT: {}", on_off(night.active)),
-            SettingsItem::Crt   => format!("CRT: {}",   on_off(crt.active)),
-            SettingsItem::Vsync => format!("VSYNC: {}", on_off(vsync.enabled)),
-            SettingsItem::Back  => "BACK".to_string(),
+            SettingsItem::Night      => format!("NIGHT: {}", on_off(night.active)),
+            SettingsItem::Crt        => format!("CRT: {}",   on_off(crt.active)),
+            SettingsItem::Vsync      => format!("VSYNC: {}", on_off(vsync.enabled)),
+            SettingsItem::WindowMode => format!("WINDOW: {}", win_mode.mode.label()),
+            SettingsItem::Resolution => format!("RES: {}",    res.res.label()),
+            SettingsItem::Back       => "BACK".to_string(),
         };
         if text.0 != s { text.0 = s; }
     }

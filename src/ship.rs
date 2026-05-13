@@ -15,7 +15,7 @@ use crate::balance::{
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
 use crate::effects::{EffectMeshes, HitFx};
 use crate::enemy::Enemy;
-use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
+use crate::modes::play_area_screen_rect;
 use crate::palette::{Palette, PaletteMaterials};
 use crate::rune::{FireExtent, OnFrost};
 use crate::trails::{empty_dynamic_mesh, Trail};
@@ -240,7 +240,6 @@ pub fn setup_world(
 pub fn friendly_movement(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mode: Res<WindowMode>,
     stats: Res<crate::stats::PlayerStats>,
     enemies: Query<&Transform, (With<Enemy>, Without<Friendly>)>,
     play_camera: Query<&Transform, (With<crate::palette::PlayCamera>, Without<Friendly>, Without<Enemy>)>,
@@ -251,7 +250,7 @@ pub fn friendly_movement(
     let cursor = win.cursor_position();
 
     let (play_left, play_top, play_screen_w, play_screen_h) =
-        play_area_screen_rect(win.width(), win.height(), effective_ui_width(&mode));
+        play_area_screen_rect(win.width(), win.height());
 
     // Camera offset — when follow-mode shifts the play camera off the
     // origin, the cursor → world conversion needs to slide with it so

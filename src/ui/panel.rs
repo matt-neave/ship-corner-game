@@ -98,7 +98,6 @@ pub fn setup_panel(commands: &mut Commands) {
             .with_children(|btns| {
                 spawn_header_button(btns, tr("btn_crt"),     ButtonKind::ToggleCrtMode);
                 spawn_header_button(btns, tr("btn_night"),   ButtonKind::ToggleNightMode);
-                spawn_header_button(btns, tr("btn_desktop"), ButtonKind::ToggleDesktopMode);
             });
         });
         // 1px divider line.

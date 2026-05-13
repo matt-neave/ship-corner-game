@@ -146,6 +146,7 @@ pub fn update_shop_mod_cards(
     mut commands: Commands,
     open: Res<CustomizeOpen>,
     viewport: Res<CustomizeViewport>,
+    ui_scale: Res<bevy::ui::UiScale>,
     shop: Option<Res<CustomizeShop>>,
     mut text_cache: Local<[Option<String>; 3]>,
     existing_spans: Query<(Entity, &ShopModTextSpan)>,
@@ -196,6 +197,13 @@ pub fn update_shop_mod_cards(
             let label = m.label();
             tf.translation.x = slot.spec_pos.x * s;
             tf.translation.y = slot.spec_pos.y * s;
+            // Visual scale follows `UiScale` (window-relative,
+            // matches bevy_ui chrome) — same fix as
+            // `sync_customize_text`. Using `display_scale` here
+            // produced 64-screen-pixel text on the design window.
+            let glyph = ui_scale.0;
+            let want_scale = Vec3::new(glyph, glyph, 1.0);
+            if tf.scale != want_scale { tf.scale = want_scale; }
             // Root text stays empty - per-line colour comes from
             // the TextSpan children rebuilt below.
             if !text.0.is_empty() { text.0 = String::new(); }
@@ -273,6 +281,9 @@ pub fn update_shop_mod_cards(
         if text.0 != cost_label { text.0 = cost_label.clone(); }
         tf.translation.x = slot.spec_pos.x * s;
         tf.translation.y = slot.spec_pos.y * s;
+        let glyph = ui_scale.0;
+        let want_scale = Vec3::new(glyph, glyph, 1.0);
+        if tf.scale != want_scale { tf.scale = want_scale; }
     }
 }
 

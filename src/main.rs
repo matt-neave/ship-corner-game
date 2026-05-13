@@ -84,12 +84,13 @@ use map::{
 };
 use modes::{
     apply_camera_follow, apply_crt_mode, apply_night_mode, apply_vsync_mode,
-    apply_window_mode, handle_desktop_drag_resize, handle_desktop_escape,
-    CameraFollow, CrtMode, GameMode, NightMode, VsyncMode, WindowMode,
+    apply_window_mode_setting,
+    CameraFollow, CrtMode, GameMode, NightMode, VsyncMode,
 };
 use palette::{apply_palette, Palette};
 use rendering::{
-    resize_upscale_sprite, setup_render, update_hash_image, update_hud_camera_viewport,
+    resize_upscale_sprite, setup_render, sync_ui_scale, update_hash_image,
+    update_hud_camera_viewport,
 };
 use settings::{apply_loaded_settings, persist_settings_on_change};
 use rune::{tick_echoes, tick_on_bleed, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_resonate};
@@ -345,10 +346,11 @@ fn main() {
         .init_state::<AppState>()
         .insert_resource(Palette::aap64_naval())
         .insert_resource(ShipPath::default())
-        .insert_resource(WindowMode::default())
         .insert_resource(NightMode::default())
         .insert_resource(CrtMode::default())
         .insert_resource(VsyncMode::default())
+        .insert_resource(modes::WindowModeSetting::default())
+        .insert_resource(modes::ResolutionSetting::default())
         .insert_resource(GameMode::default())
         .insert_resource(CameraFollow::default())
         .insert_resource(ViewMode::default())
@@ -487,13 +489,12 @@ fn main() {
             update_damage_bars,
             // Sub-tuple keeps the outer count under Bevy's 20-system cap.
             (
+                sync_ui_scale,
                 resize_upscale_sprite,
                 update_hud_camera_viewport,
-                handle_desktop_escape,
-                handle_desktop_drag_resize,
-                apply_window_mode,
                 apply_crt_mode,
                 apply_vsync_mode,
+                apply_window_mode_setting,
                 apply_camera_follow,
             ),
         ))

@@ -233,9 +233,16 @@ pub fn resize_customize_display(
     if win_w <= 0.0 || win_h <= 0.0 {
         return;
     }
-    let scale_x = (win_w / CUSTOMIZE_INTERNAL_W as f32).floor();
-    let scale_y = (win_h / CUSTOMIZE_INTERNAL_H as f32).floor();
-    let scale = scale_x.min(scale_y).max(1.0);
+    // Fractional fit-scale — matches `play_area_screen_rect` in
+    // `modes.rs`. The previous `.floor()` snapped between integer
+    // multiples and left wide letterbox gutters on most window sizes;
+    // nearest-neighbour sampling on the render-target image preserves
+    // the chunky-pixel look at fractional scales. The cursor mapping
+    // in `CustomizeViewport::window_to_spec` divides by this same
+    // `scale`, so hit-areas stay accurate whatever the value.
+    let scale_x = win_w / CUSTOMIZE_INTERNAL_W as f32;
+    let scale_y = win_h / CUSTOMIZE_INTERNAL_H as f32;
+    let scale = scale_x.min(scale_y).max(0.5);
 
     let display_w = CUSTOMIZE_INTERNAL_W as f32 * scale;
     let display_h = CUSTOMIZE_INTERNAL_H as f32 * scale;

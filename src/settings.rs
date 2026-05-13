@@ -23,7 +23,10 @@ use bevy::prelude::*;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::modes::{CrtMode, NightMode, VsyncMode};
+use crate::modes::{
+    CrtMode, NightMode, ResolutionKind, ResolutionSetting, VsyncMode, WindowModeKind,
+    WindowModeSetting,
+};
 
 /// Snapshot of every persisted setting. Lives as a resource only so the
 /// load + save systems can share the same struct shape; runtime reads /
@@ -33,14 +36,24 @@ pub struct Settings {
     pub night: bool,
     pub crt: bool,
     pub vsync: bool,
+    pub window_mode: WindowModeKind,
+    pub resolution: ResolutionKind,
 }
 
 impl Settings {
-    fn from_modes(night: &NightMode, crt: &CrtMode, vsync: &VsyncMode) -> Self {
+    fn from_modes(
+        night: &NightMode,
+        crt: &CrtMode,
+        vsync: &VsyncMode,
+        win_mode: &WindowModeSetting,
+        res: &ResolutionSetting,
+    ) -> Self {
         Self {
             night: night.active,
             crt: crt.active,
             vsync: vsync.enabled,
+            window_mode: win_mode.mode,
+            resolution: res.res,
         }
     }
 }
@@ -69,11 +82,19 @@ fn parse(blob: &str) -> Settings {
     let mut s = Settings::default();
     for line in blob.lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
-        let v = v.trim() == "true";
-        match k.trim() {
-            "night" => s.night = v,
-            "crt"   => s.crt   = v,
-            "vsync" => s.vsync = v,
+        let key = k.trim();
+        let val = v.trim();
+        let bool_val = val == "true";
+        match key {
+            "night" => s.night = bool_val,
+            "crt"   => s.crt   = bool_val,
+            "vsync" => s.vsync = bool_val,
+            "window_mode" => if let Some(m) = WindowModeKind::parse(val) {
+                s.window_mode = m;
+            },
+            "resolution"  => if let Some(r) = ResolutionKind::parse(val) {
+                s.resolution = r;
+            },
             _ => {}
         }
     }
@@ -81,7 +102,14 @@ fn parse(blob: &str) -> Settings {
 }
 
 fn serialize(s: &Settings) -> String {
-    format!("night={}\ncrt={}\nvsync={}\n", s.night, s.crt, s.vsync)
+    format!(
+        "night={}\ncrt={}\nvsync={}\nwindow_mode={}\nresolution={}\n",
+        s.night,
+        s.crt,
+        s.vsync,
+        s.window_mode.serialize(),
+        s.resolution.serialize(),
+    )
 }
 
 /// Read the settings file. Missing file / unreadable disk returns
@@ -116,6 +144,8 @@ pub fn apply_loaded_settings(
     mut night: ResMut<NightMode>,
     mut crt: ResMut<CrtMode>,
     mut vsync: ResMut<VsyncMode>,
+    mut win_mode: ResMut<WindowModeSetting>,
+    mut res: ResMut<ResolutionSetting>,
     mut commands: Commands,
     mut done: Local<bool>,
 ) {
@@ -128,19 +158,23 @@ pub fn apply_loaded_settings(
     night.active = s.night;
     crt.active = s.crt;
     vsync.enabled = s.vsync;
+    win_mode.mode = s.window_mode;
+    res.res = s.resolution;
     commands.insert_resource(s);
 }
 
-/// Watch the three mode resources for runtime flips and persist them.
-/// Cheap (3 `is_changed` checks); only writes the file when something
-/// actually changed.
+/// Watch every persisted mode resource for runtime flips and save on
+/// change. Cheap; only writes the file when something actually
+/// changed.
 pub fn persist_settings_on_change(
     night: Res<NightMode>,
     crt: Res<CrtMode>,
     vsync: Res<VsyncMode>,
+    win_mode: Res<WindowModeSetting>,
+    res: Res<ResolutionSetting>,
     mut last: Local<Option<Settings>>,
 ) {
-    let now = Settings::from_modes(&night, &crt, &vsync);
+    let now = Settings::from_modes(&night, &crt, &vsync, &win_mode, &res);
     if last.as_ref() == Some(&now) {
         return;
     }

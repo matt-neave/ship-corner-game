@@ -12,9 +12,8 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::balance::PLAY_INTERNAL;
 use crate::enemy::Enemy;
-use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
+use crate::modes::play_area_screen_rect;
 use crate::palette::PaletteMaterials;
 use crate::ui_kit::{self, theme};
 use crate::{RefinedSteel, Scrap, Steel};
@@ -148,17 +147,18 @@ pub fn update_refined_steel_text(
 pub fn update_currency_ui(
     view: Res<ViewMode>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    window_mode: Res<WindowMode>,
+    ui_scale: Res<bevy::ui::UiScale>,
     mut q: Query<(&mut Visibility, &mut Node), With<CurrencyUi>>,
 ) {
     let Ok(win) = windows.single() else { return; };
-    let (play_left, play_top, _play_w, play_h) = play_area_screen_rect(
-        win.width(), win.height(), effective_ui_width(&window_mode),
-    );
-    let upscale = (play_h / PLAY_INTERNAL as f32).max(1.0);
-    let margin = upscale * 4.0;
-    let want_left = Val::Px(play_left + margin);
-    let want_top  = Val::Px(play_top  + margin);
+    let (play_left, play_top, _play_w, _play_h) = play_area_screen_rect(win.width(), win.height());
+    // Position is a screen-pixel coord; divide by `UiScale` so the
+    // bevy_ui layout pass multiplies it back to the right place.
+    // Margin authored in design pixels so it scales with UiScale.
+    let s = ui_scale.0.max(0.0001);
+    let margin_design = 4.0;
+    let want_left = Val::Px(play_left / s + margin_design);
+    let want_top  = Val::Px(play_top  / s + margin_design);
     let want_vis = if matches!(*view, ViewMode::Map) {
         Visibility::Inherited
     } else {
@@ -237,7 +237,7 @@ pub fn update_level_status_ui(
     mode: Res<crate::modes::GameMode>,
     combat_ctx: Res<CombatContext>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    window_mode: Res<WindowMode>,
+    ui_scale: Res<bevy::ui::UiScale>,
     enemies: Query<&Enemy>,
     mut root_q: Query<(&mut Visibility, &mut Node), (With<LevelStatusUi>, Without<LevelEnemyBar>)>,
     mut text_q: Query<&mut Text, With<LevelStatusText>>,
@@ -252,14 +252,13 @@ pub fn update_level_status_ui(
     let want_vis = if visible { Visibility::Inherited } else { Visibility::Hidden };
 
     let Ok(win) = windows.single() else { return; };
-    let (play_left, play_top, play_w, play_h) = play_area_screen_rect(
-        win.width(), win.height(), effective_ui_width(&window_mode),
-    );
-    let upscale = (play_h / PLAY_INTERNAL as f32).max(1.0);
-    let margin = upscale * 4.0;
-    let want_top   = Val::Px(play_top + margin);
-    let want_left  = Val::Px(play_left);
-    let want_width = Val::Px(play_w);
+    let (play_left, play_top, play_w, _play_h) = play_area_screen_rect(win.width(), win.height());
+    // Same UiScale-compensated layout as `update_hp_bar_pixel_scale`.
+    let s = ui_scale.0.max(0.0001);
+    let margin_design = 4.0;
+    let want_top   = Val::Px(play_top / s + margin_design);
+    let want_left  = Val::Px(play_left / s);
+    let want_width = Val::Px(play_w / s);
 
     for (mut vis, mut node) in &mut root_q {
         if *vis != want_vis      { *vis = want_vis; }

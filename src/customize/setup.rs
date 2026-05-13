@@ -1038,12 +1038,29 @@ fn spawn_shop_rune_tile(
 
 // ---------- Per-frame text positioning ----------
 
-/// Sync each customize text entity's world position from its spec coord
-/// + the current display scale, and toggle visibility based on
-/// `CustomizeOpen`. Cheap (~50 entities) and unconditional.
+/// Sync each customize text entity's world position AND visual scale
+/// each frame, and toggle visibility based on `CustomizeOpen`. Cheap
+/// (~50 entities) and unconditional.
+///
+/// Two scaling factors are at play here and they're *different*:
+///
+/// - **Position** uses `viewport.display_scale` (~4 at 1280×800). The
+///   text's `CustomizeTextSpec` is authored in customize-internal
+///   pixels (320×200 canvas); multiplying by `display_scale` puts the
+///   text inside the on-screen rect of the customize sprite.
+/// - **Glyph size** uses `UiScale` (1.0 at 1280×800). Customize text
+///   lives on `UPSCALE_LAYER`, whose camera is `WindowSize` (1 world
+///   unit = 1 screen pixel), so `font_size: 16.0` would render at 16
+///   *screen* pixels regardless of window — which doesn't scale at
+///   all. Using `display_scale` for the visual scale instead (the
+///   first version of this fix) blew text up to 64 screen pixels on
+///   the design window, way too big. `UiScale` matches the bevy_ui
+///   chrome's scaling — 16 design pixels read consistently across
+///   resolutions.
 pub fn sync_customize_text(
     open: Res<super::CustomizeOpen>,
     viewport: Res<super::render::CustomizeViewport>,
+    ui_scale: Res<bevy::ui::UiScale>,
     mut q: Query<(&CustomizeTextSpec, &mut Transform, &mut Visibility), With<CustomizeText>>,
 ) {
     let want = if open.open { Visibility::Inherited } else { Visibility::Hidden };
@@ -1055,6 +1072,9 @@ pub fn sync_customize_text(
             let s = viewport.display_scale;
             tf.translation.x = spec.0.x * s;
             tf.translation.y = spec.0.y * s;
+            let scale = ui_scale.0;
+            let want_scale = Vec3::new(scale, scale, 1.0);
+            if tf.scale != want_scale { tf.scale = want_scale; }
         }
     }
 }

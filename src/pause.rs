@@ -9,7 +9,6 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 
 use crate::main_menu::{SettingsItem, SettingsItemLabel};
-use crate::modes::WindowMode;
 use crate::ui_kit::{self, theme};
 use crate::AppState;
 
@@ -89,10 +88,12 @@ pub fn setup_pause_menu(mut commands: Commands) {
             // markers so `handle_settings_item_click` (registered by
             // MainMenuPlugin, runs unconditionally) flips the matching
             // mode resource, and `update_settings_labels` keeps the
-            // ON/OFF text current.
-            spawn_pause_settings_button(root, SettingsItem::Night, "NIGHT");
-            spawn_pause_settings_button(root, SettingsItem::Crt,   "CRT");
-            spawn_pause_settings_button(root, SettingsItem::Vsync, "VSYNC");
+            // ON/OFF / cycle text current.
+            spawn_pause_settings_button(root, SettingsItem::Night,      "NIGHT");
+            spawn_pause_settings_button(root, SettingsItem::Crt,        "CRT");
+            spawn_pause_settings_button(root, SettingsItem::Vsync,      "VSYNC");
+            spawn_pause_settings_button(root, SettingsItem::WindowMode, "WINDOW");
+            spawn_pause_settings_button(root, SettingsItem::Resolution, "RES");
 
             root.spawn((
                 ui_kit::button(theme::SURFACE_RAISED),
@@ -139,13 +140,9 @@ fn spawn_pause_settings_button(
 pub fn toggle_pause_on_esc(
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<crate::AppState>>,
-    window_mode: Res<WindowMode>,
     mut next: ResMut<NextState<crate::AppState>>,
 ) {
     if !keys.just_pressed(KeyCode::Escape) {
-        return;
-    }
-    if window_mode.desktop {
         return;
     }
     match *state.get() {

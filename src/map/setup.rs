@@ -12,7 +12,7 @@ use crate::balance::{
     HULL_LEN, HULL_WIDTH, PLAY_WORLD, TURRET_MOUNTS, TURRET_POSITIONS,
 };
 use crate::components::Heading;
-use crate::modes::{effective_ui_width, play_area_screen_rect, WindowMode};
+use crate::modes::play_area_screen_rect;
 use crate::palette::{Palette, PaletteMaterials};
 use crate::ui_kit::theme;
 
@@ -248,13 +248,10 @@ pub fn update_map_slot_labels(
     state: Res<MapState>,
     view: Res<ViewMode>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    window_mode: Res<WindowMode>,
     mut q: Query<(&MapSlotLabel, &mut Node, &mut Text, &mut Visibility)>,
 ) {
     let Ok(win) = windows.single() else { return; };
-    let (play_left, play_top, play_w, play_h) = play_area_screen_rect(
-        win.width(), win.height(), effective_ui_width(&window_mode),
-    );
+    let (play_left, play_top, play_w, play_h) = play_area_screen_rect(win.width(), win.height());
     // Map sits as a square in the play-area screen rect; pad sides
     // when the play area is wider than tall (wide_play mode).
     let size = play_w.min(play_h);
