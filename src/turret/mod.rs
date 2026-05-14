@@ -33,7 +33,9 @@ pub mod heli;
 pub mod mortar;
 pub mod sharknet;
 
-pub use decor::{sync_amplifier_decor, sync_spiked_decor};
+pub use decor::{
+    sync_amplifier_decor, sync_crows_nest_decor, sync_flamethrower_decor, sync_spiked_decor,
+};
 pub use heli::{
     helicopter_ai, sync_helipad_helicopters, sync_helipad_nose_barrels,
 };
@@ -186,7 +188,7 @@ pub fn sync_turret_config(
             if tf.rotation != want { tf.rotation = want; }
             slot.barrel_angle = slot.mount_angle;
         }
-        slot.range_mult = 1.0;
+        slot.range_mult = crate::crows_nest::range_multiplier_for_slot(&cfg, slot.index);
         let new_barrels = s.barrels.clamp(1, 3);
         if new_barrels != slot.barrels { slot.next_barrel = 0; }
         slot.barrels = new_barrels;

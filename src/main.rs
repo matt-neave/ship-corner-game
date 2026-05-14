@@ -5,6 +5,7 @@ use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 
 mod ally;
+mod anchor_flail;
 mod balance;
 mod beam;
 mod blade;
@@ -14,6 +15,7 @@ mod boss_reward;
 mod bullet;
 mod cannon;
 mod components;
+mod crows_nest;
 mod customize;
 mod dockyard_view;
 mod effects;
@@ -59,7 +61,8 @@ use balance::{WINDOW_H, WINDOW_W};
 use beam::{beam_apply_damage, update_beams};
 use bullet::{bullet_collisions, bullet_update, process_damage_events, GreedAccumulator, PendingDamageQueue, VampireAccumulator};
 use effects::{
-    apply_hit_fx_visuals, tick_hit_fx, update_hit_particles, update_muzzle_flashes,
+    apply_hit_fx_visuals, tick_fire_particles, tick_hit_fx, update_hit_particles,
+    update_muzzle_flashes,
 };
 use enemy::{
     artillery_fire, artillery_shell_tick, bomber_detonate, boss_chaos_spawn,
@@ -113,9 +116,9 @@ use ship::{apply_velocity, friendly_movement, friendly_ram_damage, setup_world, 
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{
     helicopter_ai, mortar_shell_tick, shark_ai, shark_contact_damage,
-    sync_amplifier_decor, sync_helipad_helicopters, sync_helipad_nose_barrels,
-    sync_sharknet_sharks, sync_spiked_decor, sync_turret_config, turret_aim_fire,
-    TurretConfig,
+    sync_amplifier_decor, sync_crows_nest_decor, sync_flamethrower_decor,
+    sync_helipad_helicopters, sync_helipad_nose_barrels, sync_sharknet_sharks,
+    sync_spiked_decor, sync_turret_config, turret_aim_fire, TurretConfig,
 };
 use ui::{
     setup_damage_panel, setup_ui,
@@ -506,6 +509,7 @@ fn main() {
             main_menu::MainMenuPlugin,
             customize::CustomizePlugin,
             hull::HullSelectPlugin,
+            anchor_flail::AnchorFlailPlugin,
         ))
         .add_plugins((
             flamethrower::FlamethrowerPlugin,
@@ -602,12 +606,17 @@ fn main() {
         ).chain())
         // Bridge runs first so the rest of Update sees synced flags.
         .add_systems(Update, sync_state_to_open_resources)
-        // Weapon-decor sync — runs unconditionally; both systems
-        // self-gate on `cfg.is_changed()` so they're cheap when the
+        // Weapon-decor sync — runs unconditionally; each system
+        // self-gates on `cfg.is_changed()` so they're cheap when the
         // player isn't editing the loadout. Mirrors the blade-decor
-        // registration pattern (its own plugin) for SpikedPlate +
-        // Amplifier which previously had no deck visual.
-        .add_systems(Update, (sync_spiked_decor, sync_amplifier_decor))
+        // registration pattern for the no-base-fire weapons that
+        // previously had no deck visual.
+        .add_systems(Update, (
+            sync_spiked_decor,
+            sync_amplifier_decor,
+            sync_flamethrower_decor,
+            sync_crows_nest_decor,
+        ))
         .add_systems(OnEnter(AppState::Map), enter_map_view)
         .add_systems(OnEnter(AppState::Playing), enter_combat_view)
         // Map→Playing is the canonical stage-start hook: refill HP +
@@ -665,6 +674,7 @@ fn main() {
             update_muzzle_flashes,
             update_beams,
             update_hit_particles,
+            tick_fire_particles,
             update_score_text,
             update_fps_text,
             update_vsync_label,

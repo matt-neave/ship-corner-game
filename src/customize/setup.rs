@@ -1113,6 +1113,9 @@ pub fn turret_color_for(weapon: WeaponType) -> Color {
         WeaponType::SpikedPlate => hex(crate::palette::SPIKED_PLATE_HEX),
         WeaponType::Amplifier => Color::srgb(0.45, 0.78, 0.82),
         WeaponType::SharkNet => Color::srgb(0.18, 0.32, 0.55),
+        WeaponType::AnchorFlail => Color::srgb(0.32, 0.34, 0.38),
+        WeaponType::PlasmaTorpedo => Color::srgb(0.34, 0.18, 0.55),
+        WeaponType::CrowsNest => Color::srgb(0.36, 0.24, 0.16),
     }
 }
 
@@ -1148,6 +1151,12 @@ pub fn turret_barrel_color_for(weapon: WeaponType) -> Color {
         // Pale steel — the visible shark barrel against the
         // deep-ocean base.
         WeaponType::SharkNet => Color::srgb(0.85, 0.92, 1.00),
+        // Polished steel highlight for the anchor's iron.
+        WeaponType::AnchorFlail => Color::srgb(0.78, 0.82, 0.86),
+        // Bright cyan-violet plasma glow.
+        WeaponType::PlasmaTorpedo => Color::srgb(0.85, 0.95, 1.00),
+        // Sun-faded plank highlight for the lookout platform.
+        WeaponType::CrowsNest => Color::srgb(0.72, 0.54, 0.32),
     }
 }
 

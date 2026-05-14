@@ -244,3 +244,56 @@ pub fn update_hit_particles(
         tf.scale.z = 1.0;
     }
 }
+
+/// Per-particle colour gradient for fire puffs. Spawned alongside
+/// `HitParticle` with three material handles (hot / mid / cool); the
+/// tick system swaps the live `MeshMaterial2d` at life thresholds so
+/// each particle visibly transitions through the gradient as it ages.
+/// Also adds a small upward velocity bias each frame so cooled
+/// embers rise like real smoke instead of falling along their
+/// initial flight vector.
+#[derive(Component)]
+pub struct FireParticle {
+    pub mid: Handle<ColorMaterial>,
+    pub cool: Handle<ColorMaterial>,
+    /// Has the particle already been swapped to `mid`? Caches the
+    /// transition so we don't re-issue the same material assignment
+    /// every frame.
+    pub at_mid: bool,
+    /// Same idea for the cool stage.
+    pub at_cool: bool,
+}
+
+/// Upward (positive world-Y) acceleration applied to fire particles
+/// each second. Tuned so the rise is noticeable without overpowering
+/// the initial forward velocity.
+const FIRE_BUOYANCY: f32 = 35.0;
+/// Life-percent thresholds for the colour stages. >`HOT` = hot tip,
+/// between `HOT` and `COOL` = mid, below `COOL` = ember.
+const FIRE_HOT_THRESHOLD: f32 = 0.66;
+const FIRE_COOL_THRESHOLD: f32 = 0.30;
+
+pub fn tick_fire_particles(
+    time: Res<Time>,
+    mut q: Query<(
+        &mut FireParticle,
+        &HitParticle,
+        &mut MeshMaterial2d<ColorMaterial>,
+        &mut Velocity,
+    )>,
+) {
+    let dt = time.delta_secs();
+    for (mut fire, p, mut mat, mut vel) in &mut q {
+        // Buoyancy — older particles rise.
+        vel.0.y += FIRE_BUOYANCY * dt;
+        let t = (p.life / p.max_life.max(0.0001)).clamp(0.0, 1.0);
+        if t < FIRE_COOL_THRESHOLD && !fire.at_cool {
+            mat.0 = fire.cool.clone();
+            fire.at_cool = true;
+            fire.at_mid = true;
+        } else if t < FIRE_HOT_THRESHOLD && !fire.at_mid {
+            mat.0 = fire.mid.clone();
+            fire.at_mid = true;
+        }
+    }
+}

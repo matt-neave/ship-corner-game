@@ -89,6 +89,27 @@ pub enum WeaponType {
     /// unit weapons (HeliPad helicopter, Cage octopus), so the
     /// Autonomous synergy and `Hustle` apply uniformly.
     SharkNet,
+    /// Pirate chained-weight melee. Throws an iron anchor outward
+    /// along the slot's mount direction, then retracts it. Damages
+    /// enemies in the chain's path on BOTH the outward swing AND
+    /// the retraction, so each cycle has two damage windows.
+    /// Tiers (`barrels` 1/2/3) progressively elongate the reach
+    /// and shorten the cycle — and the anchor visual itself grows
+    /// from a simple hook → anchor with stock → full naval anchor
+    /// with stock + extra flukes.
+    AnchorFlail,
+    /// Slow heavy plasma cannon. Standard barrel-style firing path
+    /// (fires from the slot's barrels), but with massive damage,
+    /// glacial fire rate, and a bright distinct projectile. Long
+    /// range; pairs with Range / Rune Damage / Opener stacks.
+    PlasmaTorpedo,
+    /// Passive lookout / spotting platform. Doesn't fire. Every
+    /// adjacent equipped turret gets `+15% range × barrels` (i.e.
+    /// the Crow's Nest's own tier). Adjacency graph is
+    /// `balance::TURRET_ADJACENCY`, same as Booster's. Tagged
+    /// `Pirate` for the deck-mast flavour and `Support` for the
+    /// adjacency-buff family.
+    CrowsNest,
 }
 
 /// Gameplay-class tag attached to each weapon. Used by the tooltip to
@@ -349,6 +370,18 @@ impl WeaponType {
             // shark; 0.33Hz = one volley every 3 seconds. Barrels
             // add side-by-side sharks (1 / 2 / 3) for a wider sweep.
             WeaponType::SharkNet => (5, 0.33),
+            // AnchorFlail: per-hit damage value, applied to every
+            // enemy the chain sweeps through on each of the two
+            // damage windows per cycle. Cycle timing scales with
+            // barrels — see `anchor_flail.rs`.
+            WeaponType::AnchorFlail => (3, 0.6),
+            // PlasmaTorpedo: massive single-shot damage, fires once
+            // every ~3s. The damage is per-hit; pairs with Pierce.
+            WeaponType::PlasmaTorpedo => (12, 0.35),
+            // CrowsNest: doesn't fire — placeholder zeros so the
+            // stats panel reads cleanly. The adjacency range buff
+            // lives in `crows_nest::range_multiplier_for_slot`.
+            WeaponType::CrowsNest => (0, 0.0),
         }
     }
 
@@ -372,6 +405,9 @@ impl WeaponType {
             WeaponType::SpikedPlate => tr("weapon_spiked_plate"),
             WeaponType::Amplifier => tr("weapon_amplifier"),
             WeaponType::SharkNet => tr("weapon_sharknet"),
+            WeaponType::AnchorFlail => tr("weapon_anchor_flail"),
+            WeaponType::PlasmaTorpedo => tr("weapon_plasma_torpedo"),
+            WeaponType::CrowsNest => tr("weapon_crows_nest"),
         }
     }
 
@@ -396,6 +432,9 @@ impl WeaponType {
             WeaponType::SpikedPlate => tr("weapon_spiked_plate_desc"),
             WeaponType::Amplifier => tr("weapon_amplifier_desc"),
             WeaponType::SharkNet => tr("weapon_sharknet_desc"),
+            WeaponType::AnchorFlail => tr("weapon_anchor_flail_desc"),
+            WeaponType::PlasmaTorpedo => tr("weapon_plasma_torpedo_desc"),
+            WeaponType::CrowsNest => tr("weapon_crows_nest_desc"),
         }
     }
 
@@ -456,6 +495,16 @@ impl WeaponType {
             // arena so the sharks have time to mow through the
             // entire width before despawning at the far edge.
             WeaponType::SharkNet => 2.5,
+            // AnchorFlail: range_mult is a placeholder for the
+            // exhaustive match — actual reach lives on the per-
+            // tier constants in `anchor_flail.rs`.
+            WeaponType::AnchorFlail => 1.0,
+            // PlasmaTorpedo: long-range siege weapon — pairs with
+            // Range stat for arena-spanning shots.
+            WeaponType::PlasmaTorpedo => 1.8,
+            // CrowsNest: passive support, doesn't project. Placeholder
+            // so the exhaustive match builds.
+            WeaponType::CrowsNest => 1.0,
         }
     }
 
@@ -482,7 +531,9 @@ impl WeaponType {
     pub fn fires_from_base(self) -> bool {
         // SharkNet is autonomous-deployed (like HeliPad / Cage): the
         // slot spawns a persistent shark unit that hunts independently;
-        // the deck pad itself doesn't fire anything.
+        // the deck pad itself doesn't fire anything. AnchorFlail is
+        // melee chain-swing (like Blade), driven by its own AI tick.
+        // CrowsNest is passive support (like Booster).
         !matches!(
             self,
             WeaponType::HeliPad
@@ -493,6 +544,8 @@ impl WeaponType {
                 | WeaponType::SpikedPlate
                 | WeaponType::Amplifier
                 | WeaponType::SharkNet
+                | WeaponType::AnchorFlail
+                | WeaponType::CrowsNest
         )
     }
 
@@ -504,6 +557,9 @@ impl WeaponType {
     /// `sync_turret_config` uses this to hide the barrel meshes when
     /// the slot's weapon doesn't have any.
     pub fn has_barrels(self) -> bool {
+        // AnchorFlail uses its own anchor + chain decor; CrowsNest
+        // shows a mast/lookout instead of cannon barrels. Both
+        // exclude the standard barrel meshes.
         !matches!(
             self,
             WeaponType::HeliPad
@@ -513,6 +569,8 @@ impl WeaponType {
                 | WeaponType::Flamethrower
                 | WeaponType::SpikedPlate
                 | WeaponType::Amplifier
+                | WeaponType::AnchorFlail
+                | WeaponType::CrowsNest
         )
     }
 
@@ -555,6 +613,16 @@ impl WeaponType {
             // counts toward the autonomous synergy alongside HeliPad
             // and Cage — thematic kin with deployed-unit weapons.
             WeaponType::SharkNet => &[WeaponTag::Autonomous],
+            // AnchorFlail: Pirate chain-weight + Melee for the same
+            // reasons Harpoon double-tags — fits both the scrap-
+            // synergy pirate family and the in-your-face melee
+            // engagement family.
+            WeaponType::AnchorFlail => &[WeaponTag::Pirate, WeaponTag::Melee],
+            // PlasmaTorpedo: sci-fi heavy ordnance.
+            WeaponType::PlasmaTorpedo => &[WeaponTag::Future],
+            // CrowsNest: Pirate flavour (deck mast / lookout) +
+            // Support for the adjacency-buff family.
+            WeaponType::CrowsNest => &[WeaponTag::Pirate, WeaponTag::Support],
         }
     }
 
@@ -595,6 +663,9 @@ impl PaletteMaterials {
             WeaponType::SpikedPlate => &self.turret_spiked_plate,
             WeaponType::Amplifier => &self.turret_amplifier,
             WeaponType::SharkNet => &self.turret_sharknet,
+            WeaponType::AnchorFlail => &self.turret_anchor_flail,
+            WeaponType::PlasmaTorpedo => &self.turret_plasma_torpedo,
+            WeaponType::CrowsNest => &self.turret_crows_nest,
         }
     }
 
@@ -630,6 +701,13 @@ impl PaletteMaterials {
             // hefty piercing projectile distinct from the standard
             // friendly tracer colour.
             WeaponType::SharkNet => &self.bullet_sharknet_outer,
+            // AnchorFlail never spawns bullets — the anchor + chain
+            // is its own decor. Fallback to friendly.
+            WeaponType::AnchorFlail => &self.bullet_friendly_outer,
+            // PlasmaTorpedo: glowing purple outer envelope.
+            WeaponType::PlasmaTorpedo => &self.bullet_plasma_outer,
+            // CrowsNest never spawns bullets — passive support.
+            WeaponType::CrowsNest => &self.bullet_friendly_outer,
         }
     }
 
@@ -653,6 +731,9 @@ impl PaletteMaterials {
             WeaponType::SpikedPlate => &self.bullet_friendly,
             WeaponType::Amplifier => &self.bullet_friendly,
             WeaponType::SharkNet => &self.bullet_sharknet,
+            WeaponType::AnchorFlail => &self.bullet_friendly,
+            WeaponType::PlasmaTorpedo => &self.bullet_plasma,
+            WeaponType::CrowsNest => &self.bullet_friendly,
         }
     }
 }

@@ -25,8 +25,9 @@ use crate::weapon::WeaponType;
 #[derive(Component)]
 pub struct SpikedDecor;
 
-/// Side-by-side spacing between the two spike triangles. Tuned so the
-/// pair reads as a "row of spikes" rather than a single chunky shape.
+/// Side-by-side spacing between adjacent spikes in a multi-spike
+/// unit. Tuned so the row reads as distinct teeth rather than a
+/// single chunky shape.
 const SPIKE_LATERAL_GAP: f32 = 1.6;
 /// Base width of each triangle (in world units).
 const SPIKE_BASE_W: f32 = 1.8;
@@ -55,7 +56,7 @@ pub fn sync_spiked_decor(
 
         // Tear down any existing spike children regardless — the
         // decor is rebuilt fresh on every cfg change, no diffing
-        // needed (the slot only owns 2 spikes max).
+        // needed (the slot only owns at most `barrels` spikes).
         let existing_children: Vec<Entity> = children
             .into_iter()
             .flat_map(|c| c.iter())
@@ -69,7 +70,7 @@ pub fn sync_spiked_decor(
 
         // Triangle pointing along local +Y (the slot's mount-forward
         // direction since the slot entity is already rotated to its
-        // mount angle). Built once and shared across both spikes +
+        // mount angle). Built once and shared across every spike +
         // every SpikedPlate slot in the same frame.
         let mesh_h = spike_mesh
             .get_or_insert_with(|| meshes.add(Triangle2d::new(
@@ -79,8 +80,21 @@ pub fn sync_spiked_decor(
             )))
             .clone();
 
-        for side in [-1.0_f32, 1.0_f32] {
-            let lateral = side * SPIKE_LATERAL_GAP * 0.5;
+        // Spike count scales with `barrels` — 1/2/3 tiers map to
+        // 1/2/3 teeth on the plate. Layout mirrors the standard
+        // multi-barrel turret: centre when n=1, port+stbd when n=2,
+        // port+centre+stbd when n=3.
+        let n = s.barrels.clamp(1, 3);
+        for i in 0..n {
+            let lateral = match (n, i) {
+                (1, _) => 0.0,
+                (2, 0) => -SPIKE_LATERAL_GAP * 0.5,
+                (2, _) =>  SPIKE_LATERAL_GAP * 0.5,
+                (3, 0) => -SPIKE_LATERAL_GAP,
+                (3, 1) =>  0.0,
+                (3, _) =>  SPIKE_LATERAL_GAP,
+                _ => 0.0,
+            };
             let spike = commands.spawn((
                 Mesh2d(mesh_h.clone()),
                 MeshMaterial2d(pm.bullet_friendly.clone()),
@@ -93,6 +107,143 @@ pub fn sync_spiked_decor(
             )).id();
             commands.entity(spike).insert(ChildOf(slot_entity));
         }
+    }
+}
+
+// ---------- Crow's Nest decor ----------
+
+#[derive(Component)]
+pub struct CrowsNestDecor;
+
+/// Height of the mast pole rising from the deck pad. Reads as a
+/// vertical post even at the chunky-pixel scale.
+const NEST_MAST_HEIGHT: f32 = 3.6;
+const NEST_MAST_WIDTH: f32 = 0.7;
+/// Radius of the lookout platform sitting on top of the mast.
+const NEST_PLATFORM_RADIUS: f32 = 1.5;
+
+pub fn sync_crows_nest_decor(
+    mut commands: Commands,
+    cfg: Res<TurretConfig>,
+    pm: Option<Res<PaletteMaterials>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    slots: Query<(Entity, &TurretSlot, Option<&Children>)>,
+    existing: Query<Entity, With<CrowsNestDecor>>,
+) {
+    if !cfg.is_changed() { return; }
+    let Some(pm) = pm else { return; };
+
+    let mut mast_mesh: Option<Handle<Mesh>> = None;
+    let mut platform_mesh: Option<Handle<Mesh>> = None;
+
+    for (slot_entity, slot, children) in &slots {
+        let s = cfg.slots[slot.index];
+        let want = s.equipped && matches!(s.weapon, WeaponType::CrowsNest);
+
+        let existing_children: Vec<Entity> = children
+            .into_iter()
+            .flat_map(|c| c.iter())
+            .filter(|c| existing.get(*c).is_ok())
+            .collect();
+        for e in existing_children {
+            commands.entity(e).despawn();
+        }
+
+        if !want { continue; }
+
+        let mast_h = mast_mesh
+            .get_or_insert_with(|| meshes.add(Rectangle::new(NEST_MAST_WIDTH, NEST_MAST_HEIGHT)))
+            .clone();
+        let platform_h = platform_mesh
+            .get_or_insert_with(|| meshes.add(Circle::new(NEST_PLATFORM_RADIUS)))
+            .clone();
+
+        // Mast — centred at +NEST_MAST_HEIGHT/2 so the base sits on
+        // the deck pad and the top reaches +NEST_MAST_HEIGHT. Local
+        // +Y is the slot's mount-forward (and the mast's "up").
+        let mast = commands.spawn((
+            Mesh2d(mast_h),
+            MeshMaterial2d(pm.turret_crows_nest.clone()),
+            Transform::from_xyz(0.0, NEST_MAST_HEIGHT * 0.5, 0.05),
+            CrowsNestDecor,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(mast).insert(ChildOf(slot_entity));
+
+        // Lookout platform — circle sitting atop the mast at the
+        // tip. Slightly higher z so it draws on top of the mast.
+        let platform = commands.spawn((
+            Mesh2d(platform_h),
+            MeshMaterial2d(pm.crows_nest_top.clone()),
+            Transform::from_xyz(0.0, NEST_MAST_HEIGHT, 0.10),
+            CrowsNestDecor,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(platform).insert(ChildOf(slot_entity));
+    }
+}
+
+// ---------- Flamethrower nozzle decor ----------
+
+#[derive(Component)]
+pub struct FlamethrowerNozzle;
+
+/// Short nozzle length pointing forward from the deck pad. Reads as
+/// "this is where the flame comes out" — without it the slot just
+/// looks like a coloured circle.
+const NOZZLE_LENGTH: f32 = 3.0;
+/// Nozzle width — narrow so it looks like a focused tube, matching
+/// the new tight 20° cone.
+const NOZZLE_WIDTH: f32 = 1.2;
+/// Distance from slot centre to the BASE of the nozzle. Pushes it
+/// off the deck-pad sprite so it visibly extends outward.
+const NOZZLE_FORWARD_OFFSET: f32 = 1.4;
+
+pub fn sync_flamethrower_decor(
+    mut commands: Commands,
+    cfg: Res<TurretConfig>,
+    pm: Option<Res<PaletteMaterials>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    slots: Query<(Entity, &TurretSlot, Option<&Children>)>,
+    existing: Query<Entity, With<FlamethrowerNozzle>>,
+) {
+    if !cfg.is_changed() { return; }
+    let Some(pm) = pm else { return; };
+
+    let mut nozzle_mesh: Option<Handle<Mesh>> = None;
+
+    for (slot_entity, slot, children) in &slots {
+        let s = cfg.slots[slot.index];
+        let want = s.equipped && matches!(s.weapon, WeaponType::Flamethrower);
+
+        let existing_children: Vec<Entity> = children
+            .into_iter()
+            .flat_map(|c| c.iter())
+            .filter(|c| existing.get(*c).is_ok())
+            .collect();
+        for e in existing_children {
+            commands.entity(e).despawn();
+        }
+
+        if !want { continue; }
+
+        // Rectangle centred at +NOZZLE_LENGTH/2 so the BASE sits on
+        // the deck pad and the tip projects forward by NOZZLE_LENGTH.
+        // Local +Y is the slot's mount-forward direction (the slot
+        // entity is already rotated by `mount_angle`).
+        let mesh_h = nozzle_mesh
+            .get_or_insert_with(|| meshes.add(Rectangle::new(NOZZLE_WIDTH, NOZZLE_LENGTH)))
+            .clone();
+        let nozzle = commands.spawn((
+            Mesh2d(mesh_h),
+            // Reuse the flamethrower deck tint so the nozzle reads
+            // as part of the same machinery, not a foreign piece.
+            MeshMaterial2d(pm.turret_flamethrower.clone()),
+            Transform::from_xyz(0.0, NOZZLE_FORWARD_OFFSET + NOZZLE_LENGTH * 0.5, 0.05),
+            FlamethrowerNozzle,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(nozzle).insert(ChildOf(slot_entity));
     }
 }
 

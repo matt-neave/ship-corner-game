@@ -225,6 +225,9 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         WeaponType::SpikedPlate,
         WeaponType::Amplifier,
         WeaponType::SharkNet,
+        WeaponType::AnchorFlail,
+        WeaponType::PlasmaTorpedo,
+        WeaponType::CrowsNest,
     ];
     let runes_pool = [
         Rune::Fire,

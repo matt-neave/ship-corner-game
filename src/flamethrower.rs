@@ -25,7 +25,7 @@ use rand::Rng;
 use crate::balance::PLAY_LAYER;
 use crate::bullet::{DamageSource, PendingDamageQueue};
 use crate::components::{Friendly, Heading, Velocity};
-use crate::effects::{EffectMeshes, HitParticle};
+use crate::effects::{EffectMeshes, FireParticle, HitParticle};
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
 use crate::turret::{TurretConfig, TurretSlot};
@@ -46,11 +46,16 @@ const FLAMETHROWER_HALF_ANGLE: f32 = 0.175;
 const FLAMETHROWER_BURN_DURATION: f32 = 3.0;
 /// Duration of the cooldown phase, seconds.
 const FLAMETHROWER_COOLDOWN_DURATION: f32 = 3.0;
-/// Particles emitted PER FRAME during the active phase. The spew is
-/// continuous (independent of the damage cadence) so the flame
-/// visibly fills the cone the entire time the burner is on, even
-/// though damage still ticks on `1.0 / fire_rate` intervals.
-const FLAMETHROWER_PARTICLES_PER_FRAME: u32 = 4;
+/// Pair-emissions PER FRAME during the active phase. Each emission
+/// spawns TWO particles at the same position: a larger dark outer
+/// stroke and a smaller bright inner core. The size difference reads
+/// as a dark outline around a glowing core (pixel-art fire pattern).
+/// Spew is continuous — independent of the damage cadence — so the
+/// flame visibly fills the cone the entire time the burner is on.
+const FLAMETHROWER_PARTICLES_PER_FRAME: u32 = 3;
+/// Outer-stroke radius multiplier relative to the inner core. >1.0
+/// means the dark stroke wraps the bright inner with a visible rim.
+const FLAMETHROWER_STROKE_SCALE: f32 = 1.55;
 /// Particle velocity range. Tuned so `speed × life ≈ FLAMETHROWER_REACH`
 /// — particles visibly travel the full damage cone rather than
 /// dying within the first quarter.
@@ -185,40 +190,47 @@ pub fn flamethrower_tick(
 
         // Damage tick on `1.0 / fire_rate` cadence. With default
         // fire_rate=2 this fires every 0.5s during the active phase.
+        // The particle spew below runs UNCONDITIONALLY each frame so
+        // the visible flame is continuous even on non-damage frames —
+        // visual cadence and damage cadence are decoupled.
         ft.tick_timer -= dt;
-        if ft.tick_timer > 0.0 { continue; }
-        let rate = slot.fire_rate.max(0.1);
-        ft.tick_timer = 1.0 / rate;
+        let damage_frame = ft.tick_timer <= 0.0;
+        if damage_frame {
+            let rate = slot.fire_rate.max(0.1);
+            ft.tick_timer = 1.0 / rate;
 
-        let damage = slot.damage.max(1);
-        let source = Some(DamageSource::PlayerSlot(slot.index as u8));
-        let reach2 = FLAMETHROWER_REACH * FLAMETHROWER_REACH;
-        let cos_half = FLAMETHROWER_HALF_ANGLE.cos();
-        for (e, etf, en) in &enemies {
-            let ep = etf.translation.truncate();
-            let to = ep - slot_world;
-            let d2 = to.length_squared();
-            let er = 3.5 * en.variant.scale();
-            let reach = (FLAMETHROWER_REACH + er) * (FLAMETHROWER_REACH + er);
-            if d2 > reach { continue; }
-            if d2 < 0.001 {
+            let damage = slot.damage.max(1);
+            let source = Some(DamageSource::PlayerSlot(slot.index as u8));
+            let cos_half = FLAMETHROWER_HALF_ANGLE.cos();
+            for (e, etf, en) in &enemies {
+                let ep = etf.translation.truncate();
+                let to = ep - slot_world;
+                let d2 = to.length_squared();
+                let er = 3.5 * en.variant.scale();
+                let reach = (FLAMETHROWER_REACH + er) * (FLAMETHROWER_REACH + er);
+                if d2 > reach { continue; }
+                if d2 < 0.001 {
+                    queue.push_initial(e, damage, ep, WeaponType::Flamethrower, source, &slot.runes);
+                    continue;
+                }
+                let dir = to / d2.sqrt();
+                // Cone check via cosine of the angle between forward and
+                // direction-to-enemy. cosθ ≥ cos(half) ⇔ within the cone.
+                if dir.dot(forward) < cos_half { continue; }
                 queue.push_initial(e, damage, ep, WeaponType::Flamethrower, source, &slot.runes);
-                continue;
             }
-            let dir = to / d2.sqrt();
-            // Cone check via cosine of the angle between forward and
-            // direction-to-enemy. cosθ ≥ cos(half) ⇔ within the cone.
-            if dir.dot(forward) < cos_half { continue; }
-            queue.push_initial(e, damage, ep, WeaponType::Flamethrower, source, &slot.runes);
         }
 
-        // Flame particles fanning out from the nozzle. Reuses the
-        // Fire-rune material so the visible spit reads as fire even
-        // though we don't apply OnFire. Speed × life is tuned so
-        // particles cover the full cone reach — the spray visibly
-        // tells the player the damage area.
-        let _ = reach2; // kept for future range-based fx scaling
-        for _ in 0..FLAMETHROWER_PARTICLES_PER_TICK {
+        // Flame puffs every frame the burner is Active. Each puff is
+        // a PAIR — a larger dark outer stroke at z=5.4 and a smaller
+        // bright inner core at z=5.5, both moving on the same
+        // velocity vector. The size differential reads as a dark
+        // rim around a glowing core (the pixel-art fire silhouette).
+        // The inner carries `FireParticle` so its material cycles
+        // through hot → mid → cool over its life; the outer stays
+        // a constant dark stroke. Both shrink together via the
+        // shared `HitParticle` fade.
+        for _ in 0..FLAMETHROWER_PARTICLES_PER_FRAME {
             let spread = rng.gen_range(-FLAMETHROWER_HALF_ANGLE..FLAMETHROWER_HALF_ANGLE);
             let pa = total_angle + spread;
             let pdir = Vec2::new(-pa.sin(), pa.cos());
@@ -228,17 +240,47 @@ pub fn flamethrower_tick(
             let life = rng.gen_range(
                 FLAMETHROWER_PARTICLE_LIFE_MIN..FLAMETHROWER_PARTICLE_LIFE_MAX,
             );
-            let scale = rng.gen_range(0.6..1.1);
+            let inner_scale = rng.gen_range(0.6..1.1);
+            let outer_scale = inner_scale * FLAMETHROWER_STROKE_SCALE;
+            let vel_vec = pdir * speed;
+            let pos = Vec3::new(slot_world.x, slot_world.y, 5.4);
+
+            // OUTER dark stroke — constant cool colour, no
+            // FireParticle so it stays the rim while the inner
+            // cycles through bright stages.
             commands.spawn((
                 Mesh2d(em.particle.clone()),
-                MeshMaterial2d(pm.fire.clone()),
+                MeshMaterial2d(pm.fire_cool.clone()),
                 Transform {
-                    translation: Vec3::new(slot_world.x, slot_world.y, 5.5),
-                    scale: Vec3::new(scale, scale, 1.0),
+                    translation: pos,
+                    scale: Vec3::new(outer_scale, outer_scale, 1.0),
                     ..default()
                 },
-                HitParticle { life, max_life: life, base_scale: scale },
-                Velocity(pdir * speed),
+                HitParticle { life, max_life: life, base_scale: outer_scale },
+                Velocity(vel_vec),
+                RenderLayers::layer(PLAY_LAYER),
+            ));
+
+            // INNER bright core — spawns at the HOT tip colour;
+            // `tick_fire_particles` swaps to `fire` then `fire_cool`
+            // as the puff ages. Rendered slightly in front of the
+            // outer so the bright pixel sits on top of the rim.
+            commands.spawn((
+                Mesh2d(em.particle.clone()),
+                MeshMaterial2d(pm.fire_hot.clone()),
+                Transform {
+                    translation: Vec3::new(pos.x, pos.y, 5.5),
+                    scale: Vec3::new(inner_scale, inner_scale, 1.0),
+                    ..default()
+                },
+                HitParticle { life, max_life: life, base_scale: inner_scale },
+                FireParticle {
+                    mid: pm.fire.clone(),
+                    cool: pm.fire_cool.clone(),
+                    at_mid: false,
+                    at_cool: false,
+                },
+                Velocity(vel_vec),
                 RenderLayers::layer(PLAY_LAYER),
             ));
         }

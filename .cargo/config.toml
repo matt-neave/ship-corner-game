@@ -1,7 +1,16 @@
-# Use rust-lld (LLVM's linker, ships with the Rust toolchain) for
-# Windows MSVC builds. Significantly faster incremental linking than
-# the default MSVC linker — stacks with the `dev` Cargo feature that
-# enables `bevy/dynamic_linking` for the biggest iteration-speed win.
+# Use `lld-link.exe` — lld's MSVC-compatible frontend — for faster
+# linking than the default MSVC `link.exe`. Ships with LLVM/Clang
+# (`winget install LLVM.LLVM` if not already installed). Distinct
+# from `rust-lld` which produced "undefined symbol: anon.XXX.llvm.YYY"
+# failures against `bevy_dylib`'s anonymous LLVM symbols on this
+# project — `lld-link.exe` handles those correctly.
+#
+# Stacks with `cargo run --features dev` which enables Bevy's
+# dynamic-linking feature so Bevy isn't rebuilt on edits. If
+# `lld-link.exe` isn't found on PATH, fall back to deleting these
+# lines (the build will use `link.exe` from the MSVC toolchain).
 [target.x86_64-pc-windows-msvc]
-linker = "rust-lld.exe"
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+# Absolute path because the LLVM installer didn't add its `bin`
+# directory to system PATH on this machine — `where lld-link.exe`
+# came up empty. Hardcoding avoids a manual PATH fix.
+linker = "C:\\Program Files\\LLVM\\bin\\lld-link.exe"

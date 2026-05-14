@@ -242,6 +242,14 @@ pub const MINE_INNER_HEX: &str = "#ff4d4d";
 
 // ---------- Status-effect tints ----------
 pub const FIRE_HEX:  &str = "#ff8030"; // bright fire orange
+/// Hot tip of a fresh flame particle — near-white with a yellow tint.
+/// Flamethrower particles spawn at this colour and swap to `FIRE_HEX`
+/// then `FIRE_COOL_HEX` as they age, giving each puff a real-fire
+/// hot-to-ember gradient.
+pub const FIRE_HOT_HEX:  &str = "#fff2a0";
+/// Cool end of a fading flame — a dark red-brown ember. Particles
+/// land here in the last third of their life before despawning.
+pub const FIRE_COOL_HEX: &str = "#5a2018";
 pub const FROST_HEX: &str = "#80d8ff"; // cool sky blue (cyan-ish, distinct from fire)
 pub const SHOCK_HEX: &str = "#ffe680"; // electric yellow (lightning arc)
 pub const BLEED_HEX: &str = "#b21030"; // deep crimson (DoT blood drips)
@@ -416,6 +424,22 @@ pub struct PaletteMaterials {
     /// Live shark autonomous-unit body tint — neutral grey reading
     /// as "wildlife", distinct from the deep-blue deck launcher.
     pub shark_body: Handle<ColorMaterial>,
+    /// AnchorFlail launcher deck tint — weathered iron, distinct
+    /// from the bronze Harpoon mount.
+    pub turret_anchor_flail: Handle<ColorMaterial>,
+    /// Brighter steel for the swung anchor's hooks + crossbar at
+    /// the chain's tip. The chain itself reuses `harpoon_chain`.
+    pub anchor_iron: Handle<ColorMaterial>,
+    /// PlasmaTorpedo launcher deck tint — deep violet steel.
+    pub turret_plasma_torpedo: Handle<ColorMaterial>,
+    /// PlasmaTorpedo bullet body / glow.
+    pub bullet_plasma: Handle<ColorMaterial>,
+    pub bullet_plasma_outer: Handle<ColorMaterial>,
+    /// CrowsNest deck-mast tint — dark wood reading as a ship's
+    /// rigging post.
+    pub turret_crows_nest: Handle<ColorMaterial>,
+    /// CrowsNest lookout-platform tint — lighter sun-faded wood.
+    pub crows_nest_top: Handle<ColorMaterial>,
     /// Ship-class hull tints — one per `ShipClass`. Looked up via
     /// `ally::PaletteMaterials::hull_for_class`.
     pub pirate_hull: Handle<ColorMaterial>,
@@ -460,6 +484,12 @@ pub struct PaletteMaterials {
     pub bullet_missile_inner: Handle<ColorMaterial>,
     /// Fire-rune particle color (also reused for other future fire FX).
     pub fire:  Handle<ColorMaterial>,
+    /// Hot tip of a flame puff — flamethrower particles spawn here
+    /// and fade through `fire` → `fire_cool` over their life.
+    pub fire_hot:  Handle<ColorMaterial>,
+    /// Cooled / dying ember colour — the final frame of a fire
+    /// particle's life before despawn.
+    pub fire_cool: Handle<ColorMaterial>,
     /// Frost-rune particle color (cyan mist).
     pub frost: Handle<ColorMaterial>,
     /// Shock-rune lightning + particle color (electric yellow).
@@ -577,6 +607,23 @@ impl PaletteMaterials {
             // read as "wildlife in the water" against the navy
             // deck launcher's deep-blue tint.
             shark_body:            materials.add(Color::srgb(0.42, 0.46, 0.50)),
+            // Weathered iron base for the AnchorFlail launcher.
+            turret_anchor_flail:   materials.add(Color::srgb(0.32, 0.34, 0.38)),
+            // Brighter steel for the anchor head + crossbar — same
+            // family as the Spike Plate tips so the "polished steel
+            // on dark iron" read carries across pirate-melee weapons.
+            anchor_iron:           materials.add(Color::srgb(0.78, 0.82, 0.86)),
+            // Deep violet for the Plasma Torpedo deck launcher.
+            turret_plasma_torpedo: materials.add(Color::srgb(0.34, 0.18, 0.55)),
+            // Plasma projectile colours — bright cyan-white core
+            // inside a violet envelope. Reads as energy weaponry
+            // distinct from every other bullet on the screen.
+            bullet_plasma:         materials.add(Color::srgb(0.85, 0.95, 1.00)),
+            bullet_plasma_outer:   materials.add(Color::srgb(0.55, 0.30, 0.85)),
+            // Dark mast wood for the CrowsNest base.
+            turret_crows_nest:     materials.add(Color::srgb(0.36, 0.24, 0.16)),
+            // Sun-faded plank wood for the lookout platform on top.
+            crows_nest_top:        materials.add(Color::srgb(0.72, 0.54, 0.32)),
             bullet_mortar:         materials.add(hex(MORTAR_BRIGHT_HEX)),
             bullet_mortar_outer:   materials.add(mortar),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),
@@ -601,6 +648,8 @@ impl PaletteMaterials {
             heal:                  materials.add(hex(HEAL_HEX)),
             ally_flag:             materials.add(Color::WHITE),
             fire:                  materials.add(hex(FIRE_HEX)),
+            fire_hot:              materials.add(hex(FIRE_HOT_HEX)),
+            fire_cool:             materials.add(hex(FIRE_COOL_HEX)),
             frost:                 materials.add(hex(FROST_HEX)),
             shock:                 materials.add(hex(SHOCK_HEX)),
             bleed:                 materials.add(hex(BLEED_HEX)),
