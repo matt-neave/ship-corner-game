@@ -62,6 +62,7 @@ impl Plugin for HullSelectPlugin {
                 (
                     handle_card_click,
                     handle_map_size_click,
+                    handle_difficulty_click,
                     handle_play_click,
                     handle_back_click,
                     handle_back_on_esc,
@@ -309,6 +310,12 @@ pub struct HullSelectRoot;
 #[derive(Component, Clone, Copy)]
 pub struct MapSizeButton(pub crate::map::MapSize);
 
+/// Marker on each difficulty button (0/1/2). Read by
+/// `handle_difficulty_click` to write the `Difficulty` resource; the
+/// overlay rebuilds on the resource change to re-tint the active pill.
+#[derive(Component, Clone, Copy)]
+pub struct DifficultyButton(pub u8);
+
 #[derive(Component, Clone, Copy)]
 pub struct HullCard(pub Hull);
 
@@ -323,13 +330,14 @@ pub fn enter_hull_select(
     selected: Res<SelectedHull>,
     preview: Res<PreviewHull>,
     map_size: Res<crate::map::MapSize>,
+    difficulty: Res<crate::Difficulty>,
     hull_preview: Res<crate::dockyard_view::HullPreviewImage>,
 ) {
     // Detail panel reflects the hover preview when present, else the
     // committed selection. The hull-tile grid below reads
     // `SelectedHull` directly for its highlight state.
     let panel_hull = preview.0.unwrap_or(selected.0);
-    spawn_overlay(commands, panel_hull, selected.0, *map_size, &hull_preview.0);
+    spawn_overlay(commands, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0);
 }
 
 fn spawn_overlay(
@@ -337,6 +345,7 @@ fn spawn_overlay(
     panel_hull: Hull,
     selected_hull: Hull,
     map_size: crate::map::MapSize,
+    difficulty: crate::Difficulty,
     hull_preview_image: &Handle<Image>,
 ) {
     commands
@@ -434,6 +443,20 @@ fn spawn_overlay(
                     ));
                     for &size in crate::map::MapSize::ALL {
                         spawn_map_size_pill(run, size, size == map_size);
+                    }
+                    run.spawn((
+                        Node {
+                            margin: UiRect::top(Val::Px(theme::GAP_MD)),
+                            ..default()
+                        },
+                        ui_kit::label(
+                            "DIFFICULTY",
+                            theme::FONT_LG,
+                            theme::ACCENT,
+                        ),
+                    ));
+                    for &value in crate::Difficulty::VALUES {
+                        spawn_difficulty_pill(run, value, value == difficulty.0);
                     }
                     // Spacer pushes PLAY + BACK to the card bottom.
                     run.spawn(Node {
@@ -624,6 +647,39 @@ fn spawn_hull_tile(parent: &mut ChildSpawnerCommands, hull: Hull, selected: bool
         ))
         .with_children(|t| {
             t.spawn(ui_kit::label(hull.label(), theme::FONT_MD, text_color));
+        });
+}
+
+/// One difficulty pill (0 / 1 / 2). Same visual treatment as the
+/// VOYAGE LENGTH pills above.
+fn spawn_difficulty_pill(
+    parent: &mut ChildSpawnerCommands,
+    value: u8,
+    active: bool,
+) {
+    let (bg, border, label_color) = if active {
+        (theme::ACCENT, theme::ACCENT, Color::BLACK)
+    } else {
+        (theme::SURFACE_RAISED, theme::BORDER_SUBTLE, theme::ON_SURFACE)
+    };
+    let label = crate::Difficulty(value).label();
+    parent
+        .spawn((
+            Button,
+            Node {
+                padding: UiRect::axes(Val::Px(theme::PAD_MD), Val::Px(theme::PAD_SM)),
+                border: UiRect::all(Val::Px(theme::BORDER_W)),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(bg),
+            BorderColor(border),
+            DifficultyButton(value),
+        ))
+        .with_children(|pill| {
+            pill.spawn(ui_kit::label(label, theme::FONT_MD, label_color));
         });
 }
 
@@ -861,19 +917,26 @@ pub fn sync_hull_select_on_change(
     selected: Res<SelectedHull>,
     preview: Res<PreviewHull>,
     map_size: Res<crate::map::MapSize>,
+    difficulty: Res<crate::Difficulty>,
     commands: Commands,
     q: Query<Entity, With<HullSelectRoot>>,
     state: Res<State<crate::AppState>>,
     hull_preview: Res<crate::dockyard_view::HullPreviewImage>,
 ) {
-    if !selected.is_changed() && !preview.is_changed() && !map_size.is_changed() { return; }
+    if !selected.is_changed()
+        && !preview.is_changed()
+        && !map_size.is_changed()
+        && !difficulty.is_changed()
+    {
+        return;
+    }
     if *state.get() != crate::AppState::HullSelect { return; }
     let mut commands = commands;
     for e in &q {
         commands.entity(e).despawn();
     }
     let panel_hull = preview.0.unwrap_or(selected.0);
-    spawn_overlay(commands, panel_hull, selected.0, *map_size, &hull_preview.0);
+    spawn_overlay(commands, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0);
 }
 
 /// Click handler — commit the player's pick to the `MapSize` resource.
@@ -886,6 +949,22 @@ pub fn handle_map_size_click(
         if matches!(*interaction, Interaction::Pressed) {
             if *map_size != btn.0 {
                 *map_size = btn.0;
+            }
+            return;
+        }
+    }
+}
+
+/// Click handler — commit the player's difficulty pick. The rebuild
+/// system picks up the change and re-tints the active pill.
+pub fn handle_difficulty_click(
+    interactions: Query<(&Interaction, &DifficultyButton), Changed<Interaction>>,
+    mut difficulty: ResMut<crate::Difficulty>,
+) {
+    for (interaction, btn) in &interactions {
+        if matches!(*interaction, Interaction::Pressed) {
+            if difficulty.0 != btn.0 {
+                difficulty.0 = btn.0;
             }
             return;
         }

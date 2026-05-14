@@ -131,7 +131,7 @@ pub fn spawn_harpoon_spear(
     damage: i32,
     source: Option<DamageSource>,
     range: f32,
-    runes: [Option<Rune>; 3],
+    runes: Vec<Rune>,
     faction: FactionKind,
 ) {
     let bullet = commands.spawn((

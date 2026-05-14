@@ -126,7 +126,11 @@ pub fn setup_world(
                 range_mult: 1.0,
                 barrels: slot.barrels.max(1),
                 next_barrel: 0,
-                runes: slot.runes,
+                // SlotCfg's `[Option<Rune>; 3]` flattens to a Vec
+                // here. `sync_turret_config` rebuilds this every
+                // frame with the proper Amplifier merge, so the
+                // initial seed just needs the right shape.
+                runes: slot.runes.iter().copied().flatten().collect(),
                 cycle_idx: 0,
             },
             RenderLayers::layer(PLAY_LAYER),
@@ -241,6 +245,7 @@ pub fn friendly_movement(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
     stats: Res<crate::stats::PlayerStats>,
+    buffs: Res<crate::rune::BuffStacks>,
     enemies: Query<&Transform, (With<Enemy>, Without<Friendly>)>,
     play_camera: Query<&Transform, (With<crate::palette::PlayCamera>, Without<Friendly>, Without<Enemy>)>,
     mut q: Query<(&mut Transform, &mut Velocity, &mut Heading), With<Friendly>>,
@@ -336,7 +341,17 @@ pub fn friendly_movement(
             heading.0 = approach_angle(heading.0, desired, stats.turn_speed.effective() * dt);
         }
         let dir = Vec2::new(-heading.0.sin(), heading.0.cos());
-        vel.0 = dir * stats.move_speed.effective();
+        // Rally rune folds in on top of the base move speed via
+        // the shared `BuffStacks` engine. Each live stack adds
+        // `+1% × rune_effect`. Stacks decay independently in
+        // `tick_buff_stacks` so the buff naturally ramps up during
+        // a melee killstreak and fades when the kills stop.
+        let rally_mult = buffs.linear_mult(
+            crate::rune::BuffId::Rally,
+            crate::rune::RALLY_PER_STACK,
+            stats.rune_damage_mult(),
+        );
+        vel.0 = dir * stats.move_speed.effective() * rally_mult;
         tf.rotation = Quat::from_rotation_z(heading.0);
     }
 }
@@ -460,6 +475,7 @@ pub fn friendly_ram_damage(
     mut commands: Commands,
     mut shake: ResMut<crate::modes::ScreenShake>,
     cfg: Res<crate::turret::TurretConfig>,
+    stats: Res<crate::stats::PlayerStats>,
     mut friendly: Query<
         (
             Entity,
@@ -515,9 +531,19 @@ pub fn friendly_ram_damage(
             // Ram damage is base + Spike Plate bonus *only if* the
             // contact lands on the slot side carrying a Spike Plate.
             // Same per-slot mapping the bullet-damage reduction uses,
-            // so plate placement matters in both directions.
+            // so plate placement matters in both directions. Thorns
+            // follows the same side-mapping rule — only the runes on
+            // the impacted slot fire, so rune placement matters as
+            // much as weapon placement.
+            let contact_slot = slot_for_contact(f_pos, ep, hull_yaw);
+            let thorns_bonus = contact_slot
+                .map(|idx| crate::rune::thorns_contact_bonus_for_slot(
+                    &cfg, idx, stats.rune_damage_mult(),
+                ))
+                .unwrap_or(0);
             let ram_damage = RAM_DAMAGE_TO_ENEMY
-                + spiked_plate_contact_bonus(&cfg, f_pos, ep, hull_yaw);
+                + spiked_plate_contact_bonus(&cfg, f_pos, ep, hull_yaw)
+                + thorns_bonus;
             // Damage the enemy + flash.
             crate::bullet::apply_damage(&mut h, &mut fx, ram_damage);
             shake.add_trauma(RAM_TRAUMA);
@@ -547,19 +573,20 @@ pub struct RamSelfGrace {
     pub remaining: f32,
 }
 
-/// Bonus damage added to a ram hit when the contacted enemy is on
-/// the side of a Spike Plate slot. Maps the impact direction into
-/// hull-local space and picks the slot whose mount angle is closest
-/// — same mapping `spiked_plate_reduction` uses for incoming
-/// bullets, so the player can reason about both effects identically.
-fn spiked_plate_contact_bonus(
-    cfg: &crate::turret::TurretConfig,
+/// Map a contact-direction (enemy relative to ship) to the turret
+/// slot index whose mount angle is closest. Returns `None` if the
+/// enemy is sitting exactly on top of the ship (no direction to
+/// resolve). Pulled out so `spiked_plate_contact_bonus` and
+/// `thorns_contact_bonus_for_slot` share one slot-mapping rule
+/// — Spike Plate and Thorns both read as "the slot on the side
+/// the enemy hit you on" from the player's POV.
+pub fn slot_for_contact(
     ship_pos: Vec2,
     enemy_pos: Vec2,
     hull_yaw: f32,
-) -> i32 {
+) -> Option<usize> {
     let dir = enemy_pos - ship_pos;
-    if dir.length_squared() < 0.001 { return 0; }
+    if dir.length_squared() < 0.001 { return None; }
     let world_angle = (-dir.x).atan2(dir.y);
     let mut local_angle = world_angle - hull_yaw;
     local_angle = (local_angle + std::f32::consts::PI)
@@ -574,7 +601,20 @@ fn spiked_plate_contact_bonus(
             best = Some((i, abs));
         }
     }
-    let Some((idx, _)) = best else { return 0; };
+    best.map(|(idx, _)| idx)
+}
+
+/// Bonus damage added to a ram hit when the contacted enemy is on
+/// the side of a Spike Plate slot. Same `slot_for_contact` mapping
+/// `spiked_plate_reduction` uses for incoming bullets, so the
+/// player can reason about both effects identically.
+fn spiked_plate_contact_bonus(
+    cfg: &crate::turret::TurretConfig,
+    ship_pos: Vec2,
+    enemy_pos: Vec2,
+    hull_yaw: f32,
+) -> i32 {
+    let Some(idx) = slot_for_contact(ship_pos, enemy_pos, hull_yaw) else { return 0 };
     let slot = cfg.slots[idx];
     if slot.equipped
         && matches!(slot.weapon, crate::weapon::WeaponType::SpikedPlate)

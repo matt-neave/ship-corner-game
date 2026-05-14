@@ -26,16 +26,21 @@ use crate::weapon::WeaponType;
 
 // Submodules — HeliPad helicopter behaviour and mortar arc/AOE live
 // in their own files so this module stays focused on the per-slot
-// aim/fire path.
+// aim/fire path. SharkNet sits beside them — another autonomous-unit
+// pattern that owns its own world entities + ticks.
+pub mod decor;
 pub mod heli;
 pub mod mortar;
+pub mod sharknet;
 
+pub use decor::{sync_amplifier_decor, sync_spiked_decor};
 pub use heli::{
     helicopter_ai, sync_helipad_helicopters, sync_helipad_nose_barrels,
 };
 pub use mortar::{
     mortar_shell_tick, spawn_mortar_shell, MORTAR_SPLASH_RADIUS,
 };
+pub use sharknet::{shark_ai, shark_contact_damage, sync_sharknet_sharks};
 
 // ---------- Components & resources ----------
 
@@ -57,10 +62,13 @@ pub struct TurretSlot {
     pub barrels: u8,
     /// Which barrel fires next (0 or 1) when `barrels == 2`.
     pub next_barrel: u8,
-    /// Up to three rune sockets per turret. Bullets fired from this
-    /// turret inherit *every* equipped rune; the proc system rolls
-    /// each independently. `None` slots are inert.
-    pub runes: [Option<Rune>; 3],
+    /// Effective rune list for this slot — `SlotCfg.runes` flattened
+    /// (Nones stripped) PLUS any runes shared in by adjacent
+    /// `Amplifier` slots. Built fresh each frame by
+    /// `sync_turret_config`. Bullets fired from this turret carry a
+    /// clone of this Vec so every downstream proc / on-hit / on-kill
+    /// reader sees the same effective set.
+    pub runes: Vec<Rune>,
     /// Carousel cursor — advances by 1 every time this slot fires a
     /// shot. Only read when a `TargetCarousel` rune is socketed:
     /// `pick_target` indexes into the sorted candidate list with
@@ -182,7 +190,25 @@ pub fn sync_turret_config(
         let new_barrels = s.barrels.clamp(1, 3);
         if new_barrels != slot.barrels { slot.next_barrel = 0; }
         slot.barrels = new_barrels;
-        slot.runes = s.runes;
+        // Build the effective rune Vec: this slot's own runes
+        // flattened (drop Nones) plus every adjacent Amplifier's
+        // socketed runes. No fixed-3 cap on the result — Amplifier
+        // can broadcast its full 3 sockets into every neighbour.
+        // Amplifier slots themselves don't merge (they never fire).
+        slot.runes.clear();
+        for r in s.runes.iter().copied().flatten() {
+            slot.runes.push(r);
+        }
+        if !matches!(s.weapon, WeaponType::Amplifier) {
+            for &nbr in crate::balance::TURRET_ADJACENCY[slot.index] {
+                let nbr_cfg = &cfg.slots[nbr];
+                if !nbr_cfg.equipped { continue; }
+                if !matches!(nbr_cfg.weapon, WeaponType::Amplifier) { continue; }
+                for r in nbr_cfg.runes.iter().copied().flatten() {
+                    slot.runes.push(r);
+                }
+            }
+        }
         *vis = if s.equipped { Visibility::Inherited } else { Visibility::Hidden };
         let turret_mat = pm.turret_for(s.weapon).clone();
         if mat.0 != turret_mat { mat.0 = turret_mat.clone(); }
@@ -253,6 +279,7 @@ pub fn turret_aim_fire(
     em: Option<Res<EffectMeshes>>,
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
+    mut thirst: ResMut<crate::rune::ThirstPending>,
     ship_q: Query<(&Transform, &Heading), With<Friendly>>,
     enemies: Query<(Entity, &Transform, &Faction, &Health), With<Enemy>>,
     mut turrets: Query<
@@ -386,6 +413,21 @@ pub fn turret_aim_fire(
                 // u32::MAX which is unreachable in any real game.
                 slot.cycle_idx = slot.cycle_idx.wrapping_add(1);
 
+                // Thirst: consume any pending stacks queued from a
+                // prior kill landed by THIS slot and inflate this
+                // shot's `slot.damage`. The mutation is overwritten
+                // by `sync_turret_config` next frame, so the bonus
+                // applies exclusively to this fire pass and any
+                // multi-barrel volley spawned by it.
+                let thirst_stacks = thirst.take(slot.index);
+                if thirst_stacks > 0 {
+                    let mult = crate::rune::thirst_damage_mult(
+                        thirst_stacks,
+                        stats.rune_damage_mult(),
+                    );
+                    slot.damage = ((slot.damage as f32) * mult).round() as i32;
+                }
+
                 let total_angle = ship_h + slot.barrel_angle;
                 let barrel_forward = Vec2::new(-total_angle.sin(), total_angle.cos());
                 let barrel_right = Vec2::new(barrel_forward.y, -barrel_forward.x);
@@ -453,7 +495,7 @@ pub fn turret_aim_fire(
                                 damage: slot.damage,
                                 slot: slot.index as u8,
                                 weapon: slot.weapon,
-                                runes: slot.runes,
+                                runes: slot.runes.clone(),
                             },
                             BeamPending,
                             RenderLayers::layer(PLAY_LAYER),
@@ -474,7 +516,7 @@ pub fn turret_aim_fire(
                                 &mut commands, &em, &outer_mat, &inner_mat,
                                 muzzle_pos, pd, slot.weapon, slot.damage,
                                 Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
-                                effective_range, slot.runes, FactionKind::Friendly,
+                                effective_range, slot.runes.clone(), FactionKind::Friendly,
                                 stats.rune_damage_mult(),
                             );
                         }
@@ -499,7 +541,7 @@ pub fn turret_aim_fire(
                         // buy Rune Effect, which reads as a phantom
                         // rune.
                         let splash_runes = slot.runes.iter()
-                            .filter(|r| matches!(r, Some(Rune::Splash)))
+                            .filter(|r| matches!(r, Rune::Splash))
                             .count() as f32;
                         let splash = MORTAR_SPLASH_RADIUS
                             * (1.0 + 0.5 * splash_runes * stats.rune_damage_mult());
@@ -508,7 +550,7 @@ pub fn turret_aim_fire(
                             muzzle_pos, target_pos, slot.weapon, slot.damage,
                             splash,
                             Some(DamageSource::PlayerSlot(slot.index as u8)),
-                            slot.runes,
+                            slot.runes.clone(),
                         );
                     }
                     WeaponType::Cannon => {
@@ -523,7 +565,7 @@ pub fn turret_aim_fire(
                             &mut commands, &em, &outer_mat, &inner_mat,
                             muzzle_pos, barrel_forward, slot.weapon, slot.damage,
                             Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
-                            effective_range, slot.runes, FactionKind::Friendly,
+                            effective_range, slot.runes.clone(), FactionKind::Friendly,
                         );
                     }
                     WeaponType::Harpoon => {
@@ -538,7 +580,7 @@ pub fn turret_aim_fire(
                             &mut commands, &em, &outer_mat, &inner_mat,
                             muzzle_pos, barrel_forward, slot.weapon, slot.damage,
                             Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
-                            effective_range, slot.runes, FactionKind::Friendly,
+                            effective_range, slot.runes.clone(), FactionKind::Friendly,
                         );
                     }
                     WeaponType::SpreadRockets => {
@@ -557,7 +599,13 @@ pub fn turret_aim_fire(
                             + barrel_forward * (effective_tip + FRIENDLY_BULLET_HALF_LEN)
                             + barrel_right * lateral;
                         const ROCKET_COUNT: usize = 4;
-                        const FAN_HALF: f32 = 0.35; // ~20° spread
+                        // Wider fan than the original 0.35rad (~20°)
+                        // so the salvo visibly splays before the seek
+                        // logic curves each rocket onto its target.
+                        // 0.7rad (~40°) makes the volley read as four
+                        // distinct trajectories at launch rather than
+                        // four overlapping streaks.
+                        const FAN_HALF: f32 = 0.70;
                         // Cycle the carousel cursor an extra (count - 1)
                         // steps so each rocket gets a unique target
                         // index when Carousel is socketed.
@@ -605,7 +653,7 @@ pub fn turret_aim_fire(
                                 muzzle_pos, rocket_forward, slot.damage,
                                 initial_target, FactionKind::Enemy,
                                 Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
-                                slot.weapon, slot.runes,
+                                slot.weapon, slot.runes.clone(),
                                 effective_range * ROCKET_RANGE_MULT,
                                 stats.rune_damage_mult(),
                             );
@@ -630,7 +678,7 @@ pub fn turret_aim_fire(
                             &mut commands, &em, &outer_mat, &inner_mat,
                             muzzle_pos, dir, slot.weapon, slot.damage,
                             Some(crate::bullet::DamageSource::PlayerSlot(slot.index as u8)),
-                            effective_range, slot.runes, FactionKind::Friendly,
+                            effective_range, slot.runes.clone(), FactionKind::Friendly,
                             stats.rune_damage_mult(),
                         );
                     }
@@ -660,10 +708,13 @@ pub fn spawn_combat_bullet(
     damage: i32,
     source: Option<crate::bullet::DamageSource>,
     range: f32,
-    runes: [Option<Rune>; 3],
+    runes: Vec<Rune>,
     faction: FactionKind,
     rune_effect: f32,
 ) {
+    // Pierce inspection borrows the slice before the Vec moves into
+    // the bullet bundle — same data, no clone.
+    let rune_pierce = crate::bullet::pierce_stacks(&runes).unwrap_or(0);
     let bullet = commands.spawn((
         Mesh2d(em.bullet_friendly_outer.clone()),
         MeshMaterial2d(outer_mat.clone()),
@@ -686,8 +737,8 @@ pub fn spawn_combat_bullet(
     // helicopter / octopus paths spawn from their own helpers and
     // don't touch this function, so Pierce stays bullet-only.
     if faction == FactionKind::Friendly {
-        if let Some(stacks) = crate::bullet::pierce_stacks(&runes) {
-            commands.entity(bullet).insert(crate::bullet::make_pierce(stacks, rune_effect));
+        if rune_pierce > 0 {
+            commands.entity(bullet).insert(crate::bullet::make_pierce(rune_pierce, rune_effect));
         }
     }
     let inner = commands.spawn((

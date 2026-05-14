@@ -142,6 +142,7 @@ pub fn artillery_shell_tick(
     mut commands: Commands,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
+    difficulty: Res<crate::Difficulty>,
     mut shells: Query<(Entity, &mut ArtilleryShell)>,
     mut reticles: Query<(&mut ArtilleryReticle, &mut Transform), Without<ArtilleryShell>>,
     mut friendly: Query<
@@ -171,19 +172,22 @@ pub fn artillery_shell_tick(
         if shell.elapsed < shell.time_of_flight { continue; }
 
         // Impact — AOE damage to friendly + non-submerged allies.
+        // Difficulty scales damage at application time so the same
+        // multiplier hits every entity in the AOE.
         let center = shell.target;
         let r2 = shell.splash_radius * shell.splash_radius;
+        let damage = difficulty.scale_damage(shell.damage);
         if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
             if ftf.translation.truncate().distance_squared(center) < r2 {
                 fx.pulse();
-                h.0 = (h.0 - shell.damage).max(0);
+                h.0 = (h.0 - damage).max(0);
             }
         }
         for (atf, ally, mut h, mut fx) in &mut allies {
             if ally_is_submerged(ally) { continue; }
             if atf.translation.truncate().distance_squared(center) >= r2 { continue; }
             fx.pulse();
-            h.0 = (h.0 - shell.damage).max(0);
+            h.0 = (h.0 - damage).max(0);
         }
         spawn_hit_particles(&mut commands, &em, &pm.enemy,             center, 18, 100.0, &mut rng);
         spawn_hit_particles(&mut commands, &em, &pm.artillery_reticle, center, 10, 130.0, &mut rng);

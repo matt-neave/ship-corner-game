@@ -141,11 +141,23 @@ pub struct StageCompleteUi;
 #[derive(Component)]
 pub struct StageCompleteWaveChar { pub idx: usize }
 
-/// One staggered payout line under the title. `idx` drives the reveal
-/// order (0, 1, 2…). `base_color` is the colour the line settles on
-/// after the flash punch fades.
+/// One staggered payout row under the title. `idx` drives the reveal
+/// order (0, 1, 2…). Spawned `Visibility::Hidden`; the row's
+/// `Visibility` is flipped to `Inherited` at the reveal threshold.
+/// The row itself carries no colour — the bright `+N` value is on a
+/// separate `StagePayoutValue` child, which is the one that gets the
+/// flash-pulse on reveal.
 #[derive(Component)]
 pub struct StagePayoutLine {
+    pub idx: u8,
+}
+
+/// Marks the bright `+N` value text on a payout row. Two-job
+/// component: (a) `tick_payout_reveal` writes the flash → base
+/// colour pulse onto this, NOT the row container; (b) `base_color`
+/// is the rest colour the pulse settles into.
+#[derive(Component)]
+pub struct StagePayoutValue {
     pub idx: u8,
     pub base_color: Color,
 }
@@ -182,12 +194,18 @@ pub fn enter_stage_complete(
     }
     let total = earned_pre_interest + interest;
 
-    let payout_color = Color::srgb(1.0, 0.85, 0.30);
+    // Two colours: the bright accent on the `+N` value (the thing
+    // the eye should land on), and a dim muted tone for the
+    // "EARNED" / "INTEREST" / "TOTAL" labels + the "SCRAP" unit
+    // suffix. Splitting label vs value colours is the readability
+    // win — the player used to see one homogeneous gold blob.
+    let value_color  = Color::srgb(1.0, 0.88, 0.40);
     let total_color  = theme::ACCENT;
-    let line_specs: [(String, Color); 3] = [
-        (format!("EARNED: +{}", earned_pre_interest),  payout_color),
-        (format!("INTEREST: +{}", interest),           payout_color),
-        (format!("TOTAL: +{}", total),                 total_color),
+    let label_color  = theme::ON_SURFACE_DIM;
+    let line_specs: [(&str, u32, Color); 3] = [
+        ("EARNED",   earned_pre_interest, value_color),
+        ("INTEREST", interest,            value_color),
+        ("TOTAL",    total,               total_color),
     ];
 
     commands
@@ -241,65 +259,116 @@ pub fn enter_stage_complete(
                     ));
                 }
             });
-            // Three payout lines stagger-revealed by `tick_payout_reveal`.
-            // Spawned `Visibility::Hidden`; each becomes visible when
-            // `StageCompleteTimer` crosses its reveal threshold and
-            // pulses white → its base colour as a "punch" cue.
+            // Three payout rows stagger-revealed by `tick_payout_reveal`.
+            // Each row: `LABEL  +N SCRAP`. Label + unit are dim and
+            // small; the `+N` value is large and bright so the eye
+            // lands on the gain instantly. The flash-pulse on reveal
+            // hits the value text only.
             root.spawn(Node {
-                margin: UiRect { top: Val::Px(24.0), ..default() },
+                margin: UiRect { top: Val::Px(28.0), ..default() },
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
-                row_gap: Val::Px(6.0),
+                row_gap: Val::Px(10.0),
                 ..default()
             })
             .with_children(|wrap| {
-                for (idx, (text, base_color)) in line_specs.iter().enumerate() {
+                for (idx, (label, value, value_base)) in line_specs.iter().enumerate() {
+                    let is_total = idx == 2;
+                    let label_font = if is_total { 22.0 } else { 18.0 };
+                    let value_font = if is_total { 56.0 } else { 40.0 };
+                    let unit_font  = if is_total { 22.0 } else { 18.0 };
                     wrap.spawn((
-                        Text::new(text.clone()),
-                        TextFont {
-                            font_size: if idx == 2 { 32.0 } else { 26.0 },
-                            font_smoothing: FontSmoothing::None,
+                        Node {
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Baseline,
+                            column_gap: Val::Px(theme::GAP_MD),
                             ..default()
                         },
-                        TextColor(*base_color),
+                        BackgroundColor(Color::NONE),
                         Visibility::Hidden,
-                        StagePayoutLine {
-                            idx: idx as u8,
-                            base_color: *base_color,
-                        },
-                    ));
+                        StagePayoutLine { idx: idx as u8 },
+                    ))
+                    .with_children(|row| {
+                        // LABEL — dim, small. Tells the player which
+                        // bucket the value below is for.
+                        row.spawn((
+                            Text::new(label.to_string()),
+                            TextFont {
+                                font_size: label_font,
+                                font_smoothing: FontSmoothing::None,
+                                ..default()
+                            },
+                            TextColor(label_color),
+                        ));
+                        // VALUE — the bright `+N`. This is what the
+                        // flash-pulse animates. Big font so the eye
+                        // can read it at a glance.
+                        row.spawn((
+                            Text::new(format!("+{}", value)),
+                            TextFont {
+                                font_size: value_font,
+                                font_smoothing: FontSmoothing::None,
+                                ..default()
+                            },
+                            TextColor(*value_base),
+                            StagePayoutValue {
+                                idx: idx as u8,
+                                base_color: *value_base,
+                            },
+                        ));
+                        // UNIT — dim "SCRAP" suffix so the player
+                        // sees exactly what they're earning. Same
+                        // tone as the label so the row reads as
+                        // "label  +N  unit".
+                        row.spawn((
+                            Text::new("SCRAP"),
+                            TextFont {
+                                font_size: unit_font,
+                                font_smoothing: FontSmoothing::None,
+                                ..default()
+                            },
+                            TextColor(label_color),
+                        ));
+                    });
                 }
             });
         });
 }
 
-/// Stagger-reveal the payout lines under the title. Each line's
-/// reveal threshold is `PAYOUT_FIRST_DELAY + idx × PAYOUT_LINE_GAP`;
-/// after crossing it the line goes visible and its colour pulses from
-/// `PAYOUT_FLASH_COLOR` → its stored base over `PAYOUT_FLASH_DURATION`
-/// seconds. The pulse is what the eye lands on, mimicking the
-/// "[nudge_down]" effect SNKRX uses on its end-of-round screen.
+/// Stagger-reveal the payout rows under the title. Each row's reveal
+/// threshold is `PAYOUT_FIRST_DELAY + idx × PAYOUT_LINE_GAP`. The row
+/// container's visibility flips on at the threshold (covering both
+/// the LABEL and the SCRAP suffix); the bright `+N` value carried by
+/// `StagePayoutValue` gets the flash → base colour pulse for the
+/// "punch" cue mimicking the "[nudge_down]" effect SNKRX uses on its
+/// end-of-round screen.
 pub fn tick_payout_reveal(
     timer: Res<StageCompleteTimer>,
-    mut q: Query<(&StagePayoutLine, &mut Visibility, &mut TextColor)>,
+    mut rows: Query<(&StagePayoutLine, &mut Visibility)>,
+    mut values: Query<(&StagePayoutValue, &mut TextColor)>,
 ) {
     let t = timer.0;
-    for (line, mut vis, mut color) in &mut q {
+    for (line, mut vis) in &mut rows {
         let reveal_at = PAYOUT_FIRST_DELAY + line.idx as f32 * PAYOUT_LINE_GAP;
-        if t < reveal_at {
-            if *vis != Visibility::Hidden { *vis = Visibility::Hidden; }
-            continue;
-        }
-        if *vis != Visibility::Inherited { *vis = Visibility::Inherited; }
+        let want_vis = if t < reveal_at {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        if *vis != want_vis { *vis = want_vis; }
+    }
+    for (val, mut color) in &mut values {
+        let reveal_at = PAYOUT_FIRST_DELAY + val.idx as f32 * PAYOUT_LINE_GAP;
+        if t < reveal_at { continue; }
         let since = t - reveal_at;
         let want = if since >= PAYOUT_FLASH_DURATION {
-            line.base_color
+            val.base_color
         } else {
             // Smooth-step the flash → base mix so the pulse settles
             // softly instead of snapping.
             let k = since / PAYOUT_FLASH_DURATION;
             let k = k * k * (3.0 - 2.0 * k);
-            lerp_color(PAYOUT_FLASH_COLOR, line.base_color, k)
+            lerp_color(PAYOUT_FLASH_COLOR, val.base_color, k)
         };
         if color.0 != want { color.0 = want; }
     }

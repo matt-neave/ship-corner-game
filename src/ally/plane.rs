@@ -172,7 +172,7 @@ fn spawn_plane_bullets(
                 remaining: PLANE_BULLET_RANGE,
                 weapon: WeaponType::Standard,
                 source,
-                runes: [None; 3],
+                runes: Vec::new(),
             },
             Velocity(forward * PLANE_BULLET_SPEED),
             RenderLayers::layer(PLAY_LAYER),

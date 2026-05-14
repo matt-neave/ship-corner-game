@@ -149,6 +149,39 @@ pub enum Rune {
     /// bonus, scaled by Rune Effect. Reads as "alpha strike" — great
     /// on slow heavy weapons (Sniper, Cannon).
     Opener,
+    /// On kill, spawn a small heal pickup at the corpse. The pickup
+    /// vanishes on player contact and heals 1 HP per stack scaled by
+    /// Rune Effect. See `tick_on_leftovers` for the pickup lifecycle
+    /// and the pickup-collision check in `ship.rs`.
+    Leftovers,
+    /// +25% XP per stack scaled by Rune Effect on every kill credited
+    /// to a bullet carrying this rune. Read in `process_damage_event`
+    /// at the kill branch.
+    Star,
+    /// After a kill, the next shot from the SAME turret slot deals
+    /// +50% damage per stack (scaled by Rune Effect). Slot-state lives
+    /// on `TurretSlot.thirst_bonus`; consumed on the very next fired
+    /// shot.
+    Thirst,
+    /// `[Support]`-only periodic heal. Every 5s, each socketed Medic
+    /// on a Support-tagged weapon heals 2 HP per stack scaled by
+    /// Rune Effect. Off-slot stacks (Medic on a non-Support weapon)
+    /// are inert. Driven by `tick_on_medic`.
+    Medic,
+    /// `[Melee]`-only stacking move-speed buff. Each kill credited
+    /// to a Melee-tagged slot carrying Rally adds a stack worth
+    /// `+1% × stacks × Rune Effect` move speed for 5s. Stacks decay
+    /// independently; `tick_on_rally` removes expired ones and rolls
+    /// the effective buff into `PlayerStats.move_speed`.
+    Rally,
+    /// Per-side contact-retaliation. When the friendly hull rams an
+    /// enemy, the impact maps to one turret slot via
+    /// `ship::slot_for_contact` (same mapping `SpikedPlate` uses).
+    /// Only Thorns runes on THAT slot fire — each stack adds
+    /// `+1 × Rune Effect` chip damage. Rune placement matters as much
+    /// as weapon placement: a Thorns on the bow slot only retaliates
+    /// for head-on contact.
+    Thorns,
 }
 
 impl Rune {
@@ -175,6 +208,12 @@ impl Rune {
             Rune::Greed            => tr("rune_greed"),
             Rune::Executioner      => tr("rune_executioner"),
             Rune::Opener           => tr("rune_opener"),
+            Rune::Leftovers        => tr("rune_leftovers"),
+            Rune::Star             => tr("rune_star"),
+            Rune::Thirst           => tr("rune_thirst"),
+            Rune::Medic            => tr("rune_medic"),
+            Rune::Rally            => tr("rune_rally"),
+            Rune::Thorns           => tr("rune_thorns"),
         }
     }
 
@@ -202,6 +241,12 @@ impl Rune {
             Rune::Greed            => tr("rune_greed_desc"),
             Rune::Executioner      => tr("rune_executioner_desc"),
             Rune::Opener           => tr("rune_opener_desc"),
+            Rune::Leftovers        => tr("rune_leftovers_desc"),
+            Rune::Star             => tr("rune_star_desc"),
+            Rune::Thirst           => tr("rune_thirst_desc"),
+            Rune::Medic            => tr("rune_medic_desc"),
+            Rune::Rally            => tr("rune_rally_desc"),
+            Rune::Thorns           => tr("rune_thorns_desc"),
         }
     }
 
@@ -294,6 +339,16 @@ impl Rune {
             // into the primary hit; they don't trigger chain events.
             Rune::Executioner     => 0.0,
             Rune::Opener          => 0.0,
+            // Leftovers fires on-kill (spawns a heal pickup) — no
+            // chain payload. Same for Star (XP boost) and Thirst
+            // (next-shot bonus). Medic / Rally / Thorns are passive
+            // or kill-driven slot effects, never bullet chains.
+            Rune::Leftovers       => 0.0,
+            Rune::Star            => 0.0,
+            Rune::Thirst          => 0.0,
+            Rune::Medic           => 0.0,
+            Rune::Rally           => 0.0,
+            Rune::Thorns          => 0.0,
         }
     }
 }
@@ -302,9 +357,544 @@ impl Rune {
 /// the same socket. Returns 1.0 (no change) if none equipped; each
 /// stack adds +1.0 × `rune_effect`. Read by `heli.rs` and
 /// `octopus.rs` at the speed calculation site.
-pub fn hustle_speed_mult(runes: &[Option<Rune>; 3], rune_effect: f32) -> f32 {
-    let stacks = runes.iter().filter(|r| matches!(r, Some(Rune::Hustle))).count() as f32;
+pub fn hustle_speed_mult(runes: &[Rune], rune_effect: f32) -> f32 {
+    let stacks = runes.iter().filter(|r| matches!(r, Rune::Hustle)).count() as f32;
     1.0 + stacks * rune_effect
+}
+
+impl Rune {
+    /// Apply this rune's proc effect to a damage event, having already
+    /// passed the proc-roll. Per-variant behaviour lives in one match
+    /// here so adding a new rune is a single edit (this method + the
+    /// label / description / proc_coefficient stubs above), instead
+    /// of having to thread changes into both `process_damage_event`'s
+    /// match AND `apply_rune_stacked`.
+    ///
+    /// `stacks` is the number of copies of THIS rune on the bullet —
+    /// the proc-resolution loop has already collapsed duplicates so
+    /// the count here is meaningful (3 Fire runes = burn 3× as fast).
+    ///
+    /// `chain` is the same `Vec<DamageEvent>` the proc loop pops from;
+    /// arms that fire chain damage (Shock) push back onto it for
+    /// same-frame resolution.
+    pub fn apply_proc(
+        self,
+        stacks: u8,
+        ev: &crate::bullet::DamageEvent,
+        chain: &mut Vec<crate::bullet::DamageEvent>,
+        commands: &mut Commands,
+        player_stats: &crate::stats::PlayerStats,
+        pm: &PaletteMaterials,
+        em: &EffectMeshes,
+        on_resonate: &Query<&OnResonate>,
+        enemy_snap: &[(Entity, Vec2, f32)],
+        rng: &mut rand::rngs::ThreadRng,
+    ) {
+        match self {
+            Rune::Fire | Rune::Frost | Rune::Bleed => {
+                apply_rune_stacked(commands, ev.target, self, stacks);
+            }
+            Rune::Shock => {
+                // Total chain bolts = `stacks × chains_per_rune`, where
+                // `chains_per_rune` comes from the player's Rune Damage
+                // stat (rounded, min 1). Default stat = 1.0 keeps the
+                // old "one chain per Shock rune" behaviour; pumping
+                // Rune Damage scales the chain count linearly so the
+                // tooltip's "chain lightning to (Rune Damage) enemies"
+                // matches what actually happens.
+                let r2 = crate::balance::SHOCK_CHAIN_RANGE
+                    * crate::balance::SHOCK_CHAIN_RANGE;
+                let chains_per_rune = player_stats
+                    .rune_damage_mult()
+                    .round()
+                    .max(1.0) as u32;
+                let total_chains = stacks as u32 * chains_per_rune;
+                let mut excluded: Vec<Entity> = vec![ev.target];
+                for _ in 0..total_chains {
+                    let chain_target = enemy_snap
+                        .iter()
+                        .filter(|(e, _, _)| !excluded.contains(e))
+                        .map(|&(e, p, _)| (e, p, p.distance_squared(ev.hit_pos)))
+                        .filter(|(_, _, d2)| *d2 <= r2)
+                        .min_by(|a, b| {
+                            a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                    let Some((target, target_pos, _)) = chain_target else { break };
+                    excluded.push(target);
+                    crate::bullet::spawn_lightning_arc(
+                        commands, em, &pm.shock, ev.hit_pos, target_pos,
+                    );
+                    let mut next_procced = ev.procced.clone();
+                    next_procced.push(Rune::Shock);
+                    chain.push(crate::bullet::DamageEvent {
+                        target,
+                        amount: ev.amount, // shock chain = 100% weapon damage
+                        hit_pos: target_pos,
+                        weapon: ev.weapon,
+                        source: None,
+                        runes: ev.runes.clone(),
+                        procced: next_procced,
+                        proc_strength: ev.proc_strength * Rune::Shock.proc_coefficient(),
+                    });
+                }
+                // Suppress the otherwise-unused `rng` warning for the
+                // arms that don't need randomness — keeping the
+                // parameter on the signature means future runes can
+                // reach for it without re-threading.
+                let _ = rng;
+            }
+            Rune::Echo => {
+                // One delayed event per Echo stack — 3 Echo runes ⇒
+                // 3 follow-up hits on the same target.
+                for _ in 0..stacks {
+                    commands.spawn(EchoPending {
+                        timer: ECHO_DELAY,
+                        target: ev.target,
+                        damage: ev.amount,
+                        source: ev.source,
+                        weapon: ev.weapon,
+                    });
+                }
+            }
+            Rune::Cascade => {
+                // Handled in `process_damage_event`'s lethal branch —
+                // Cascade fires *because* the target died, so it sits
+                // outside the proc-roll-gated path. No-op here.
+            }
+            Rune::Conduit => {
+                apply_rune_stacked(commands, ev.target, Rune::Conduit, stacks);
+                crate::effects::spawn_hit_particles(
+                    commands, em, &pm.shock, ev.hit_pos, 4, 35.0, rng,
+                );
+            }
+            Rune::Resonate => {
+                // Add `stacks` Resonate stacks on this hit (capped),
+                // so a 3-Resonate socket winds the amp up 3× faster
+                // than a 1-Resonate socket.
+                let current = on_resonate.get(ev.target).map(|r| r.stacks).unwrap_or(0);
+                let new_stacks = current
+                    .saturating_add(stacks)
+                    .min(crate::balance::RESONATE_MAX_STACKS);
+                commands.entity(ev.target).insert(OnResonate::new(new_stacks));
+                crate::effects::spawn_hit_particles(
+                    commands, em, &pm.bullet_sniper, ev.hit_pos, 3, 30.0, rng,
+                );
+            }
+            // Targeting runes are passive — read at aim time by
+            // `turret_aim_fire`, never proc on hit.
+            Rune::TargetFurthest
+            | Rune::TargetHighestHp
+            | Rune::TargetLowestHp
+            | Rune::TargetCarousel
+            | Rune::Splash => {}
+            // Vampire/Ward/Blast fire inline upstream in
+            // `process_damage_event`, regardless of proc roll. Hustle
+            // is a passive autonomous-unit speed buff — never reaches
+            // the proc loop. Pierce is read at bullet spawn time.
+            // Greed / Executioner / Opener are folded into the primary
+            // hit (or the lethal branch for Greed). The new content-
+            // batch runes (Leftovers / Star / Thirst / Medic / Rally /
+            // Thorns) all fire elsewhere too — on the KillEvent bus,
+            // a periodic tick, or the friendly-ram-damage site.
+            Rune::Vampire
+            | Rune::Ward
+            | Rune::Blast
+            | Rune::Hustle
+            | Rune::Pierce
+            | Rune::Greed
+            | Rune::Executioner
+            | Rune::Opener
+            | Rune::Leftovers
+            | Rune::Star
+            | Rune::Thirst
+            | Rune::Medic
+            | Rune::Rally
+            | Rune::Thorns => {}
+        }
+    }
+}
+
+// ---------- Kill-credit event bus ----------
+//
+// Emitted from `process_damage_event`'s lethal branch every time a
+// damage event drops the target's HP to 0. Carries the dying entity
+// + the source slot (if a player turret landed the killing blow) +
+// the full rune set on the killing hit. `enemy_death_check`
+// consumes the events on the same frame and dispatches each
+// on-kill rune effect (XP bonus for Star, heal-pickup spawn for
+// Leftovers, future effects). Any other future "I want to react to
+// a kill" system reads the same stream — adding a new on-kill rune
+// no longer requires a per-rune marker component.
+
+#[derive(Event, Clone, Debug)]
+pub struct KillEvent {
+    pub target: Entity,
+    /// `Some(slot_idx)` when a player turret bullet landed the
+    /// lethal hit; `None` for ally / boss / chain damage. Unused by
+    /// the current Star / Leftovers readers (they only filter by
+    /// rune) but kept on the event so future per-slot on-kill
+    /// effects don't have to re-thread it.
+    #[allow(dead_code)]
+    pub source_slot: Option<u8>,
+    /// Runes carried by the bullet that landed the killing blow.
+    /// Readers filter by `Rune::Star` etc. — keeping the full slice
+    /// here lets future on-kill runes plug in without changes to
+    /// the writer.
+    pub runes: Vec<Rune>,
+}
+
+// ---------- Generic pickup framework ----------
+//
+// `Magnetic` is the magnet-pull component shared by every drop type.
+// Attach it alongside a pickup-specific marker (e.g. `HpPickup`) and
+// `tick_magnetic_pickups` will draw the entity toward the player
+// once the ship enters `pull_radius`. Future drop kinds (scrap,
+// shield top-ups, ally summons) plug in by spawning with the same
+// component — no per-drop magnet bookkeeping required.
+
+#[derive(Component, Clone, Copy)]
+pub struct Magnetic {
+    /// World distance at which the magnet engages. Outside this
+    /// radius the pickup is stationary (relying only on its own
+    /// lifetime decay).
+    pub pull_radius: f32,
+    /// Initial draw speed (world units/sec) the moment the ship
+    /// enters the radius.
+    pub base_speed: f32,
+    /// Per-second acceleration applied while the ship stays inside
+    /// the radius. Keeps the pull tight at long range and snappy
+    /// at close range.
+    pub accel: f32,
+    /// Internal — current pull speed, updated every frame while in
+    /// radius. Reset to `base_speed` when the ship leaves the radius
+    /// so a re-entry doesn't keep stale momentum.
+    pub current_speed: f32,
+}
+
+impl Magnetic {
+    /// Default tuning that reads as "tight magnet pull when the ship
+    /// passes close by" — ~18 world units of catch range, ~30u/s
+    /// initial pull ramping up by 60u/s² while engaged.
+    pub fn default_pull() -> Self {
+        Self {
+            pull_radius: 18.0,
+            base_speed: 30.0,
+            accel: 60.0,
+            current_speed: 30.0,
+        }
+    }
+}
+
+/// Per-frame magnet driver. Iterates every `Magnetic` pickup and,
+/// if the friendly ship is within `pull_radius`, slides the entity's
+/// Transform toward the ship at an accelerating pace. Doesn't touch
+/// the pickup's collision / lifetime — those live on the per-drop
+/// systems (e.g. `tick_hp_pickups`).
+pub fn tick_magnetic_pickups(
+    time: Res<Time>,
+    friendly: Query<&Transform, (With<crate::components::Friendly>, Without<Magnetic>)>,
+    mut pickups: Query<(&mut Transform, &mut Magnetic), Without<crate::components::Friendly>>,
+) {
+    let Ok(ftf) = friendly.single() else { return };
+    let fp = ftf.translation.truncate();
+    let dt = time.delta_secs();
+    for (mut tf, mut mag) in &mut pickups {
+        let pp = tf.translation.truncate();
+        let to = fp - pp;
+        let dist = to.length();
+        if dist > mag.pull_radius {
+            // Out of range — reset speed so a future engagement
+            // starts at the configured base instead of compounding
+            // stale acceleration.
+            if mag.current_speed != mag.base_speed {
+                mag.current_speed = mag.base_speed;
+            }
+            continue;
+        }
+        // In radius — accelerate toward the ship. Cap step size to
+        // the remaining distance so we don't overshoot through the
+        // hull on a fast pull.
+        mag.current_speed += mag.accel * dt;
+        let step = (mag.current_speed * dt).min(dist);
+        if dist > 0.001 {
+            let dir = to / dist;
+            tf.translation.x += dir.x * step;
+            tf.translation.y += dir.y * step;
+        }
+    }
+}
+
+// ---------- Heal pickup (Leftovers spawn product) ----------
+
+/// Heal value scaled by `rune_effect` at spawn time. Despawns on
+/// player contact (heals up to `heal` HP) or after `lifetime` seconds.
+#[derive(Component)]
+pub struct HpPickup {
+    pub heal: i32,
+    pub lifetime: f32,
+}
+
+/// World radius of a heal pickup for the collision check. Slightly
+/// larger than the player's hit radius so passing-close grabs the
+/// drop.
+pub const HP_PICKUP_RADIUS: f32 = 4.0;
+/// Default lifetime before unclaimed pickups vanish.
+pub const HP_PICKUP_LIFETIME: f32 = 8.0;
+/// Visual radius — small enough to read as a sub-object, big enough
+/// to spot at a glance.
+pub const HP_PICKUP_VISUAL_R: f32 = 1.4;
+
+/// Spawn a heal pickup at `pos` worth `heal` HP. Caller is responsible
+/// for clamping `heal` to >= 1 (a 0-heal pickup is a waste of a render
+/// slot).
+pub fn spawn_hp_pickup(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    pos: Vec2,
+    heal: i32,
+) {
+    let mesh = meshes.add(Circle::new(HP_PICKUP_VISUAL_R));
+    let mat = materials.add(Color::srgb(0.40, 0.95, 0.55));
+    commands.spawn((
+        Mesh2d(mesh),
+        MeshMaterial2d(mat),
+        Transform::from_xyz(pos.x, pos.y, 4.5),
+        HpPickup {
+            heal: heal.max(1),
+            lifetime: HP_PICKUP_LIFETIME,
+        },
+        // Magnet pull — sliding a heal toward the ship reads as
+        // "the game wants you to take this", and saves the player
+        // from chasing partial heals during a clear.
+        Magnetic::default_pull(),
+        RenderLayers::layer(PLAY_LAYER),
+    ));
+}
+
+/// Per-frame pickup tick: decay lifetime, despawn expired, heal +
+/// despawn on player contact.
+pub fn tick_hp_pickups(
+    time: Res<Time>,
+    mut commands: Commands,
+    player_stats: Res<crate::stats::PlayerStats>,
+    mut pickups: Query<(Entity, &Transform, &mut HpPickup)>,
+    mut friendly: Query<
+        (&Transform, &mut Health),
+        (With<crate::components::Friendly>, Without<HpPickup>),
+    >,
+) {
+    let dt = time.delta_secs();
+    let Ok((ftf, mut fh)) = friendly.single_mut() else { return };
+    let fp = ftf.translation.truncate();
+    let max = player_stats.max_hp();
+    let pickup_r2 = HP_PICKUP_RADIUS * HP_PICKUP_RADIUS;
+    for (e, tf, mut pickup) in &mut pickups {
+        pickup.lifetime -= dt;
+        if pickup.lifetime <= 0.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        let pp = tf.translation.truncate();
+        if pp.distance_squared(fp) < pickup_r2 && fh.0 < max {
+            fh.0 = (fh.0 + pickup.heal).min(max);
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+// ---------- Generic buff-stacks engine ----------
+//
+// `BuffStacks` is the central store for any player-wide buff that
+// stacks and decays. Each `BuffId` keys a `Vec<f32>` of remaining
+// durations; `tick_buff_stacks` decays every stack uniformly and
+// drops expired entries. Adding a new stacking buff is two lines
+// (variant + a push call) — no per-buff resource + tick system.
+//
+// Today: `Rally` (Melee-kill move-speed) lives here. ThirstPending
+// stays a per-slot one-shot (different shape). MedicTimer stays a
+// periodic interval (different shape). Both could fold into this
+// family with extensions; the first cut keeps the abstraction tight.
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum BuffId {
+    /// Move-speed stack granted by a Melee-tagged slot's Rally kill.
+    Rally,
+}
+
+#[derive(Resource, Default)]
+pub struct BuffStacks {
+    map: std::collections::HashMap<BuffId, Vec<f32>>,
+}
+
+impl BuffStacks {
+    /// Add one stack of `id` with `duration` seconds remaining.
+    pub fn push(&mut self, id: BuffId, duration: f32) {
+        self.map.entry(id).or_default().push(duration);
+    }
+    /// Live stack count for `id`. Zero when the buff isn't in the map.
+    pub fn count(&self, id: BuffId) -> usize {
+        self.map.get(&id).map(|v| v.len()).unwrap_or(0)
+    }
+    /// Helper for the `Rally` move-speed math — every consumer that
+    /// asks for "1 + per_stack × count × rune_effect" goes through
+    /// here so the formula lives in one place.
+    pub fn linear_mult(&self, id: BuffId, per_stack: f32, rune_effect: f32) -> f32 {
+        1.0 + per_stack * self.count(id) as f32 * rune_effect
+    }
+}
+
+/// Per-frame decay. Drops every expired stack across every `BuffId`
+/// and removes empty entries so the map doesn't grow unboundedly
+/// with retired buffs.
+pub fn tick_buff_stacks(time: Res<Time>, mut buffs: ResMut<BuffStacks>) {
+    let dt = time.delta_secs();
+    buffs.map.retain(|_, stacks| {
+        let mut i = 0;
+        while i < stacks.len() {
+            stacks[i] -= dt;
+            if stacks[i] <= 0.0 {
+                stacks.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        !stacks.is_empty()
+    });
+}
+
+pub const RALLY_DURATION: f32 = 5.0;
+/// Per-stack move-speed bonus contributed by one Rally stack
+/// (pre-`rune_effect` scaling). +1% per stack matches the design
+/// note; `friendly_movement` folds in the live Rune Effect stat.
+pub const RALLY_PER_STACK: f32 = 0.01;
+
+/// Bundled kill-credit writers used by `process_damage_events`.
+/// Keeps the system signature under Bevy's 16-param cap when we
+/// thread Thirst / Rally bookkeeping through alongside the existing
+/// resources, AND carries the `KillEvent` writer so the lethal
+/// branch can broadcast the kill instead of inserting per-rune
+/// marker components.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct OnKillBookkeeping<'w> {
+    pub cfg: Res<'w, crate::turret::TurretConfig>,
+    pub thirst: ResMut<'w, ThirstPending>,
+    pub buffs: ResMut<'w, BuffStacks>,
+    pub kill_writer: EventWriter<'w, KillEvent>,
+}
+
+// ---------- Thirst (next-shot damage bonus) ----------
+
+/// Per-slot count of Thirst stacks queued for the next shot. Indexed
+/// by `TurretConfig::slots` index (0..8). `process_damage_event`'s
+/// lethal branch writes this when the killing bullet's source is
+/// `PlayerSlot(idx)` AND that slot carries Thirst runes;
+/// `turret_aim_fire` reads + clears at the moment of the bonus shot.
+#[derive(Resource, Default)]
+pub struct ThirstPending(pub [u8; 8]);
+
+impl ThirstPending {
+    /// Set the pending stacks for slot `idx`. No-op if `idx` is out of
+    /// range.
+    pub fn set(&mut self, idx: usize, stacks: u8) {
+        if let Some(slot) = self.0.get_mut(idx) {
+            *slot = stacks;
+        }
+    }
+    /// Drain the pending stacks for slot `idx` — returns the count
+    /// and clears it.
+    pub fn take(&mut self, idx: usize) -> u8 {
+        match self.0.get_mut(idx) {
+            Some(slot) => {
+                let v = *slot;
+                *slot = 0;
+                v
+            }
+            None => 0,
+        }
+    }
+}
+
+/// Damage multiplier for `stacks` pending Thirst rolls, scaled by
+/// `rune_effect`. Returns 1.0 when no stacks (no bonus). Each stack
+/// adds 50% × rune_effect.
+pub fn thirst_damage_mult(stacks: u8, rune_effect: f32) -> f32 {
+    if stacks == 0 { return 1.0; }
+    1.0 + 0.5 * stacks as f32 * rune_effect
+}
+
+// ---------- Medic (periodic Support-slot heal) ----------
+
+#[derive(Resource, Default)]
+pub struct MedicTimer(pub f32);
+
+pub const MEDIC_INTERVAL: f32 = 5.0;
+pub const MEDIC_HEAL_BASE: f32 = 2.0;
+
+/// Every `MEDIC_INTERVAL`s, scan turret config: for each slot whose
+/// weapon carries the `Support` tag, sum Medic-rune stacks and heal
+/// the friendly hull by `MEDIC_HEAL_BASE × total_stacks × rune_effect`
+/// HP (clamped to max). Medic stacks on non-Support weapons are inert.
+pub fn tick_on_medic(
+    time: Res<Time>,
+    mut timer: ResMut<MedicTimer>,
+    cfg: Res<crate::turret::TurretConfig>,
+    player_stats: Res<crate::stats::PlayerStats>,
+    mut friendly: Query<&mut Health, With<crate::components::Friendly>>,
+) {
+    timer.0 += time.delta_secs();
+    if timer.0 < MEDIC_INTERVAL { return; }
+    timer.0 -= MEDIC_INTERVAL;
+
+    let mut stacks_total: u32 = 0;
+    for slot in &cfg.slots {
+        if !slot.equipped { continue; }
+        let is_support = slot
+            .weapon
+            .tags()
+            .iter()
+            .any(|t| matches!(t, crate::weapon::WeaponTag::Support));
+        if !is_support { continue; }
+        for r in &slot.runes {
+            if matches!(r, Some(Rune::Medic)) {
+                stacks_total = stacks_total.saturating_add(1);
+            }
+        }
+    }
+    if stacks_total == 0 { return; }
+    let heal = (MEDIC_HEAL_BASE * stacks_total as f32 * player_stats.rune_damage_mult())
+        .round() as i32;
+    if heal <= 0 { return; }
+    let max = player_stats.max_hp();
+    if let Ok(mut h) = friendly.single_mut() {
+        if h.0 < max {
+            h.0 = (h.0 + heal).min(max);
+        }
+    }
+}
+
+// ---------- Thorns (ram-contact bonus) ----------
+
+/// Contact-damage bonus from Thorns runes socketed on a specific
+/// slot. Mirrors Spike Plate's "the slot on the side you got hit on"
+/// rule — the ram-damage caller maps the impact direction to a slot
+/// via `ship::slot_for_contact`, then passes THAT slot's index here.
+/// Each Thorns stack adds `+1 × rune_effect` chip damage, rounded up
+/// so a single stack always reads as +1 minimum.
+pub fn thorns_contact_bonus_for_slot(
+    cfg: &crate::turret::TurretConfig,
+    slot_idx: usize,
+    rune_effect: f32,
+) -> i32 {
+    let Some(slot) = cfg.slots.get(slot_idx) else { return 0 };
+    if !slot.equipped { return 0; }
+    let stacks: u32 = slot
+        .runes
+        .iter()
+        .filter(|r| matches!(r, Some(Rune::Thorns)))
+        .count() as u32;
+    if stacks == 0 { return 0; }
+    (stacks as f32 * rune_effect).round().max(1.0) as i32
 }
 
 // ---------- On-hit application ----------
@@ -361,7 +951,18 @@ pub fn apply_rune_stacked(
         | Rune::Pierce
         | Rune::Greed
         | Rune::Executioner
-        | Rune::Opener => {}
+        | Rune::Opener
+        // Leftovers / Star / Thirst / Medic / Rally / Thorns: no
+        // status component attaches to the target. Their effects
+        // fire either at the kill-credit site (Star, Leftovers,
+        // Thirst, Rally), at a periodic tick (Medic, Rally decay),
+        // or at the friendly hull's contact-ram (Thorns).
+        | Rune::Leftovers
+        | Rune::Star
+        | Rune::Thirst
+        | Rune::Medic
+        | Rune::Rally
+        | Rune::Thorns => {}
     }
 }
 

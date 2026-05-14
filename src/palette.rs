@@ -401,6 +401,21 @@ pub struct PaletteMaterials {
     pub turret_flamethrower: Handle<ColorMaterial>,
     /// `SpikedPlate` deck tint — battleship grey base.
     pub turret_spiked_plate: Handle<ColorMaterial>,
+    /// `Amplifier` deck tint — pale teal so it reads as a passive
+    /// broadcast pad next to its more aggressive Support cousin
+    /// (Booster's amber).
+    pub turret_amplifier: Handle<ColorMaterial>,
+    /// `SharkNet` deck tint — deep ocean blue, signalling heavy
+    /// charge weaponry.
+    pub turret_sharknet: Handle<ColorMaterial>,
+    /// SharkNet projectile colours — slate blue outer hull, pale
+    /// steel inner so the shark reads as a distinct heavy bullet
+    /// against both the play area and other tracers.
+    pub bullet_sharknet: Handle<ColorMaterial>,
+    pub bullet_sharknet_outer: Handle<ColorMaterial>,
+    /// Live shark autonomous-unit body tint — neutral grey reading
+    /// as "wildlife", distinct from the deep-blue deck launcher.
+    pub shark_body: Handle<ColorMaterial>,
     /// Ship-class hull tints — one per `ShipClass`. Looked up via
     /// `ally::PaletteMaterials::hull_for_class`.
     pub pirate_hull: Handle<ColorMaterial>,
@@ -551,6 +566,17 @@ impl PaletteMaterials {
             turret_spread_rockets: materials.add(hex(SPREAD_ROCKETS_HEX)),
             turret_flamethrower:   materials.add(hex(FLAMETHROWER_HEX)),
             turret_spiked_plate:   materials.add(hex(SPIKED_PLATE_HEX)),
+            // Pale teal — visually distinct from Booster's amber so
+            // the two Support weapons read apart on the deck.
+            turret_amplifier:      materials.add(Color::srgb(0.45, 0.78, 0.82)),
+            // Deep ocean blue base for the SharkNet launcher.
+            turret_sharknet:       materials.add(Color::srgb(0.18, 0.32, 0.55)),
+            bullet_sharknet:       materials.add(Color::srgb(0.85, 0.92, 1.00)),
+            bullet_sharknet_outer: materials.add(Color::srgb(0.35, 0.55, 0.82)),
+            // Mid-grey for the live shark unit — neutral enough to
+            // read as "wildlife in the water" against the navy
+            // deck launcher's deep-blue tint.
+            shark_body:            materials.add(Color::srgb(0.42, 0.46, 0.50)),
             bullet_mortar:         materials.add(hex(MORTAR_BRIGHT_HEX)),
             bullet_mortar_outer:   materials.add(mortar),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),

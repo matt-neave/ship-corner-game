@@ -31,18 +31,35 @@ use crate::palette::PaletteMaterials;
 use crate::turret::{TurretConfig, TurretSlot};
 use crate::weapon::WeaponType;
 
-/// Cone reach (world units) in front of the slot's barrel direction.
-const FLAMETHROWER_REACH: f32 = 16.0;
-/// Half-angle of the cone (radians). ~25° each side → 50° total
-/// arc. Wide enough to read as a spray, narrow enough that the player
-/// has to aim the ship to keep enemies inside.
-const FLAMETHROWER_HALF_ANGLE: f32 = 0.45;
+/// Cone reach (world units) in front of the slot's mount direction.
+/// Sized so a single equipped Flamethrower covers a meaningful chunk
+/// of the play area in front of the slot — anything less and the
+/// burn fires into empty water with the player wondering whether
+/// the weapon is even doing anything.
+const FLAMETHROWER_REACH: f32 = 60.0;
+/// Half-angle of the cone (radians). ~10° each side → ~20° total
+/// arc. Tight focus reads as a directed flame spear; the slot's
+/// mount direction is FIXED (like Blade) so the player aims by
+/// rotating the SHIP.
+const FLAMETHROWER_HALF_ANGLE: f32 = 0.175;
 /// Duration of the active burn phase, seconds.
 const FLAMETHROWER_BURN_DURATION: f32 = 3.0;
 /// Duration of the cooldown phase, seconds.
 const FLAMETHROWER_COOLDOWN_DURATION: f32 = 3.0;
-/// Particles per active tick — sprayed forward through the cone.
-const FLAMETHROWER_PARTICLES_PER_TICK: u32 = 8;
+/// Particles emitted PER FRAME during the active phase. The spew is
+/// continuous (independent of the damage cadence) so the flame
+/// visibly fills the cone the entire time the burner is on, even
+/// though damage still ticks on `1.0 / fire_rate` intervals.
+const FLAMETHROWER_PARTICLES_PER_FRAME: u32 = 4;
+/// Particle velocity range. Tuned so `speed × life ≈ FLAMETHROWER_REACH`
+/// — particles visibly travel the full damage cone rather than
+/// dying within the first quarter.
+const FLAMETHROWER_PARTICLE_SPEED_MIN: f32 = 140.0;
+const FLAMETHROWER_PARTICLE_SPEED_MAX: f32 = 200.0;
+/// Particle lifetime range. Combined with the speed above, particles
+/// reach the cone's outer edge before fading.
+const FLAMETHROWER_PARTICLE_LIFE_MIN: f32 = 0.30;
+const FLAMETHROWER_PARTICLE_LIFE_MAX: f32 = 0.45;
 
 /// Phase of a Flamethrower slot. `Active` burns; `Cooldown` is
 /// idle. Phase swaps when `phase_timer` reaches 0.
@@ -197,15 +214,21 @@ pub fn flamethrower_tick(
 
         // Flame particles fanning out from the nozzle. Reuses the
         // Fire-rune material so the visible spit reads as fire even
-        // though we don't apply OnFire.
+        // though we don't apply OnFire. Speed × life is tuned so
+        // particles cover the full cone reach — the spray visibly
+        // tells the player the damage area.
         let _ = reach2; // kept for future range-based fx scaling
         for _ in 0..FLAMETHROWER_PARTICLES_PER_TICK {
             let spread = rng.gen_range(-FLAMETHROWER_HALF_ANGLE..FLAMETHROWER_HALF_ANGLE);
             let pa = total_angle + spread;
             let pdir = Vec2::new(-pa.sin(), pa.cos());
-            let speed = rng.gen_range(35.0..55.0);
-            let life = rng.gen_range(0.22..0.36);
-            let scale = rng.gen_range(0.5..0.9);
+            let speed = rng.gen_range(
+                FLAMETHROWER_PARTICLE_SPEED_MIN..FLAMETHROWER_PARTICLE_SPEED_MAX,
+            );
+            let life = rng.gen_range(
+                FLAMETHROWER_PARTICLE_LIFE_MIN..FLAMETHROWER_PARTICLE_LIFE_MAX,
+            );
+            let scale = rng.gen_range(0.6..1.1);
             commands.spawn((
                 Mesh2d(em.particle.clone()),
                 MeshMaterial2d(pm.fire.clone()),

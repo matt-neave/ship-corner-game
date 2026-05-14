@@ -32,6 +32,7 @@ mod main_menu;
 mod octopus;
 mod onboarding;
 mod settings;
+mod sfx;
 mod rune;
 mod ship;
 mod stage_complete;
@@ -43,6 +44,7 @@ mod turret;
 mod ui;
 mod ui_kit;
 mod weapon;
+mod win_screen;
 mod xp;
 
 use ally::{
@@ -68,20 +70,28 @@ use enemy::{
 };
 use map::{
     advance_map_anim_timeline, apply_view_mode, boss_patrol_movement,
-    close_popup_on_view_change, handle_building_choice_clicks, handle_debug_buttons,
+    close_popup_on_view_change, handle_building_choice_clicks,
     in_combat_view, level_complete_check, level_fail_check, map_begin_phase,
     map_boat_movement, map_click_input, refresh_map_fill, setup_currency_ui,
-    setup_debug_ui, setup_level_status_ui, setup_map,
+    setup_level_status_ui, setup_map,
     setup_progress_assets, spawn_boss_patrols,
-    sync_debug_panel_visibility, sync_owned_slot_visuals,
+    sync_owned_slot_visuals,
     tick_buildings,
-    toggle_debug_ui_on_hash, update_anim_beams, update_anim_pulses,
+    update_anim_beams, update_anim_pulses,
     update_building_button_tints, update_building_description, update_building_hover_tooltip,
-    update_building_progress_bars, update_claim_label, update_currency_ui,
-    update_debug_button_tints, update_level_status_ui, update_map_slot_labels,
+    update_building_progress_bars, update_currency_ui,
+    update_level_status_ui, update_map_slot_labels,
     update_refined_steel_text, update_scrap_text, update_steel_text,
     BuildingTimers, CombatContext, DebugClaimMode, DebugUiVisible, MapAnimTimeline,
     MapState, TriggerMapPhase, ViewMode,
+};
+// Debug-panel systems live behind the inverse-demo feature flag.
+// Imported separately so the demo-build `use` block doesn't pull in
+// names the schedule no longer references.
+#[cfg(not(feature = "demo"))]
+use map::{
+    handle_debug_buttons, setup_debug_ui, sync_debug_panel_visibility,
+    toggle_debug_ui_on_hash, update_claim_label, update_debug_button_tints,
 };
 use modes::{
     apply_camera_follow, apply_crt_mode, apply_night_mode, apply_vsync_mode,
@@ -94,12 +104,18 @@ use rendering::{
     update_hud_camera_viewport,
 };
 use settings::{apply_loaded_settings, persist_settings_on_change};
-use rune::{tick_echoes, tick_on_bleed, tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_resonate};
+use rune::{
+    tick_buff_stacks, tick_echoes, tick_hp_pickups, tick_magnetic_pickups, tick_on_bleed,
+    tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_medic, tick_on_resonate,
+    BuffStacks, MedicTimer, ThirstPending,
+};
 use ship::{apply_velocity, friendly_movement, friendly_ram_damage, setup_world, tick_stunned};
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{
-    helicopter_ai, mortar_shell_tick, sync_helipad_helicopters, sync_helipad_nose_barrels,
-    sync_turret_config, turret_aim_fire, TurretConfig,
+    helicopter_ai, mortar_shell_tick, shark_ai, shark_contact_damage,
+    sync_amplifier_decor, sync_helipad_helicopters, sync_helipad_nose_barrels,
+    sync_sharknet_sharks, sync_spiked_decor, sync_turret_config, turret_aim_fire,
+    TurretConfig,
 };
 use ui::{
     setup_damage_panel, setup_ui,
@@ -139,6 +155,125 @@ pub enum AppState {
     /// boss into the arena and returns to `Playing`. Combat freezes
     /// while in this state because it isn't in `in_combat_view`.
     BossIntro,
+    /// Win screen — entered when the player clears a 5★ section boss.
+    /// Minimal end-of-run overlay; exiting back to MainMenu runs the
+    /// same fresh-run reset as the GameOver path.
+    Win,
+}
+
+/// Owns the in-combat-view Update schedule. Pulled out of the main
+/// `App::new()` chain so adding a new combat-tick system means
+/// editing one place with room to spare — not nervously rearranging
+/// sub-tuples to dodge Bevy's `IntoSystemConfigs` tuple cap.
+///
+/// The schedule is split into three groups for readability:
+/// - **AI** — ship / enemy movement, AI ticks, spawn drips.
+/// - **Projectiles** — turret fire, enemy fire, autonomous units,
+///   shell + mine + helicopter ticks.
+/// - **Damage** — the bullet → damage-event drain with kill-credit
+///   and status decay ticks chained after.
+///
+/// Every group runs `run_if(in_combat_view)`, so out-of-combat
+/// states (Pause, Customize, Map, GameOver) freeze the sim
+/// uniformly.
+struct CombatSimPlugin;
+
+impl Plugin for CombatSimPlugin {
+    fn build(&self, app: &mut App) {
+        // ---- AI tick group ----
+        app.add_systems(
+            Update,
+            (
+                // Refresh the shared ally-positions snapshot before any
+                // enemy AI / fire system reads it this frame.
+                update_ally_positions_cache,
+                friendly_movement,
+                enemy_ai,
+                tick_stunned,
+                apply_velocity,
+                friendly_ram_damage,
+                stats::shield_recharge_system,
+                bomber_detonate,
+                (spawn_enemies, boss_chaos_spawn),
+            )
+                .run_if(in_combat_view),
+        );
+
+        // ---- Projectile / turret group ----
+        app.add_systems(
+            Update,
+            (
+                sync_turret_config,
+                // beam_apply_damage needs the BeamPending entities spawned
+                // by turret_aim_fire to be visible this frame.
+                (turret_aim_fire, beam_apply_damage).chain(),
+                enemy_fire,
+                sniper_fire,
+                sniper_aim_line_tick,
+                sniper_turret_aim,
+                artillery_fire,
+                artillery_shell_tick,
+                enemy_landmine_tick,
+                bullet_update,
+                mortar_shell_tick,
+                // HeliPad slots: sync the "one helicopter per equipped slot"
+                // invariant first so a freshly spawned heli ticks this frame
+                // in `helicopter_ai`. `.chain()` inserts the command-flush
+                // sync point that makes that hand-off safe.
+                (sync_helipad_helicopters, sync_helipad_nose_barrels, helicopter_ai).chain(),
+                // SharkNet autonomous unit: same shape as HeliPad — sync
+                // existence first, then AI tick, then contact-damage
+                // collision pass. Chained for the same command-flush
+                // reason: freshly-spawned sharks need their Transform
+                // visible before the AI moves them this frame.
+                (sync_sharknet_sharks, shark_ai, shark_contact_damage).chain(),
+            )
+                .run_if(in_combat_view),
+        );
+
+        // ---- Damage pipeline ----
+        //
+        // Producers (`bullet_collisions`, `tick_echoes`, blade /
+        // octopus / mortar / beam systems run earlier in the
+        // schedule) push `DamageEvent`s into `PendingDamageQueue`;
+        // `process_damage_events` drains them, applies damage, rolls
+        // runes, and chains. `enemy_death_check` despawns anything
+        // that hit zero AFTER the drain so chain damage gets the
+        // same death pipeline. Kill-credit / passive tick systems
+        // (magnet pull, HP pickup collect, Rally decay, Medic
+        // interval) run BETWEEN the drain and the death-check so
+        // event-driven on-kill effects can see the dying enemy's
+        // marker components.
+        app.add_systems(
+            Update,
+            (
+                (
+                    bullet_collisions,
+                    tick_echoes,
+                    process_damage_events,
+                    tick_on_fire,
+                    tick_on_frost,
+                    tick_on_bleed,
+                    tick_on_conduit,
+                    tick_on_resonate,
+                    (
+                        tick_magnetic_pickups,
+                        tick_hp_pickups,
+                        tick_buff_stacks,
+                        tick_on_medic,
+                    )
+                        .chain(),
+                    enemy_death_check,
+                )
+                    .chain(),
+                // Track damage frame-to-frame to spawn / refresh enemy
+                // HP bars. Gated to combat — outside combat there's no
+                // damage to detect.
+                track_enemy_damage_for_hp_bars,
+            )
+                .run_if(in_combat_view),
+        );
+    }
 }
 
 /// One-way mirror: drive the boolean overlay flags from the authoritative
@@ -226,6 +361,71 @@ pub struct RefinedSteel(pub u32);
 #[derive(Resource)]
 pub struct SpawnTimer { pub t: f32, pub elapsed: f32 }
 
+/// Run-difficulty selector — picked on the HullSelect setup screen
+/// alongside hull + voyage length. Three tiers: `0` is gentler than
+/// baseline, `1` is the baseline tuning, `2` is harder. Scales enemy
+/// max HP at spawn and outgoing enemy damage; everything else stays
+/// constant so the existing wave + variant schedules read the same
+/// at every difficulty.
+#[derive(Resource, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Difficulty(pub u8);
+
+impl Default for Difficulty {
+    /// Default to the baseline tier (1) so a fresh install plays the
+    /// originally-tuned campaign.
+    fn default() -> Self { Self(1) }
+}
+
+impl Difficulty {
+    pub const VALUES: &'static [u8] = &[0, 1, 2];
+
+    pub fn label(self) -> &'static str {
+        match self.0 {
+            0 => "0",
+            1 => "1",
+            2 => "2",
+            _ => "?",
+        }
+    }
+
+    /// Multiplier applied to enemy max HP at spawn (both regular
+    /// variants and bosses). Easier difficulty thins enemies, harder
+    /// thickens them.
+    pub fn hp_mult(self) -> f32 {
+        match self.0 {
+            0 => 0.75,
+            1 => 1.0,
+            2 => 1.5,
+            _ => 1.0,
+        }
+    }
+
+    /// Multiplier applied to outgoing enemy damage at the source
+    /// (bullet `damage`, contact `contact_damage`, landmine yield).
+    pub fn damage_mult(self) -> f32 {
+        match self.0 {
+            0 => 0.75,
+            1 => 1.0,
+            2 => 1.5,
+            _ => 1.0,
+        }
+    }
+
+    /// Apply `hp_mult` to a baseline HP value, rounding to the nearest
+    /// int and clamping to >= 1 so a fractional roll never kills the
+    /// enemy at spawn.
+    pub fn scale_hp(self, hp: i32) -> i32 {
+        ((hp as f32) * self.hp_mult()).round().max(1.0) as i32
+    }
+
+    /// Apply `damage_mult` to a baseline damage value, rounding and
+    /// clamping to >= 0 (damage <= 0 short-circuits the damage queue
+    /// in `push_initial`).
+    pub fn scale_damage(self, dmg: i32) -> i32 {
+        ((dmg as f32) * self.damage_mult()).round().max(0.0) as i32
+    }
+}
+
 /// Wall-clock seconds since the current run started. Pauses on MainMenu
 /// and HullSelect; reset on `OnEnter(HullSelect)`.
 #[derive(Resource, Default)]
@@ -310,6 +510,9 @@ fn main() {
         .add_plugins((
             flamethrower::FlamethrowerPlugin,
             stats_panel_overlay::StatsPanelOverlayPlugin,
+            win_screen::WinScreenPlugin,
+            sfx::SfxPlugin,
+            CombatSimPlugin,
         ))
         // Workaround for a Bevy 0.16 + WebGL2/ANGLE bug: the default
         // mesh allocator packs many small meshes into shared "slab"
@@ -357,6 +560,9 @@ fn main() {
         .insert_resource(PendingDamageQueue::default())
         .insert_resource(VampireAccumulator::default())
         .insert_resource(GreedAccumulator::default())
+        .insert_resource(ThirstPending::default())
+        .insert_resource(BuffStacks::default())
+        .insert_resource(MedicTimer::default())
         .insert_resource(modes::ScreenShake::default())
         .insert_resource(RunTimer::default())
         .init_state::<AppState>()
@@ -371,24 +577,37 @@ fn main() {
         .insert_resource(CameraFollow::default())
         .insert_resource(ViewMode::default())
         .insert_resource(map::MapSize::default())
+        .insert_resource(Difficulty::default())
         .insert_resource(MapState::new(map::MapSize::default().sections()))
         .insert_resource(BuildingTimers::default())
         .insert_resource(MapAnimTimeline::default())
         .insert_resource(CombatContext::default())
         .insert_resource(DebugClaimMode::default())
         .add_event::<TriggerMapPhase>()
+        .add_event::<rune::KillEvent>()
         .insert_resource(AllyPositionsCache::default())
         .add_systems(Startup, (
             setup_render, setup_world, setup_ui, setup_map,
             // After setup_map so 5★ polygons exist for reject-sampling.
             spawn_boss_patrols,
-            setup_debug_ui, setup_currency_ui, setup_progress_assets,
+            // Debug panel is stripped from demo builds — call sites
+            // that read DebugUiVisible are all gated below, so a
+            // missing panel entity is harmless.
+            #[cfg(not(feature = "demo"))]
+            setup_debug_ui,
+            setup_currency_ui, setup_progress_assets,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
             setup_damage_panel,
             setup_wave_indicator, setup_spawn_indicator_assets,
         ).chain())
         // Bridge runs first so the rest of Update sees synced flags.
         .add_systems(Update, sync_state_to_open_resources)
+        // Weapon-decor sync — runs unconditionally; both systems
+        // self-gate on `cfg.is_changed()` so they're cheap when the
+        // player isn't editing the loadout. Mirrors the blade-decor
+        // registration pattern (its own plugin) for SpikedPlate +
+        // Amplifier which previously had no deck visual.
+        .add_systems(Update, (sync_spiked_decor, sync_amplifier_decor))
         .add_systems(OnEnter(AppState::Map), enter_map_view)
         .add_systems(OnEnter(AppState::Playing), enter_combat_view)
         // Map→Playing is the canonical stage-start hook: refill HP +
@@ -409,62 +628,11 @@ fn main() {
             // to the camera in the same frame.
             (apply_night_mode, apply_palette, update_hash_image).chain(),
         ))
-        .add_systems(Update, (
-            // Refresh the shared ally-positions snapshot before any
-            // enemy AI / fire system reads it this frame.
-            update_ally_positions_cache,
-            friendly_movement,
-            enemy_ai,
-            tick_stunned,
-            apply_velocity,
-            friendly_ram_damage,
-            stats::shield_recharge_system,
-            bomber_detonate,
-            (spawn_enemies, boss_chaos_spawn),
-            sync_turret_config,
-            // beam_apply_damage needs the BeamPending entities spawned
-            // by turret_aim_fire to be visible this frame.
-            (turret_aim_fire, beam_apply_damage).chain(),
-            // Sub-tuple keeps the outer count under Bevy's 20-system cap.
-            (
-                enemy_fire,
-                sniper_fire, sniper_aim_line_tick, sniper_turret_aim,
-                artillery_fire, artillery_shell_tick,
-                enemy_landmine_tick,
-            ),
-            bullet_update,
-            mortar_shell_tick,
-            // HeliPad slots: sync the "one helicopter per equipped slot"
-            // invariant first so a freshly spawned heli ticks this frame
-            // in `helicopter_ai`. Both gate themselves on slot config so
-            // they idle harmlessly when no HeliPad is equipped.
-            // `sync_helipad_helicopters` first so freshly-spawned heli
-            // entities exist when `sync_helipad_nose_barrels` looks up
-            // their owning slot for visibility. `.chain()` inserts the
-            // command-flush sync point that makes that hand-off safe.
-            (sync_helipad_helicopters, sync_helipad_nose_barrels, helicopter_ai).chain(),
-            // Damage application chain. Producers (`bullet_collisions`,
-            // `tick_echoes`, blade/octopus/mortar/beam systems run earlier
-            // in the schedule) push `DamageEvent`s into
-            // `PendingDamageQueue`; `process_damage_events` drains
-            // them, applies damage, rolls runes, and chains.
-            // `enemy_death_check` despawns anything that hit zero AFTER
-            // the drain so chain damage gets the same death pipeline.
-            // `tick_on_*` decay status components — no damage — but
-            // live in the chain to keep all status-related work in one
-            // ordered block.
-            (
-                bullet_collisions, tick_echoes,
-                process_damage_events,
-                tick_on_fire, tick_on_frost, tick_on_bleed,
-                tick_on_conduit, tick_on_resonate,
-                enemy_death_check,
-            ).chain(),
-            // Track damage frame-to-frame to spawn / refresh enemy
-            // HP bars. Gated to combat — outside combat there's no
-            // damage to detect.
-            track_enemy_damage_for_hp_bars,
-        ).run_if(in_combat_view))
+        // In-combat-view schedule lives in `CombatSimPlugin` (above),
+        // registered via `add_plugins`. The block was lifted out of
+        // this builder chain so each combat-tick group could be a
+        // small tuple without the `IntoSystemConfigs` cap forcing
+        // sub-tuple bundling here.
         // The bar updater runs unconditionally so orphan bars get
         // cleaned up regardless of state. If the player dies (→
         // GameOver) while an enemy still had a visible bar, leaving
@@ -564,8 +732,12 @@ fn main() {
             handle_building_choice_clicks,
             update_building_hover_tooltip,
             (
-                handle_debug_buttons, update_debug_button_tints, update_claim_label,
-                toggle_debug_ui_on_hash, sync_debug_panel_visibility,
+                // Debug panel + hash-toggle stripped in demo builds.
+                #[cfg(not(feature = "demo"))]
+                (
+                    handle_debug_buttons, update_debug_button_tints, update_claim_label,
+                    toggle_debug_ui_on_hash, sync_debug_panel_visibility,
+                ),
                 update_damage_panel, update_damage_row_icons, sync_damage_panel_visibility,
                 update_wave_indicator,
                 tick_spawn_indicators,

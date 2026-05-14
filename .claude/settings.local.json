@@ -22,7 +22,14 @@
       "PowerShell($path = \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\ally\\\\mod.rs\"; $content = Get-Content $path -Raw; $startMarker = \"// ---------- Planes ----------\"; $endMarker = \"// ---------- Oil tankers ----------\"; $start = $content.IndexOf\\($startMarker\\); $end = $content.IndexOf\\($endMarker\\); if \\($start -lt 0 -or $end -lt 0 -or $end -lt $start\\) { Write-Host \"MARKERS NOT FOUND start=$start end=$end\" } else { $new = $content.Substring\\(0, $start\\) + $content.Substring\\($end\\); [System.IO.File]::WriteAllText\\($path, $new\\); Write-Host \"Removed plane section: $\\($end - $start\\) chars\" })",
       "PowerShell(New-Item -ItemType Directory -Path \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\enemy\" -Force)",
       "PowerShell(Move-Item \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\enemy.rs\" \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\\\\enemy\\\\mod.rs\")",
-      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\" -Recurse -Filter \"*.rs\")"
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\matth\\\\Documents\\\\projects\\\\ship-game\\\\src\" -Recurse -Filter \"*.rs\")",
+      "Bash(cargo doc *)",
+      "Bash(cp \"../snkrx/assets/sounds/Cannon shots 1.ogg\" \"assets/sounds/shoot.ogg\")",
+      "Bash(cp \"../snkrx/assets/sounds/Cannon shots 7.ogg\" \"assets/sounds/cannon.ogg\")",
+      "Bash(cp \"../snkrx/assets/sounds/Magical Impact 12.ogg\" \"assets/sounds/hit.ogg\")",
+      "Bash(cp \"../snkrx/assets/sounds/Explosion Grenade_04.ogg\" \"assets/sounds/explosion.ogg\")",
+      "Bash(cp \"../snkrx/assets/sounds/Player Takes Damage 2.ogg\" \"assets/sounds/player_hit.ogg\")",
+      "Bash(grep -E \"\\(turret/mod|turret\\\\\\\\\\\\\\\\mod\\)\")"
     ]
   }
 }

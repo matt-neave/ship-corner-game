@@ -59,3 +59,10 @@ wide_play = []
 # matches the viewport (no follow needed). On → ~1.44× the play
 # space per stage. Try `cargo run --features big_arena`.
 big_arena = []
+# Demo-release build. Strips developer-facing debug tools out of
+# the binary: the bottom-right map debug panel (CLAIM / PHASE /
+# SPAWN ALLY / SPAWN BOSS / SPAWN ENEMY / OPEN CUSTOMIZE / ADD
+# SCRAP), the `#` keyboard toggle for that panel, and the `+/-`
+# stat-debug buttons on the shop's stats panel. Build with
+# `cargo build --release --features demo`.
+demo = []

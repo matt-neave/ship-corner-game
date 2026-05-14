@@ -1111,6 +1111,8 @@ pub fn turret_color_for(weapon: WeaponType) -> Color {
         WeaponType::SpreadRockets => hex(crate::palette::SPREAD_ROCKETS_HEX),
         WeaponType::Flamethrower => hex(crate::palette::FLAMETHROWER_HEX),
         WeaponType::SpikedPlate => hex(crate::palette::SPIKED_PLATE_HEX),
+        WeaponType::Amplifier => Color::srgb(0.45, 0.78, 0.82),
+        WeaponType::SharkNet => Color::srgb(0.18, 0.32, 0.55),
     }
 }
 
@@ -1140,6 +1142,12 @@ pub fn turret_barrel_color_for(weapon: WeaponType) -> Color {
         WeaponType::Flamethrower => hex(crate::palette::FIRE_HEX),
         // Bright steel for the spike tips on top of the plate.
         WeaponType::SpikedPlate => hex(crate::palette::SPIKED_PLATE_TIP_HEX),
+        // Brighter teal — pops on the pad colour without bleeding
+        // into Booster's amber-gold pulse ring.
+        WeaponType::Amplifier => Color::srgb(0.70, 0.95, 0.98),
+        // Pale steel — the visible shark barrel against the
+        // deep-ocean base.
+        WeaponType::SharkNet => Color::srgb(0.85, 0.92, 1.00),
     }
 }
 
@@ -1169,6 +1177,12 @@ pub fn rune_color_for(rune: Rune) -> Color {
         Rune::Greed            => Color::srgb(0.95, 0.78, 0.20), // gold-scrap
         Rune::Executioner      => Color::srgb(0.55, 0.10, 0.10), // dark blood red
         Rune::Opener           => Color::srgb(0.95, 0.95, 0.55), // first-strike yellow
+        Rune::Leftovers        => Color::srgb(0.40, 0.85, 0.55), // medkit green
+        Rune::Star             => Color::srgb(0.95, 0.90, 0.40), // sparkle gold
+        Rune::Thirst           => Color::srgb(0.75, 0.20, 0.45), // hungry magenta
+        Rune::Medic            => Color::srgb(0.95, 0.85, 0.90), // medical pink
+        Rune::Rally            => Color::srgb(1.00, 0.55, 0.20), // war-cry orange
+        Rune::Thorns           => Color::srgb(0.40, 0.55, 0.35), // briar green
     }
 }
 

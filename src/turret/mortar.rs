@@ -42,7 +42,7 @@ pub struct MortarShell {
     pub splash_radius: f32,
     pub source: Option<DamageSource>,
     pub weapon: WeaponType,
-    pub runes: [Option<Rune>; 3],
+    pub runes: Vec<Rune>,
     pub shadow: Option<Entity>,
 }
 
@@ -59,7 +59,7 @@ pub fn spawn_mortar_shell(
     damage: i32,
     splash_radius: f32,
     source: Option<DamageSource>,
-    runes: [Option<Rune>; 3],
+    runes: Vec<Rune>,
 ) {
     // Orient the oblong bullet mesh along the flight direction so the
     // shell visually points at its landing spot for the whole arc.

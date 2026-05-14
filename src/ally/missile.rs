@@ -68,7 +68,7 @@ fn spawn_homing_missile(
     spawn_homing_missile_full(
         commands, em, pm, pos, forward, damage, initial_target,
         target_faction, source, WeaponType::Standard,
-        [None; 3], MISSILE_RANGE, 1.0,
+        Vec::new(), MISSILE_RANGE, 1.0,
     );
 }
 
@@ -88,11 +88,14 @@ pub fn spawn_homing_missile_full(
     target_faction: FactionKind,
     source: Option<crate::bullet::DamageSource>,
     weapon: WeaponType,
-    runes: [Option<crate::rune::Rune>; 3],
+    runes: Vec<crate::rune::Rune>,
     range: f32,
     rune_effect: f32,
 ) {
     let heading_rot = (-forward.x).atan2(forward.y);
+    // Inspect for Pierce on the slice before the Vec moves into the
+    // bundle — same data, no clone.
+    let pierce_stacks = crate::bullet::pierce_stacks(&runes);
     let bullet = commands.spawn((
         Mesh2d(em.bullet_missile_outer.clone()),
         MeshMaterial2d(pm.bullet_missile_outer.clone()),
@@ -115,7 +118,7 @@ pub fn spawn_homing_missile_full(
         RenderLayers::layer(PLAY_LAYER),
     )).id();
     if target_faction == FactionKind::Enemy {
-        if let Some(stacks) = crate::bullet::pierce_stacks(&runes) {
+        if let Some(stacks) = pierce_stacks {
             commands.entity(bullet).insert(crate::bullet::make_pierce(stacks, rune_effect));
         }
     }

@@ -75,6 +75,20 @@ pub enum WeaponType {
     /// `SPIKED_PLATE_REDUCTION` when the bullet hits the hull on the
     /// same side this slot occupies. Tagged Melee + Support.
     SpikedPlate,
+    /// Rune-share support node. Doesn't fire. Its own three rune
+    /// sockets are mirrored into the empty rune slots of every
+    /// adjacent equipped turret each frame (see
+    /// `sync_turret_config`), so the runes "broadcast" to whatever
+    /// fires next door. Tagged `Support`.
+    Amplifier,
+    /// Lock-and-charge volley. Long cooldown (~3s), then fires
+    /// `barrels` heavy "shark" projectiles in parallel along the
+    /// turret's aim line. Each shark pierces every enemy on its
+    /// path for high damage, persisting until it leaves the arena.
+    /// Tagged `Autonomous` for thematic kinship with the deployed-
+    /// unit weapons (HeliPad helicopter, Cage octopus), so the
+    /// Autonomous synergy and `Hustle` apply uniformly.
+    SharkNet,
 }
 
 /// Gameplay-class tag attached to each weapon. Used by the tooltip to
@@ -186,7 +200,7 @@ pub fn pick_target(
     candidates: &[(bevy::math::Vec2, i32)],
     anchor: bevy::math::Vec2,
     fallback: bevy::math::Vec2,
-    runes: &[Option<crate::rune::Rune>; 3],
+    runes: &[crate::rune::Rune],
     cycle_idx: Option<u32>,
 ) -> Option<bevy::math::Vec2> {
     if candidates.is_empty() { return None; }
@@ -201,7 +215,7 @@ pub fn pick_target(
     // candidate set shifts frame to frame.
     let has_carousel = runes
         .iter()
-        .any(|r| matches!(*r, Some(crate::rune::Rune::TargetCarousel)));
+        .any(|r| matches!(r, crate::rune::Rune::TargetCarousel));
     if has_carousel {
         let mut ordered: Vec<(bevy::math::Vec2, i32)> = candidates.to_vec();
         ordered.sort_by(|a, b| {
@@ -216,7 +230,7 @@ pub fn pick_target(
 
     let priority = runes
         .iter()
-        .find_map(|r| r.and_then(|r| r.target_priority()));
+        .find_map(|r| r.target_priority());
     let best = if let Some(p) = priority {
         candidates
             .iter()
@@ -327,6 +341,14 @@ impl WeaponType {
             // stats panel reads "0 / 0" cleanly. Damage/reduction
             // numbers live in `balance::SPIKED_PLATE_*`.
             WeaponType::SpikedPlate => (0, 0.0),
+            // Amplifier: doesn't fire. Same placeholder zeros — the
+            // rune-share logic in `sync_turret_config` is the whole
+            // gameplay value of this slot.
+            WeaponType::Amplifier => (0, 0.0),
+            // SharkNet: heavy damage on a long cooldown. 5 dmg per
+            // shark; 0.33Hz = one volley every 3 seconds. Barrels
+            // add side-by-side sharks (1 / 2 / 3) for a wider sweep.
+            WeaponType::SharkNet => (5, 0.33),
         }
     }
 
@@ -348,6 +370,8 @@ impl WeaponType {
             WeaponType::SpreadRockets => tr("weapon_spread_rockets"),
             WeaponType::Flamethrower => tr("weapon_flamethrower"),
             WeaponType::SpikedPlate => tr("weapon_spiked_plate"),
+            WeaponType::Amplifier => tr("weapon_amplifier"),
+            WeaponType::SharkNet => tr("weapon_sharknet"),
         }
     }
 
@@ -370,6 +394,8 @@ impl WeaponType {
             WeaponType::SpreadRockets => tr("weapon_spread_rockets_desc"),
             WeaponType::Flamethrower => tr("weapon_flamethrower_desc"),
             WeaponType::SpikedPlate => tr("weapon_spiked_plate_desc"),
+            WeaponType::Amplifier => tr("weapon_amplifier_desc"),
+            WeaponType::SharkNet => tr("weapon_sharknet_desc"),
         }
     }
 
@@ -414,12 +440,22 @@ impl WeaponType {
             // last-mile work, so the firing arc just needs to cover
             // mid-field engagement.
             WeaponType::SpreadRockets => 1.4,
-            // Flamethrower: short cone. Used by `flamethrower.rs` for
-            // the cone reach calc.
-            WeaponType::Flamethrower => 0.45,
+            // Flamethrower: cone reach == `TURRET_RANGE` so the
+            // displayed range matches the actual cone depth. The
+            // `flamethrower.rs` tick reads a separate `FLAMETHROWER_REACH`
+            // constant so the cone fills a meaningful slice of the
+            // arena (TURRET_RANGE-equivalent in world units).
+            WeaponType::Flamethrower => 1.0,
             // Spike Plate: doesn't project — placeholder for the
             // exhaustive match.
             WeaponType::SpikedPlate => 1.0,
+            // Amplifier: no projectile, no range. Placeholder so the
+            // exhaustive match builds.
+            WeaponType::Amplifier => 1.0,
+            // SharkNet: very long reach — the salvo crosses the
+            // arena so the sharks have time to mow through the
+            // entire width before despawning at the far edge.
+            WeaponType::SharkNet => 2.5,
         }
     }
 
@@ -444,6 +480,9 @@ impl WeaponType {
     /// The aim/fire system early-returns for these so the slot doesn't
     /// try to track a target or spawn muzzle flashes.
     pub fn fires_from_base(self) -> bool {
+        // SharkNet is autonomous-deployed (like HeliPad / Cage): the
+        // slot spawns a persistent shark unit that hunts independently;
+        // the deck pad itself doesn't fire anything.
         !matches!(
             self,
             WeaponType::HeliPad
@@ -452,6 +491,8 @@ impl WeaponType {
                 | WeaponType::Cage
                 | WeaponType::Flamethrower
                 | WeaponType::SpikedPlate
+                | WeaponType::Amplifier
+                | WeaponType::SharkNet
         )
     }
 
@@ -471,6 +512,7 @@ impl WeaponType {
                 | WeaponType::Cage
                 | WeaponType::Flamethrower
                 | WeaponType::SpikedPlate
+                | WeaponType::Amplifier
         )
     }
 
@@ -507,6 +549,12 @@ impl WeaponType {
             // Spiked deck plate — Melee for the contact-damage buff
             // and Support for the per-side reduction it grants.
             WeaponType::SpikedPlate => &[WeaponTag::Melee, WeaponTag::Support],
+            // Rune-share broadcast pad — Support, like Booster.
+            WeaponType::Amplifier => &[WeaponTag::Support],
+            // SharkNet: heavy charge volley. Tagged Autonomous so it
+            // counts toward the autonomous synergy alongside HeliPad
+            // and Cage — thematic kin with deployed-unit weapons.
+            WeaponType::SharkNet => &[WeaponTag::Autonomous],
         }
     }
 
@@ -545,6 +593,8 @@ impl PaletteMaterials {
             WeaponType::SpreadRockets => &self.turret_spread_rockets,
             WeaponType::Flamethrower => &self.turret_flamethrower,
             WeaponType::SpikedPlate => &self.turret_spiked_plate,
+            WeaponType::Amplifier => &self.turret_amplifier,
+            WeaponType::SharkNet => &self.turret_sharknet,
         }
     }
 
@@ -574,6 +624,12 @@ impl PaletteMaterials {
             WeaponType::Flamethrower => &self.bullet_friendly_outer,
             // Spike Plate never spawns bullets; fallback to friendly.
             WeaponType::SpikedPlate => &self.bullet_friendly_outer,
+            // Amplifier never spawns bullets; fallback to friendly.
+            WeaponType::Amplifier => &self.bullet_friendly_outer,
+            // SharkNet: heavy steel-blue outer shell — reads as a
+            // hefty piercing projectile distinct from the standard
+            // friendly tracer colour.
+            WeaponType::SharkNet => &self.bullet_sharknet_outer,
         }
     }
 
@@ -595,6 +651,8 @@ impl PaletteMaterials {
             WeaponType::SpreadRockets => &self.bullet_missile_inner,
             WeaponType::Flamethrower => &self.fire,
             WeaponType::SpikedPlate => &self.bullet_friendly,
+            WeaponType::Amplifier => &self.bullet_friendly,
+            WeaponType::SharkNet => &self.bullet_sharknet,
         }
     }
 }

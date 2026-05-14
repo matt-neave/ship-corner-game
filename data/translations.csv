@@ -38,6 +38,8 @@ weapon_harpoon,HARPOON
 weapon_spread_rockets,SPREAD ROCKETS
 weapon_flamethrower,FLAMETHROWER
 weapon_spiked_plate,SPIKED PLATE
+weapon_amplifier,AMPLIFIER
+weapon_sharknet,SHARK NET
 weapon_cannon_desc,Heavy cannonball. Knocks enemies back on hit.
 weapon_booster_desc,Does not fire. Boosts the fire rate of every adjacent turret.
 weapon_blade_desc,Spinning blade on an extending arm. Damages anything it touches near the ship.
@@ -46,6 +48,8 @@ weapon_harpoon_desc,Long-range melee. Lances out and reels the target into the h
 weapon_spread_rockets_desc,Salvo of 4 seeking rockets every 2.5s. Each rocket re-homes onto a target.
 weapon_flamethrower_desc,Short cone burner. Burns 3s then reloads 3s. Does not auto-apply Fire.
 weapon_spiked_plate_desc,Passive deck armour. On this slot's side of the hull: +5 ram damage to the enemy in contact and -1 incoming bullet damage.
+weapon_amplifier_desc,Doesn't fire. Broadcasts its socketed runes to every adjacent turret each frame, filling their empty rune slots.
+weapon_sharknet_desc,Heavy charge volley. Fires once every 3s, sending sharks tearing across the arena. Each shark pierces every enemy on its line for 5 damage. Barrels add side-by-side sharks for a wider attack.
 weapon_tag_naval,NAVAL
 weapon_tag_future,FUTURE
 weapon_tag_autonomous,AUTONOMOUS
@@ -81,6 +85,12 @@ rune_pierce,PIERCE
 rune_greed,GREED
 rune_executioner,EXECUTIONER
 rune_opener,OPENER
+rune_leftovers,LEFTOVERS
+rune_star,STAR
+rune_thirst,THIRST
+rune_medic,MEDIC
+rune_rally,RALLY
+rune_thorns,THORNS
 rune_fire_desc,Sets enemies ablaze, dealing 1 every 0.5s for 4 seconds.
 rune_frost_desc,Freezes enemies in place. Movement crawls.
 rune_shock_desc,Chains lightning to nearby enemies.
@@ -97,6 +107,12 @@ rune_pierce_desc,Bullets pierce through enemies with falling damage. Stacks add 
 rune_greed_desc,Every Nth kill on this weapon drops +1 scrap. Stacks lower N; Rune Effect lowers it further.
 rune_executioner_desc,Bonus damage to enemies below 30% HP.
 rune_opener_desc,Bonus damage when the target is at full HP.
+rune_leftovers_desc,Killing blows drop a heal pickup. Rune Effect scales the heal.
+rune_star_desc,Kills landed by this weapon grant +25% XP. Rune Effect scales the bonus.
+rune_thirst_desc,After a kill from this weapon the next shot deals +50% damage. Rune Effect scales the bonus.
+rune_medic_desc,On a [SUPPORT] weapon: heal 2 HP every 5s. Rune Effect scales the heal.
+rune_rally_desc,On a [MELEE] weapon: each kill grants +1% move speed for 5s (stacks). Rune Effect scales the bonus.
+rune_thorns_desc,Enemies that ram this slot's side of the hull take +1 contact damage per Thorns stack. Rune placement matters as much as weapon placement.
 rune_target_furthest,FURTHEST
 rune_target_max_hp,MAX HP
 rune_target_min_hp,MIN HP

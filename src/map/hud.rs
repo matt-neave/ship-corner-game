@@ -288,7 +288,13 @@ pub fn update_level_status_ui(
 }
 
 // ---------- Debug panel ----------
+//
+// All six functions below are registered in `main.rs` only when the
+// `demo` feature is OFF. `#[cfg_attr]` mirrors that gating so demo
+// builds don't emit dead-code warnings for symbols the linker will
+// strip.
 
+#[cfg_attr(feature = "demo", allow(dead_code))]
 pub fn setup_debug_ui(mut commands: Commands) {
     commands.spawn((
         Node {
@@ -380,6 +386,7 @@ pub fn setup_debug_ui(mut commands: Commands) {
     });
 }
 
+#[cfg_attr(feature = "demo", allow(dead_code))]
 pub fn handle_debug_buttons(
     interactions: Query<(&Interaction, &DebugButton), Changed<Interaction>>,
     mut claim_mode: ResMut<DebugClaimMode>,
@@ -389,6 +396,7 @@ pub fn handle_debug_buttons(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<crate::effects::EffectMeshes>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    difficulty: Res<crate::Difficulty>,
     friendly: Query<&Transform, With<crate::components::Friendly>>,
     mut scrap: ResMut<crate::Scrap>,
 ) {
@@ -439,6 +447,7 @@ pub fn handle_debug_buttons(
                     // No campaign context in the debug path; treat as a
                     // fresh-run boss so the multiplier is the baseline 1.0×.
                     0,
+                    *difficulty,
                 );
             }
             DebugButton::SpawnEnemy(variant) => {
@@ -460,12 +469,14 @@ pub fn handle_debug_buttons(
                 crate::enemy::spawn_enemy(
                     &mut commands, pm_ref, em_ref, &mut meshes,
                     pos, heading, variant,
+                    *difficulty,
                 );
             }
         }
     }
 }
 
+#[cfg_attr(feature = "demo", allow(dead_code))]
 pub fn update_debug_button_tints(
     claim_mode: Res<DebugClaimMode>,
     mut q: Query<(&Interaction, &DebugButton, &mut BackgroundColor)>,
@@ -481,6 +492,7 @@ pub fn update_debug_button_tints(
     }
 }
 
+#[cfg_attr(feature = "demo", allow(dead_code))]
 pub fn update_claim_label(
     claim_mode: Res<DebugClaimMode>,
     mut q: Query<&mut Text, With<DebugClaimLabel>>,
@@ -500,13 +512,22 @@ pub fn update_claim_label(
 #[derive(Resource)]
 pub struct DebugUiVisible(pub bool);
 impl Default for DebugUiVisible {
+    /// Visible by default on dev builds, off in demo builds. The demo
+    /// build never spawns the debug panel anyway (its setup system is
+    /// stripped in `main.rs`), but flipping the default to off here
+    /// also disables the customize-screen `+/-` stat-debug glyphs,
+    /// which self-gate on this resource.
+    #[cfg(not(feature = "demo"))]
     fn default() -> Self { Self(true) }
+    #[cfg(feature = "demo")]
+    fn default() -> Self { Self(false) }
 }
 
 /// Toggle the debug panel on `#` (any keyboard layout — reads the
 /// logical character, not a physical KeyCode). Layered in addition to
 /// the customize-overlay's auto-hide, which still wins via
 /// `sync_debug_panel_visibility` below.
+#[cfg_attr(feature = "demo", allow(dead_code))]
 pub fn toggle_debug_ui_on_hash(
     mut events: EventReader<KeyboardInput>,
     mut visible: ResMut<DebugUiVisible>,
@@ -524,6 +545,7 @@ pub fn toggle_debug_ui_on_hash(
 /// Sole writer of `DebugPanel` visibility. Combines the customize-open
 /// auto-hide and the `#` toggle, so the two never fight: the panel is
 /// visible only when customize is closed AND the toggle is on.
+#[cfg_attr(feature = "demo", allow(dead_code))]
 pub fn sync_debug_panel_visibility(
     visible: Res<DebugUiVisible>,
     customize_open: Res<crate::customize::CustomizeOpen>,

@@ -409,6 +409,7 @@ pub fn spawn_enemy(
     pos: Vec2,
     heading: f32,
     variant: EnemyVariant,
+    difficulty: crate::Difficulty,
 ) {
     let body_mat = match variant {
         EnemyVariant::Standard => pm.enemy.clone(),
@@ -421,6 +422,7 @@ pub fn spawn_enemy(
     };
     let scale = variant.scale();
     let dir = Vec2::new(-heading.sin(), heading.cos());
+    let scaled_hp = difficulty.scale_hp(variant.hp());
 
     let id = commands.spawn((
         Mesh2d(em.enemy_body.clone()),
@@ -434,10 +436,10 @@ pub fn spawn_enemy(
             state_timer: 1.0,
             waypoint: Vec2::ZERO,
             fire_cd: 0.5,
-            max_hp: variant.hp(),
+            max_hp: scaled_hp,
         },
-        Health(variant.hp()),
-        PreviousHp(variant.hp()),
+        Health(scaled_hp),
+        PreviousHp(scaled_hp),
         Velocity(dir * variant.speed()),
         Heading(heading),
         Faction(FactionKind::Enemy),
@@ -548,9 +550,9 @@ pub fn spawn_enemies(
     em: Option<Res<EffectMeshes>>,
     indicator_assets: Option<Res<SpawnIndicatorAssets>>,
     mode: Res<GameMode>,
+    difficulty: Res<crate::Difficulty>,
     mut combat_ctx: ResMut<crate::map::CombatContext>,
-    pending: Res<crate::xp::LevelUpsPending>,
-    mut return_state: ResMut<crate::xp::LevelUpReturn>,
+    mut level_up_q: crate::xp::LevelUpQueue,
     mut next_state: ResMut<NextState<crate::AppState>>,
     mut seen: ResMut<crate::onboarding::SeenVariants>,
     mut boss_intro_pending: ResMut<crate::boss_intro::BossIntroPending>,
@@ -650,6 +652,7 @@ pub fn spawn_enemies(
                 &mut commands, &pm, &em, &mut meshes,
                 spawn.pos, combat_ctx.is_boss_wave,
                 combat_ctx.battles_cleared,
+                *difficulty,
             );
             // First-encounter banner: if the player hasn't seen this
             // variant yet THIS run, mark it + drop the bottom-left
@@ -689,8 +692,8 @@ pub fn spawn_enemies(
                 // drains, which avoids racing `level_complete_check`
                 // (it can fire on the same frame `enemy_budget` hits 0
                 // and the order of those two systems isn't pinned).
-                if pending.0 > 0 && combat_ctx.wave_idx + 1 < combat_ctx.wave_count {
-                    return_state.0 = Some(crate::AppState::Playing);
+                if level_up_q.pending.0 > 0 && combat_ctx.wave_idx + 1 < combat_ctx.wave_count {
+                    level_up_q.return_state.0 = Some(crate::AppState::Playing);
                     next_state.set(crate::AppState::LevelUp);
                 }
             }
@@ -730,6 +733,7 @@ pub fn boss_chaos_spawn(
     em: Option<Res<EffectMeshes>>,
     mode: Res<GameMode>,
     view: Res<crate::map::ViewMode>,
+    difficulty: Res<crate::Difficulty>,
     mut combat_ctx: ResMut<crate::map::CombatContext>,
     bosses: Query<&Ally, (With<Enemy>, With<Ally>)>,
     enemies: Query<Entity, With<Enemy>>,
@@ -770,6 +774,7 @@ pub fn boss_chaos_spawn(
     spawn_one_at(
         &mut commands, &pm, &em, &mut meshes,
         pos, /*boss_wave=*/ true, combat_ctx.battles_cleared,
+        *difficulty,
     );
     combat_ctx.boss_chaos_cd = interval;
 }
@@ -824,12 +829,13 @@ fn spawn_one_at(
     pos: Vec2,
     boss_wave: bool,
     battles_cleared: u32,
+    difficulty: crate::Difficulty,
 ) -> EnemyVariant {
     let mut rng = rand::thread_rng();
     let variant = EnemyVariant::roll_weighted(battles_cleared, boss_wave, &mut rng);
     let inward = (-pos).normalize_or(Vec2::Y);
     let heading = (-inward.x).atan2(inward.y);
-    spawn_enemy(commands, pm, em, meshes, pos, heading, variant);
+    spawn_enemy(commands, pm, em, meshes, pos, heading, variant, difficulty);
     variant
 }
 
@@ -1158,7 +1164,7 @@ pub fn enemy_fire(
                 remaining: ENEMY_RANGE,
                 weapon: WeaponType::Standard,
                 source: None,
-                runes: [None; 3],
+                runes: Vec::new(),
             },
             Velocity(dir * BULLET_SPEED),
             RenderLayers::layer(PLAY_LAYER),
@@ -1194,6 +1200,8 @@ pub fn bomber_detonate(
     mut commands: Commands,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
+    difficulty: Res<crate::Difficulty>,
+    mut sfx: crate::sfx::SfxPlayer,
     // `Without<Ally>` keeps boss ships (which carry both Enemy and
     // Ally) out of the kamikaze branch — they're not actually
     // Bomber/Rammer variants anyway, but the filter is explicit so
@@ -1214,11 +1222,15 @@ pub fn bomber_detonate(
     let mut rng = rand::thread_rng();
 
     for (_be, btf, enemy, mut be_hp) in &mut bombers {
-        let (radius, contact_damage) = match enemy.variant {
+        let (radius, contact_damage_base) = match enemy.variant {
             EnemyVariant::Bomber => (BOMBER_DETONATE_DIST, 15),
             EnemyVariant::Rammer => (BOMBER_DETONATE_DIST * 0.6, 3),
             _ => continue,
         };
+        // Difficulty scales contact damage at application time. Same
+        // scaled value is used for both the friendly and the ally
+        // branch so the multiplier is consistent regardless of target.
+        let contact_damage = difficulty.scale_damage(contact_damage_base);
         let bp = btf.translation.truncate();
 
         // Friendly first — preferred target if in range.
@@ -1254,6 +1266,7 @@ pub fn bomber_detonate(
             // particles, score, scrap, XP, AND the Rammer's
             // landmine drop. Saves a duplicate landmine-spawn site.
             be_hp.0 = 0;
+            sfx.play(crate::sfx::Sfx::Explosion);
             // Bomber gets a heftier two-tone burst; Rammer keeps the
             // sparkle small so the visual cue stays "small bang +
             // mine left behind" rather than "bomber-grade boom".
@@ -1289,15 +1302,34 @@ pub fn enemy_death_check(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut sfx: crate::sfx::SfxPlayer,
+    mut kill_events: EventReader<crate::rune::KillEvent>,
     enemies: Query<(Entity, &Transform, &Health, &Enemy)>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
     let mut rng = rand::thread_rng();
+
+    // Drain the KillEvent stream once and index by target — each
+    // dying enemy looks itself up in this map to apply on-kill rune
+    // effects. Building the map up front instead of querying the
+    // stream per-enemy keeps the cost O(events + dead) rather than
+    // O(events × dead).
+    use std::collections::HashMap;
+    let credits_by_target: HashMap<Entity, &crate::rune::KillEvent> = kill_events
+        .read()
+        .map(|ev| (ev.target, ev))
+        .collect();
+
     for (e, tf, h, enemy) in &enemies {
         if h.0 > 0 { continue; }
         commands.entity(e).despawn();
         score.0 += 10;
+        // Death feedback — Sfx::Coin matches the scrap drop beat;
+        // pitch-variation on rapid wave clears keeps the audio from
+        // turning into a flat repeat.
+        sfx.play(crate::sfx::Sfx::Coin);
         // Harvest = chance an enemy drops 1 scrap on death. Pirate
         // synergy multiplies the chance. Most kills give nothing on
         // their own — wave clears, interest, and the boss bounty are
@@ -1312,8 +1344,45 @@ pub fn enemy_death_check(
         // boss = 60 HP, largest variant = 15 HP).
         let is_boss = enemy.max_hp >= 50;
         crate::xp::grant_kill_xp(&mut xp, &mut pending, &player_stats, is_boss);
+
         let pos = tf.translation.truncate();
         spawn_hit_particles(&mut commands, &em, &pm.enemy, pos, 10, 60.0, &mut rng);
+
+        // On-kill rune dispatch. Pulls the matching KillEvent (if
+        // any) and applies each on-kill rune effect inline. Adding
+        // a new on-kill rune is a new branch here + a new variant
+        // in the Rune enum — no marker component plumbing.
+        if let Some(credit) = credits_by_target.get(&e) {
+            let star_stacks = credit
+                .runes
+                .iter()
+                .filter(|&&r| r == crate::rune::Rune::Star)
+                .count();
+            if star_stacks > 0 {
+                let base = if is_boss { 5.0 } else { 1.0 };
+                let bonus = (base * 0.25 * star_stacks as f32 * player_stats.rune_damage_mult())
+                    .round()
+                    .max(1.0) as u32;
+                xp.grant(bonus, &mut pending);
+            }
+            let leftovers_stacks = credit
+                .runes
+                .iter()
+                .filter(|&&r| r == crate::rune::Rune::Leftovers)
+                .count();
+            if leftovers_stacks > 0 {
+                let heal = (1.0 * leftovers_stacks as f32 * player_stats.rune_damage_mult())
+                    .round()
+                    .max(1.0) as i32;
+                crate::rune::spawn_hp_pickup(
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials,
+                    pos,
+                    heal,
+                );
+            }
+        }
 
         // Rammer drops a time-fused landmine on death — regardless
         // of cause (contact-detonation drives HP to 0 via

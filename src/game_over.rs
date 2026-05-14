@@ -53,7 +53,8 @@ pub struct GameOverMainMenuButton;
 #[derive(Component)]
 pub struct GameOverQuitButton;
 
-pub fn enter_game_over(mut commands: Commands) {
+pub fn enter_game_over(mut commands: Commands, mut sfx: crate::sfx::SfxPlayer) {
+    sfx.play(crate::sfx::Sfx::GameOver);
     commands
         .spawn((
             Node {

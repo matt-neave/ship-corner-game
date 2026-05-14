@@ -585,21 +585,31 @@ pub fn level_complete_check(
     if enemies.iter().count() > 0 { return; }
 
     let id = state.current as usize;
-    // Capture the boss class BEFORE flipping ownership so the reward
-    // screen knows which class to offer for recruit. The class lives
-    // on the section regardless of clear order; ownership flip is
-    // separate.
-    let boss_class = state
+    // Capture the boss class + star tier BEFORE flipping ownership so
+    // the reward / win check has the section's data; collapse into
+    // owned values so the immutable borrow on `state.sections` ends
+    // before the mutable borrow on `state.owned`.
+    let (boss_class, stars) = state
         .sections
         .get(id)
-        .and_then(|s| s.boss_class);
+        .map(|s| (s.boss_class, s.stars))
+        .unwrap_or((None, 0));
     if id < state.owned.len() && !state.owned[id] {
         state.owned[id] = true;
     }
+    campaign.battles_cleared = campaign.battles_cleared.saturating_add(1);
+
+    // Clearing a 5★ section ends the run with a win — skip the shop /
+    // map cycle entirely. No boss reward is queued because the run is
+    // over.
+    if stars >= 5 {
+        next_state.set(crate::AppState::Win);
+        return;
+    }
+
     if let Some(class) = boss_class {
         boss_reward_pending.0 = Some(class);
     }
-    campaign.battles_cleared = campaign.battles_cleared.saturating_add(1);
 
     // Don't reset combat-context here — `CombatContext` still holds the
     // just-finished stage's wave_idx / wave_count so the wave readout

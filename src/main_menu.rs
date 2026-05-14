@@ -48,6 +48,10 @@ impl Plugin for MainMenuPlugin {
                     sync_main_menu_visibility,
                     sync_main_menu_view,
                     handle_settings_item_click,
+                    // .after() so the Switch SFX plays at the updated
+                    // SfxVolume on a SfxVolume-cycle press, not the
+                    // pre-write value.
+                    play_settings_click_sound.after(handle_settings_item_click),
                     update_settings_labels,
                 ),
             )
@@ -127,6 +131,7 @@ pub enum SettingsItem {
     Vsync,
     WindowMode,
     Resolution,
+    SfxVolume,
     Back,
 }
 
@@ -213,6 +218,7 @@ pub fn setup_main_menu(mut commands: Commands) {
                 spawn_settings_button(col, SettingsItem::Vsync, "VSYNC");
                 spawn_settings_button(col, SettingsItem::WindowMode, "WINDOW");
                 spawn_settings_button(col, SettingsItem::Resolution, "RES");
+                spawn_settings_button(col, SettingsItem::SfxVolume, "SFX");
                 spawn_settings_button(col, SettingsItem::Back, "BACK");
             });
         });
@@ -338,6 +344,7 @@ pub fn handle_settings_item_click(
     mut vsync: ResMut<VsyncMode>,
     mut win_mode: ResMut<crate::modes::WindowModeSetting>,
     mut res: ResMut<crate::modes::ResolutionSetting>,
+    mut sfx_vol: ResMut<crate::sfx::SfxVolume>,
 ) {
     for (interaction, item) in &interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
@@ -347,7 +354,26 @@ pub fn handle_settings_item_click(
             SettingsItem::Vsync      => vsync.enabled = !vsync.enabled,
             SettingsItem::WindowMode => win_mode.mode = win_mode.mode.cycle(),
             SettingsItem::Resolution => res.res = res.res.cycle(),
+            SettingsItem::SfxVolume  => *sfx_vol = sfx_vol.cycle(),
             SettingsItem::Back       => *view = MainMenuView::Root,
+        }
+    }
+}
+
+/// Tactile feedback on settings-button presses, including the
+/// SFX-volume cycle so the player hears the new volume immediately.
+/// Split from `handle_settings_item_click` because `SfxPlayer` carries
+/// a `Res<SfxVolume>` internally, which conflicts with this system's
+/// `ResMut<SfxVolume>` cycle write at Bevy's system-param check.
+/// Registered with `.after(handle_settings_item_click)` so the new
+/// volume is in place when the Switch sound plays.
+pub fn play_settings_click_sound(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<SettingsItem>)>,
+    mut sfx: crate::sfx::SfxPlayer,
+) {
+    for interaction in &interactions {
+        if matches!(*interaction, Interaction::Pressed) {
+            sfx.play(crate::sfx::Sfx::Switch);
         }
     }
 }
@@ -386,6 +412,7 @@ pub fn update_settings_labels(
     vsync: Res<VsyncMode>,
     win_mode: Res<crate::modes::WindowModeSetting>,
     res: Res<crate::modes::ResolutionSetting>,
+    sfx_vol: Res<crate::sfx::SfxVolume>,
     mut q: Query<(&SettingsItemLabel, &mut Text)>,
 ) {
     for (label, mut text) in &mut q {
@@ -395,6 +422,7 @@ pub fn update_settings_labels(
             SettingsItem::Vsync      => format!("VSYNC: {}", on_off(vsync.enabled)),
             SettingsItem::WindowMode => format!("WINDOW: {}", win_mode.mode.label()),
             SettingsItem::Resolution => format!("RES: {}",    res.res.label()),
+            SettingsItem::SfxVolume  => format!("SFX: {}",    sfx_vol.label()),
             SettingsItem::Back       => "BACK".to_string(),
         };
         if text.0 != s { text.0 = s; }

@@ -62,6 +62,7 @@ pub fn viking_ram_damage(
     time: Res<Time>,
     mut commands: Commands,
     mut shake: ResMut<crate::modes::ScreenShake>,
+    difficulty: Res<crate::Difficulty>,
     mut vikings: Query<(Entity, &Transform, &Faction, &Ally, &mut VikingRamCharge)>,
     mut victims: Query<(
         Entity,
@@ -101,8 +102,16 @@ pub fn viking_ram_damage(
                     / (VIKING_RAM_MAX_SPEED - VIKING_RAM_BASE_SPEED))
                     .clamp(0.0, 1.0);
                 let bonus = (VIKING_RAM_DAMAGE_CAP - VIKING_RAM_DAMAGE) as f32 * t;
-                let dmg = (VIKING_RAM_DAMAGE + bonus.round() as i32)
+                let base_dmg = (VIKING_RAM_DAMAGE + bonus.round() as i32)
                     .min(VIKING_RAM_DAMAGE_CAP);
+                // Boss-side Vikings (target faction Friendly) get the
+                // run-difficulty multiplier applied at impact. Player-
+                // side Vikings (target faction Enemy) hit at base.
+                let dmg = if vfac.0 == FactionKind::Friendly {
+                    difficulty.scale_damage(base_dmg)
+                } else {
+                    base_dmg
+                };
                 let dealt = crate::bullet::apply_damage(&mut h, &mut fx, dmg);
                 crate::bullet::credit_damage(
                     &mut stats,

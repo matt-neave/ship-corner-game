@@ -30,11 +30,12 @@ pub struct BeamHit {
     pub damage: i32,
     pub slot: u8,
     pub weapon: WeaponType,
-    /// Slot rune sockets snapshotted at fire time. The beam pushes a
+    /// Effective rune list snapshotted from the firing slot at fire
+    /// time (own + neighbour Amplifier runes). The beam pushes a
     /// `DamageEvent` per pierced enemy carrying these runes so Fire/
     /// Frost/Shock/etc. proc on beam hits the same way they do on a
     /// regular bullet hit.
-    pub runes: [Option<crate::rune::Rune>; 3],
+    pub runes: Vec<crate::rune::Rune>,
 }
 
 /// Marker present until the beam's damage has been resolved exactly once.

@@ -244,6 +244,10 @@ pub fn helicopter_ai(
         if !slot_cfg.equipped || !matches!(slot_cfg.weapon, WeaponType::HeliPad) {
             continue;
         }
+        // Flatten the slot's `[Option<Rune>; 3]` config to a `Vec<Rune>`
+        // once per slot for the rune-aware picker + hustle math.
+        let slot_runes: Vec<crate::rune::Rune> =
+            slot_cfg.runes.iter().copied().flatten().collect();
 
         let cur = tf.translation.truncate();
         let effective_range = TURRET_RANGE * stats.range_mult();
@@ -257,7 +261,7 @@ pub fn helicopter_ai(
         // a per-heli cycle counter through here if Carousel becomes
         // a meaningful HeliPad slot pick.
         let best_pos = crate::weapon::pick_target(
-            &enemy_snap, ship_pos, cur, &slot_cfg.runes, None,
+            &enemy_snap, ship_pos, cur, &slot_runes, None,
         )
         .map(|p| p + crate::weapon::offset_for_slot(heli.owner_slot));
         let best: Option<(f32, Vec2)> = best_pos.map(|p| (p.distance(cur), p));
@@ -313,7 +317,7 @@ pub fn helicopter_ai(
         // a 1-Hustle (+100%) HeliPad inside a 4-Autonomous synergy
         // (+40%) ends up at 1.4 × 2.0 = 2.8× speed.
         let hustle = crate::rune::hustle_speed_mult(
-            &slot_cfg.runes,
+            &slot_runes,
             stats.rune_damage_mult(),
         );
         let speed = HELI_SPEED * synergies.autonomous_speed_mult() * hustle;
@@ -377,7 +381,11 @@ pub fn helicopter_ai(
                 remaining: HELI_BULLET_RANGE,
                 weapon: WeaponType::Standard,
                 source: Some(DamageSource::PlayerSlot(heli.owner_slot as u8)),
-                runes: slot_cfg.runes,
+                // Flatten the SlotCfg's 3-fixed sockets to a Vec —
+                // helicopter bullets snapshot the player's config
+                // directly (HeliPad is its own firing path, not
+                // routed through `sync_turret_config`'s merge).
+                runes: slot_cfg.runes.iter().copied().flatten().collect(),
             },
             Velocity(dir * HELI_BULLET_SPEED),
             RenderLayers::layer(PLAY_LAYER),

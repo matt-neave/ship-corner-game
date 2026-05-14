@@ -513,6 +513,7 @@ pub fn spawn_boss(
     class: ShipClass,
     stars: u8,
     battles_cleared: u32,
+    difficulty: crate::Difficulty,
 ) {
     let ship = build_ship_for_faction(
         commands, pm, em, meshes, pos, heading, class,
@@ -522,10 +523,10 @@ pub fn spawn_boss(
     // so each successive boss feels meaningfully tankier than the
     // last — Brotato-style escalation that compounds on top of the
     // tier bump every 3 stages. +15% per cleared stage, capped at 12
-    // (3.4x at the wall).
+    // (3.4x at the wall). Difficulty layers on top as a final multiplier.
     let stage_mult = 1.0 + 0.15 * battles_cleared.min(12) as f32;
     let base_hp = class.boss_hp() * stars.max(1) as i32;
-    let boss_hp = ((base_hp as f32) * stage_mult).round() as i32;
+    let boss_hp = difficulty.scale_hp(((base_hp as f32) * stage_mult).round() as i32);
     // `EnemyVariant::Standard` is a placeholder — `enemy_ai` /
     // `enemy_fire` / `bomber_detonate` all gate `Without<Ally>` so
     // the variant's stats / firing path never apply to a boss. Kept
@@ -1359,7 +1360,7 @@ pub fn ally_turret_aim_fire(
                     turret.class.fire_damage(),
                     source,
                     TURRET_RANGE,
-                    [None; 3], // ally turrets don't currently carry runes
+                    Vec::new(), // ally turrets don't currently carry runes
                     turret.target_faction.opposite(),
                     1.0, // no rune effect on ally bullets (no runes)
                 );

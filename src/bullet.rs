@@ -33,8 +33,7 @@ use rand::Rng;
 
 use crate::ally::{ally_hit_radius, ally_is_submerged, Ally};
 use crate::balance::{
-    BEAM_LENGTH, CASCADE_RANGE, PLAY_LAYER, RESONATE_MAX_STACKS,
-    SHOCK_CHAIN_RANGE, SHOCK_VISUAL_LIFE,
+    BEAM_LENGTH, CASCADE_RANGE, PLAY_LAYER, SHOCK_VISUAL_LIFE,
 };
 use crate::beam::Beam;
 use crate::cannon::Knockback;
@@ -42,9 +41,7 @@ use crate::components::{FactionKind, Friendly, Health, Velocity};
 use crate::effects::{spawn_hit_particles, EffectMeshes, HitFx};
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
-use crate::rune::{
-    resonate_multiplier, EchoPending, OnConduit, OnResonate, Rune, ECHO_DELAY,
-};
+use crate::rune::{resonate_multiplier, OnConduit, OnResonate, Rune};
 use crate::ui::DamageStats;
 use crate::weapon::WeaponType;
 
@@ -160,11 +157,11 @@ pub struct Bullet {
     /// Who fired the bullet, for damage-attribution. `None` for enemy
     /// fire and untracked allied sources.
     pub source: Option<DamageSource>,
-    /// Up to 3 runes carried by the bullet (inherited from the firing
-    /// slot's `runes` array). On hit, each non-`None` rune is rolled
-    /// through the proc system and may trigger status applies / chain
-    /// damage. Always all-`None` for enemy bullets.
-    pub runes: [Option<Rune>; 3],
+    /// Effective rune list snapshotted from the firing slot's
+    /// `TurretSlot.runes` (which already folds in any neighbour
+    /// `Amplifier` runes). On hit, the proc system rolls each rune
+    /// independently. Empty for enemy bullets.
+    pub runes: Vec<Rune>,
 }
 
 /// Attached to bullets fired with the Pierce rune. Lets the bullet
@@ -191,8 +188,8 @@ pub struct Pierce {
 /// when there's at least one, `None` otherwise. Used by bullet-spawn
 /// sites so they can attach the `Pierce` component without duplicating
 /// the filter in every caller.
-pub fn pierce_stacks(runes: &[Option<Rune>; 3]) -> Option<u8> {
-    let n = runes.iter().filter(|r| matches!(r, Some(Rune::Pierce))).count() as u8;
+pub fn pierce_stacks(runes: &[Rune]) -> Option<u8> {
+    let n = runes.iter().filter(|r| matches!(r, Rune::Pierce)).count() as u8;
     if n > 0 { Some(n) } else { None }
 }
 
@@ -239,9 +236,11 @@ pub struct DamageEvent {
     /// hops so the secondary damage doesn't inflate the originating
     /// source's share.
     pub source: Option<DamageSource>,
-    /// All runes attached to the source — each one may proc on this hit
-    /// (gated by `procced` + `proc_strength`). Slot's `[Option<Rune>; 3]`
-    /// flattened to `Vec<Rune>` so the count matters (3 Fire = stack 3).
+    /// Effective rune list at the moment the source fired — already
+    /// flattened (no Options) and Amplifier-merged at sync time, so
+    /// duplicate entries are intentional stack counts (3 Fire = stack
+    /// 3). Each rune may proc on this hit, gated by `procced` +
+    /// `proc_strength`.
     pub runes: Vec<Rune>,
     /// Runes already triggered upstream in this chain — preventing the same
     /// effect from firing twice within one chain. Risk-of-Rain-style.
@@ -278,10 +277,11 @@ pub struct VampireAccumulator(pub f32);
 pub struct GreedAccumulator(pub u32);
 
 impl PendingDamageQueue {
-    /// Convenience helper — flatten a slot's `[Option<Rune>; 3]` into
-    /// a `Vec<Rune>` and push a fresh DamageEvent (proc_strength 1.0,
-    /// no procced yet) onto the queue. Used by every "I just hit an
-    /// enemy" callsite.
+    /// Convenience helper — push a fresh DamageEvent (proc_strength
+    /// 1.0, no procced yet) onto the queue. `runes` is a slice of
+    /// the effective rune list (already flattened — Amplifier merge
+    /// happens at `sync_turret_config` time, so what arrives here
+    /// is the full set the proc system should roll).
     pub fn push_initial(
         &mut self,
         target: Entity,
@@ -289,7 +289,7 @@ impl PendingDamageQueue {
         hit_pos: Vec2,
         weapon: WeaponType,
         source: Option<DamageSource>,
-        runes: &[Option<Rune>; 3],
+        runes: &[Rune],
     ) {
         if amount <= 0 { return; }
         self.0.push(DamageEvent {
@@ -298,7 +298,7 @@ impl PendingDamageQueue {
             hit_pos,
             weapon,
             source,
-            runes: runes.iter().filter_map(|r| *r).collect(),
+            runes: runes.to_vec(),
             procced: Vec::new(),
             proc_strength: 1.0,
         });
@@ -312,6 +312,8 @@ pub fn bullet_collisions(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     cfg: Res<crate::turret::TurretConfig>,
+    difficulty: Res<crate::Difficulty>,
+    mut sfx: crate::sfx::SfxPlayer,
     mut queue: ResMut<PendingDamageQueue>,
     bullets: Query<
         (
@@ -426,7 +428,11 @@ pub fn bullet_collisions(
             }
             FactionKind::Enemy => {
                 // Enemy bullets carry no runes — keep the original inline
-                // hit logic and skip the proc queue.
+                // hit logic and skip the proc queue. Difficulty scales the
+                // incoming damage at the entry point (before Spike Plate
+                // chip-down + shield absorption) so the multiplier
+                // compounds with the player's mitigations.
+                let incoming = difficulty.scale_damage(b.damage);
                 let mut consumed = false;
                 for (_fe, ftf, mut h, mut fx, shield_opt, fheading) in &mut friendly {
                     let fp = ftf.translation.truncate();
@@ -441,13 +447,18 @@ pub fn bullet_collisions(
                         // the shield still gets the chip-down (matches
                         // the "deflected by spikes before reaching the
                         // shield" mental model).
-                        let dmg = spiked_plate_reduction(&cfg, fp, bp, fheading.0, b.damage);
+                        let dmg = spiked_plate_reduction(&cfg, fp, bp, fheading.0, incoming);
                         let after_shield = shield_opt
                             .map(|mut s| s.absorb(dmg))
                             .unwrap_or(dmg);
                         apply_damage(&mut h, &mut fx, after_shield);
                         let hit_pos = ftf.translation.truncate();
                         spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
+                        // Only fire SFX if damage actually landed
+                        // (shield-absorbed shots stay silent).
+                        if after_shield > 0 {
+                            sfx.play(crate::sfx::Sfx::PlayerHit);
+                        }
                         consumed = true;
                         break;
                     }
@@ -463,7 +474,7 @@ pub fn bullet_collisions(
                     let ap = atf.translation.truncate();
                     if point_segment_dist_sq(ap, prev_bp, bp) < hit_d * hit_d {
                         commands.entity(be).despawn();
-                        apply_damage(&mut h, &mut fx, b.damage);
+                        apply_damage(&mut h, &mut fx, incoming);
                         let hit_pos = atf.translation.truncate();
                         spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
                         break;
@@ -495,8 +506,8 @@ pub fn process_damage_events(
     em: Option<Res<EffectMeshes>>,
     mut vampire_acc: ResMut<VampireAccumulator>,
     mut greed_acc: ResMut<GreedAccumulator>,
-    mut scrap: ResMut<crate::Scrap>,
-    mut scrap_earned: ResMut<crate::stage_complete::ScrapEarnedThisStage>,
+    mut scrap_w: crate::stage_complete::ScrapWriter,
+    mut on_kill: crate::rune::OnKillBookkeeping,
     mut friendly: Query<
         (&mut Health, Option<&mut crate::stats::Shield>),
         (With<Friendly>, Without<Enemy>),
@@ -529,14 +540,84 @@ pub fn process_damage_events(
     // `queue.0` (Shock fans out, Cascade fires on lethal). Bounded
     // by `procced` accumulating per chain hop.
     while let Some(ev) = queue.0.pop() {
+        // Snapshot the fields the post-process needs (target, source,
+        // rune list) before `ev` is consumed by the inner call. The
+        // rune list is cloned for the `KillEvent` broadcast; the
+        // bookkeeping for Thirst / Rally reuses the same source data.
+        let target = ev.target;
+        let source = ev.source;
+        let event_runes = ev.runes.clone();
+
         process_damage_event(
             ev, &mut queue.0,
             &mut commands, &mut stats, &player_stats, &pm, &em,
             future_stun,
             &enemy_snap, &mut enemies, &mut friendly, &mut vampire_acc,
-            &mut greed_acc, &mut scrap, &mut scrap_earned,
+            &mut greed_acc, &mut *scrap_w.total, &mut *scrap_w.earned,
             &on_conduit, &on_resonate, &mut rng,
         );
+
+        // Was the hit lethal? Read the target's HP back via the
+        // mutable query — entity is still alive (despawn happens
+        // next frame in `enemy_death_check`), so `.get` succeeds and
+        // HP <= 0 marks the kill.
+        let died = enemies
+            .get(target)
+            .map(|(_, _, _, h, _, _)| h.0 <= 0)
+            .unwrap_or(false);
+        if !died { continue; }
+
+        let source_slot = match source {
+            Some(crate::bullet::DamageSource::PlayerSlot(idx)) => Some(idx),
+            _ => None,
+        };
+
+        // Broadcast a single KillEvent. Every on-kill subscriber
+        // (Star / Leftovers / future runes / future achievements)
+        // reads this stream — no per-rune marker components.
+        on_kill.kill_writer.write(crate::rune::KillEvent {
+            target,
+            source_slot,
+            runes: event_runes.clone(),
+        });
+
+        // Slot-bound on-kill effects (Thirst / Rally) still need
+        // their resource writes here because they affect future-
+        // frame behaviour (next-shot bonus / move-speed stacks).
+        // Once `RuneEffect::on_kill` lands these can move out and
+        // dispatch through the same event stream.
+        let Some(idx) = source_slot else { continue };
+        let slot_idx = idx as usize;
+        let thirst_stacks = event_runes
+            .iter()
+            .filter(|&&r| r == Rune::Thirst)
+            .count() as u8;
+        let rally_stacks = event_runes
+            .iter()
+            .filter(|&&r| r == Rune::Rally)
+            .count() as u8;
+        if thirst_stacks > 0 {
+            on_kill.thirst.set(slot_idx, thirst_stacks);
+        }
+        if rally_stacks > 0 {
+            // Rally requires the firing slot to carry the `Melee`
+            // tag — kills from non-Melee weapons don't grant stacks
+            // even if the slot is socketed with Rally runes.
+            let melee = on_kill
+                .cfg
+                .slots
+                .get(slot_idx)
+                .map(|s| s.weapon.tags().iter().any(|t| matches!(t, crate::weapon::WeaponTag::Melee)))
+                .unwrap_or(false);
+            if melee {
+                for _ in 0..rally_stacks {
+                    on_kill.buffs.push(
+                        crate::rune::BuffId::Rally,
+                        crate::rune::RALLY_DURATION,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -699,6 +780,13 @@ fn process_damage_event(
     // Lethal-only branch: Cascade is the one rune that fires *because*
     // the target died. Other runes don't fan out from a kill (saves a
     // frame of FX on something already despawning).
+    //
+    // Kill-credit rune bookkeeping (Star / Leftovers / Thirst / Rally)
+    // is broadcast as a `KillEvent` by the wrapper system
+    // `process_damage_events` AFTER this returns — that way every
+    // on-kill subscriber (current and future) reads one event stream
+    // instead of each rune adding a marker component on the dying
+    // entity. See `crate::rune::KillEvent`.
     if h.0 <= 0 {
         // Greed scrap-on-Nth-kill (fires regardless of proc roll).
         // Stacks reduce the threshold (more frequent payouts), Rune
@@ -816,103 +904,14 @@ fn process_damage_event(
     for (rune, stacks) in counts {
         if ev.procced.contains(&rune) { continue; }
         if !player_stats.proc_roll_with_luck(&mut *rng, strength) { continue; }
-
-        match rune {
-            Rune::Fire | Rune::Frost | Rune::Bleed => {
-                crate::rune::apply_rune_stacked(commands, ev.target, rune, stacks);
-            }
-            Rune::Shock => {
-                // Total chain bolts = `stacks × chains_per_rune`, where
-                // `chains_per_rune` comes from the player's Rune Damage
-                // stat (rounded, min 1). Default stat = 1.0 keeps the
-                // old "one chain per Shock rune" behaviour; pumping
-                // Rune Damage scales the chain count linearly so the
-                // tooltip's "chain lightning to (Rune Damage) enemies"
-                // matches what actually happens.
-                let r2 = SHOCK_CHAIN_RANGE * SHOCK_CHAIN_RANGE;
-                let chains_per_rune = player_stats
-                    .rune_damage_mult()
-                    .round()
-                    .max(1.0) as u32;
-                let total_chains = stacks as u32 * chains_per_rune;
-                let mut excluded: Vec<Entity> = vec![ev.target];
-                for _ in 0..total_chains {
-                    let chain_target = enemy_snap
-                        .iter()
-                        .filter(|(e, _, _)| !excluded.contains(e))
-                        .map(|&(e, p, _)| (e, p, p.distance_squared(ev.hit_pos)))
-                        .filter(|(_, _, d2)| *d2 <= r2)
-                        .min_by(|a, b| {
-                            a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                    let Some((target, target_pos, _)) = chain_target else { break };
-                    excluded.push(target);
-                    spawn_lightning_arc(commands, em, &pm.shock, ev.hit_pos, target_pos);
-                    let mut next_procced = ev.procced.clone();
-                    next_procced.push(Rune::Shock);
-                    chain.push(DamageEvent {
-                        target,
-                        amount: ev.amount, // shock chain = 100% weapon damage
-                        hit_pos: target_pos,
-                        weapon: ev.weapon,
-                        source: None,
-                        runes: ev.runes.clone(),
-                        procced: next_procced,
-                        proc_strength: ev.proc_strength * Rune::Shock.proc_coefficient(),
-                    });
-                }
-            }
-            Rune::Echo => {
-                // One delayed event per Echo stack — 3 Echo runes ⇒
-                // 3 follow-up hits on the same target.
-                for _ in 0..stacks {
-                    commands.spawn(EchoPending {
-                        timer: ECHO_DELAY,
-                        target: ev.target,
-                        damage: ev.amount,
-                        source: ev.source,
-                        weapon: ev.weapon,
-                    });
-                }
-            }
-            Rune::Cascade => {
-                // Handled in the lethal branch above — skip here.
-            }
-            Rune::Conduit => {
-                crate::rune::apply_rune_stacked(commands, ev.target, Rune::Conduit, stacks);
-                spawn_hit_particles(commands, em, &pm.shock, ev.hit_pos, 4, 35.0, rng);
-            }
-            Rune::Resonate => {
-                // Add `stacks` Resonate stacks on this hit (capped),
-                // so a 3-Resonate socket winds the amp up 3× faster
-                // than a 1-Resonate socket.
-                let current = on_resonate.get(ev.target).map(|r| r.stacks).unwrap_or(0);
-                let new_stacks = current.saturating_add(stacks).min(RESONATE_MAX_STACKS);
-                commands.entity(ev.target).insert(OnResonate::new(new_stacks));
-                spawn_hit_particles(commands, em, &pm.bullet_sniper, ev.hit_pos, 3, 30.0, rng);
-            }
-            // Targeting runes are passive — read at aim time by
-            // `turret_aim_fire`, never proc on hit.
-            Rune::TargetFurthest
-            | Rune::TargetHighestHp
-            | Rune::TargetLowestHp
-            | Rune::TargetCarousel
-            | Rune::Splash => {}
-            // Vampire/Ward/Blast fire inline (above), regardless of
-            // proc roll. Hustle is a passive autonomous-unit speed
-            // buff — never reaches the proc loop. Pierce is read at
-            // bullet spawn time. Greed / Executioner / Opener are
-            // folded into the primary hit (above) or the lethal
-            // branch (Greed).
-            Rune::Vampire
-            | Rune::Ward
-            | Rune::Blast
-            | Rune::Hustle
-            | Rune::Pierce
-            | Rune::Greed
-            | Rune::Executioner
-            | Rune::Opener => {}
-        }
+        // Per-rune dispatch lives in `Rune::apply_proc` (rune.rs) so
+        // adding a new rune is a single match-arm there, not a fresh
+        // arm in this loop. Future on-kill / on-tick dispatch will
+        // sit alongside it as parallel methods.
+        rune.apply_proc(
+            stacks, &ev, chain, commands, player_stats, pm, em,
+            on_resonate, enemy_snap, rng,
+        );
     }
 }
 
@@ -987,7 +986,7 @@ fn spawn_blast_ring(
 /// points get a random perpendicular jitter so the bolt forks like
 /// real lightning instead of a flat ruler-line. Used by both Shock
 /// (cyan chain) and Cascade (gold on-kill snowball).
-fn spawn_lightning_arc(
+pub(crate) fn spawn_lightning_arc(
     commands: &mut Commands,
     em: &EffectMeshes,
     mat: &Handle<ColorMaterial>,

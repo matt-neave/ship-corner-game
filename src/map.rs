@@ -45,10 +45,14 @@ pub use buildings::{
     update_building_description, update_building_hover_tooltip, update_building_progress_bars,
 };
 pub use hud::{
-    handle_debug_buttons, setup_currency_ui, setup_debug_ui, setup_level_status_ui,
-    sync_debug_panel_visibility, toggle_debug_ui_on_hash, update_claim_label,
-    update_currency_ui, update_debug_button_tints, update_level_status_ui,
+    setup_currency_ui, setup_level_status_ui,
+    update_currency_ui, update_level_status_ui,
     update_refined_steel_text, update_scrap_text, update_steel_text, DebugUiVisible,
+};
+#[cfg(not(feature = "demo"))]
+pub use hud::{
+    handle_debug_buttons, setup_debug_ui, sync_debug_panel_visibility,
+    toggle_debug_ui_on_hash, update_claim_label, update_debug_button_tints,
 };
 pub use input::{map_boat_movement, map_click_input};
 pub use setup::{setup_map, sync_owned_slot_visuals, update_map_slot_labels};
@@ -655,10 +659,18 @@ pub struct ProgressBarAssets {
 }
 
 // ---------- Debug panel markers ----------
+//
+// In demo builds nothing in the active schedule references these
+// markers (the spawning system + every reader is feature-gated out of
+// `main.rs`'s system registration). They're still compiled so the
+// hud.rs definitions type-check; `#[cfg_attr]` suppresses the
+// dead-code warning so the demo build stays clean.
 
+#[cfg_attr(feature = "demo", allow(dead_code))]
 #[derive(Component)]
 pub struct DebugPanel;
 
+#[cfg_attr(feature = "demo", allow(dead_code))]
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub enum DebugButton {
     ClaimMode,
@@ -670,6 +682,7 @@ pub enum DebugButton {
     AddScrap,
 }
 
+#[cfg_attr(feature = "demo", allow(dead_code))]
 #[derive(Component)]
 pub struct DebugClaimLabel;
 

@@ -223,6 +223,8 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         WeaponType::SpreadRockets,
         WeaponType::Flamethrower,
         WeaponType::SpikedPlate,
+        WeaponType::Amplifier,
+        WeaponType::SharkNet,
     ];
     let runes_pool = [
         Rune::Fire,
@@ -241,6 +243,12 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         Rune::Greed,
         Rune::Executioner,
         Rune::Opener,
+        Rune::Leftovers,
+        Rune::Star,
+        Rune::Thirst,
+        Rune::Medic,
+        Rune::Rally,
+        Rune::Thorns,
         Rune::TargetFurthest,
         Rune::TargetHighestHp,
         Rune::TargetLowestHp,
@@ -263,9 +271,11 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         // stat. Forces the player to weigh each mod against their
         // build instead of clicking everything. Pure-buff mods use
         // the standard `debug_step` value; trade-off cards bump
-        // the buff to 1.5x and apply a -0.75x nerf to a random
-        // other stat, so the upside outweighs the downside but the
-        // pick still costs you something.
+        // the buff to 1.5x and apply a -1.25x nerf to a random
+        // other stat — Brotato-style "buff favored but nerf bites":
+        // ~20% headroom (1.5 / 1.25), so the trade-off is worth
+        // taking when the side stat is dump-worthy and a real cost
+        // otherwise.
         let trade_off = rng.gen_bool(0.33);
         if trade_off {
             // Pick a side-effect stat that isn't the primary.
@@ -274,7 +284,7 @@ pub fn roll_fresh_stock() -> CustomizeShop {
                 if k != kind { break k; }
             };
             let buff = kind.debug_step() * 1.5;
-            let nerf = -side_kind.debug_step() * 0.75;
+            let nerf = -side_kind.debug_step() * 1.25;
             mods.push(Some(ShopMod {
                 kind,
                 delta: buff,
@@ -815,6 +825,13 @@ fn purchase_burst_color(
 /// Shop-sourced drags return `0` — can't sell something you don't
 /// own yet.
 pub fn sell_refund_for(source: &DragSourceKind, cfg: &TurretConfig) -> u32 {
+    // Floor the fraction then clamp to >= 1 for any genuinely sellable
+    // source — the cost-rebalance to 2 scrap left the old `0.33 × cost
+    // floored` math returning 0 for a vanilla 1-barrel turret with no
+    // runes, which propagated as "sell does nothing" because
+    // `complete_drag` bails on a zero refund. Min-1 ensures sell
+    // always feels like it did *something*; empty slots still return 0
+    // via the equipped / is_none guards above.
     match *source {
         DragSourceKind::ShipSlot(slot) => {
             let s = cfg.slots[slot];
@@ -823,11 +840,11 @@ pub fn sell_refund_for(source: &DragSourceKind, cfg: &TurretConfig) -> u32 {
             for _ in s.runes.iter().flatten() {
                 total_cost += SHOP_RUNE_COST;
             }
-            (total_cost as f32 * SHOP_SELL_FRACTION).floor() as u32
+            ((total_cost as f32 * SHOP_SELL_FRACTION).floor() as u32).max(1)
         }
         DragSourceKind::ShipRune { slot, rune_idx } => {
             if cfg.slots[slot].runes[rune_idx].is_none() { return 0; }
-            (SHOP_RUNE_COST as f32 * SHOP_SELL_FRACTION).floor() as u32
+            ((SHOP_RUNE_COST as f32 * SHOP_SELL_FRACTION).floor() as u32).max(1)
         }
         _ => 0,
     }

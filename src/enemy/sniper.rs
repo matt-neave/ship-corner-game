@@ -120,7 +120,7 @@ pub fn sniper_fire(
                     remaining: SNIPER_FIRE_RANGE * 1.4,
                     weapon: WeaponType::Standard,
                     source: None,
-                    runes: [None; 3],
+                    runes: Vec::new(),
                 },
                 Velocity(dir * SNIPER_BULLET_SPEED),
                 RenderLayers::layer(PLAY_LAYER),

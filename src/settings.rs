@@ -27,17 +27,24 @@ use crate::modes::{
     CrtMode, NightMode, ResolutionKind, ResolutionSetting, VsyncMode, WindowModeKind,
     WindowModeSetting,
 };
+use crate::sfx::SfxVolume;
 
 /// Snapshot of every persisted setting. Lives as a resource only so the
 /// load + save systems can share the same struct shape; runtime reads /
 /// writes go through the per-feature mode resources.
-#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// `sfx_volume` is stored as a raw `f32` (linear, 0.0..=1.0) rather
+/// than a serialised tier so a hand-edited `settings.txt` can dial in
+/// any volume the player wants — the settings UI just cycles through
+/// the canonical `SfxVolume::STEPS` rungs.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     pub night: bool,
     pub crt: bool,
     pub vsync: bool,
     pub window_mode: WindowModeKind,
     pub resolution: ResolutionKind,
+    pub sfx_volume: f32,
 }
 
 impl Settings {
@@ -47,6 +54,7 @@ impl Settings {
         vsync: &VsyncMode,
         win_mode: &WindowModeSetting,
         res: &ResolutionSetting,
+        sfx_volume: &SfxVolume,
     ) -> Self {
         Self {
             night: night.active,
@@ -54,6 +62,7 @@ impl Settings {
             vsync: vsync.enabled,
             window_mode: win_mode.mode,
             resolution: res.res,
+            sfx_volume: sfx_volume.0,
         }
     }
 }
@@ -79,7 +88,13 @@ fn settings_path() -> Option<PathBuf> {
 /// Parse a `key=value` text blob. Anything malformed is silently
 /// dropped — defaults will fill the gap.
 fn parse(blob: &str) -> Settings {
-    let mut s = Settings::default();
+    // Start from the runtime default so a missing key keeps the live
+    // default rather than zeroing fields like sfx_volume that have a
+    // non-default sensible value.
+    let mut s = Settings {
+        sfx_volume: SfxVolume::default().0,
+        ..Settings::default()
+    };
     for line in blob.lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
         let key = k.trim();
@@ -95,6 +110,9 @@ fn parse(blob: &str) -> Settings {
             "resolution"  => if let Some(r) = ResolutionKind::parse(val) {
                 s.resolution = r;
             },
+            "sfx_volume" => if let Ok(f) = val.parse::<f32>() {
+                s.sfx_volume = f.clamp(0.0, 1.0);
+            },
             _ => {}
         }
     }
@@ -103,12 +121,13 @@ fn parse(blob: &str) -> Settings {
 
 fn serialize(s: &Settings) -> String {
     format!(
-        "night={}\ncrt={}\nvsync={}\nwindow_mode={}\nresolution={}\n",
+        "night={}\ncrt={}\nvsync={}\nwindow_mode={}\nresolution={}\nsfx_volume={}\n",
         s.night,
         s.crt,
         s.vsync,
         s.window_mode.serialize(),
         s.resolution.serialize(),
+        s.sfx_volume,
     )
 }
 
@@ -146,6 +165,7 @@ pub fn apply_loaded_settings(
     mut vsync: ResMut<VsyncMode>,
     mut win_mode: ResMut<WindowModeSetting>,
     mut res: ResMut<ResolutionSetting>,
+    mut sfx_vol: ResMut<SfxVolume>,
     mut commands: Commands,
     mut done: Local<bool>,
 ) {
@@ -160,6 +180,7 @@ pub fn apply_loaded_settings(
     vsync.enabled = s.vsync;
     win_mode.mode = s.window_mode;
     res.res = s.resolution;
+    sfx_vol.0 = s.sfx_volume.clamp(0.0, 1.0);
     commands.insert_resource(s);
 }
 
@@ -172,9 +193,10 @@ pub fn persist_settings_on_change(
     vsync: Res<VsyncMode>,
     win_mode: Res<WindowModeSetting>,
     res: Res<ResolutionSetting>,
+    sfx_vol: Res<SfxVolume>,
     mut last: Local<Option<Settings>>,
 ) {
-    let now = Settings::from_modes(&night, &crt, &vsync, &win_mode, &res);
+    let now = Settings::from_modes(&night, &crt, &vsync, &win_mode, &res, &sfx_vol);
     if last.as_ref() == Some(&now) {
         return;
     }

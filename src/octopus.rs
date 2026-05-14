@@ -23,6 +23,7 @@ use crate::balance::PLAY_LAYER;
 use crate::bullet::{DamageSource, PendingDamageQueue};
 use crate::components::Friendly;
 use crate::effects::{spawn_hit_particles, EffectMeshes};
+use crate::rune::Rune;
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
 use crate::trails::{empty_dynamic_mesh, rebuild_ribbon_mesh};
@@ -127,10 +128,10 @@ pub struct OctopusTentacle {
     /// Set the moment the slap-phase damage hits — guards against a
     /// second damage application across phase transitions.
     pub damage_dealt: bool,
-    /// Slot rune sockets snapshotted at spawn time so the tentacle
+    /// Effective rune list snapshotted at spawn time so the tentacle
     /// keeps its rune loadout even if the source slot's weapon is
     /// swapped during the 0.6s lifecycle.
-    pub runes: [Option<crate::rune::Rune>; 3],
+    pub runes: Vec<crate::rune::Rune>,
     /// Resting rotation (in radians) the tentacle holds. Small
     /// per-spawn jitter so multiple tentacles striking the same
     /// target don't read as identical poses.
@@ -418,9 +419,14 @@ pub fn octopus_ai(
         .collect();
     for (mut tf, oct) in &mut octopuses {
         let pos = tf.translation.truncate();
-        let runes = cfg.slots.get(oct.owner_slot)
-            .map(|s| s.runes)
-            .unwrap_or([None; 3]);
+        // SlotCfg.runes is still the player's 3-fixed-socket config;
+        // flatten Nones to get a `Vec<Rune>` slice for the picker /
+        // hustle math.
+        let runes: Vec<Rune> = cfg
+            .slots
+            .get(oct.owner_slot)
+            .map(|s| s.runes.iter().copied().flatten().collect())
+            .unwrap_or_default();
         let Some(target) = crate::weapon::pick_target(
             &snapshot, ship_pos, pos, &runes, None,
         )
@@ -494,6 +500,11 @@ pub fn octopus_spawn_tentacles(
         oct.spawn_cd -= dt;
         let s = cfg.slots.get(oct.owner_slot).copied().unwrap_or_default();
         if !matches!(s.weapon, WeaponType::Cage) || !s.equipped { continue; }
+        // Cage reads its runes from SlotCfg directly (the cage isn't
+        // routed through `sync_turret_config`'s effective-rune merge,
+        // since the octopus is its own entity, not a turret bullet).
+        // Flatten once for the picker + tentacle snapshot below.
+        let s_runes: Vec<Rune> = s.runes.iter().copied().flatten().collect();
         let cap = max_tentacles(s.barrels);
         let active_count = tentacles.iter().filter(|t| t.source == oct_entity).count();
         if active_count >= cap { continue; }
@@ -531,7 +542,7 @@ pub fn octopus_spawn_tentacles(
             .map(|(_, p, h)| (*p, *h))
             .collect();
         let Some(target_pos) = crate::weapon::pick_target(
-            &positions_only, ship_pos, body_pos, &s.runes, None,
+            &positions_only, ship_pos, body_pos, &s_runes, None,
         ) else { continue; };
         let Some(target_entity) = in_range
             .iter()
@@ -573,7 +584,7 @@ pub fn octopus_spawn_tentacles(
                 timer: TENTACLE_EMERGE_TIME,
                 damage: s.damage.max(1),
                 damage_dealt: false,
-                runes: s.runes,
+                runes: s_runes.clone(),
                 whip_from,
             },
         )).id();

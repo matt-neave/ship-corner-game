@@ -106,6 +106,16 @@ pub struct LevelUpsPending(pub u32);
 #[derive(Resource, Default, Debug)]
 pub struct LevelUpReturn(pub Option<crate::AppState>);
 
+/// Bundled SystemParam for the two level-up resources `spawn_enemies`
+/// needs to mutate when a mid-stage threshold crossing should bounce
+/// the player to the LevelUp overlay. Wrapping them into one
+/// `SystemParam` keeps `spawn_enemies` under Bevy's 16-param cap.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct LevelUpQueue<'w> {
+    pub pending: Res<'w, LevelUpsPending>,
+    pub return_state: ResMut<'w, LevelUpReturn>,
+}
+
 // ---------- Buff catalog ----------
 
 /// One offerable buff. Mutates a single `Stat` field on `PlayerStats`.
@@ -308,9 +318,11 @@ pub fn enter_level_up(
     mut choices: ResMut<LevelUpChoices>,
     xp: Res<Xp>,
     stats: Res<PlayerStats>,
+    mut sfx: crate::sfx::SfxPlayer,
 ) {
     choices.buffs = pick_buffs(4);
     spawn_level_up_overlay(&mut commands, &choices, &xp, &stats);
+    sfx.play(crate::sfx::Sfx::LevelUp);
 }
 
 /// Reveal the overlay only once Bevy UI has actually finished computing

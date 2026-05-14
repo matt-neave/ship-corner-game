@@ -219,6 +219,7 @@ pub fn exit_boss_intro(
     mut meshes: ResMut<Assets<Mesh>>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
+    difficulty: Res<crate::Difficulty>,
     mut pending: ResMut<BossIntroPending>,
     ui: Query<Entity, With<BossIntroUi>>,
 ) {
@@ -235,6 +236,7 @@ pub fn exit_boss_intro(
             &mut commands, &pm, &em, &mut meshes,
             pending.pos, pending.heading, class, pending.stars,
             pending.battles_cleared,
+            *difficulty,
         );
     }
 }

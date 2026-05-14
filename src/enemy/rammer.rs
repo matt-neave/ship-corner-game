@@ -60,6 +60,7 @@ pub fn enemy_landmine_tick(
     mut commands: Commands,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
+    difficulty: Res<crate::Difficulty>,
     mut mines: Query<(Entity, &Transform, &mut EnemyLandmine)>,
     mut friendly: Query<
         (&Transform, &mut Health, &mut HitFx),
@@ -102,17 +103,20 @@ pub fn enemy_landmine_tick(
         }
         if !detonate { continue; }
 
+        // Difficulty scales the AOE damage at the moment of
+        // application, identically for friendly + each ally hit.
+        let damage = difficulty.scale_damage(mine.damage);
         if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
             if ftf.translation.truncate().distance_squared(center) < r2 {
                 fx.pulse();
-                h.0 = (h.0 - mine.damage).max(0);
+                h.0 = (h.0 - damage).max(0);
             }
         }
         for (atf, ally, mut h, mut fx) in &mut allies {
             if ally_is_submerged(ally) { continue; }
             if atf.translation.truncate().distance_squared(center) >= r2 { continue; }
             fx.pulse();
-            h.0 = (h.0 - mine.damage).max(0);
+            h.0 = (h.0 - damage).max(0);
         }
 
         spawn_hit_particles(&mut commands, &em, &pm.enemy,          center, 16, 90.0,  &mut rng);

@@ -1414,6 +1414,9 @@ fn rune_tooltip(
     stats: &crate::stats::PlayerStats,
     slot_runes: Option<&[Option<Rune>; 3]>,
 ) -> (String, String) {
+    // `slot_runes` still uses the 3-fixed-socket SlotCfg shape — the
+    // tooltip caller has a `SlotCfg`, not a `TurretSlot`, so the
+    // pre-flatten array stays here for now.
     let mut body = String::new();
     // Targeting runes carry a `[Targeting Mode]` chip on the line
     // beneath the name so the player can tell at a glance that
@@ -1679,6 +1682,48 @@ fn rune_dynamic_description(
             format!(
                 "+{:+.0}% damage to enemies at full HP.",
                 pct,
+            )
+        }
+        Rune::Leftovers => {
+            let heal = (1.0 * rune_dmg).round().max(1.0) as i32;
+            format!(
+                "Killing blows drop a heal pickup worth {} HP.",
+                heal,
+            )
+        }
+        Rune::Star => {
+            let pct = (25.0 * rune_dmg).round() as i32;
+            format!(
+                "+{}% XP from kills landed by this weapon.",
+                pct,
+            )
+        }
+        Rune::Thirst => {
+            let pct = (50.0 * rune_dmg).round() as i32;
+            format!(
+                "After a kill, next shot from this slot deals +{}% damage.",
+                pct,
+            )
+        }
+        Rune::Medic => {
+            let heal = (2.0 * rune_dmg).round().max(1.0) as i32;
+            format!(
+                "Equipped on a [SUPPORT] weapon: heal {} HP every 5s.",
+                heal,
+            )
+        }
+        Rune::Rally => {
+            let pct = (1.0 * rune_dmg).max(0.1);
+            format!(
+                "Equipped on a [MELEE] weapon: kills grant +{:.1}% move speed for 5s (stacks).",
+                pct,
+            )
+        }
+        Rune::Thorns => {
+            let bonus = (1.0 * rune_dmg).round().max(1.0) as i32;
+            format!(
+                "Contact damage on this slot's side: +{} per stack.",
+                bonus,
             )
         }
         // Targeting runes have no value to show — pure aim modifiers.

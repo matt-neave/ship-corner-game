@@ -94,6 +94,7 @@ pub fn setup_pause_menu(mut commands: Commands) {
             spawn_pause_settings_button(root, SettingsItem::Vsync,      "VSYNC");
             spawn_pause_settings_button(root, SettingsItem::WindowMode, "WINDOW");
             spawn_pause_settings_button(root, SettingsItem::Resolution, "RES");
+            spawn_pause_settings_button(root, SettingsItem::SfxVolume,  "SFX");
 
             root.spawn((
                 ui_kit::button(theme::SURFACE_RAISED),
