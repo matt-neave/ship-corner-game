@@ -79,9 +79,9 @@ pub const WANDER_DURATION: f32 = 3.0;
 pub const CHARGE_SPEED: f32 = 65.0;
 /// Maximum charge duration. After this many seconds the shark
 /// stops the sprint and returns to Wander even if it hasn't left
-/// the arena. Previously the charge ran until the shark crossed
-/// the play-area edge, which let it travel the full width (~200u).
-pub const CHARGE_MAX_DURATION: f32 = 0.7;
+/// the arena. Long enough that the burst actually reaches a target
+/// at reasonable wander-pack range at `CHARGE_SPEED`.
+pub const CHARGE_MAX_DURATION: f32 = 1.4;
 /// Extra seconds added to `state_timer` on the first damaging
 /// contact of a charge. Gives the shark a satisfying over-shoot
 /// past its target instead of stopping the instant it draws blood.
@@ -244,16 +244,12 @@ pub fn shark_ai(
         *group_counts.entry(shark.owner_slot).or_insert(0) += 1;
     }
 
-    // Pass 1: every shark wanders independently. Only the leader
-    // (lateral_idx == 0) is allowed to TRANSITION to Charge — once
-    // it does, pass 2 rallies the followers into formation. While
-    // in Charge, only the leader runs the charge logic; followers
-    // are positioned by pass 2 to maintain the pack shape.
+    // Pass 1: only the leader (lateral_idx == 0) runs the state
+    // machine. Followers stay glued to the leader's formation via
+    // pass 2 — both during Wander (loose ranks) and during Charge
+    // (tighter V) — so charging never causes a teleport.
     for (mut tf, mut shark) in &mut sharks {
-        // Followers in Charge are entirely driven by pass 2 — skip.
-        if shark.state == SharkState::Charge && shark.lateral_idx != 0 {
-            continue;
-        }
+        if shark.lateral_idx != 0 { continue; }
         match shark.state {
             SharkState::Wander => {
                 shark.state_timer -= dt;
@@ -297,40 +293,32 @@ pub fn shark_ai(
                 tf.rotation = Quat::from_rotation_z(h);
 
                 if shark.state_timer <= 0.0 {
-                    // Only the leader transitions; followers wait
-                    // in place so the group can rally together.
-                    // Clamp the follower's timer at 0 so it doesn't
-                    // run away into deep-negative territory.
-                    if shark.lateral_idx != 0 {
-                        shark.state_timer = 0.0;
+                    // Target lock: nearest enemy to this leader's
+                    // current position. Entity captured so we can
+                    // re-aim each frame until first contact.
+                    let pos = tf.translation.truncate();
+                    let target = enemy_snapshot
+                        .iter()
+                        .min_by(|a, b| {
+                            a.1.distance_squared(pos)
+                                .partial_cmp(&b.1.distance_squared(pos))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .copied();
+                    if let Some((e, t)) = target {
+                        let dir = (t - pos).normalize_or(Vec2::Y);
+                        shark.charge_dir = dir;
+                        shark.target = Some(e);
+                        shark.made_contact = false;
+                        shark.state = SharkState::Charge;
+                        shark.state_timer = CHARGE_MAX_DURATION;
+                        shark.hit_this_charge.clear();
+                        let heading = (-dir.x).atan2(dir.y);
+                        tf.rotation = Quat::from_rotation_z(heading);
                     } else {
-                        // Target lock: nearest enemy to this leader's
-                        // current position. Entity captured so we can
-                        // re-aim each frame until first contact.
-                        let pos = tf.translation.truncate();
-                        let target = enemy_snapshot
-                            .iter()
-                            .min_by(|a, b| {
-                                a.1.distance_squared(pos)
-                                    .partial_cmp(&b.1.distance_squared(pos))
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                            .copied();
-                        if let Some((e, t)) = target {
-                            let dir = (t - pos).normalize_or(Vec2::Y);
-                            shark.charge_dir = dir;
-                            shark.target = Some(e);
-                            shark.made_contact = false;
-                            shark.state = SharkState::Charge;
-                            shark.state_timer = CHARGE_MAX_DURATION;
-                            shark.hit_this_charge.clear();
-                            let heading = (-dir.x).atan2(dir.y);
-                            tf.rotation = Quat::from_rotation_z(heading);
-                        } else {
-                            // No targets — restart the wander cycle so
-                            // we re-check next interval.
-                            shark.state_timer = WANDER_DURATION;
-                        }
+                        // No targets — restart the wander cycle so
+                        // we re-check next interval.
+                        shark.state_timer = WANDER_DURATION;
                     }
                 }
             }
@@ -417,45 +405,44 @@ pub fn shark_ai(
         );
     }
 
-    // Pass 2: drive follower state from the leader ONLY when the
-    // leader is in Charge (or just transitioned). During the leader's
-    // Wander phase, followers keep wandering independently from
-    // pass 1 — pack only forms up the moment the charge fires.
+    // Pass 2: every follower is glued to the leader's formation
+    // position so the pack stays together. Lateral spread always
+    // applies (ranked beside leader during wander); a backward
+    // offset is added during Charge to form a V with the leader
+    // at the tip. State/direction is copied so contact damage,
+    // homing, and the charge timer all run in lockstep with the
+    // leader.
     for (mut tf, mut shark) in &mut sharks {
         if shark.lateral_idx == 0 { continue; }
         let Some(snap) = leader_snap.get(&shark.owner_slot).copied() else { continue; };
+        let forward = match snap.state {
+            SharkState::Wander => snap.wander_dir,
+            SharkState::Charge => snap.charge_dir,
+        }
+        .try_normalize()
+        .unwrap_or(Vec2::Y);
+        let perp_right = Vec2::new(forward.y, -forward.x);
+        let n = group_counts.get(&shark.owner_slot).copied().unwrap_or(1);
+        let lat = perp_right * lateral_x_for(n, shark.lateral_idx);
+        let back = match snap.state {
+            SharkState::Charge => -forward * SHARK_BACK_GAP,
+            SharkState::Wander => Vec2::ZERO,
+        };
+        tf.translation.x = snap.pos.x + lat.x + back.x;
+        tf.translation.y = snap.pos.y + lat.y + back.y;
+        tf.rotation = snap.rot;
         let was_charge = shark.state == SharkState::Charge;
         let entered_charge = !was_charge && snap.state == SharkState::Charge;
         let entered_wander = was_charge && snap.state == SharkState::Wander;
-        if snap.state == SharkState::Charge {
-            // Rally to formation and stay glued for the charge.
-            let forward = snap.charge_dir.try_normalize().unwrap_or(Vec2::Y);
-            let perp_right = Vec2::new(forward.y, -forward.x);
-            let n = group_counts.get(&shark.owner_slot).copied().unwrap_or(1);
-            let lat = perp_right * lateral_x_for(n, shark.lateral_idx);
-            // Drop followers slightly behind the leader so the pack
-            // reads as a V with the leader at the tip.
-            let back = -forward * SHARK_BACK_GAP;
-            tf.translation.x = snap.pos.x + lat.x + back.x;
-            tf.translation.y = snap.pos.y + lat.y + back.y;
-            tf.rotation = snap.rot;
-            shark.state = SharkState::Charge;
-            shark.state_timer = snap.state_timer;
-            shark.charge_dir = snap.charge_dir;
-            if entered_charge {
-                shark.hit_this_charge.clear();
-                shark.made_contact = false;
-            }
-        } else if entered_wander {
-            // Leader just exited Charge — return follower to Wander
-            // with a fresh cycle. wander_dir seeded from leader's
-            // exit dir so the post-charge dispersal feels coherent,
-            // then immediate re-roll lets each shark drift its own
-            // way.
-            shark.state = SharkState::Wander;
-            shark.state_timer = snap.state_timer;
-            shark.wander_dir = snap.wander_dir;
-            shark.wander_turn_timer = 0.0;
+        shark.state = snap.state;
+        shark.state_timer = snap.state_timer;
+        shark.wander_dir = snap.wander_dir;
+        shark.charge_dir = snap.charge_dir;
+        if entered_charge {
+            shark.hit_this_charge.clear();
+            shark.made_contact = false;
+        }
+        if entered_wander {
             shark.made_contact = false;
         }
     }

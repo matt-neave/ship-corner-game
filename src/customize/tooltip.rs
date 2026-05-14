@@ -641,7 +641,7 @@ pub fn update_synergy_banner(
         ),
     >,
     mut text_q: Query<
-        (&mut Visibility, &mut Transform, &mut Text2d),
+        (&mut Visibility, &mut Transform, &mut Text2d, &mut TextBounds),
         (
             With<SynergyBannerText>,
             Without<SynergyBannerOutline>,
@@ -666,7 +666,7 @@ pub fn update_synergy_banner(
             ),
         >,
         text_q: &mut Query<
-            (&mut Visibility, &mut Transform, &mut Text2d),
+            (&mut Visibility, &mut Transform, &mut Text2d, &mut TextBounds),
             (
                 With<SynergyBannerText>,
                 Without<SynergyBannerOutline>,
@@ -679,7 +679,7 @@ pub fn update_synergy_banner(
         if let Ok((mut v, _, _)) = fill_q.single_mut() {
             if *v != Visibility::Hidden { *v = Visibility::Hidden; }
         }
-        if let Ok((mut v, _, _)) = text_q.single_mut() {
+        if let Ok((mut v, _, _, _)) = text_q.single_mut() {
             if *v != Visibility::Hidden { *v = Visibility::Hidden; }
         }
     };
@@ -756,9 +756,12 @@ pub fn update_synergy_banner(
         .join("\n\n");
 
     let s = viewport.display_scale;
-    // Width = widest row across every section. Each section's header
-    // wraps independently; ladder rows have known lengths.
-    let widest_unwrapped = sections
+    let glyph_pre = ui_scale.0.max(0.0001);
+    // `estimate_text_native_width` returns the text's LOCAL width
+    // (pre Transform.scale). Multiply by glyph to get the actual
+    // rendered width in screen pixels, which is what the box outline
+    // is sized in.
+    let widest_unwrapped_visual = sections
         .iter()
         .flat_map(|sec| {
             std::iter::once(estimate_text_native_width(&sec.header_plain, SYNERGY_FONT))
@@ -768,25 +771,36 @@ pub fn update_synergy_banner(
                         .map(|r| estimate_text_native_width(r, SYNERGY_FONT)),
                 )
         })
-        .fold(0.0_f32, f32::max);
-    let banner_text_w = widest_unwrapped.min(SYNERGY_TEXT_MAX_W);
+        .fold(0.0_f32, f32::max) * glyph_pre;
+    // Dynamic wrap cap — fit the box to content, capped at how much
+    // of the customize canvas is actually available for it. The
+    // `SYNERGY_TEXT_MAX_W` constant remains as an upper safety bound
+    // so the box can never exceed it even on enormous windows.
+    let canvas_half_w_pre = CUSTOMIZE_INTERNAL_W as f32 * 0.5;
+    let canvas_margin_native = 12.0 * s;
+    let canvas_available_native = (canvas_half_w_pre * 2.0 * s - canvas_margin_native).max(60.0);
+    let max_text_w_native = (canvas_available_native - 2.0 * SYNERGY_TEXT_PAD_X)
+        .min(SYNERGY_TEXT_MAX_W)
+        .max(60.0);
+    let banner_text_w = widest_unwrapped_visual.min(max_text_w_native);
     let banner_fill_w_native = banner_text_w + 2.0 * SYNERGY_TEXT_PAD_X;
-    // Line count: header wraps per section (1-2 lines typical) plus 4
-    // ladder rows. Sections are separated by a blank line in the
-    // rendered text so the visual break is unmistakable.
+    // Line count uses VISUAL widths against the visual wrap cap.
     let lines_per_section: Vec<f32> = sections
         .iter()
         .map(|sec| {
-            let h_w = estimate_text_native_width(&sec.header_plain, SYNERGY_FONT);
-            let header_lines = (h_w / SYNERGY_TEXT_MAX_W).ceil().max(1.0);
+            let h_w_visual = estimate_text_native_width(&sec.header_plain, SYNERGY_FONT) * glyph_pre;
+            let header_lines = (h_w_visual / banner_text_w.max(1.0)).ceil().max(1.0);
             header_lines + 4.0
         })
         .collect();
     let section_lines_total: f32 = lines_per_section.iter().sum();
     let dividers = sections.len().saturating_sub(1) as f32;
     let total_lines = section_lines_total + dividers;
-    let banner_fill_h_native =
-        total_lines * SYNERGY_FONT * TOOLTIP_LINE_HEIGHT_MULT + 2.0 * SYNERGY_TEXT_PAD_Y;
+    // Each rendered line is `SYNERGY_FONT * glyph * LINE_HEIGHT_MULT`
+    // tall in screen pixels — multiply by glyph so the box height
+    // grows / shrinks with `UiScale`.
+    let banner_fill_h_native = total_lines * SYNERGY_FONT * glyph_pre * TOOLTIP_LINE_HEIGHT_MULT
+        + 2.0 * SYNERGY_TEXT_PAD_Y;
     let banner_w_spec = banner_fill_w_native / s;
     let banner_h_spec = banner_fill_h_native / s;
 
@@ -802,16 +816,23 @@ pub fn update_synergy_banner(
         state.pos_spec.x,
         state.pos_spec.y - state.size_spec.y * 0.5 - SYNERGY_GAP - banner_h_spec * 0.5,
     );
-    if banner_pos.y - banner_h_spec * 0.5 < -canvas_half_h {
+    // Margin so the banner outline doesn't kiss the canvas edge —
+    // text-wrap estimates can undercount by a line at the boundary
+    // case, which would otherwise punch a few pixels of the bottom
+    // out of the customize sprite.
+    let canvas_margin = 6.0;
+    let safe_half_w = canvas_half_w - canvas_margin;
+    let safe_half_h = canvas_half_h - canvas_margin;
+    if banner_pos.y - banner_h_spec * 0.5 < -safe_half_h {
         banner_pos.y = state.pos_spec.y + state.size_spec.y * 0.5 + SYNERGY_GAP + banner_h_spec * 0.5;
     }
     banner_pos.x = banner_pos.x.clamp(
-        -canvas_half_w + banner_w_spec * 0.5,
-        canvas_half_w - banner_w_spec * 0.5,
+        -safe_half_w + banner_w_spec * 0.5,
+        safe_half_w - banner_w_spec * 0.5,
     );
     banner_pos.y = banner_pos.y.clamp(
-        -canvas_half_h + banner_h_spec * 0.5,
-        canvas_half_h - banner_h_spec * 0.5,
+        -safe_half_h + banner_h_spec * 0.5,
+        safe_half_h - banner_h_spec * 0.5,
     );
     let banner_native_centre = Vec2::new(banner_pos.x * s, banner_pos.y * s);
     let banner_fill_native = Vec2::new(banner_fill_w_native, banner_fill_h_native);
@@ -833,7 +854,7 @@ pub fn update_synergy_banner(
             sprite.custom_size = Some(banner_fill_native);
         }
     }
-    if let Ok((mut v, mut tf, mut text)) = text_q.single_mut() {
+    if let Ok((mut v, mut tf, mut text, mut bounds)) = text_q.single_mut() {
         if *v != Visibility::Inherited { *v = Visibility::Inherited; }
         tf.translation.x = banner_native_centre.x;
         tf.translation.y = banner_native_centre.y;
@@ -843,6 +864,15 @@ pub fn update_synergy_banner(
         let want_scale = Vec3::new(glyph, glyph, 1.0);
         if tf.scale != want_scale { tf.scale = want_scale; }
         if !text.0.is_empty() { text.0 = String::new(); }
+        // TextBounds is in the text's LOCAL coords (pre-scale). To
+        // wrap at `banner_text_w` screen pixels we have to divide by
+        // the glyph scale, otherwise the visual wrap point sits at
+        // `banner_text_w * glyph` and the rendered text spills out
+        // past the box outline.
+        let want_bounds_w = Some((banner_text_w / glyph.max(0.0001)).max(20.0));
+        if bounds.width != want_bounds_w {
+            bounds.width = want_bounds_w;
+        }
     }
 
     // Rebuild spans when any section's tag/tier/text changes. Key
@@ -1383,7 +1413,29 @@ fn turret_tooltip(
     if matches!(weapon, WeaponType::Mortar) {
         body.push_str(AOE_TAG);
     }
-    body.push_str(weapon.description());
+    // Some weapons have tier-dependent descriptions — the static CSV
+    // is replaced inline with a live phrasing that uses the slot's
+    // current tier (`barrels`).
+    match weapon {
+        WeaponType::Amplifier => {
+            let n = barrels.clamp(1, 3) as u32;
+            let word = if n == 1 { "rune" } else { "runes" };
+            body.push_str(&format!(
+                "Adjacent weapons inherit {} of this Amplifier's {}.",
+                n, word,
+            ));
+        }
+        WeaponType::Booster => {
+            let pct = (crate::booster::booster_mult_for_tier(barrels) - 1.0) * 100.0;
+            body.push_str(&format!(
+                "Adjacent turrets fire {:.0}% faster.",
+                pct,
+            ));
+        }
+        _ => {
+            body.push_str(weapon.description());
+        }
+    }
     // Brotato-style dynamic stat lines below the flavour. Each line
     // is appended only if non-empty so non-firing weapons don't get
     // a stray "Damage 0.0" or orphan whitespace.
@@ -1392,9 +1444,11 @@ fn turret_tooltip(
     let extra_line = weapon_extra_line(weapon, stats);
     let mut have_stats_block = false;
     let mut push_stat = |body: &mut String, line: &str| {
-        body.push('\n');
         if !have_stats_block {
+            body.push_str("\n\n");
             have_stats_block = true;
+        } else {
+            body.push('\n');
         }
         body.push_str(line);
     };
@@ -1778,7 +1832,7 @@ fn rune_dynamic_description(
         Rune::Medic => {
             let heal = (2.0 * rune_dmg).round().max(1.0) as i32;
             format!(
-                "Equipped on a [SUPPORT] weapon: heal {} HP every 5s.",
+                "Equipped on a [SUPPORT], heal {} HP every 5s.",
                 heal,
             )
         }

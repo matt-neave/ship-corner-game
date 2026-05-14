@@ -646,14 +646,11 @@ pub fn turret_aim_fire(
                                     .find(|c| c.0 == p)
                                     .map(|c| c.2)
                             });
-                            // Rockets need a generous flight envelope —
-                            // they curve through air time + may overshoot
-                            // and loop back when re-acquiring. Decouple
-                            // the bullet's max-travel distance from the
-                            // slot's `effective_range` (used only for
-                            // target picking) so the seek arc has time
-                            // to actually land hits.
-                            const ROCKET_RANGE_MULT: f32 = 3.0;
+                            // Rockets fly past the slot's nominal range
+                            // so the seek arc has room to land hits, but
+                            // not so far that mis-fired rockets loiter
+                            // halfway across the arena.
+                            const ROCKET_RANGE_MULT: f32 = 1.5;
                             crate::ally::spawn_homing_missile_full(
                                 &mut commands, &em, &pm,
                                 muzzle_pos, rocket_forward, slot.damage,

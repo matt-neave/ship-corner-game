@@ -24,10 +24,6 @@ use crate::palette::PaletteMaterials;
 use crate::turret::{TurretConfig, TurretSlot};
 use crate::weapon::WeaponType;
 
-/// Per-Booster fire-rate boost applied to each adjacent equipped turret.
-/// Stacks multiplicatively — N adjacent Boosters → ×1.30^N.
-pub const BOOSTER_FIRE_RATE_MULT: f32 = 1.30;
-
 /// How many pulse particles ride each booster→neighbour connection.
 /// 3 reads as a continuous trickle without becoming a solid line.
 const BOOSTER_PULSES_PER_CONNECTION: usize = 3;
@@ -79,16 +75,23 @@ impl Plugin for BoosterPlugin {
     }
 }
 
+/// Per-tier fire-rate multiplier for a Booster of `barrels` level.
+/// T1 = +30%, T2 = +40%, T3 = +50%.
+pub fn booster_mult_for_tier(barrels: u8) -> f32 {
+    1.0 + 0.1 * (barrels.clamp(1, 3) as f32 + 2.0)
+}
+
 /// Fire-rate multiplier applied to slot `slot_idx` from every adjacent
 /// equipped Booster. Returns 1.0 when no Booster is touching this slot.
-/// Multiplicative stacking: two adjacent Boosters → 1.30 × 1.30 ≈ 1.69.
+/// Multiplicative stacking across boosters; each contributes a tier-
+/// scaled multiplier (T1=1.30, T2=1.40, T3=1.50).
 pub fn boost_multiplier_for_slot(cfg: &TurretConfig, slot_idx: usize) -> f32 {
     let Some(neighbours) = TURRET_ADJACENCY.get(slot_idx) else { return 1.0; };
     let mut mult = 1.0_f32;
     for &n in neighbours.iter() {
         let Some(s) = cfg.slots.get(n) else { continue; };
         if s.equipped && matches!(s.weapon, WeaponType::Booster) {
-            mult *= BOOSTER_FIRE_RATE_MULT;
+            mult *= booster_mult_for_tier(s.barrels);
         }
     }
     mult

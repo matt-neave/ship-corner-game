@@ -31,10 +31,10 @@ use crate::palette::PaletteMaterials;
 use crate::turret::{TurretConfig, TurretSlot};
 use crate::weapon::WeaponType;
 
-/// Cone reach (world units) in front of the slot's mount direction.
-/// Short enough to feel like a focused jet of fire rather than a
-/// half-arena sweep — the player closes the distance to use it.
-const FLAMETHROWER_REACH: f32 = 38.0;
+/// Damage cone reach (world units) in front of the slot's mount
+/// direction. Matched to the upper end of the particle travel
+/// distance so the visible flame and the damage area line up.
+const FLAMETHROWER_REACH: f32 = 50.0;
 /// Half-angle of the cone (radians). ~10° each side → ~20° total
 /// arc. Tight focus reads as a directed flame spear; the slot's
 /// mount direction is FIXED (like Blade) so the player aims by

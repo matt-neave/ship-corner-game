@@ -44,7 +44,7 @@ weapon_anchor_flail,ANCHOR FLAIL
 weapon_plasma_torpedo,PLASMA TORPEDO
 weapon_crows_nest,CROW'S NEST
 weapon_cannon_desc,Fires a heavy cannonball that knocks enemies back.
-weapon_booster_desc,Boosts fire rate of adjacent turrets.
+weapon_booster_desc,Adjacent turrets fire 30% faster.
 weapon_blade_desc,Spinning blade that deals damage on contact.
 weapon_cage_desc,Releases an octopus that hunts and slaps enemies.
 weapon_harpoon_desc,Lances out and reels the target in.
@@ -116,7 +116,7 @@ rune_opener_desc,Bonus damage when the target is at full HP.
 rune_leftovers_desc,Killing blows drop a heal pickup. Rune Effect scales the heal.
 rune_star_desc,Kills landed by this weapon grant +25% XP. Rune Effect scales the bonus.
 rune_thirst_desc,After a kill from this weapon the next shot deals +50% damage. Rune Effect scales the bonus.
-rune_medic_desc,On a [SUPPORT] weapon: heal 2 HP every 5s. Rune Effect scales the heal.
+rune_medic_desc,Equipped on a [SUPPORT], heal 2 HP every 5s.
 rune_rally_desc,On a [MELEE] weapon: each kill grants +1% move speed for 5s (stacks). Rune Effect scales the bonus.
 rune_thorns_desc,Enemies that ram this slot's side of the hull take +1 contact damage per Thorns stack. Rune placement matters as much as weapon placement.
 rune_target_furthest,FURTHEST

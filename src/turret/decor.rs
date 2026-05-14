@@ -321,19 +321,18 @@ pub fn sync_amplifier_decor(
 #[derive(Component)]
 pub struct SharkNetDeck;
 
-/// Outer square edge of the net (covers the base disc).
-const NET_OUTER: f32 = 4.6;
-/// Inner darker square — gives the net a recessed mesh feel.
-const NET_INNER: f32 = 3.2;
-/// Thickness of the cross-strands forming the "+" inside the net.
-const NET_STRAND_THICK: f32 = 0.5;
-/// Length of each cross-strand (spans the inner square).
-const NET_STRAND_LEN: f32 = NET_INNER;
+/// Outer dark square — fully obscures the base disc behind it.
+const NET_OUTER: f32 = 5.0;
+/// Inner cell square — slightly lighter, recessed pen feel.
+const NET_INNER: f32 = 3.4;
+/// Cross-strand thickness for the `+` net pattern.
+const NET_STRAND_THICK: f32 = 0.6;
 
-/// SharkNet slot visual: a blue square "net" overlaid on the base
-/// disc, with two crossed strands so it reads as netting rather
-/// than a cannon. Replaces the standard turret-base + barrel
-/// silhouette so the player sees a net pen, not a gun.
+/// SharkNet slot visual: a square "net" that fully covers the base
+/// turret disc so the slot reads as a holding pen, not a cannon.
+/// Uses the dark `turret_sharknet` material for the outer plate and
+/// the light `bullet_friendly` cyan for the inner cell + cross
+/// strands.
 pub fn sync_sharknet_decor(
     mut commands: Commands,
     cfg: Res<TurretConfig>,
@@ -347,8 +346,8 @@ pub fn sync_sharknet_decor(
 
     let outer_mesh = meshes.add(Rectangle::new(NET_OUTER, NET_OUTER));
     let inner_mesh = meshes.add(Rectangle::new(NET_INNER, NET_INNER));
-    let strand_h_mesh = meshes.add(Rectangle::new(NET_STRAND_LEN, NET_STRAND_THICK));
-    let strand_v_mesh = meshes.add(Rectangle::new(NET_STRAND_THICK, NET_STRAND_LEN));
+    let strand_h_mesh = meshes.add(Rectangle::new(NET_INNER, NET_STRAND_THICK));
+    let strand_v_mesh = meshes.add(Rectangle::new(NET_STRAND_THICK, NET_INNER));
 
     for (slot_entity, slot, children) in &slots {
         let s = cfg.slots[slot.index];
@@ -365,31 +364,34 @@ pub fn sync_sharknet_decor(
 
         if !want { continue; }
 
-        // Outer light-blue frame.
+        // Outer dark plate — sits above the base disc and fully
+        // covers it. z bumped well above the disc's z=2.0 so the
+        // 2D sort puts the net on top no matter the depth-buffer
+        // behaviour for transparent quads.
         let outer = commands.spawn((
             Mesh2d(outer_mesh.clone()),
-            MeshMaterial2d(pm.bullet_friendly.clone()),
-            Transform::from_xyz(0.0, 0.0, 0.05),
+            MeshMaterial2d(pm.turret_sharknet.clone()),
+            Transform::from_xyz(0.0, 0.0, 1.0),
             SharkNetDeck,
             RenderLayers::layer(PLAY_LAYER),
         )).id();
         commands.entity(outer).insert(ChildOf(slot_entity));
 
-        // Inner darker square — recessed pen look.
+        // Inner light cell — pen interior.
         let inner = commands.spawn((
             Mesh2d(inner_mesh.clone()),
-            MeshMaterial2d(pm.turret_sharknet.clone()),
-            Transform::from_xyz(0.0, 0.0, 0.06),
+            MeshMaterial2d(pm.bullet_friendly.clone()),
+            Transform::from_xyz(0.0, 0.0, 1.05),
             SharkNetDeck,
             RenderLayers::layer(PLAY_LAYER),
         )).id();
         commands.entity(inner).insert(ChildOf(slot_entity));
 
-        // Cross strands forming a `+` — the "net" pattern.
+        // Cross strands — net pattern over the cell.
         let strand_h = commands.spawn((
             Mesh2d(strand_h_mesh.clone()),
-            MeshMaterial2d(pm.bullet_friendly.clone()),
-            Transform::from_xyz(0.0, 0.0, 0.07),
+            MeshMaterial2d(pm.turret_sharknet.clone()),
+            Transform::from_xyz(0.0, 0.0, 1.10),
             SharkNetDeck,
             RenderLayers::layer(PLAY_LAYER),
         )).id();
@@ -397,8 +399,8 @@ pub fn sync_sharknet_decor(
 
         let strand_v = commands.spawn((
             Mesh2d(strand_v_mesh.clone()),
-            MeshMaterial2d(pm.bullet_friendly.clone()),
-            Transform::from_xyz(0.0, 0.0, 0.07),
+            MeshMaterial2d(pm.turret_sharknet.clone()),
+            Transform::from_xyz(0.0, 0.0, 1.10),
             SharkNetDeck,
             RenderLayers::layer(PLAY_LAYER),
         )).id();
