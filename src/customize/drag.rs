@@ -192,10 +192,9 @@ pub const SHOP_TURRET_COST: u32 = 2;
 /// Scrap cost for a rune purchase.
 pub const SHOP_RUNE_COST: u32 = 2;
 /// Sell refund fraction — selling returns this share of the
-/// original purchase cost (rounded down). `0.33` → 33%: a 15-scrap
-/// turret refunds 4 (15 × 0.33 = 4.95 → 4); a 10-scrap rune refunds
-/// 3 (10 × 0.33 = 3.3 → 3).
-pub const SHOP_SELL_FRACTION: f32 = 0.33;
+/// original purchase cost (rounded down). `0.5` → 50%: a 4-scrap
+/// turret refunds 2; a 2-scrap rune refunds 1.
+pub const SHOP_SELL_FRACTION: f32 = 0.5;
 /// Backwards-compatibility alias: existing callers that don't yet
 /// distinguish turret/rune/mod still reference `SHOP_ITEM_COST`.
 /// Pointed at `SHOP_TURRET_COST` so the most expensive baseline wins

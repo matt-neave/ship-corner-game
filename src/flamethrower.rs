@@ -32,11 +32,9 @@ use crate::turret::{TurretConfig, TurretSlot};
 use crate::weapon::WeaponType;
 
 /// Cone reach (world units) in front of the slot's mount direction.
-/// Sized so a single equipped Flamethrower covers a meaningful chunk
-/// of the play area in front of the slot — anything less and the
-/// burn fires into empty water with the player wondering whether
-/// the weapon is even doing anything.
-const FLAMETHROWER_REACH: f32 = 60.0;
+/// Short enough to feel like a focused jet of fire rather than a
+/// half-arena sweep — the player closes the distance to use it.
+const FLAMETHROWER_REACH: f32 = 38.0;
 /// Half-angle of the cone (radians). ~10° each side → ~20° total
 /// arc. Tight focus reads as a directed flame spear; the slot's
 /// mount direction is FIXED (like Blade) so the player aims by
@@ -59,12 +57,12 @@ const FLAMETHROWER_STROKE_SCALE: f32 = 1.55;
 /// Particle velocity range. Tuned so `speed × life ≈ FLAMETHROWER_REACH`
 /// — particles visibly travel the full damage cone rather than
 /// dying within the first quarter.
-const FLAMETHROWER_PARTICLE_SPEED_MIN: f32 = 140.0;
-const FLAMETHROWER_PARTICLE_SPEED_MAX: f32 = 200.0;
+const FLAMETHROWER_PARTICLE_SPEED_MIN: f32 = 110.0;
+const FLAMETHROWER_PARTICLE_SPEED_MAX: f32 = 160.0;
 /// Particle lifetime range. Combined with the speed above, particles
 /// reach the cone's outer edge before fading.
-const FLAMETHROWER_PARTICLE_LIFE_MIN: f32 = 0.30;
-const FLAMETHROWER_PARTICLE_LIFE_MAX: f32 = 0.45;
+const FLAMETHROWER_PARTICLE_LIFE_MIN: f32 = 0.22;
+const FLAMETHROWER_PARTICLE_LIFE_MAX: f32 = 0.32;
 
 /// Phase of a Flamethrower slot. `Active` burns; `Cooldown` is
 /// idle. Phase swaps when `phase_timer` reaches 0.

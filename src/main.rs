@@ -509,9 +509,9 @@ fn main() {
             main_menu::MainMenuPlugin,
             customize::CustomizePlugin,
             hull::HullSelectPlugin,
-            anchor_flail::AnchorFlailPlugin,
         ))
         .add_plugins((
+            anchor_flail::AnchorFlailPlugin,
             flamethrower::FlamethrowerPlugin,
             stats_panel_overlay::StatsPanelOverlayPlugin,
             win_screen::WinScreenPlugin,

@@ -242,6 +242,17 @@ pub fn update_hit_particles(
         tf.scale.x = s;
         tf.scale.y = s;
         tf.scale.z = 1.0;
+        // Orient the capsule along its current velocity. The
+        // particle mesh has a long axis (Y), so without this every
+        // puff stays pointing world +Y regardless of where it's
+        // moving — flamethrower particles fired sideways look
+        // wrong, mortar dust looks frozen. Velocity-aligned
+        // rotation costs nothing and makes every particle that
+        // uses this tick look natural.
+        if v.0.length_squared() > 0.01 {
+            let heading = (-v.0.x).atan2(v.0.y);
+            tf.rotation = Quat::from_rotation_z(heading);
+        }
     }
 }
 
@@ -284,7 +295,10 @@ pub fn tick_fire_particles(
 ) {
     let dt = time.delta_secs();
     for (mut fire, p, mut mat, mut vel) in &mut q {
-        // Buoyancy — older particles rise.
+        // Buoyancy — older particles rise. Velocity-aligned rotation
+        // is done generically in `update_hit_particles` so every
+        // particle (including the dark outer stroke that doesn't
+        // carry FireParticle) re-orients toward its motion.
         vel.0.y += FIRE_BUOYANCY * dt;
         let t = (p.life / p.max_life.max(0.0001)).clamp(0.0, 1.0);
         if t < FIRE_COOL_THRESHOLD && !fire.at_cool {

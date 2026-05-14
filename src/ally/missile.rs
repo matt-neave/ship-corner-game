@@ -42,6 +42,13 @@ pub struct HomingMissile {
     /// Cached at spawn — the missile outlives its launcher so we can't
     /// re-read the launcher's faction mid-flight.
     pub target_faction: FactionKind,
+    /// Seconds before the homing tracker engages. Until this hits 0
+    /// the missile flies in a straight line on its initial velocity.
+    /// Set > 0 on player-fired salvos so a missile launched at point
+    /// A doesn't instantly snap toward target B mid-flight — the
+    /// volley reads as "fire then track" instead of "homing the
+    /// moment it leaves the rack".
+    pub homing_delay: f32,
 }
 
 /// Slower than a cannonball (`BULLET_SPEED = 110`) so the homing curve
@@ -68,7 +75,9 @@ fn spawn_homing_missile(
     spawn_homing_missile_full(
         commands, em, pm, pos, forward, damage, initial_target,
         target_faction, source, WeaponType::Standard,
-        Vec::new(), MISSILE_RANGE, 1.0,
+        // Ally missile launcher: no homing delay — its targeting
+        // pick happens at fire time and is already aimed.
+        Vec::new(), MISSILE_RANGE, 1.0, 0.0,
     );
 }
 
@@ -91,6 +100,7 @@ pub fn spawn_homing_missile_full(
     runes: Vec<crate::rune::Rune>,
     range: f32,
     rune_effect: f32,
+    homing_delay: f32,
 ) {
     let heading_rot = (-forward.x).atan2(forward.y);
     // Inspect for Pierce on the slice before the Vec moves into the
@@ -114,6 +124,7 @@ pub fn spawn_homing_missile_full(
             target: initial_target,
             turn_rate: MISSILE_TURN_RATE,
             target_faction,
+            homing_delay,
         },
         RenderLayers::layer(PLAY_LAYER),
     )).id();
@@ -196,6 +207,14 @@ pub fn homing_missile_track(
     let dt = time.delta_secs();
 
     for (mut tf, mut vel, mut m) in &mut missiles {
+        // Homing delay — fly straight on the spawn velocity for the
+        // first `homing_delay` seconds. Lets a player salvo travel
+        // visibly before snapping toward a target instead of
+        // sharply bending at the muzzle.
+        if m.homing_delay > 0.0 {
+            m.homing_delay -= dt;
+            continue;
+        }
         let pos = tf.translation.truncate();
         let target_faction = m.target_faction;
 

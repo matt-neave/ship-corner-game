@@ -658,6 +658,11 @@ pub fn turret_aim_fire(
                                 slot.weapon, slot.runes.clone(),
                                 effective_range * ROCKET_RANGE_MULT,
                                 stats.rune_damage_mult(),
+                                // Player salvos fly straight for 1 second
+                                // before homing kicks in — gives each rocket
+                                // a visible "fan out" arc before snapping
+                                // toward its target.
+                                1.0,
                             );
                         }
                     }

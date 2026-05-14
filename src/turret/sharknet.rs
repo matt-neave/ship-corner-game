@@ -68,6 +68,11 @@ pub struct Shark {
 pub const WANDER_DURATION: f32 = 3.0;
 /// World units per second during a charge.
 pub const CHARGE_SPEED: f32 = 80.0;
+/// Maximum charge duration. After this many seconds the shark
+/// stops the sprint and returns to Wander even if it hasn't left
+/// the arena. Previously the charge ran until the shark crossed
+/// the play-area edge, which let it travel the full width (~200u).
+pub const CHARGE_MAX_DURATION: f32 = 0.7;
 /// Wander cruising speed — slower than the charge so the shift in
 /// pace at lock-on is unmistakable.
 pub const WANDER_SPEED: f32 = 22.0;
@@ -140,12 +145,15 @@ pub fn sync_sharknet_sharks(
             // (radius=2.0, half-length=3.0 → 4×6 outline.)
             let body_mesh = meshes.add(Capsule2d::new(2.0, 3.0));
             let body_mat = pm.shark_body.clone();
-            // Triangle tail — base wider than body, apex pointing
-            // BACK (along local -Y, since +Y is the swim direction).
+            // Triangle tail fluke — apex tucked into the body's rear
+            // hemisphere (local +Y is swim-forward; the capsule's
+            // cylinder ends at y=-3 and the rear cap bottoms out at
+            // y=-5), wide trailing edge at y=-8. This reads as a
+            // proper fish fin: narrow attachment, spreading fluke.
             let tail_mesh = meshes.add(Triangle2d::new(
-                Vec2::new(-2.2, -2.6),
-                Vec2::new( 2.2, -2.6),
-                Vec2::new( 0.0, -4.6),
+                Vec2::new( 0.0, -3.0),
+                Vec2::new(-3.0, -8.0),
+                Vec2::new( 3.0, -8.0),
             ));
 
             let shark_entity = commands.spawn((
@@ -201,7 +209,21 @@ pub fn shark_ai(
         .map(|t| t.translation.truncate())
         .collect();
 
+    // Count sharks per owner_slot so lateral offsets in pass 2 match
+    // the formation that `lateral_x_for` expects. Sharks from the
+    // same slot move as a unit; different slots are independent.
+    let mut group_counts: std::collections::HashMap<usize, u8> =
+        std::collections::HashMap::new();
+    for (_, shark) in &sharks {
+        *group_counts.entry(shark.owner_slot).or_insert(0) += 1;
+    }
+
+    // Pass 1: leaders (lateral_idx == 0) run the full state machine.
+    // Followers are skipped here — they're driven by the leader in
+    // pass 2 so the entire group shares wander direction, charge
+    // target, and timing.
     for (mut tf, mut shark) in &mut sharks {
+        if shark.lateral_idx != 0 { continue; }
         match shark.state {
             SharkState::Wander => {
                 shark.state_timer -= dt;
@@ -262,7 +284,10 @@ pub fn shark_ai(
                         let dir = (t - pos).normalize_or(Vec2::Y);
                         shark.charge_dir = dir;
                         shark.state = SharkState::Charge;
-                        shark.state_timer = 0.0;
+                        // Re-use state_timer as the charge clock —
+                        // ticks down to 0 over CHARGE_MAX_DURATION,
+                        // capping the sprint to a short burst.
+                        shark.state_timer = CHARGE_MAX_DURATION;
                         shark.hit_this_charge.clear();
                         let heading = (-dir.x).atan2(dir.y);
                         tf.rotation = Quat::from_rotation_z(heading);
@@ -274,14 +299,16 @@ pub fn shark_ai(
                 }
             }
             SharkState::Charge => {
+                shark.state_timer -= dt;
                 let step = shark.charge_dir * CHARGE_SPEED * dt;
                 tf.translation.x += step.x;
                 tf.translation.y += step.y;
                 let limit_w = half_w + 5.0;
                 let limit_h = half_h + 5.0;
-                if tf.translation.x.abs() > limit_w
-                    || tf.translation.y.abs() > limit_h
-                {
+                let out_of_bounds = tf.translation.x.abs() > limit_w
+                    || tf.translation.y.abs() > limit_h;
+                let charge_over = shark.state_timer <= 0.0;
+                if out_of_bounds || charge_over {
                     shark.state = SharkState::Wander;
                     shark.state_timer = WANDER_DURATION;
                     // Reset the wander direction to push back inside
@@ -294,6 +321,66 @@ pub fn shark_ai(
                     shark.wander_turn_timer = WANDER_TURN_INTERVAL;
                 }
             }
+        }
+    }
+
+    // Snapshot leader state per owner_slot so followers can mirror it.
+    #[derive(Clone, Copy)]
+    struct LeaderSnap {
+        pos: Vec2,
+        wander_dir: Vec2,
+        charge_dir: Vec2,
+        state: SharkState,
+        state_timer: f32,
+        wander_turn_timer: f32,
+        rot: Quat,
+    }
+    let mut leader_snap: std::collections::HashMap<usize, LeaderSnap> =
+        std::collections::HashMap::new();
+    for (tf, shark) in &sharks {
+        if shark.lateral_idx != 0 { continue; }
+        leader_snap.insert(
+            shark.owner_slot,
+            LeaderSnap {
+                pos: tf.translation.truncate(),
+                wander_dir: shark.wander_dir,
+                charge_dir: shark.charge_dir,
+                state: shark.state,
+                state_timer: shark.state_timer,
+                wander_turn_timer: shark.wander_turn_timer,
+                rot: tf.rotation,
+            },
+        );
+    }
+
+    // Pass 2: followers snap to leader pos + lateral offset, in the
+    // perpendicular of the leader's current forward direction. State,
+    // timers, and direction are copied so contact damage and the
+    // wander/charge cycle run in lockstep with the leader.
+    for (mut tf, mut shark) in &mut sharks {
+        if shark.lateral_idx == 0 { continue; }
+        let Some(snap) = leader_snap.get(&shark.owner_slot).copied() else { continue; };
+        let forward = match snap.state {
+            SharkState::Wander => snap.wander_dir,
+            SharkState::Charge => snap.charge_dir,
+        }
+        .try_normalize()
+        .unwrap_or(Vec2::Y);
+        let perp_right = Vec2::new(forward.y, -forward.x);
+        let n = group_counts.get(&shark.owner_slot).copied().unwrap_or(1);
+        let offset = perp_right * lateral_x_for(n, shark.lateral_idx);
+        tf.translation.x = snap.pos.x + offset.x;
+        tf.translation.y = snap.pos.y + offset.y;
+        tf.rotation = snap.rot;
+        let was_wander = shark.state == SharkState::Wander;
+        let entered_charge = was_wander && snap.state == SharkState::Charge;
+        shark.state = snap.state;
+        shark.state_timer = snap.state_timer;
+        shark.wander_dir = snap.wander_dir;
+        shark.charge_dir = snap.charge_dir;
+        shark.wander_turn_timer = snap.wander_turn_timer;
+        if entered_charge {
+            shark.hit_this_charge.clear();
         }
     }
 }

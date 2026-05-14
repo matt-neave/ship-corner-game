@@ -24,7 +24,7 @@ weapon_railgun,RAILGUN
 weapon_mortar,MORTAR
 weapon_helipad,HELI PAD
 weapon_standard_desc,Balanced cannon. Reliable workhorse.
-weapon_sniper_desc,Heavy round per shot. Built for long range.
+weapon_sniper_desc,Heavy round per shot.
 weapon_mg_desc,Rapid bursts with mild spread.
 weapon_shotgun_desc,Wide cone of pellets up close.
 weapon_railgun_desc,Beam pierces every enemy in its path.
@@ -43,19 +43,19 @@ weapon_sharknet,SHARK NET
 weapon_anchor_flail,ANCHOR FLAIL
 weapon_plasma_torpedo,PLASMA TORPEDO
 weapon_crows_nest,CROW'S NEST
-weapon_cannon_desc,Heavy cannonball. Knocks enemies back on hit.
-weapon_booster_desc,Does not fire. Boosts the fire rate of every adjacent turret.
-weapon_blade_desc,Spinning blade on an extending arm. Damages anything it touches near the ship.
-weapon_cage_desc,Releases an octopus that hunts enemies in the water and slaps them with tentacles.
-weapon_harpoon_desc,Long-range melee. Lances out and reels the target into the hull.
-weapon_spread_rockets_desc,Salvo of 4 seeking rockets every 2.5s. Each rocket re-homes onto a target.
-weapon_flamethrower_desc,Short cone burner. Burns 3s then reloads 3s. Does not auto-apply Fire.
-weapon_spiked_plate_desc,Passive deck armour. On this slot's side of the hull: +5 ram damage to the enemy in contact and -1 incoming bullet damage.
-weapon_amplifier_desc,Doesn't fire. Broadcasts its socketed runes to every adjacent turret each frame, filling their empty rune slots.
-weapon_sharknet_desc,Heavy charge volley. Fires once every 3s, sending sharks tearing across the arena. Each shark pierces every enemy on its line for 5 damage. Barrels add side-by-side sharks for a wider attack.
-weapon_anchor_flail_desc,Throws an iron anchor on a chain along the slot's mount direction then retracts it. Damages every enemy in the path on BOTH the outward swing and the return. Tiers extend reach and shorten the cycle.
-weapon_plasma_torpedo_desc,Slow heavy plasma cannon. Long cooldown but devastating damage per shot. Long range; pairs with Pierce / Opener.
-weapon_crows_nest_desc,Doesn't fire. Every adjacent equipped turret gets +15% range per barrel tier (1/2/3 = +15/30/45%).
+weapon_cannon_desc,Heavy cannonball. Knocks enemies back.
+weapon_booster_desc,Boosts fire rate of adjacent turrets.
+weapon_blade_desc,Spinning blade. Damages anything it touches.
+weapon_cage_desc,Releases an octopus that hunts and slaps enemies.
+weapon_harpoon_desc,Lances out and reels the target in.
+weapon_spread_rockets_desc,Salvo of 4 homing rockets per shot.
+weapon_flamethrower_desc,Cone burner. 3s burn / 3s reload. Does not auto-apply Fire.
+weapon_spiked_plate_desc,Passive armour on this slot's side: +5 ram damage and -1 incoming bullet damage.
+weapon_amplifier_desc,Broadcasts socketed runes to adjacent turrets' empty slots.
+weapon_sharknet_desc,Launches sharks that pierce every enemy on their line. Barrels add side-by-side sharks.
+weapon_anchor_flail_desc,Hurls an anchor outward and retracts it. Damages enemies on both the throw and the return.
+weapon_plasma_torpedo_desc,Heavy plasma cannon. Pairs with Pierce / Opener.
+weapon_crows_nest_desc,Adjacent turrets gain +15% range per barrel tier.
 weapon_tag_naval,NAVAL
 weapon_tag_future,FUTURE
 weapon_tag_autonomous,AUTONOMOUS

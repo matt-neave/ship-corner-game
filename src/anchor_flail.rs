@@ -206,21 +206,36 @@ fn spawn_anchor_visual(
     head: Entity,
     tier: usize,
 ) {
-    // Fluke triangle (the curved bottom of an anchor, simplified to
-    // a wide downward-pointing wedge). Base at the head's pivot,
-    // apex hangs behind (-Y).
-    let fluke = meshes.add(Triangle2d::new(
-        Vec2::new(-2.6, 0.0),
-        Vec2::new( 2.6, 0.0),
-        Vec2::new( 0.0, -3.2),
-    ));
-    let fluke_e = commands.spawn((
-        Mesh2d(fluke),
-        MeshMaterial2d(pm.anchor_iron.clone()),
-        Transform::from_xyz(0.0, 0.0, 0.0),
-        RenderLayers::layer(PLAY_LAYER),
-    )).id();
-    commands.entity(fluke_e).insert(ChildOf(head));
+    // Crown — 5 thin line-segment rectangles forming a U-shaped
+    // curve from one fluke hook through the bottom and back up to the
+    // other hook. Reads as the iconic anchor bottom: sweeping arms
+    // flaring outward, narrow trough at the centre, hook tips at
+    // shank level (y=0) where the chain attaches.
+    let crown_points = [
+        Vec2::new(-3.0,  0.0),
+        Vec2::new(-2.5, -2.0),
+        Vec2::new(-1.0, -3.2),
+        Vec2::new( 1.0, -3.2),
+        Vec2::new( 2.5, -2.0),
+        Vec2::new( 3.0,  0.0),
+    ];
+    for w in crown_points.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        let delta = b - a;
+        let length = delta.length();
+        let angle = delta.y.atan2(delta.x);
+        let mid = (a + b) * 0.5;
+        let seg = meshes.add(Rectangle::new(length, 0.9));
+        let seg_e = commands.spawn((
+            Mesh2d(seg),
+            MeshMaterial2d(pm.anchor_iron.clone()),
+            Transform::from_xyz(mid.x, mid.y, 0.0)
+                .with_rotation(Quat::from_rotation_z(angle)),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(seg_e).insert(ChildOf(head));
+    }
 
     if tier >= 2 {
         // Stock — horizontal crossbar above the flukes, sitting at

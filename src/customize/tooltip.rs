@@ -141,9 +141,7 @@ const TOOLTIP_H: f32 = 22.0;
 /// Spec-pixel gap between the hovered source and the tooltip edge.
 const TOOLTIP_GAP: f32 = 2.0;
 /// Native-pixel padding between the text bounds and the fill edge.
-/// Generous on the horizontal axis so the wrap-cap estimate has room
-/// to be wrong without text spilling onto the white outline.
-const TOOLTIP_TEXT_PAD: f32 = 18.0;
+const TOOLTIP_TEXT_PAD: f32 = 10.0;
 /// Native-pixel thickness of the white outline ring around the fill.
 const TOOLTIP_BORDER_PX: f32 = 2.0;
 /// Title + body font sizes (native pixels). Both bumped so labels read
@@ -151,10 +149,9 @@ const TOOLTIP_BORDER_PX: f32 = 2.0;
 const TOOLTIP_TITLE_FONT: f32 = 18.0;
 const TOOLTIP_BODY_FONT: f32 = 14.0;
 /// Native-pixel cap on body text width — body wraps at word boundaries
-/// when it would exceed this. Big enough that short descriptions fit on
-/// one line; small enough that long descriptions stack neatly without
-/// dominating the canvas.
-const TOOLTIP_BODY_MAX_W: f32 = 260.0;
+/// when it would exceed this. Tight: prefers wrapping to a second line
+/// over a wide single-line box.
+const TOOLTIP_BODY_MAX_W: f32 = 180.0;
 /// Approx char width (chars × font_size × this ≈ rendered native width).
 /// Used both for the title's auto-fit and the body's line-count estimate.
 /// The default font has variable glyph width — capitals like "M" and
