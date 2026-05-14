@@ -62,29 +62,53 @@ pub struct Shark {
     /// transition. Without this a slow-traversing shark would chunk
     /// the same enemy multiple times in a single pass.
     pub hit_this_charge: Vec<Entity>,
+    /// Locked-on enemy during Charge. While this entity is alive and
+    /// the shark hasn't yet drawn blood, `charge_dir` is re-aimed
+    /// toward it every frame (homing). Cleared on Charge end or once
+    /// the shark connects.
+    pub target: Option<Entity>,
+    /// Set to true on the first damaging contact of the current
+    /// charge. After that the shark stops homing and continues
+    /// straight in its current direction for the rest of the charge.
+    pub made_contact: bool,
 }
 
 /// Seconds the shark drifts before locking a target and charging.
 pub const WANDER_DURATION: f32 = 3.0;
 /// World units per second during a charge.
-pub const CHARGE_SPEED: f32 = 80.0;
+pub const CHARGE_SPEED: f32 = 65.0;
 /// Maximum charge duration. After this many seconds the shark
 /// stops the sprint and returns to Wander even if it hasn't left
 /// the arena. Previously the charge ran until the shark crossed
 /// the play-area edge, which let it travel the full width (~200u).
 pub const CHARGE_MAX_DURATION: f32 = 0.7;
+/// Extra seconds added to `state_timer` on the first damaging
+/// contact of a charge. Gives the shark a satisfying over-shoot
+/// past its target instead of stopping the instant it draws blood.
+pub const CHARGE_POST_CONTACT_BONUS: f32 = 0.3;
 /// Wander cruising speed — slower than the charge so the shift in
 /// pace at lock-on is unmistakable.
 pub const WANDER_SPEED: f32 = 22.0;
 /// Contact-hit radius — slightly larger than visual body so a
 /// glancing pass still registers.
 pub const SHARK_HIT_RADIUS: f32 = 3.5;
-/// Side-by-side spacing between sharks in a 2/3-barrel unit.
-pub const SHARK_GAP: f32 = 4.0;
+/// Side-by-side spacing between sharks in a 2/3-barrel unit. The
+/// shark body capsule is 4u wide, so a gap larger than that leaves
+/// clear water between adjacent sharks instead of having them touch.
+pub const SHARK_GAP: f32 = 8.0;
+/// Backward offset applied to follower sharks during a synced charge
+/// so the leader nudges ahead of its wingmen — reads as a flying-V
+/// pack instead of a perfectly straight rank.
+pub const SHARK_BACK_GAP: f32 = 3.5;
 /// Seconds before the wander direction can re-roll. The shark
 /// commits to a heading for this long before idle re-orientation,
 /// so it cruises in semi-coherent paths instead of jittering.
 const WANDER_TURN_INTERVAL: f32 = 1.4;
+/// Side-to-side wiggle frequency (rad/s) of the shark's rotation as
+/// it moves. Fast enough to read as a fish swim cadence at speed.
+const WIGGLE_FREQ: f32 = 14.0;
+/// Peak rotation amplitude of the wiggle (radians, ~10 degrees).
+const WIGGLE_AMP_ROT: f32 = 0.18;
 /// Half the playable arena (with a small inset) used to bounce the
 /// shark back inward when it nears an edge during wander.
 const WANDER_BOUNDS_INSET: f32 = 6.0;
@@ -145,15 +169,14 @@ pub fn sync_sharknet_sharks(
             // (radius=2.0, half-length=3.0 → 4×6 outline.)
             let body_mesh = meshes.add(Capsule2d::new(2.0, 3.0));
             let body_mat = pm.shark_body.clone();
-            // Triangle tail fluke — apex tucked into the body's rear
-            // hemisphere (local +Y is swim-forward; the capsule's
-            // cylinder ends at y=-3 and the rear cap bottoms out at
-            // y=-5), wide trailing edge at y=-8. This reads as a
-            // proper fish fin: narrow attachment, spreading fluke.
+            // Triangle tail fluke — apex tucked inside the body's
+            // rear hemisphere with the wide trailing edge clear of
+            // the cap. Sits 1u out from the previous tighter pass
+            // so the fin reads as a fin, not as part of the body.
             let tail_mesh = meshes.add(Triangle2d::new(
-                Vec2::new( 0.0, -3.0),
-                Vec2::new(-3.0, -8.0),
-                Vec2::new( 3.0, -8.0),
+                Vec2::new( 0.0, -2.0),
+                Vec2::new(-3.0, -7.0),
+                Vec2::new( 3.0, -7.0),
             ));
 
             let shark_entity = commands.spawn((
@@ -169,6 +192,8 @@ pub fn sync_sharknet_sharks(
                     wander_dir: Vec2::Y,
                     wander_turn_timer: 0.0,
                     hit_this_charge: Vec::new(),
+                    target: None,
+                    made_contact: false,
                 },
                 RenderLayers::layer(PLAY_LAYER),
                 Visibility::Inherited,
@@ -192,7 +217,7 @@ pub fn sync_sharknet_sharks(
 /// whatever it happens to be near.
 pub fn shark_ai(
     time: Res<Time>,
-    enemies: Query<&Transform, (With<Enemy>, Without<Shark>)>,
+    enemies: Query<(Entity, &Transform), (With<Enemy>, Without<Shark>)>,
     mut sharks: Query<(&mut Transform, &mut Shark)>,
 ) {
     let dt = time.delta_secs();
@@ -202,11 +227,12 @@ pub fn shark_ai(
     let bound_w = (half_w - WANDER_BOUNDS_INSET).max(0.0);
     let bound_h = (half_h - WANDER_BOUNDS_INSET).max(0.0);
 
-    // Snapshot enemy positions once so each shark can search
-    // independently without a per-shark query borrow.
-    let enemy_positions: Vec<Vec2> = enemies
+    // Snapshot (entity, position) pairs so target-locked sharks can
+    // re-aim toward the same enemy each frame during the homing
+    // portion of a charge.
+    let enemy_snapshot: Vec<(Entity, Vec2)> = enemies
         .iter()
-        .map(|t| t.translation.truncate())
+        .map(|(e, t)| (e, t.translation.truncate()))
         .collect();
 
     // Count sharks per owner_slot so lateral offsets in pass 2 match
@@ -218,12 +244,16 @@ pub fn shark_ai(
         *group_counts.entry(shark.owner_slot).or_insert(0) += 1;
     }
 
-    // Pass 1: leaders (lateral_idx == 0) run the full state machine.
-    // Followers are skipped here — they're driven by the leader in
-    // pass 2 so the entire group shares wander direction, charge
-    // target, and timing.
+    // Pass 1: every shark wanders independently. Only the leader
+    // (lateral_idx == 0) is allowed to TRANSITION to Charge — once
+    // it does, pass 2 rallies the followers into formation. While
+    // in Charge, only the leader runs the charge logic; followers
+    // are positioned by pass 2 to maintain the pack shape.
     for (mut tf, mut shark) in &mut sharks {
-        if shark.lateral_idx != 0 { continue; }
+        // Followers in Charge are entirely driven by pass 2 — skip.
+        if shark.state == SharkState::Charge && shark.lateral_idx != 0 {
+            continue;
+        }
         match shark.state {
             SharkState::Wander => {
                 shark.state_timer -= dt;
@@ -267,39 +297,73 @@ pub fn shark_ai(
                 tf.rotation = Quat::from_rotation_z(h);
 
                 if shark.state_timer <= 0.0 {
-                    // Target lock: nearest enemy to THIS shark's
-                    // current position — sharks roaming far apart
-                    // will independently lock different enemies,
-                    // which is the intended free-hunt feel.
-                    let pos = tf.translation.truncate();
-                    let target = enemy_positions
-                        .iter()
-                        .min_by(|a, b| {
-                            a.distance_squared(pos)
-                                .partial_cmp(&b.distance_squared(pos))
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .copied();
-                    if let Some(t) = target {
-                        let dir = (t - pos).normalize_or(Vec2::Y);
-                        shark.charge_dir = dir;
-                        shark.state = SharkState::Charge;
-                        // Re-use state_timer as the charge clock —
-                        // ticks down to 0 over CHARGE_MAX_DURATION,
-                        // capping the sprint to a short burst.
-                        shark.state_timer = CHARGE_MAX_DURATION;
-                        shark.hit_this_charge.clear();
-                        let heading = (-dir.x).atan2(dir.y);
-                        tf.rotation = Quat::from_rotation_z(heading);
+                    // Only the leader transitions; followers wait
+                    // in place so the group can rally together.
+                    // Clamp the follower's timer at 0 so it doesn't
+                    // run away into deep-negative territory.
+                    if shark.lateral_idx != 0 {
+                        shark.state_timer = 0.0;
                     } else {
-                        // No targets — restart the wander cycle so
-                        // we re-check next interval.
-                        shark.state_timer = WANDER_DURATION;
+                        // Target lock: nearest enemy to this leader's
+                        // current position. Entity captured so we can
+                        // re-aim each frame until first contact.
+                        let pos = tf.translation.truncate();
+                        let target = enemy_snapshot
+                            .iter()
+                            .min_by(|a, b| {
+                                a.1.distance_squared(pos)
+                                    .partial_cmp(&b.1.distance_squared(pos))
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .copied();
+                        if let Some((e, t)) = target {
+                            let dir = (t - pos).normalize_or(Vec2::Y);
+                            shark.charge_dir = dir;
+                            shark.target = Some(e);
+                            shark.made_contact = false;
+                            shark.state = SharkState::Charge;
+                            shark.state_timer = CHARGE_MAX_DURATION;
+                            shark.hit_this_charge.clear();
+                            let heading = (-dir.x).atan2(dir.y);
+                            tf.rotation = Quat::from_rotation_z(heading);
+                        } else {
+                            // No targets — restart the wander cycle so
+                            // we re-check next interval.
+                            shark.state_timer = WANDER_DURATION;
+                        }
                     }
                 }
             }
             SharkState::Charge => {
                 shark.state_timer -= dt;
+                // Pre-contact: re-aim toward the locked target every
+                // frame so the shark hunts a juking enemy instead of
+                // sailing through where they used to be. Post-contact:
+                // direction is frozen — the shark continues in a
+                // straight line for the rest of the burst, blood
+                // already in the water.
+                if !shark.made_contact {
+                    if let Some(target_entity) = shark.target {
+                        let pos = tf.translation.truncate();
+                        let target_pos = enemy_snapshot
+                            .iter()
+                            .find(|(e, _)| *e == target_entity)
+                            .map(|(_, p)| *p);
+                        if let Some(tp) = target_pos {
+                            let dir = (tp - pos).try_normalize();
+                            if let Some(d) = dir {
+                                shark.charge_dir = d;
+                                let heading = (-d.x).atan2(d.y);
+                                tf.rotation = Quat::from_rotation_z(heading);
+                            }
+                        } else {
+                            // Target dead or gone — drop the lock so
+                            // the shark commits to its current
+                            // heading for the rest of the charge.
+                            shark.target = None;
+                        }
+                    }
+                }
                 let step = shark.charge_dir * CHARGE_SPEED * dt;
                 tf.translation.x += step.x;
                 tf.translation.y += step.y;
@@ -311,6 +375,8 @@ pub fn shark_ai(
                 if out_of_bounds || charge_over {
                     shark.state = SharkState::Wander;
                     shark.state_timer = WANDER_DURATION;
+                    shark.target = None;
+                    shark.made_contact = false;
                     // Reset the wander direction to push back inside
                     // the arena so the post-charge shark doesn't keep
                     // drifting away.
@@ -332,7 +398,6 @@ pub fn shark_ai(
         charge_dir: Vec2,
         state: SharkState,
         state_timer: f32,
-        wander_turn_timer: f32,
         rot: Quat,
     }
     let mut leader_snap: std::collections::HashMap<usize, LeaderSnap> =
@@ -347,59 +412,90 @@ pub fn shark_ai(
                 charge_dir: shark.charge_dir,
                 state: shark.state,
                 state_timer: shark.state_timer,
-                wander_turn_timer: shark.wander_turn_timer,
                 rot: tf.rotation,
             },
         );
     }
 
-    // Pass 2: followers snap to leader pos + lateral offset, in the
-    // perpendicular of the leader's current forward direction. State,
-    // timers, and direction are copied so contact damage and the
-    // wander/charge cycle run in lockstep with the leader.
+    // Pass 2: drive follower state from the leader ONLY when the
+    // leader is in Charge (or just transitioned). During the leader's
+    // Wander phase, followers keep wandering independently from
+    // pass 1 — pack only forms up the moment the charge fires.
     for (mut tf, mut shark) in &mut sharks {
         if shark.lateral_idx == 0 { continue; }
         let Some(snap) = leader_snap.get(&shark.owner_slot).copied() else { continue; };
-        let forward = match snap.state {
-            SharkState::Wander => snap.wander_dir,
-            SharkState::Charge => snap.charge_dir,
+        let was_charge = shark.state == SharkState::Charge;
+        let entered_charge = !was_charge && snap.state == SharkState::Charge;
+        let entered_wander = was_charge && snap.state == SharkState::Wander;
+        if snap.state == SharkState::Charge {
+            // Rally to formation and stay glued for the charge.
+            let forward = snap.charge_dir.try_normalize().unwrap_or(Vec2::Y);
+            let perp_right = Vec2::new(forward.y, -forward.x);
+            let n = group_counts.get(&shark.owner_slot).copied().unwrap_or(1);
+            let lat = perp_right * lateral_x_for(n, shark.lateral_idx);
+            // Drop followers slightly behind the leader so the pack
+            // reads as a V with the leader at the tip.
+            let back = -forward * SHARK_BACK_GAP;
+            tf.translation.x = snap.pos.x + lat.x + back.x;
+            tf.translation.y = snap.pos.y + lat.y + back.y;
+            tf.rotation = snap.rot;
+            shark.state = SharkState::Charge;
+            shark.state_timer = snap.state_timer;
+            shark.charge_dir = snap.charge_dir;
+            if entered_charge {
+                shark.hit_this_charge.clear();
+                shark.made_contact = false;
+            }
+        } else if entered_wander {
+            // Leader just exited Charge — return follower to Wander
+            // with a fresh cycle. wander_dir seeded from leader's
+            // exit dir so the post-charge dispersal feels coherent,
+            // then immediate re-roll lets each shark drift its own
+            // way.
+            shark.state = SharkState::Wander;
+            shark.state_timer = snap.state_timer;
+            shark.wander_dir = snap.wander_dir;
+            shark.wander_turn_timer = 0.0;
+            shark.made_contact = false;
+        }
+    }
+
+    // Pass 3: side-to-side wiggle on top of the base forward rotation.
+    // Each shark gets a unique phase offset derived from its owner
+    // slot + lateral index so a school doesn't oscillate in lockstep.
+    let t = time.elapsed_secs();
+    for (mut tf, shark) in &mut sharks {
+        let forward = match shark.state {
+            SharkState::Wander => shark.wander_dir,
+            SharkState::Charge => shark.charge_dir,
         }
         .try_normalize()
         .unwrap_or(Vec2::Y);
-        let perp_right = Vec2::new(forward.y, -forward.x);
-        let n = group_counts.get(&shark.owner_slot).copied().unwrap_or(1);
-        let offset = perp_right * lateral_x_for(n, shark.lateral_idx);
-        tf.translation.x = snap.pos.x + offset.x;
-        tf.translation.y = snap.pos.y + offset.y;
-        tf.rotation = snap.rot;
-        let was_wander = shark.state == SharkState::Wander;
-        let entered_charge = was_wander && snap.state == SharkState::Charge;
-        shark.state = snap.state;
-        shark.state_timer = snap.state_timer;
-        shark.wander_dir = snap.wander_dir;
-        shark.charge_dir = snap.charge_dir;
-        shark.wander_turn_timer = snap.wander_turn_timer;
-        if entered_charge {
-            shark.hit_this_charge.clear();
-        }
+        let base_h = (-forward.x).atan2(forward.y);
+        let phase = (shark.owner_slot as f32) * 1.7 + (shark.lateral_idx as f32) * 0.9;
+        let wig = (t * WIGGLE_FREQ + phase).sin() * WIGGLE_AMP_ROT;
+        tf.rotation = Quat::from_rotation_z(base_h + wig);
     }
 }
 
 /// Contact-damage during the Charge phase. Per-shark grace list
 /// (`hit_this_charge`) prevents a single shark from chunking the
-/// same enemy more than once on the same pass.
+/// same enemy more than once on the same pass. First contact flips
+/// `made_contact` so the AI stops homing (the rest of the burst
+/// runs straight) and sprays a small red blood-particle burst.
 pub fn shark_contact_damage(
+    mut commands: Commands,
     cfg: Res<TurretConfig>,
     mut queue: ResMut<PendingDamageQueue>,
+    em: Option<Res<crate::effects::EffectMeshes>>,
+    pm: Option<Res<crate::palette::PaletteMaterials>>,
     mut sharks: Query<(&Transform, &mut Shark)>,
     mut enemies: Query<(Entity, &Transform, &Health, &mut HitFx), With<Enemy>>,
 ) {
     let r2 = SHARK_HIT_RADIUS * SHARK_HIT_RADIUS;
+    let mut rng = rand::thread_rng();
     for (tf, mut shark) in &mut sharks {
         if shark.state != SharkState::Charge { continue; }
-        // Snapshot slot-side config — damage + runes carry into the
-        // damage event so proc systems (Fire/Shock/etc.) fire off
-        // the bite the same way they would off a bullet hit.
         let slot = cfg.slots.get(shark.owner_slot).copied().unwrap_or_default();
         let damage = slot.damage.max(1);
         let slot_runes: Vec<Rune> = slot.runes.iter().copied().flatten().collect();
@@ -407,33 +503,45 @@ pub fn shark_contact_damage(
         for (e, etf, h, mut fx) in &mut enemies {
             if h.0 <= 0 { continue; }
             if shark.hit_this_charge.contains(&e) { continue; }
-            let dist2 = etf.translation.truncate().distance_squared(pos);
+            let ep = etf.translation.truncate();
+            let dist2 = ep.distance_squared(pos);
             if dist2 >= r2 { continue; }
             shark.hit_this_charge.push(e);
+            let was_first_contact = !shark.made_contact;
+            shark.made_contact = true;
+            if was_first_contact {
+                shark.state_timer += CHARGE_POST_CONTACT_BONUS;
+            }
             queue.push_initial(
                 e,
                 damage,
-                etf.translation.truncate(),
+                ep,
                 WeaponType::SharkNet,
                 Some(DamageSource::PlayerSlot(shark.owner_slot as u8)),
                 &slot_runes,
             );
             fx.pulse();
+            if let (Some(em), Some(pm)) = (em.as_ref(), pm.as_ref()) {
+                crate::effects::spawn_hit_particles(
+                    &mut commands, em, &pm.bleed, ep, 6, 60.0, &mut rng,
+                );
+            }
         }
     }
 }
 
-/// Lateral offset per sub-shark inside a unit. `n` is the total
-/// count (1/2/3); `idx` is which sub-shark. Mirrors the deck-barrel
-/// layout for consistency with other multi-barrel weapons.
-fn lateral_x_for(n: u8, idx: u8) -> f32 {
-    match (n, idx) {
-        (1, _) => 0.0,
-        (2, 0) => -SHARK_GAP * 0.5,
-        (2, _) =>  SHARK_GAP * 0.5,
-        (3, 0) => -SHARK_GAP,
-        (3, 1) =>  0.0,
-        (3, _) =>  SHARK_GAP,
-        _ => 0.0,
+/// Lateral offset per sub-shark inside a unit, RELATIVE TO THE
+/// LEADER (`lateral_idx == 0`). The group is leader-centred — the
+/// leader's free wander position drives where the formation sits,
+/// and followers flank it. Earlier this mapping was leader=left
+/// with followers offsetting from "absolute" formation slots,
+/// which made follower 1 in a triple unit land on top of the
+/// leader (both at offset 0) — you'd see two sharks instead of
+/// three.
+fn lateral_x_for(_n: u8, idx: u8) -> f32 {
+    match idx {
+        0 => 0.0,
+        1 => -SHARK_GAP,
+        _ => SHARK_GAP,
     }
 }

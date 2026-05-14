@@ -42,8 +42,16 @@ const FLAMETHROWER_REACH: f32 = 38.0;
 const FLAMETHROWER_HALF_ANGLE: f32 = 0.175;
 /// Duration of the active burn phase, seconds.
 const FLAMETHROWER_BURN_DURATION: f32 = 3.0;
-/// Duration of the cooldown phase, seconds.
-const FLAMETHROWER_COOLDOWN_DURATION: f32 = 3.0;
+/// Cooldown phase length by tier (`barrels` 1..=3). T1 = full 3s
+/// reload; T2 = halved; T3 = no cooldown (burns continuously, with
+/// the Cooldown phase skipped entirely).
+pub fn flamethrower_cooldown_for_tier(barrels: u8) -> f32 {
+    match barrels.clamp(1, 3) {
+        1 => 3.0,
+        2 => 1.5,
+        _ => 0.0,
+    }
+}
 /// Pair-emissions PER FRAME during the active phase. Each emission
 /// spawns TWO particles at the same position: a larger dark outer
 /// stroke and a smaller bright inner core. The size difference reads
@@ -133,6 +141,7 @@ pub fn flamethrower_tick(
     em: Option<Res<EffectMeshes>>,
     mut queue: ResMut<PendingDamageQueue>,
     cfg: Res<TurretConfig>,
+    stats: Res<crate::stats::PlayerStats>,
     ship_q: Query<(&Transform, &Heading), With<Friendly>>,
     mut slots: Query<
         (&TurretSlot, &Transform, &mut Flamethrower),
@@ -152,19 +161,26 @@ pub fn flamethrower_tick(
         if !cfg.slots[slot.index].equipped { continue; }
         if !matches!(cfg.slots[slot.index].weapon, WeaponType::Flamethrower) { continue; }
 
-        // Phase tick — flip Active ⇄ Cooldown on timeout.
+        // Phase tick — flip Active ⇄ Cooldown on timeout. T3
+        // (`cooldown == 0`) skips the Cooldown phase entirely: the
+        // Active timer just refreshes so the burn never stops.
         ft.phase_timer -= dt;
         if ft.phase_timer <= 0.0 {
+            let cooldown = flamethrower_cooldown_for_tier(slot.barrels);
             ft.phase = match ft.phase {
-                FlamethrowerPhase::Active => FlamethrowerPhase::Cooldown,
+                FlamethrowerPhase::Active => {
+                    if cooldown <= 0.0 {
+                        FlamethrowerPhase::Active
+                    } else {
+                        FlamethrowerPhase::Cooldown
+                    }
+                }
                 FlamethrowerPhase::Cooldown => FlamethrowerPhase::Active,
             };
             ft.phase_timer = match ft.phase {
                 FlamethrowerPhase::Active => FLAMETHROWER_BURN_DURATION,
-                FlamethrowerPhase::Cooldown => FLAMETHROWER_COOLDOWN_DURATION,
+                FlamethrowerPhase::Cooldown => cooldown,
             };
-            // Reset tick on Active entry so the first burst lands
-            // immediately rather than after a half-second pause.
             if matches!(ft.phase, FlamethrowerPhase::Active) {
                 ft.tick_timer = 0.0;
             }
@@ -200,12 +216,17 @@ pub fn flamethrower_tick(
             let damage = slot.damage.max(1);
             let source = Some(DamageSource::PlayerSlot(slot.index as u8));
             let cos_half = FLAMETHROWER_HALF_ANGLE.cos();
+            // Folds the player Range stat + any Crow's Nest range
+            // adjacency into the cone reach, matching how every other
+            // weapon's range scales.
+            let range_factor = stats.range_mult() * slot.range_mult.max(1.0);
+            let scaled_reach = FLAMETHROWER_REACH * range_factor;
             for (e, etf, en) in &enemies {
                 let ep = etf.translation.truncate();
                 let to = ep - slot_world;
                 let d2 = to.length_squared();
                 let er = 3.5 * en.variant.scale();
-                let reach = (FLAMETHROWER_REACH + er) * (FLAMETHROWER_REACH + er);
+                let reach = (scaled_reach + er) * (scaled_reach + er);
                 if d2 > reach { continue; }
                 if d2 < 0.001 {
                     queue.push_initial(e, damage, ep, WeaponType::Flamethrower, source, &slot.runes);

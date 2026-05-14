@@ -117,8 +117,9 @@ use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{
     helicopter_ai, mortar_shell_tick, shark_ai, shark_contact_damage,
     sync_amplifier_decor, sync_crows_nest_decor, sync_flamethrower_decor,
-    sync_helipad_helicopters, sync_helipad_nose_barrels, sync_sharknet_sharks,
-    sync_spiked_decor, sync_turret_config, turret_aim_fire, TurretConfig,
+    sync_helipad_helicopters, sync_helipad_nose_barrels, sync_sharknet_decor,
+    sync_sharknet_sharks, sync_spiked_decor, sync_turret_config, turret_aim_fire,
+    TurretConfig,
 };
 use ui::{
     setup_damage_panel, setup_ui,
@@ -616,6 +617,7 @@ fn main() {
             sync_amplifier_decor,
             sync_flamethrower_decor,
             sync_crows_nest_decor,
+            sync_sharknet_decor,
         ))
         .add_systems(OnEnter(AppState::Map), enter_map_view)
         .add_systems(OnEnter(AppState::Playing), enter_combat_view)

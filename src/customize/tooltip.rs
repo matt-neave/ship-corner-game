@@ -141,7 +141,10 @@ const TOOLTIP_H: f32 = 22.0;
 /// Spec-pixel gap between the hovered source and the tooltip edge.
 const TOOLTIP_GAP: f32 = 2.0;
 /// Native-pixel padding between the text bounds and the fill edge.
-const TOOLTIP_TEXT_PAD: f32 = 10.0;
+/// Split horizontal vs vertical so the box can stay short while
+/// keeping the text comfortably away from the side outlines.
+const TOOLTIP_TEXT_PAD_X: f32 = 14.0;
+const TOOLTIP_TEXT_PAD_Y: f32 = 6.0;
 /// Native-pixel thickness of the white outline ring around the fill.
 const TOOLTIP_BORDER_PX: f32 = 2.0;
 /// Title + body font sizes (native pixels). Both bumped so labels read
@@ -149,9 +152,9 @@ const TOOLTIP_BORDER_PX: f32 = 2.0;
 const TOOLTIP_TITLE_FONT: f32 = 18.0;
 const TOOLTIP_BODY_FONT: f32 = 14.0;
 /// Native-pixel cap on body text width — body wraps at word boundaries
-/// when it would exceed this. Tight: prefers wrapping to a second line
-/// over a wide single-line box.
-const TOOLTIP_BODY_MAX_W: f32 = 180.0;
+/// when it would exceed this. Generous: prefer a wide single-line box
+/// over wrapping to multiple short lines.
+const TOOLTIP_BODY_MAX_W: f32 = 380.0;
 /// Approx char width (chars × font_size × this ≈ rendered native width).
 /// Used both for the title's auto-fit and the body's line-count estimate.
 /// The default font has variable glyph width — capitals like "M" and
@@ -161,8 +164,9 @@ const TOOLTIP_BODY_MAX_W: f32 = 180.0;
 /// of slightly wider tooltips than strictly needed.
 const TOOLTIP_CHAR_W: f32 = 0.72;
 /// Vertical line-height multiplier for the wrapped body — turns
-/// `body_font * lines` into the total body block height.
-const TOOLTIP_LINE_HEIGHT_MULT: f32 = 1.25;
+/// `body_font * lines` into the total body block height. Tight so
+/// multi-line tooltips don't read as towers of whitespace.
+const TOOLTIP_LINE_HEIGHT_MULT: f32 = 1.1;
 
 /// Native-pixel font size for the synergy banner text. Matched to
 /// `TOOLTIP_BODY_FONT` so the banner reads as a natural sibling
@@ -177,10 +181,10 @@ const SYNERGY_TEXT_PAD_Y: f32 = 6.0;
 /// banner's bottom edge.
 const SYNERGY_GAP: f32 = 2.0;
 /// Native-pixel cap on banner text width. Wide enough that the
-/// "Nx" milestone-prefixed ladder line fits on a single row even
-/// for the longer Pirate descriptor, and a 2-line description
-/// breathes without aggressive wrapping.
-const SYNERGY_TEXT_MAX_W: f32 = 460.0;
+/// Support descriptor ("Boosts every neighbour that is not Support")
+/// fits without overflowing the box, and the milestone ladder rows
+/// stay on a single line each.
+const SYNERGY_TEXT_MAX_W: f32 = 600.0;
 /// Dim colour for inactive-tier values in the banner.
 const SYNERGY_INACTIVE_COLOR: Color = Color::srgb(0.45, 0.48, 0.55);
 /// Bright colour for the active-tier value.
@@ -479,7 +483,7 @@ pub fn update_customize_tooltip(
     // tight on short descriptions.
     let body_wrapped_w = body_unwrapped_w.min(TOOLTIP_BODY_MAX_W);
     let text_w_native = title_w_native.max(body_wrapped_w);
-    let fill_w_native = (text_w_native + 2.0 * TOOLTIP_TEXT_PAD).max(TOOLTIP_MIN_W * s);
+    let fill_w_native = (text_w_native + 2.0 * TOOLTIP_TEXT_PAD_X).max(TOOLTIP_MIN_W * s);
     // Line-count estimate: how many `TOOLTIP_BODY_MAX_W` slabs the
     // unwrapped body needs. `ceil(body_w / max_w)`, min 1. Plus the
     // count of explicit `\n` in the body (e.g. the `[TAG]\n…` chip
@@ -489,7 +493,7 @@ pub fn update_customize_tooltip(
     let body_lines = (body_unwrapped_w / TOOLTIP_BODY_MAX_W).ceil().max(1.0) + explicit_breaks;
     let body_block_h = body_lines * TOOLTIP_BODY_FONT * TOOLTIP_LINE_HEIGHT_MULT;
     let title_block_h = TOOLTIP_TITLE_FONT * TOOLTIP_LINE_HEIGHT_MULT;
-    let fill_h_native = title_block_h + body_block_h + 2.0 * TOOLTIP_TEXT_PAD;
+    let fill_h_native = title_block_h + body_block_h + 2.0 * TOOLTIP_TEXT_PAD_Y;
     let tooltip_w_spec = fill_w_native / s;
     let tooltip_h_spec = fill_h_native / s;
 
@@ -533,7 +537,7 @@ pub fn update_customize_tooltip(
     // Title pinned to the top of the fill (anchor TopCenter); body
     // sits directly below it. Top-of-fill y = native_centre.y + h/2 -
     // pad; body starts at top_y - title_block_h.
-    let fill_top_native = native_centre.y + fill_h_native * 0.5 - TOOLTIP_TEXT_PAD;
+    let fill_top_native = native_centre.y + fill_h_native * 0.5 - TOOLTIP_TEXT_PAD_Y;
     // Glyph scale follows `UiScale` (window-relative, matches bevy_ui
     // chrome). Positions are pre-multiplied by `display_scale`
     // (~4× at design) to land in the customize sprite's screen rect,
@@ -1259,10 +1263,15 @@ fn describe_source(
             // `turret_tooltip` iterates each tag and renders a chip
             // for each one, gated by per-tag discovery. So a Harpoon
             // with only Pirate discovered shows `[PIRATE][???]`.
-            Some(turret_tooltip(
+            let (title, mut body) = turret_tooltip(
                 s.weapon, s.barrels.max(1), discovered, stats, synergies,
                 Some((damage_stats.per_slot[slot], damage_stats.total)),
-            ))
+            );
+            if let Some(extra) = weapon_slot_context_line(s.weapon, slot, cfg) {
+                body.push('\n');
+                body.push_str(&extra);
+            }
+            Some((title, body))
         }
         DragSourceKind::ShipRune { slot, rune_idx } => {
             let s = cfg.slots[slot];
@@ -1375,18 +1384,28 @@ fn turret_tooltip(
         body.push_str(AOE_TAG);
     }
     body.push_str(weapon.description());
-    body.push_str("\n\n");
-    // Brotato-style dynamic stat lines below the flavour. Show base
-    // damage × current TurretDamage modifier, plus weapon-specific
-    // notes (knockback / splash / pierce) where relevant.
-    body.push_str(&weapon_damage_line(weapon, stats, synergies));
-    if let Some(rate_line) = weapon_rate_line(weapon, barrels) {
+    // Brotato-style dynamic stat lines below the flavour. Each line
+    // is appended only if non-empty so non-firing weapons don't get
+    // a stray "Damage 0.0" or orphan whitespace.
+    let dmg_line = weapon_damage_line(weapon, stats, synergies);
+    let rate_line = weapon_rate_line(weapon, barrels);
+    let extra_line = weapon_extra_line(weapon, stats);
+    let mut have_stats_block = false;
+    let mut push_stat = |body: &mut String, line: &str| {
         body.push('\n');
-        body.push_str(&rate_line);
+        if !have_stats_block {
+            have_stats_block = true;
+        }
+        body.push_str(line);
+    };
+    if !dmg_line.is_empty() {
+        push_stat(&mut body, &dmg_line);
     }
-    if let Some(extra) = weapon_extra_line(weapon, stats) {
-        body.push('\n');
-        body.push_str(&extra);
+    if let Some(rate) = rate_line.as_deref() {
+        push_stat(&mut body, rate);
+    }
+    if let Some(extra) = extra_line.as_deref() {
+        push_stat(&mut body, extra);
     }
     // Per-slot damage-last-round footer. Only present for equipped ship
     // slots (shop turrets have no history). The `\x1F` sentinel splits
@@ -1444,6 +1463,12 @@ fn weapon_damage_line(
     synergies: &Synergies,
 ) -> String {
     let (base_dmg, _rate) = weapon.defaults();
+    // Non-firing weapons (Booster, Amplifier, SpikedPlate, CrowsNest)
+    // have zero base damage — showing "Damage 0.0" is misleading.
+    // Callers skip the preceding blank line when this is empty.
+    if base_dmg <= 0 {
+        return String::new();
+    }
     // Fold every multiplier that actually applies in combat — the
     // player's Weapon Damage stat AND any active Naval / Support
     // synergies (Support opts out for Support-tagged weapons via
@@ -1465,13 +1490,13 @@ fn weapon_damage_line(
         let total = final_dmg * multishot as f32;
         if pct_bonus == 0 {
             return format!(
-                "Damage {:.1} × {} ({:.0} total)",
+                "Damage {:.1} x {} ({:.0} total)",
                 final_dmg, multishot, total,
             );
         }
         let sign = if pct_bonus > 0 { "+" } else { "" };
         return format!(
-            "Damage {:.1} × {} ({:.0} total, {}{}% bonus)",
+            "Damage {:.1} x {} ({:.0} total, {}{}% bonus)",
             final_dmg, multishot, total, sign, pct_bonus,
         );
     }
@@ -1502,11 +1527,53 @@ fn multishot_count(weapon: WeaponType) -> u8 {
 /// reciprocal. Returns None when the weapon doesn't fire from the
 /// deck (Booster).
 fn weapon_rate_line(weapon: WeaponType, barrels: u8) -> Option<String> {
+    // Flamethrower's `fire_rate` is the internal damage-tick rate, not
+    // a meaningful cooldown to the player — what reads as "cooldown"
+    // is the reload phase between burns, which shrinks per tier and
+    // disappears entirely at T3.
+    if matches!(weapon, WeaponType::Flamethrower) {
+        return match barrels.clamp(1, 3) {
+            1 => Some("Cooldown 3.00s".to_string()),
+            2 => Some("Cooldown 1.50s".to_string()),
+            _ => Some("Always active".to_string()),
+        };
+    }
     let (_base_dmg, base_rate) = weapon.defaults();
     if base_rate <= 0.0 { return None; }
     let effective_rate = base_rate * (barrels.max(1) as f32);
     let cooldown = 1.0 / effective_rate;
     Some(format!("Cooldown {:.2}s", cooldown))
+}
+
+/// Live, slot-aware context line for weapons whose effect depends
+/// on adjacency. Returns `None` for weapons without an adjacency
+/// story (most of them). Only invoked for placed slots — shop
+/// tooltips skip this since there's no neighbourhood yet.
+fn weapon_slot_context_line(
+    weapon: WeaponType,
+    slot_idx: usize,
+    cfg: &TurretConfig,
+) -> Option<String> {
+    match weapon {
+        WeaponType::Amplifier => {
+            let n = crate::balance::TURRET_ADJACENCY[slot_idx]
+                .iter()
+                .filter(|&&i| {
+                    cfg.slots[i].equipped
+                        && !matches!(cfg.slots[i].weapon, WeaponType::Amplifier)
+                })
+                .count();
+            let word = if n == 1 { "turret" } else { "turrets" };
+            Some(format!("Broadcasting to {} {}", n, word))
+        }
+        WeaponType::CrowsNest => {
+            let s = cfg.slots[slot_idx];
+            let tier = s.barrels.clamp(1, 3) as u32;
+            let pct = tier * 15;
+            Some(format!("Adjacent weapons gain +{}% range", pct))
+        }
+        _ => None,
+    }
 }
 
 /// "Range X%" line. Shows the resolved final percentage only.
@@ -1518,6 +1585,12 @@ fn weapon_extra_line(
     stats: &crate::stats::PlayerStats,
 ) -> Option<String> {
     let final_pct = (weapon.range_mult() * stats.range_mult() * 100.0).round() as i32;
+    // Flamethrower's reach is part of its identity — surface the
+    // line even at the 100% baseline so the player can see how the
+    // Range stat will extend the cone.
+    if matches!(weapon, WeaponType::Flamethrower) {
+        return Some(format!("Range {}%", final_pct));
+    }
     if final_pct == 100 {
         None
     } else {
@@ -1670,14 +1743,14 @@ fn rune_dynamic_description(
             let pct = crate::balance::EXECUTIONER_BONUS_PER_STACK * rune_dmg * 100.0;
             let threshold = (crate::balance::EXECUTIONER_HP_THRESHOLD * 100.0).round() as i32;
             format!(
-                "+{:+.0}% damage to enemies below {}% HP.",
+                "{:+.0}% damage to enemies below {}% HP.",
                 pct, threshold,
             )
         }
         Rune::Opener => {
             let pct = crate::balance::OPENER_BONUS_PER_STACK * rune_dmg * 100.0;
             format!(
-                "+{:+.0}% damage to enemies at full HP.",
+                "{:+.0}% damage to enemies at full HP.",
                 pct,
             )
         }

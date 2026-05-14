@@ -34,7 +34,8 @@ pub mod mortar;
 pub mod sharknet;
 
 pub use decor::{
-    sync_amplifier_decor, sync_crows_nest_decor, sync_flamethrower_decor, sync_spiked_decor,
+    sync_amplifier_decor, sync_crows_nest_decor, sync_flamethrower_decor,
+    sync_sharknet_decor, sync_spiked_decor,
 };
 pub use heli::{
     helicopter_ai, sync_helipad_helicopters, sync_helipad_nose_barrels,
@@ -206,7 +207,10 @@ pub fn sync_turret_config(
                 let nbr_cfg = &cfg.slots[nbr];
                 if !nbr_cfg.equipped { continue; }
                 if !matches!(nbr_cfg.weapon, WeaponType::Amplifier) { continue; }
-                for r in nbr_cfg.runes.iter().copied().flatten() {
+                // Tier gates broadcast capacity: lvl 1 shares the
+                // first socketed rune only, lvl 3 shares all three.
+                let cap = nbr_cfg.barrels.clamp(1, 3) as usize;
+                for r in nbr_cfg.runes.iter().copied().flatten().take(cap) {
                     slot.runes.push(r);
                 }
             }
@@ -658,11 +662,12 @@ pub fn turret_aim_fire(
                                 slot.weapon, slot.runes.clone(),
                                 effective_range * ROCKET_RANGE_MULT,
                                 stats.rune_damage_mult(),
-                                // Player salvos fly straight for 1 second
-                                // before homing kicks in — gives each rocket
-                                // a visible "fan out" arc before snapping
-                                // toward its target.
-                                1.0,
+                                // Player salvos fly straight briefly before
+                                // homing kicks in — short enough that the
+                                // seek feels responsive, long enough that
+                                // each rocket reads as "fan out then chase"
+                                // rather than snapping at the muzzle.
+                                0.3,
                             );
                         }
                     }

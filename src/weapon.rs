@@ -351,7 +351,7 @@ impl WeaponType {
             // (one volley every 2.5s). Damage per rocket — modest so
             // a full salvo lands as a satisfying chunk without being
             // a Mortar-replacement.
-            WeaponType::SpreadRockets => (3, 0.4),
+            WeaponType::SpreadRockets => (2, 0.4),
             // Flamethrower: damage / tick repurposed by `flamethrower.rs`
             // as "1 damage every 0.5s during the active burn phase".
             // Fire rate = 2.0Hz drives the per-tick cadence; the

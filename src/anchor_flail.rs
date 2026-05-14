@@ -37,30 +37,32 @@ use crate::weapon::WeaponType;
 pub enum AnchorPhase {
     /// Cooldown between swings — anchor sits at the slot, no damage.
     Idle,
-    /// Anchor extending outward along the slot's mount direction.
-    Out,
-    /// Anchor retracting back toward the slot.
-    In,
+    /// Anchor extended at full reach, orbiting around the slot.
+    Swing,
 }
 
 /// State attached to every equipped AnchorFlail slot. Drives the
-/// per-frame extension of the anchor head and the per-swing damage
-/// grace list.
+/// per-frame orbit of the anchor head around the slot and the
+/// per-swing damage grace list.
 #[derive(Component)]
 pub struct AnchorFlail {
     pub phase: AnchorPhase,
     pub phase_timer: f32,
-    /// Maximum reach for this slot's tier — set at decor-sync time
+    /// Orbit radius for this slot's tier — set at decor-sync time
     /// from `slot.barrels`.
     pub reach: f32,
-    /// Seconds for ONE direction (Out OR In). Out + In = full cycle
-    /// minus the idle gap.
+    /// Seconds for a single swing phase (one cycle of orbital motion).
     pub swing_duration: f32,
-    /// Idle-phase length between cycles.
+    /// Idle-phase length between swings.
     pub idle_duration: f32,
+    /// Number of full revolutions the head completes per swing — set
+    /// at decor-sync time from tier.
+    pub revolutions: f32,
+    /// Current orbit angle in radians (0 = slot-local +Y, growing
+    /// clockwise). Wraps within a swing; reset to 0 at Swing entry.
+    pub angle: f32,
     /// Enemies already damaged on the CURRENT swing. Cleared on
-    /// every Out / In entry so a slow-passing enemy can still be
-    /// chunked once per direction (so a full cycle hits twice).
+    /// every Idle → Swing transition.
     pub hit_this_swing: Vec<Entity>,
 }
 
@@ -82,10 +84,15 @@ pub struct AnchorChain {
 
 /// Per-tier reach (world units). Index = barrels - 1.
 const REACH_BY_TIER: [f32; 3] = [14.0, 18.0, 22.0];
-/// Per-tier swing duration in ONE direction (seconds).
-const SWING_BY_TIER: [f32; 3] = [1.0, 0.8, 0.6];
-/// Per-tier idle pause between cycles (seconds).
-const IDLE_BY_TIER: [f32; 3] = [0.8, 0.6, 0.4];
+/// Per-tier swing duration (seconds). Total length of one orbital
+/// swing window before returning to idle.
+const SWING_BY_TIER: [f32; 3] = [1.4, 1.2, 1.0];
+/// Per-tier idle pause between swings (seconds).
+const IDLE_BY_TIER: [f32; 3] = [0.6, 0.5, 0.4];
+/// Per-tier full revolutions completed per swing. Higher tier = more
+/// rotations within roughly the same window, so the flail visibly
+/// whips faster as the player upgrades it.
+const REVS_BY_TIER: [f32; 3] = [1.0, 1.5, 2.0];
 /// Anchor hit radius around the head's world position.
 const HIT_RADIUS: f32 = 4.0;
 /// Visible chain thickness.
@@ -144,6 +151,7 @@ pub fn sync_anchor_flail_decor(
         let reach = REACH_BY_TIER[tier_idx];
         let swing = SWING_BY_TIER[tier_idx];
         let idle = IDLE_BY_TIER[tier_idx];
+        let revs = REVS_BY_TIER[tier_idx];
 
         commands.entity(slot_entity).insert(AnchorFlail {
             phase: AnchorPhase::Idle,
@@ -151,6 +159,8 @@ pub fn sync_anchor_flail_decor(
             reach,
             swing_duration: swing,
             idle_duration: idle,
+            revolutions: revs,
+            angle: 0.0,
             hit_this_swing: Vec::new(),
         });
 
@@ -206,18 +216,19 @@ fn spawn_anchor_visual(
     head: Entity,
     tier: usize,
 ) {
-    // Crown — 5 thin line-segment rectangles forming a U-shaped
-    // curve from one fluke hook through the bottom and back up to the
-    // other hook. Reads as the iconic anchor bottom: sweeping arms
-    // flaring outward, narrow trough at the centre, hook tips at
-    // shank level (y=0) where the chain attaches.
+    // Crown — 5 thin line-segment rectangles forming an anchor head
+    // that extends outward from the ring. +Y points away from the
+    // ship, so the crown sits at the FAR end of the head with the
+    // hook tips curving back toward the chain. Classic Admiralty
+    // silhouette: shank → crown shoulder → arms sweep back-and-out
+    // → fluke tips facing the ring.
     let crown_points = [
-        Vec2::new(-3.0,  0.0),
-        Vec2::new(-2.5, -2.0),
-        Vec2::new(-1.0, -3.2),
-        Vec2::new( 1.0, -3.2),
-        Vec2::new( 2.5, -2.0),
-        Vec2::new( 3.0,  0.0),
+        Vec2::new(-3.0, 0.5),
+        Vec2::new(-2.0, 1.8),
+        Vec2::new(-0.5, 2.5),
+        Vec2::new( 0.5, 2.5),
+        Vec2::new( 2.0, 1.8),
+        Vec2::new( 3.0, 0.5),
     ];
     for w in crown_points.windows(2) {
         let a = w[0];
@@ -252,13 +263,13 @@ fn spawn_anchor_visual(
     }
 
     if tier >= 3 {
-        // Back-spike — small downward needle behind the flukes,
+        // Back-spike — small needle protruding past the crown,
         // T3-exclusive "extra menace" upgrade. Reads as a
         // tournament-grade anchor vs the journeyman T1/T2.
         let spike = meshes.add(Triangle2d::new(
-            Vec2::new(-0.6, -3.0),
-            Vec2::new( 0.6, -3.0),
-            Vec2::new( 0.0, -4.6),
+            Vec2::new(-0.6, 2.5),
+            Vec2::new( 0.6, 2.5),
+            Vec2::new( 0.0, 4.0),
         ));
         let spike_e = commands.spawn((
             Mesh2d(spike),
@@ -270,11 +281,11 @@ fn spawn_anchor_visual(
     }
 }
 
-/// Per-frame state machine + damage. Positions the anchor head along
-/// the slot's local +Y based on the current phase progress, stretches
-/// the chain to match, and damages enemies near the chain segment
-/// (with per-swing grace so the same enemy isn't hit twice in one
-/// direction).
+/// Per-frame state machine + damage. Orbits the anchor head around
+/// the slot at full reach during the Swing phase, dragging the chain
+/// behind it. Idle parks the head at the slot. Damage applies to any
+/// enemy within HIT_RADIUS of the head's world position, with a
+/// per-swing grace list so each enemy is only chunked once per cycle.
 pub fn anchor_flail_tick(
     time: Res<Time>,
     cfg: Res<TurretConfig>,
@@ -286,7 +297,6 @@ pub fn anchor_flail_tick(
         (Without<AnchorHead>, Without<Enemy>),
     >,
     slot_world: Query<&GlobalTransform, With<TurretSlot>>,
-    head_world: Query<&GlobalTransform, (With<AnchorHead>, Without<TurretSlot>)>,
     mut enemies: Query<(Entity, &Transform, &Health), (With<Enemy>, Without<AnchorHead>, Without<TurretSlot>)>,
 ) {
     let dt = time.delta_secs();
@@ -302,93 +312,66 @@ pub fn anchor_flail_tick(
         flail.phase_timer -= dt;
         if flail.phase_timer <= 0.0 {
             flail.phase = match flail.phase {
-                AnchorPhase::Idle => AnchorPhase::Out,
-                AnchorPhase::Out  => AnchorPhase::In,
-                AnchorPhase::In   => AnchorPhase::Idle,
+                AnchorPhase::Idle => AnchorPhase::Swing,
+                AnchorPhase::Swing => AnchorPhase::Idle,
             };
             flail.phase_timer = match flail.phase {
                 AnchorPhase::Idle => flail.idle_duration,
-                AnchorPhase::Out | AnchorPhase::In => flail.swing_duration,
+                AnchorPhase::Swing => flail.swing_duration,
             };
-            // Reset per-swing grace on entering Out / In so each
-            // direction is its own damage window (full cycle =
-            // double-tap).
-            if !matches!(flail.phase, AnchorPhase::Idle) {
+            if matches!(flail.phase, AnchorPhase::Swing) {
                 flail.hit_this_swing.clear();
+                flail.angle = 0.0;
             }
         }
 
-        // ---- Extension along slot-local +Y ----
-        // Progress 0..1 within the current phase.
-        let progress = match flail.phase {
-            AnchorPhase::Idle => 0.0,
-            AnchorPhase::Out => {
-                1.0 - (flail.phase_timer / flail.swing_duration.max(0.0001)).clamp(0.0, 1.0)
-            }
-            AnchorPhase::In => {
-                (flail.phase_timer / flail.swing_duration.max(0.0001)).clamp(0.0, 1.0)
+        // ---- Orbit angle + head position ----
+        // During Swing the head orbits the slot at full reach. The
+        // angle is measured from slot-local +Y (the mount direction),
+        // sweeping clockwise so the local position is
+        // (sin a, cos a) * reach.
+        let local_pos = match flail.phase {
+            AnchorPhase::Idle => Vec2::ZERO,
+            AnchorPhase::Swing => {
+                let omega = flail.revolutions
+                    * std::f32::consts::TAU
+                    / flail.swing_duration.max(0.0001);
+                flail.angle += omega * dt;
+                Vec2::new(flail.angle.sin(), flail.angle.cos()) * flail.reach
             }
         };
-        let extension = flail.reach * progress;
 
-        // Find this slot's head + chain children. Iterating the
-        // small per-slot pair is cheaper than wiring entity
-        // references into AnchorFlail.
         for (mut tf, head) in &mut heads {
             if head.slot != slot_entity { continue; }
-            tf.translation.y = extension;
+            tf.translation.x = local_pos.x;
+            tf.translation.y = local_pos.y;
+            // Rotate the head so its local +Y axis stays aligned with
+            // the radial (outward) direction — the crown always
+            // points away from the slot as it whips around.
+            tf.rotation = Quat::from_rotation_z(-flail.angle);
         }
         for (mut tf, chain) in &mut chains {
             if chain.slot != slot_entity { continue; }
-            // Rectangle is centred at origin; scale.y stretches it
-            // from origin to +extension. Set Y midpoint accordingly.
-            let len = extension.max(0.01);
-            tf.translation.y = len * 0.5;
+            let len = local_pos.length().max(0.01);
+            let mid = local_pos * 0.5;
+            tf.translation.x = mid.x;
+            tf.translation.y = mid.y;
+            tf.rotation = Quat::from_rotation_z(-flail.angle);
             tf.scale.x = 1.0;
             tf.scale.y = len;
             tf.scale.z = 1.0;
         }
 
-        // ---- Damage check: enemies near the anchor head's world position ----
-        if matches!(flail.phase, AnchorPhase::Idle) {
-            continue;
-        }
-        // Pull the head's world position from its GlobalTransform —
-        // automatically reflects the ship + slot rotation chain.
-        let head_entity = heads.iter().find(|(_, h)| h.slot == slot_entity).map(|_| ());
-        if head_entity.is_none() { continue; }
-        // Use the slot_world + head_world queries to read live
-        // GlobalTransforms after Transform-propagation.
-        let _ = slot_world.get(slot_entity); // (kept for future per-segment hit-tests)
-        let Some(head_world_pos) = head_world
-            .iter()
-            .find_map(|gt| {
-                // We need to match the head BY slot, but head_world
-                // lacks the AnchorHead component data because of the
-                // .with_query filter on the Query. Instead match by
-                // finding the slot's child head via parent traversal
-                // is overkill — `heads.iter()` already gave us the
-                // child Transform; we can also pull its world pos by
-                // composing slot world + local. Compose manually:
-                let _ = gt;
-                None::<Vec2>
-            })
-            .or_else(|| {
-                // Manual compose: slot GlobalTransform * local head
-                // offset (which is (0, extension)).
-                let slot_g = slot_world.get(slot_entity).ok()?;
-                let m = slot_g.compute_transform();
-                let local = Vec3::new(0.0, extension, 0.0);
-                let world = m.translation + m.rotation.mul_vec3(local);
-                Some(world.truncate())
-            })
-        else { continue; };
+        // ---- Damage during Swing ----
+        if matches!(flail.phase, AnchorPhase::Idle) { continue; }
+        let Ok(slot_g) = slot_world.get(slot_entity) else { continue; };
+        let m = slot_g.compute_transform();
+        let head_world_pos = (m.translation
+            + m.rotation.mul_vec3(Vec3::new(local_pos.x, local_pos.y, 0.0)))
+            .truncate();
 
         let damage = slot.damage.max(1);
         let source = Some(DamageSource::PlayerSlot(slot.index as u8));
-        // Iterate enemies and damage anyone close to the anchor head.
-        // We snapshot hit entities locally then push them onto the
-        // grace list outside the borrow.
         let mut new_hits: Vec<Entity> = Vec::new();
         for (e, etf, h) in &mut enemies {
             if h.0 <= 0 { continue; }

@@ -43,19 +43,19 @@ weapon_sharknet,SHARK NET
 weapon_anchor_flail,ANCHOR FLAIL
 weapon_plasma_torpedo,PLASMA TORPEDO
 weapon_crows_nest,CROW'S NEST
-weapon_cannon_desc,Heavy cannonball. Knocks enemies back.
+weapon_cannon_desc,Fires a heavy cannonball that knocks enemies back.
 weapon_booster_desc,Boosts fire rate of adjacent turrets.
-weapon_blade_desc,Spinning blade. Damages anything it touches.
+weapon_blade_desc,Spinning blade that deals damage on contact.
 weapon_cage_desc,Releases an octopus that hunts and slaps enemies.
 weapon_harpoon_desc,Lances out and reels the target in.
 weapon_spread_rockets_desc,Salvo of 4 homing rockets per shot.
-weapon_flamethrower_desc,Cone burner. 3s burn / 3s reload. Does not auto-apply Fire.
-weapon_spiked_plate_desc,Passive armour on this slot's side: +5 ram damage and -1 incoming bullet damage.
-weapon_amplifier_desc,Broadcasts socketed runes to adjacent turrets' empty slots.
-weapon_sharknet_desc,Launches sharks that pierce every enemy on their line. Barrels add side-by-side sharks.
+weapon_flamethrower_desc,Burns enemies at close range.
+weapon_spiked_plate_desc,Contact with spikes deals +5 damage and reduces damage received by -1.
+weapon_amplifier_desc,Every adjacent turret fires with its own runes plus the Amplifier's. Stacks with multiple Amplifiers.
+weapon_sharknet_desc,Unleashes sharks that charge down enemies.
 weapon_anchor_flail_desc,Hurls an anchor outward and retracts it. Damages enemies on both the throw and the return.
-weapon_plasma_torpedo_desc,Heavy plasma cannon. Pairs with Pierce / Opener.
-weapon_crows_nest_desc,Adjacent turrets gain +15% range per barrel tier.
+weapon_plasma_torpedo_desc,Slow heavy plasma cannon.
+weapon_crows_nest_desc,Adjacent weapons gain +15% range per tier.
 weapon_tag_naval,NAVAL
 weapon_tag_future,FUTURE
 weapon_tag_autonomous,AUTONOMOUS

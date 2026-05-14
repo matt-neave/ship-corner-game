@@ -291,11 +291,15 @@ pub fn sync_amplifier_decor(
             .get_or_insert_with(|| meshes.add(Circle::new(AMP_DOT_RADIUS)))
             .clone();
 
-        // Three dots arranged on an equilateral triangle. Starting
-        // angle of `PI/2` puts the top dot pointing along the
-        // slot's mount-forward (+Y) direction, with the other two
-        // splayed back-left and back-right.
-        for i in 0..3 {
+        // Dot count tracks the Amplifier's tier — each barrel level
+        // represents one additional rune the Amplifier can broadcast,
+        // so the visible dots mirror its current sharing capacity.
+        let dot_count = s.barrels.clamp(1, 3) as usize;
+        // Dots arranged on the upper arc of the regular triangle,
+        // starting at the mount-forward (+Y) direction. With one dot
+        // we just place it forward; with two or three we splay across
+        // the triangle's vertices.
+        for i in 0..dot_count {
             let theta = std::f32::consts::FRAC_PI_2
                 + (i as f32) * std::f32::consts::TAU / 3.0;
             let x = AMP_DOT_RING * theta.cos();
@@ -309,5 +313,95 @@ pub fn sync_amplifier_decor(
             )).id();
             commands.entity(dot).insert(ChildOf(slot_entity));
         }
+    }
+}
+
+// ---------- SharkNet deck decor ----------
+
+#[derive(Component)]
+pub struct SharkNetDeck;
+
+/// Outer square edge of the net (covers the base disc).
+const NET_OUTER: f32 = 4.6;
+/// Inner darker square — gives the net a recessed mesh feel.
+const NET_INNER: f32 = 3.2;
+/// Thickness of the cross-strands forming the "+" inside the net.
+const NET_STRAND_THICK: f32 = 0.5;
+/// Length of each cross-strand (spans the inner square).
+const NET_STRAND_LEN: f32 = NET_INNER;
+
+/// SharkNet slot visual: a blue square "net" overlaid on the base
+/// disc, with two crossed strands so it reads as netting rather
+/// than a cannon. Replaces the standard turret-base + barrel
+/// silhouette so the player sees a net pen, not a gun.
+pub fn sync_sharknet_decor(
+    mut commands: Commands,
+    cfg: Res<TurretConfig>,
+    pm: Option<Res<PaletteMaterials>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    slots: Query<(Entity, &TurretSlot, Option<&Children>)>,
+    existing: Query<Entity, With<SharkNetDeck>>,
+) {
+    if !cfg.is_changed() { return; }
+    let Some(pm) = pm else { return; };
+
+    let outer_mesh = meshes.add(Rectangle::new(NET_OUTER, NET_OUTER));
+    let inner_mesh = meshes.add(Rectangle::new(NET_INNER, NET_INNER));
+    let strand_h_mesh = meshes.add(Rectangle::new(NET_STRAND_LEN, NET_STRAND_THICK));
+    let strand_v_mesh = meshes.add(Rectangle::new(NET_STRAND_THICK, NET_STRAND_LEN));
+
+    for (slot_entity, slot, children) in &slots {
+        let s = cfg.slots[slot.index];
+        let want = s.equipped && matches!(s.weapon, WeaponType::SharkNet);
+
+        let existing_children: Vec<Entity> = children
+            .into_iter()
+            .flat_map(|c| c.iter())
+            .filter(|c| existing.get(*c).is_ok())
+            .collect();
+        for e in existing_children {
+            commands.entity(e).despawn();
+        }
+
+        if !want { continue; }
+
+        // Outer light-blue frame.
+        let outer = commands.spawn((
+            Mesh2d(outer_mesh.clone()),
+            MeshMaterial2d(pm.bullet_friendly.clone()),
+            Transform::from_xyz(0.0, 0.0, 0.05),
+            SharkNetDeck,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(outer).insert(ChildOf(slot_entity));
+
+        // Inner darker square — recessed pen look.
+        let inner = commands.spawn((
+            Mesh2d(inner_mesh.clone()),
+            MeshMaterial2d(pm.turret_sharknet.clone()),
+            Transform::from_xyz(0.0, 0.0, 0.06),
+            SharkNetDeck,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(inner).insert(ChildOf(slot_entity));
+
+        // Cross strands forming a `+` — the "net" pattern.
+        let strand_h = commands.spawn((
+            Mesh2d(strand_h_mesh.clone()),
+            MeshMaterial2d(pm.bullet_friendly.clone()),
+            Transform::from_xyz(0.0, 0.0, 0.07),
+            SharkNetDeck,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(strand_h).insert(ChildOf(slot_entity));
+
+        let strand_v = commands.spawn((
+            Mesh2d(strand_v_mesh.clone()),
+            MeshMaterial2d(pm.bullet_friendly.clone()),
+            Transform::from_xyz(0.0, 0.0, 0.07),
+            SharkNetDeck,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(strand_v).insert(ChildOf(slot_entity));
     }
 }
