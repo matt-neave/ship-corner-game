@@ -112,7 +112,10 @@ use rune::{
     tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_medic, tick_on_resonate,
     BuffStacks, MedicTimer, ThirstPending,
 };
-use ship::{apply_velocity, friendly_movement, friendly_ram_damage, setup_world, tick_stunned};
+use ship::{
+    apply_velocity, despawn_player_world, friendly_movement, friendly_ram_damage,
+    setup_world, spawn_player_world, tick_stunned,
+};
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{
     helicopter_ai, mortar_shell_tick, shark_ai, shark_contact_damage,
@@ -620,7 +623,17 @@ fn main() {
             sync_sharknet_decor,
         ))
         .add_systems(OnEnter(AppState::Map), enter_map_view)
-        .add_systems(OnEnter(AppState::Playing), enter_combat_view)
+        // OnEnter(Playing): set the camera-gating ViewMode AND spawn
+        // the friendly hull / arena border / wake trail if they don't
+        // already exist. `spawn_player_world` is idempotent, so
+        // re-entries (Pause → Playing, Map → Playing) short-circuit
+        // and leave the alive ship in place.
+        .add_systems(OnEnter(AppState::Playing), (enter_combat_view, spawn_player_world))
+        // OnEnter(MainMenu): tear the play world down so the menu
+        // screen renders against an empty stage — no stale player
+        // ship sitting at origin, no border framing the void. The
+        // menu owns its own fleet of decorative pirate hulls.
+        .add_systems(OnEnter(AppState::MainMenu), despawn_player_world)
         // Map→Playing is the canonical stage-start hook: refill HP +
         // wipe arena debris from last stage. (Permanent ally roster
         // respawn is owned by `BossRewardPlugin`, which also hooks
@@ -693,13 +706,18 @@ fn main() {
             ),
         ))
         .add_systems(Update, (
-            // HP bars are visible in both map and combat view.
+            // HP bars are visible in both map and combat view, BUT
+            // not on the landing screen. `update_wave_ui` writes
+            // Visibility::Inherited on every `ViewMode` change, which
+            // would otherwise un-hide the player's HP bar the moment
+            // MainMenu sets ViewMode::Combat to wake up the menu fleet
+            // camera. Gating the whole block keeps the menu clean.
             update_wave_ui,
             update_hp_subdividers,
             update_hp_bar_pixel_scale,
             sync_ally_hp_bars,
             update_ally_hp_values,
-        ))
+        ).run_if(not(in_state(AppState::MainMenu))))
         .add_systems(Update, (
             (ally_ai, ally_turret_aim_fire, ally_death_check, plane_ai),
             // homing_missile_track runs before apply_velocity so the

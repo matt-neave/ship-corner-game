@@ -4,7 +4,54 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bevy = "0.16"
+# 2D-only feature set. Bevy's defaults pull in the entire 3D stack
+# (PBR rendering, glTF loader, scene serialization, 3D animation
+# graphs, mesh picking, HDR / KTX2 / zstd compressed-texture formats)
+# which this game doesn't touch — every visual is a `Mesh2d` / `Sprite`
+# / `Text2d` on a 2D camera. Trimming them shrinks the binary and
+# cuts compile time. If you need any of these back, add the feature
+# name to the list (full list at https://docs.rs/crate/bevy/latest/features).
+bevy = { version = "0.16", default-features = false, features = [
+    # Asset + log + state plumbing (almost everything depends on these).
+    "bevy_asset",
+    "bevy_log",
+    "bevy_state",
+    "bevy_color",
+    # 2D rendering pipeline.
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_sprite",
+    "bevy_sprite_picking_backend",
+    # Text + UI.
+    "bevy_text",
+    "default_font",
+    "bevy_ui",
+    "bevy_ui_picking_backend",
+    "bevy_picking",
+    "bevy_input_focus",
+    # Audio (Vorbis-encoded SFX assets — see `sfx.rs`).
+    "bevy_audio",
+    "vorbis",
+    # Image asset format used for the play render target snapshots
+    # we generate at startup (`make_hash_image`, `make_scanline_image`).
+    "png",
+    # Cameras / windowing / input.
+    "bevy_window",
+    "bevy_winit",
+    "custom_cursor",
+    # Diagnostics resource used by the FPS counter.
+    "sysinfo_plugin",
+    # Tonemapping LUTs — Bevy's default camera setup references them
+    # even when we set ClearColor directly, so keep them around.
+    "smaa_luts",
+    "tonemapping_luts",
+    # Parallel system execution.
+    "multi_threaded",
+    # Linux X11 backend (Wayland is opt-in).
+    "x11",
+    # WebGL2 renderer for the wasm build.
+    "webgl2",
+] }
 rand = "0.8"
 
 # Native-only deps. WASM builds get a stub: `winit`'s direct API (resize

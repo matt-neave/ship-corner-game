@@ -37,6 +37,15 @@ pub enum SharkState {
     Charge,
 }
 
+/// Marker on the triangular tail-fluke child of a `Shark`. Lets
+/// `shark_ai`'s tail-wiggle pass find the right Transform without
+/// walking the Children list every frame. `shark` carries the parent
+/// Entity so the tail can pick up its parent's swim phase.
+#[derive(Component)]
+pub struct SharkTail {
+    pub shark: Entity,
+}
+
 #[derive(Component)]
 pub struct Shark {
     pub owner_slot: usize,
@@ -104,11 +113,20 @@ pub const SHARK_BACK_GAP: f32 = 3.5;
 /// commits to a heading for this long before idle re-orientation,
 /// so it cruises in semi-coherent paths instead of jittering.
 const WANDER_TURN_INTERVAL: f32 = 1.4;
-/// Side-to-side wiggle frequency (rad/s) of the shark's rotation as
-/// it moves. Fast enough to read as a fish swim cadence at speed.
+/// Side-to-side wiggle frequency (rad/s) of the shark's swim cycle.
+/// Body + tail share this frequency so they stay phase-locked.
 const WIGGLE_FREQ: f32 = 14.0;
-/// Peak rotation amplitude of the wiggle (radians, ~10 degrees).
-const WIGGLE_AMP_ROT: f32 = 0.18;
+/// Peak yaw of the body itself — small, around the shark's centre.
+/// A real fish's body undulates less than the tail; keeping this low
+/// stops the whole silhouette from skidding side to side and reads
+/// as the spine flexing while the head holds heading.
+const WIGGLE_AMP_BODY: f32 = 0.06;
+/// Extra yaw on the tail BEYOND the body's, counter-phase. The tail
+/// rotates around its junction with the body (mesh authored with the
+/// apex at local origin) so the wide trailing edge sweeps further
+/// than the apex — same swing arc you see on a real shark's caudal
+/// fin from above.
+const WIGGLE_AMP_TAIL_EXTRA: f32 = 0.32;
 /// Half the playable arena (with a small inset) used to bounce the
 /// shark back inward when it nears an edge during wander.
 const WANDER_BOUNDS_INSET: f32 = 6.0;
@@ -125,6 +143,7 @@ pub fn sync_sharknet_sharks(
     cfg: Res<TurretConfig>,
     pm: Option<Res<PaletteMaterials>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     ship_q: Query<&Transform, (With<Friendly>, Without<Shark>)>,
     sharks: Query<(Entity, &Shark)>,
 ) {
@@ -169,15 +188,29 @@ pub fn sync_sharknet_sharks(
             // (radius=2.0, half-length=3.0 → 4×6 outline.)
             let body_mesh = meshes.add(Capsule2d::new(2.0, 3.0));
             let body_mat = pm.shark_body.clone();
-            // Triangle tail fluke — apex tucked inside the body's
-            // rear hemisphere with the wide trailing edge clear of
-            // the cap. Sits 1u out from the previous tighter pass
-            // so the fin reads as a fin, not as part of the body.
+
+            // Tail fluke — mesh AUTHORED with the apex at local
+            // origin so its Transform position can be the junction
+            // with the body, and its rotation pivots around that
+            // junction. Trailing edge extends 5 units behind the
+            // apex, same visual length as the previous mesh.
             let tail_mesh = meshes.add(Triangle2d::new(
-                Vec2::new( 0.0, -2.0),
-                Vec2::new(-3.0, -7.0),
-                Vec2::new( 3.0, -7.0),
+                Vec2::new( 0.0,  0.0),
+                Vec2::new(-3.0, -5.0),
+                Vec2::new( 3.0, -5.0),
             ));
+
+            // Dorsal fin — small forward-pointing triangle on top of
+            // the body, slightly aft of the head. Darker than the
+            // body so it reads as a separate fin instead of a body
+            // highlight. Locked to the body's rotation; doesn't
+            // counter-wiggle.
+            let dorsal_mesh = meshes.add(Triangle2d::new(
+                Vec2::new(-0.8, -0.6),
+                Vec2::new( 0.8, -0.6),
+                Vec2::new( 0.0,  1.4),
+            ));
+            let dorsal_mat = materials.add(Color::srgb(0.26, 0.28, 0.32));
 
             let shark_entity = commands.spawn((
                 Mesh2d(body_mesh),
@@ -199,13 +232,29 @@ pub fn sync_sharknet_sharks(
                 Visibility::Inherited,
             )).id();
 
+            // Tail: junction-pivot is at body's rear (y=-2). The
+            // counter-wiggle pass rotates this Transform in opposite
+            // phase to the body, sweeping the trailing edge wide
+            // while the apex stays glued to the body.
             let tail = commands.spawn((
                 Mesh2d(tail_mesh),
                 MeshMaterial2d(body_mat),
-                Transform::from_xyz(0.0, 0.0, -0.05),
+                Transform::from_xyz(0.0, -2.0, -0.05),
+                SharkTail { shark: shark_entity },
                 RenderLayers::layer(PLAY_LAYER),
             )).id();
             commands.entity(tail).insert(ChildOf(shark_entity));
+
+            // Dorsal fin: sits slightly ahead of the body's centre on
+            // local +Y, at a higher z so it stays on top of the body
+            // capsule even when the body wiggles.
+            let dorsal = commands.spawn((
+                Mesh2d(dorsal_mesh),
+                MeshMaterial2d(dorsal_mat),
+                Transform::from_xyz(0.0, 0.2, 0.05),
+                RenderLayers::layer(PLAY_LAYER),
+            )).id();
+            commands.entity(dorsal).insert(ChildOf(shark_entity));
         }
     }
 }
@@ -217,8 +266,11 @@ pub fn sync_sharknet_sharks(
 /// whatever it happens to be near.
 pub fn shark_ai(
     time: Res<Time>,
-    enemies: Query<(Entity, &Transform), (With<Enemy>, Without<Shark>)>,
-    mut sharks: Query<(&mut Transform, &mut Shark)>,
+    enemies: Query<(Entity, &Transform), (With<Enemy>, Without<Shark>, Without<SharkTail>)>,
+    // Without<SharkTail> proves the sharks/tails queries are archetype-
+    // disjoint so the two `&mut Transform` accesses don't conflict.
+    mut sharks: Query<(Entity, &mut Transform, &mut Shark), Without<SharkTail>>,
+    mut tails: Query<(&SharkTail, &mut Transform), Without<Shark>>,
 ) {
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
@@ -240,7 +292,7 @@ pub fn shark_ai(
     // same slot move as a unit; different slots are independent.
     let mut group_counts: std::collections::HashMap<usize, u8> =
         std::collections::HashMap::new();
-    for (_, shark) in &sharks {
+    for (_, _, shark) in &sharks {
         *group_counts.entry(shark.owner_slot).or_insert(0) += 1;
     }
 
@@ -248,7 +300,7 @@ pub fn shark_ai(
     // machine. Followers stay glued to the leader's formation via
     // pass 2 — both during Wander (loose ranks) and during Charge
     // (tighter V) — so charging never causes a teleport.
-    for (mut tf, mut shark) in &mut sharks {
+    for (_, mut tf, mut shark) in &mut sharks {
         if shark.lateral_idx != 0 { continue; }
         match shark.state {
             SharkState::Wander => {
@@ -390,7 +442,7 @@ pub fn shark_ai(
     }
     let mut leader_snap: std::collections::HashMap<usize, LeaderSnap> =
         std::collections::HashMap::new();
-    for (tf, shark) in &sharks {
+    for (_, tf, shark) in &sharks {
         if shark.lateral_idx != 0 { continue; }
         leader_snap.insert(
             shark.owner_slot,
@@ -412,7 +464,7 @@ pub fn shark_ai(
     // at the tip. State/direction is copied so contact damage,
     // homing, and the charge timer all run in lockstep with the
     // leader.
-    for (mut tf, mut shark) in &mut sharks {
+    for (_, mut tf, mut shark) in &mut sharks {
         if shark.lateral_idx == 0 { continue; }
         let Some(snap) = leader_snap.get(&shark.owner_slot).copied() else { continue; };
         let forward = match snap.state {
@@ -447,11 +499,11 @@ pub fn shark_ai(
         }
     }
 
-    // Pass 3: side-to-side wiggle on top of the base forward rotation.
-    // Each shark gets a unique phase offset derived from its owner
-    // slot + lateral index so a school doesn't oscillate in lockstep.
+    // Pass 3a: small body yaw around the heading. Each shark gets a
+    // unique phase offset derived from its owner slot + lateral index
+    // so a school doesn't oscillate in lockstep.
     let t = time.elapsed_secs();
-    for (mut tf, shark) in &mut sharks {
+    for (_, mut tf, shark) in &mut sharks {
         let forward = match shark.state {
             SharkState::Wander => shark.wander_dir,
             SharkState::Charge => shark.charge_dir,
@@ -460,8 +512,38 @@ pub fn shark_ai(
         .unwrap_or(Vec2::Y);
         let base_h = (-forward.x).atan2(forward.y);
         let phase = (shark.owner_slot as f32) * 1.7 + (shark.lateral_idx as f32) * 0.9;
-        let wig = (t * WIGGLE_FREQ + phase).sin() * WIGGLE_AMP_ROT;
-        tf.rotation = Quat::from_rotation_z(base_h + wig);
+        let wig = (t * WIGGLE_FREQ + phase).sin();
+        tf.rotation = Quat::from_rotation_z(base_h + wig * WIGGLE_AMP_BODY);
+    }
+
+    // Pass 3b: tail counter-wiggle. Each tail's mesh is authored with
+    // its apex at local origin, so its Transform position sits at the
+    // body junction and its rotation pivots around that junction. We
+    // want the tail's WORLD rotation to be in counter-phase with the
+    // body's at amplitude `WIGGLE_AMP_BODY + WIGGLE_AMP_TAIL_EXTRA`:
+    //
+    //   world_tail = body_world + tail_local
+    //              = (base_h + wig * body_amp) + tail_local
+    //   target world_tail = base_h - wig * (body_amp + tail_extra)
+    //
+    // Solving: tail_local = -wig * (2 * body_amp + tail_extra) ...
+    // but since we only care about counter-phase from the heading
+    // (not from the body), the simpler formulation
+    //   tail_local = -wig * (body_amp + tail_extra)
+    // gives the trailing edge a clear counter-sweep against the
+    // body's small yaw — visually reads as a fish flexing its
+    // spine, head + tail going opposite ways.
+    let mut shark_phase: std::collections::HashMap<Entity, f32> =
+        std::collections::HashMap::with_capacity(8);
+    for (e, _, shark) in &sharks {
+        let phase = (shark.owner_slot as f32) * 1.7 + (shark.lateral_idx as f32) * 0.9;
+        shark_phase.insert(e, phase);
+    }
+    let tail_amp = WIGGLE_AMP_BODY + WIGGLE_AMP_TAIL_EXTRA;
+    for (tail, mut tail_tf) in &mut tails {
+        let Some(phase) = shark_phase.get(&tail.shark) else { continue; };
+        let wig = (t * WIGGLE_FREQ + phase).sin();
+        tail_tf.rotation = Quat::from_rotation_z(-wig * tail_amp);
     }
 }
 

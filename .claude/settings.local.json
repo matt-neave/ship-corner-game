@@ -29,7 +29,8 @@
       "Bash(cp \"../snkrx/assets/sounds/Magical Impact 12.ogg\" \"assets/sounds/hit.ogg\")",
       "Bash(cp \"../snkrx/assets/sounds/Explosion Grenade_04.ogg\" \"assets/sounds/explosion.ogg\")",
       "Bash(cp \"../snkrx/assets/sounds/Player Takes Damage 2.ogg\" \"assets/sounds/player_hit.ogg\")",
-      "Bash(grep -E \"\\(turret/mod|turret\\\\\\\\\\\\\\\\mod\\)\")"
+      "Bash(grep -E \"\\(turret/mod|turret\\\\\\\\\\\\\\\\mod\\)\")",
+      "Bash(cargo test *)"
     ]
   }
 }

@@ -23,20 +23,48 @@ use crate::turret::{BarrelIndex, HeliPadDecal, TurretBarrel, TurretConfig, Turre
 
 // ---------- Setup ----------
 
-/// Spawn everything that belongs in the play world: borders, friendly trail,
-/// hull, dock + pier grid, 8 turrets, and the cached `EffectMeshes` /
-/// `PaletteMaterials` resources that downstream systems pull from.
+/// Marker on each of the four arena-border line entities so
+/// `despawn_player_world` can sweep them up alongside the friendly
+/// hull when the player returns to MainMenu.
+#[derive(Component)]
+pub struct PlayBorder;
+
+/// Build the cached `PaletteMaterials` + `EffectMeshes` resources that
+/// every play-world entity references. Runs once at Startup so the
+/// resources exist before any spawn site needs them.
+///
+/// The play-world ENTITIES (friendly hull, trail, arena border) are
+/// spawned on demand by `spawn_player_world` at `OnEnter(Playing)`,
+/// not here. Keeping the play world empty during MainMenu / HullSelect
+/// means those screens don't have to firefight a stale player ship +
+/// border rendering behind their own chrome.
 pub fn setup_world(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    cfg: Res<TurretConfig>,
     palette: Res<Palette>,
-    stats: Res<crate::stats::PlayerStats>,
 ) {
-    // Build palette-material handles once. Every entity in the play world
-    // references one of these — runtime palette swaps update them all.
     let pm = PaletteMaterials::build(&palette, &mut materials);
+    let em = build_effect_meshes(&mut meshes);
+    commands.insert_resource(pm);
+    commands.insert_resource(em);
+}
+
+/// Spawn the play-world entities the player needs in combat: arena
+/// border, friendly hull, 8 turrets + barrels + HeliPad decals, and
+/// the wake trail. Idempotent — subsequent `OnEnter(Playing)` ticks
+/// (after Pause / Map / Customize) see the Friendly already alive and
+/// short-circuit. Only fresh-start paths (MainMenu → HullSelect →
+/// Playing) hit the actual spawn code.
+pub fn spawn_player_world(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    pm: Res<PaletteMaterials>,
+    cfg: Res<TurretConfig>,
+    stats: Res<crate::stats::PlayerStats>,
+    existing: Query<Entity, With<Friendly>>,
+) {
+    if !existing.is_empty() { return; }
 
     // 1px play-area border drawn around the *arena* (z=6 so it always
     // frames the action). With `big_arena` the border tracks the
@@ -57,6 +85,7 @@ pub fn setup_world(
             MeshMaterial2d(pm.border.clone()),
             Transform::from_xyz(x, y, 6.0),
             RenderLayers::layer(PLAY_LAYER),
+            PlayBorder,
         ));
     }
 
@@ -186,12 +215,32 @@ pub fn setup_world(
         commands.entity(bar).insert(ChildOf(turret_id));
     }
 
-    // Cache effect meshes once so muzzle flashes / hit particles don't
-    // allocate. Bullet + enemy primitives are also cached here so every bullet
-    // / enemy can share the same mesh handle and benefit from Bevy's
-    // draw-call batching. Built locally so we can pass `&em` to the ally
-    // spawn below before handing the resource off to the ECS.
-    let em = EffectMeshes {
+}
+
+/// Sweep the friendly hull (+ children: turrets, barrels, decals),
+/// the wake trail, and the arena border on the way out of the play
+/// world. Runs at `OnEnter(MainMenu)` so the menu screen never has to
+/// fight a still-alive player ship rendering behind its chrome.
+///
+/// `Commands::despawn` is recursive in Bevy 0.15+, so despawning the
+/// `Friendly` root takes its descendants along — no per-child
+/// bookkeeping required.
+pub fn despawn_player_world(
+    mut commands: Commands,
+    ships: Query<Entity, With<Friendly>>,
+    trails: Query<Entity, With<Trail>>,
+    borders: Query<Entity, With<PlayBorder>>,
+) {
+    for e in &ships { commands.entity(e).despawn(); }
+    for e in &trails { commands.entity(e).despawn(); }
+    for e in &borders { commands.entity(e).despawn(); }
+}
+
+/// Build the shared `EffectMeshes` resource — one mesh handle per
+/// short-lived FX / per-bullet / per-enemy primitive so spawns
+/// reference the same handle and Bevy can batch their draw calls.
+fn build_effect_meshes(meshes: &mut Assets<Mesh>) -> EffectMeshes {
+    EffectMeshes {
         muzzle_flash:          meshes.add(Capsule2d::new(1.6, 4.0)),
         particle:              meshes.add(Capsule2d::new(0.7, 1.6)),
         bullet_friendly_outer: meshes.add(Capsule2d::new(2.0, 1.5)),
@@ -226,14 +275,7 @@ pub fn setup_world(
         // rather than being mistaken for bullet pellets.
         boarder_dot:           meshes.add(Circle::new(0.8)),
         beam:                  meshes.add(Rectangle::new(1.0, BEAM_LENGTH)),
-    };
-
-    // No allies seeded by default — the player spawns them on demand
-    // from the debug panel (`DebugButton::SpawnAlly`).
-
-    // Hand both off to the ECS so other systems can pick them up.
-    commands.insert_resource(pm);
-    commands.insert_resource(em);
+    }
 }
 
 // ---------- Movement ----------

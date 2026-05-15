@@ -106,6 +106,20 @@ pub const CUSTOMIZE_LAYER: usize = 5;
 /// as the in-game ship.
 pub const HULL_PREVIEW_LAYER: usize = 6;
 
+/// Layer for the chunky-pixel main-menu chrome — title backdrop,
+/// PLAY / SETTINGS buttons, settings sub-page panels. Mirrors the
+/// customize pipeline: a dedicated `MainMenuCamera` renders this
+/// layer to a low-res image, displayed nearest-neighbour upscaled
+/// on `UPSCALE_LAYER`. The menu's text labels still live on
+/// `UPSCALE_LAYER` directly so glyphs stay crisp.
+pub const MAIN_MENU_LAYER: usize = 7;
+
+/// Internal render-target resolution for the main menu. Same 320×200
+/// shape as the customize overlay so the chunky pixel size reads
+/// consistent across both screens at the default 1280×800 window.
+pub const MAIN_MENU_INTERNAL_W: u32 = 320;
+pub const MAIN_MENU_INTERNAL_H: u32 = 200;
+
 /// Internal render-target resolution for the hull-select ship preview.
 /// Sized so the in-game `HULL_LEN`×`HULL_WIDTH` capsule + the eight
 /// `TURRET_POSITIONS` slots all fit comfortably with a few spec pixels
