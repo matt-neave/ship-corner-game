@@ -59,11 +59,22 @@ pub fn setup_world(
 pub fn spawn_player_world(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
+    // Materials only consumed by the experimental sprite-stacked
+    // turret (gated on `stacked_standard_turret`) to allocate the
+    // black bore-dot material. Stays unused on the default build —
+    // accept the dead-code warning rather than cfg-gating the param
+    // signature (which makes the call sites diverge).
+    #[allow(unused_mut)]
+    mut materials: ResMut<Assets<ColorMaterial>>,
     pm: Res<PaletteMaterials>,
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
     existing: Query<Entity, With<Friendly>>,
 ) {
+    // Discard the unused-binding warning on the default (no-feature)
+    // build path. Cleaner than cfg-gating the parameter list.
+    #[cfg(not(feature = "stacked_standard_turret"))]
+    let _ = &mut materials;
     if !existing.is_empty() { return; }
 
     // 1px play-area border drawn around the *arena* (z=6 so it always
@@ -166,6 +177,56 @@ pub fn spawn_player_world(
         ));
         ec.insert(ChildOf(ship));
         let turret_id = ec.id();
+
+        // ---- Experimental: 3-layer sprite-stacked Standard turret ----
+        // Two identical-radius discs on top of the base (layer 0),
+        // each offset by exactly 1 internal pixel (1.0 world unit) along
+        // the turret's local +Y. The 1-px-per-slice rule is what makes
+        // sprite stacking read — sub-pixel offsets get snapped away by
+        // the chunky-pixel render target's nearest-neighbour sampling,
+        // and tapering radii would just look like a cone. Same
+        // silhouette + integer offset = horizontal slices of a 3D mesh.
+        //
+        // Plus a single black pixel at the centre of the top layer —
+        // sells the "hollow cylinder seen from above" illusion (the
+        // bore of the gun barrel). Without it the stack reads as a
+        // solid puck instead of a tube.
+        //
+        // Parented to the turret so the whole assembly rotates with the
+        // aim direction.
+        #[cfg(feature = "stacked_standard_turret")]
+        if matches!(slot.weapon, crate::weapon::WeaponType::Standard) {
+            // (local_y_offset, z_offset_from_base)
+            let layers: [(f32, f32); 2] = [
+                (1.0, 0.05),
+                (2.0, 0.10),
+            ];
+            for (y, dz) in layers {
+                let layer = commands.spawn((
+                    Mesh2d(base_mesh.clone()),
+                    MeshMaterial2d(turret_mat.clone()),
+                    Transform::from_xyz(0.0, y, dz),
+                    if visible { Visibility::Inherited } else { Visibility::Hidden },
+                    RenderLayers::layer(PLAY_LAYER),
+                )).id();
+                commands.entity(layer).insert(ChildOf(turret_id));
+            }
+
+            // Barrel-bore dot: 1×1 internal-pixel black square on top
+            // of layer 2 (z = 0.15 to sit above both stacked discs).
+            // Rectangle rather than Circle so the chunky-pixel sampler
+            // lands exactly one pixel regardless of camera offset.
+            let bore_mesh = meshes.add(Rectangle::new(1.0, 1.0));
+            let bore_mat = materials.add(Color::BLACK);
+            let bore = commands.spawn((
+                Mesh2d(bore_mesh),
+                MeshMaterial2d(bore_mat),
+                Transform::from_xyz(0.0, 2.0, 0.15),
+                if visible { Visibility::Inherited } else { Visibility::Hidden },
+                RenderLayers::layer(PLAY_LAYER),
+            )).id();
+            commands.entity(bore).insert(ChildOf(turret_id));
+        }
 
         // Spawn THREE barrel children, indexed port / middle / starboard.
         // Single-barrel mode shows just the middle; twin shows port + stbd

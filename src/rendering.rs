@@ -123,6 +123,291 @@ pub fn make_hash_image(light: Color, dark: Color) -> Image {
     make_hash_image_with_tile(light, dark, 192)
 }
 
+// ---------- Alternate background patterns ----------
+//
+// Each generator returns a tileable RGBA image at a fixed period.
+// The `BackgroundSetting` resource picks which one feeds the
+// `HashSprite`'s texture each frame via `update_hash_image`.
+
+fn rgba_bytes(c: Color) -> [u8; 4] {
+    let s: bevy::color::Srgba = c.into();
+    [
+        (s.red   * 255.0).round() as u8,
+        (s.green * 255.0).round() as u8,
+        (s.blue  * 255.0).round() as u8,
+        255u8,
+    ]
+}
+
+fn pattern_image<F: Fn(u32, u32) -> bool>(
+    light: Color, dark: Color, tile: u32, is_light: F,
+) -> Image {
+    let lb = rgba_bytes(light);
+    let db = rgba_bytes(dark);
+    let mut data = Vec::with_capacity((tile * tile * 4) as usize);
+    for y in 0..tile {
+        for x in 0..tile {
+            data.extend_from_slice(if is_light(x, y) { &lb } else { &db });
+        }
+    }
+    let mut img = Image::new(
+        Extent3d { width: tile, height: tile, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    img.sampler = ImageSampler::nearest();
+    img
+}
+
+/// Diagonal hash mirrored to the opposite slope. Same tile period as
+/// the default `make_hash_image`, just with the band running NE→SW
+/// instead of NW→SE.
+pub fn make_hash_reverse_image(light: Color, dark: Color) -> Image {
+    let tile = 192u32;
+    let half = tile / 2;
+    pattern_image(light, dark, tile, move |x, y| {
+        ((x + (tile - 1 - y)) % tile) < half
+    })
+}
+
+/// Vertical bars: alternating columns of `light` and `dark`,
+/// band width = `tile / 2`. 64-tile so the bars read narrower than
+/// the diagonal hash (which is 192).
+pub fn make_vertical_stripes_image(light: Color, dark: Color) -> Image {
+    let tile = 64u32;
+    let half = tile / 2;
+    pattern_image(light, dark, tile, move |x, _| (x % tile) < half)
+}
+
+/// Horizontal bands: alternating rows of `light` and `dark`. Same
+/// 64-tile period as the vertical version.
+pub fn make_horizontal_stripes_image(light: Color, dark: Color) -> Image {
+    let tile = 64u32;
+    let half = tile / 2;
+    pattern_image(light, dark, tile, move |_, y| (y % tile) < half)
+}
+
+/// Crosshatch / chess-board pattern. Small 32-tile period so the
+/// checker reads as a busier weave than the wide diagonal hash.
+pub fn make_checker_image(light: Color, dark: Color) -> Image {
+    let tile = 32u32;
+    let half = tile / 2;
+    pattern_image(light, dark, tile, move |x, y| {
+        let in_light_col = (x % tile) < half;
+        let in_light_row = (y % tile) < half;
+        in_light_col == in_light_row
+    })
+}
+
+/// Solid block of `light` — no pattern at all. Generated at the
+/// minimum 2-tile period to keep memory cost trivial.
+pub fn make_plain_image(light: Color) -> Image {
+    let tile = 2u32;
+    pattern_image(light, light, tile, |_, _| true)
+}
+
+/// Fine 45-degree hash — same diagonal direction as the default, just
+/// repeated three times within the original 192 period (effective 64).
+pub fn make_hash_fine_image(light: Color, dark: Color) -> Image {
+    let tile = 64u32;
+    let half = tile / 2;
+    pattern_image(light, dark, tile, move |x, y| ((x + y) % tile) < half)
+}
+
+/// Large 96-tile checker — chunkier blocks than the default checker.
+pub fn make_large_checker_image(light: Color, dark: Color) -> Image {
+    let tile = 96u32;
+    let half = tile / 2;
+    pattern_image(light, dark, tile, move |x, y| {
+        let in_light_col = (x % tile) < half;
+        let in_light_row = (y % tile) < half;
+        in_light_col == in_light_row
+    })
+}
+
+/// Thin crosshatch grid — narrow lines of `dark` on a `light` field,
+/// 32-tile period. Lines are 2 px wide so the grid reads at distance
+/// without dominating the background.
+pub fn make_grid_image(light: Color, dark: Color) -> Image {
+    let tile = 32u32;
+    pattern_image(light, dark, tile, move |x, y| {
+        let on_line = (x % tile) < 2 || (y % tile) < 2;
+        !on_line
+    })
+}
+
+// ---------- Colour-scheme variants ----------
+//
+// These ignore the palette and hard-code a colour pair so the player
+// can pick a backdrop with a completely different mood than the default
+// blue ocean theme.
+
+/// Small filled dots on a darker background. `radius` is the dot radius
+/// in pixels; the dot sits centred in each `tile × tile` cell.
+fn make_dots_image(bg: Color, dot: Color, tile: u32, radius: f32) -> Image {
+    let centre = tile as f32 / 2.0 - 0.5;
+    let r2 = radius * radius;
+    pattern_image(dot, bg, tile, move |x, y| {
+        let dx = x as f32 - centre;
+        let dy = y as f32 - centre;
+        dx * dx + dy * dy <= r2
+    })
+}
+
+/// Sinusoidal wave bands. `period` is the number of rows in one full
+/// sine cycle; the wave amplitude scales the threshold band so two
+/// alternating colours read as horizontal "swells".
+fn make_waves_image(light: Color, dark: Color, tile: u32, period: f32) -> Image {
+    pattern_image(light, dark, tile, move |x, y| {
+        let phase = (x as f32 * std::f32::consts::TAU / period).sin();
+        let threshold = (tile as f32 / 2.0) + phase * (tile as f32 / 6.0);
+        (y as f32) < threshold
+    })
+}
+
+/// Brick pattern — rows of bricks with mortar lines between them, and
+/// alternating rows offset by half a brick. Brick body is `brick`, mortar
+/// is `mortar`. `bw`, `bh` are brick width/height in pixels.
+fn make_bricks_image(brick: Color, mortar: Color, bw: u32, bh: u32) -> Image {
+    let tile_w = bw * 2;
+    let tile_h = bh * 2;
+    let tile = tile_w.max(tile_h);
+    pattern_image(brick, mortar, tile, move |x, y| {
+        let row = y / bh;
+        let offset = if row % 2 == 0 { 0 } else { bw / 2 };
+        let xx = (x + offset) % bw;
+        let yy = y % bh;
+        // Mortar = bottom row and rightmost column of each brick cell.
+        xx != bw - 1 && yy != bh - 1
+    })
+}
+
+/// Concentric rings centred in a `tile × tile` cell. Ring frequency =
+/// pixels per ring. Colours alternate based on the floor of `distance /
+/// frequency`.
+fn make_radial_image(a: Color, b: Color, tile: u32, freq: f32) -> Image {
+    let centre = tile as f32 / 2.0 - 0.5;
+    pattern_image(a, b, tile, move |x, y| {
+        let dx = x as f32 - centre;
+        let dy = y as f32 - centre;
+        let d = (dx * dx + dy * dy).sqrt();
+        ((d / freq) as i32 % 2) == 0
+    })
+}
+
+/// Deterministic random-look noise via a small integer hash. Same input
+/// `(x, y)` always returns the same byte, so the texture is stable
+/// across regenerations.
+fn make_noise_image(a: Color, b: Color, tile: u32, threshold: u8) -> Image {
+    pattern_image(a, b, tile, move |x, y| {
+        // Cheap xorshift-style hash on two 32-bit inputs. Mixes the bits
+        // well enough that the output looks like noise without needing
+        // a real PRNG.
+        let mut h = x.wrapping_mul(73856093) ^ y.wrapping_mul(19349663);
+        h ^= h >> 13;
+        h = h.wrapping_mul(1274126177);
+        h ^= h >> 16;
+        (h as u8) < threshold
+    })
+}
+
+/// Sparse star field — very low-density bright pixels on a dark field,
+/// generated by the same noise hash with an extreme threshold.
+fn make_stars_image(bg: Color, star: Color, tile: u32, density_threshold: u8) -> Image {
+    pattern_image(star, bg, tile, move |x, y| {
+        // Use a distinct salt so the star pattern doesn't line up with
+        // `make_noise_image`'s output.
+        let mut h = x.wrapping_mul(2654435761) ^ y.wrapping_mul(40503);
+        h ^= h >> 11;
+        h = h.wrapping_mul(2246822519);
+        h ^= h >> 17;
+        (h as u8) < density_threshold
+    })
+}
+
+/// Dispatch: build the right background image for a `BackgroundKind`.
+/// Themed variants use the live ocean / contrast colours (`light` /
+/// `dark`); every other variant ignores those params and hard-codes its
+/// own colour pair so the gallery reads as visually distinct.
+pub fn make_background_image(
+    kind: crate::modes::BackgroundKind,
+    light: Color,
+    dark: Color,
+) -> Image {
+    use crate::modes::BackgroundKind as K;
+    match kind {
+        // Themed (palette-driven)
+        K::HashDiagonal        => make_hash_image(light, dark),
+        K::HashDiagonalReverse => make_hash_reverse_image(light, dark),
+        K::HashFine            => make_hash_fine_image(light, dark),
+        K::VerticalStripes     => make_vertical_stripes_image(light, dark),
+        K::HorizontalStripes   => make_horizontal_stripes_image(light, dark),
+        K::Checker             => make_checker_image(light, dark),
+        K::LargeChecker        => make_large_checker_image(light, dark),
+        K::GridDefault         => make_grid_image(light, dark),
+        K::Plain               => make_plain_image(light),
+
+        // Sand / warm
+        K::DotsWarm            => make_dots_image(hex("#7a4a2b"), hex("#f0c891"), 16, 3.0),
+        K::WavesSand           => make_waves_image(hex("#e8b377"), hex("#a96a3a"), 96, 32.0),
+        K::BricksRed           => make_bricks_image(hex("#a23c2a"), hex("#2c1410"), 24, 12),
+        K::HashSunset          => make_hash_image_with_tile(hex("#ff7044"), hex("#5a1820"), 96),
+        // Amber / copper — embers + warm-brown set.
+        K::HashAmber           => make_hash_image_with_tile(hex("#d99834"), hex("#3a1a0d"), 128),
+        K::StarsAmber          => make_stars_image(hex("#1a0d05"), hex("#f0c060"), 64, 5),
+        K::WavesCopper         => make_waves_image(hex("#c46a3a"), hex("#5c2a18"), 96, 40.0),
+
+        // Forest / green — six distinct palettes:
+        // lime, two-tone forest, pine, moss, jungle, leaf-star.
+        K::GridGreen           => make_grid_image(hex("#1a3a1f"), hex("#6abf5a")),
+        K::CheckerForest       => make_large_checker_image(hex("#2f5a32"), hex("#1a3320")),
+        // DotsPine — bright leaf dots on a near-black pine ground.
+        K::DotsPine            => make_dots_image(hex("#0d2818"), hex("#7fd05a"), 16, 3.0),
+        // WavesMoss — yellow-green moss swells over deep olive.
+        K::WavesMoss           => make_waves_image(hex("#a8c45a"), hex("#3a5028"), 96, 36.0),
+        // HashJungle — saturated jungle green over shadow.
+        K::HashJungle          => make_hash_image_with_tile(hex("#3d9c44"), hex("#0e2410"), 128),
+        // StarsLeaf — sparse leaf-green specks on near-black forest.
+        K::StarsLeaf           => make_stars_image(hex("#091a0c"), hex("#a5e88a"), 64, 4),
+
+        // Purple / neon — extended with violet hash, twilight stars,
+        // synthwave magenta grid.
+        K::DotsNeon            => make_dots_image(hex("#1a0a2e"), hex("#ff2a9d"), 14, 2.5),
+        K::WavesPurple         => make_waves_image(hex("#6a3aa8"), hex("#2a1248"), 96, 48.0),
+        K::HashPurple          => make_hash_image_with_tile(hex("#a66ad6"), hex("#2a1245"), 128),
+        K::StarsViolet         => make_stars_image(hex("#0e0518"), hex("#d490ff"), 64, 4),
+        K::GridMagenta         => make_grid_image(hex("#1a0612"), hex("#ff5cb0")),
+
+        // Teal / cool — extended with hash, waves, bioluminescent dots.
+        K::RadialTeal          => make_radial_image(hex("#0a3a48"), hex("#2ab0b8"), 128, 8.0),
+        K::MicroCheckerTeal    => {
+            let tile = 8u32;
+            let half = tile / 2;
+            pattern_image(hex("#36c1b8"), hex("#0a3038"), tile, move |x, y| {
+                let in_light_col = (x % tile) < half;
+                let in_light_row = (y % tile) < half;
+                in_light_col == in_light_row
+            })
+        }
+        K::HashTeal            => make_hash_image_with_tile(hex("#3ad0c2"), hex("#0a3038"), 128),
+        K::WavesTeal           => make_waves_image(hex("#5ec8d4"), hex("#0c3a48"), 96, 36.0),
+        K::DotsTeal            => make_dots_image(hex("#0a2832"), hex("#76e8d8"), 14, 2.5),
+
+        // Crimson / blood — saturated red on near-black blood.
+        K::HashCrimson         => make_hash_image_with_tile(hex("#d44456"), hex("#2a0a14"), 128),
+        K::DotsCrimson         => make_dots_image(hex("#1a0408"), hex("#ff7090"), 14, 2.5),
+
+        // Gold / brass — single bright variant.
+        K::HashGold            => make_hash_image_with_tile(hex("#ffd070"), hex("#3d2810"), 128),
+
+        // Monochrome / noir
+        K::StarsNoir           => make_stars_image(hex("#06070a"), hex("#e8ecf0"), 64, 4),
+        K::NoiseGrey           => make_noise_image(hex("#2a2a2a"), hex("#4a4a4a"), 64, 128),
+    }
+}
+
 // ---------- Setup ----------
 
 pub fn setup_render(
@@ -287,20 +572,23 @@ pub fn setup_render(
 pub fn update_hash_image(
     palette: Res<Palette>,
     night: Res<NightMode>,
+    mut bg: ResMut<crate::modes::BackgroundSetting>,
     hash: Option<Res<HashImage>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    if !palette.is_changed() && !night.is_changed() { return; }
+    let kind_changed = bg.last_applied != Some(bg.kind);
+    if !palette.is_changed() && !night.is_changed() && !kind_changed { return; }
     let Some(hash) = hash else { return; };
     let dark = if night.active {
         hex("#0c0e1a")
     } else {
         darken(palette.ocean, 0.7)
     };
-    let new_img = make_hash_image(palette.ocean, dark);
+    let new_img = make_background_image(bg.kind, palette.ocean, dark);
     if let Some(img) = images.get_mut(&hash.0) {
         *img = new_img;
     }
+    bg.last_applied = Some(bg.kind);
 }
 
 /// Per-frame: scale every bevy_ui `Val::Px` value to the live window

@@ -24,8 +24,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::modes::{
-    CrtMode, NightMode, ResolutionKind, ResolutionSetting, VsyncMode, WindowModeKind,
-    WindowModeSetting,
+    BackgroundKind, BackgroundSetting, CrtMode, NightMode, ResolutionKind, ResolutionSetting,
+    VsyncMode, WindowModeKind, WindowModeSetting,
 };
 use crate::sfx::SfxVolume;
 
@@ -45,6 +45,7 @@ pub struct Settings {
     pub window_mode: WindowModeKind,
     pub resolution: ResolutionKind,
     pub sfx_volume: f32,
+    pub background: BackgroundKind,
 }
 
 impl Settings {
@@ -55,6 +56,7 @@ impl Settings {
         win_mode: &WindowModeSetting,
         res: &ResolutionSetting,
         sfx_volume: &SfxVolume,
+        background: &BackgroundSetting,
     ) -> Self {
         Self {
             night: night.active,
@@ -63,6 +65,7 @@ impl Settings {
             window_mode: win_mode.mode,
             resolution: res.res,
             sfx_volume: sfx_volume.0,
+            background: background.kind,
         }
     }
 }
@@ -113,6 +116,9 @@ fn parse(blob: &str) -> Settings {
             "sfx_volume" => if let Ok(f) = val.parse::<f32>() {
                 s.sfx_volume = f.clamp(0.0, 1.0);
             },
+            "background"  => if let Some(b) = BackgroundKind::parse(val) {
+                s.background = b;
+            },
             _ => {}
         }
     }
@@ -121,13 +127,14 @@ fn parse(blob: &str) -> Settings {
 
 fn serialize(s: &Settings) -> String {
     format!(
-        "night={}\ncrt={}\nvsync={}\nwindow_mode={}\nresolution={}\nsfx_volume={}\n",
+        "night={}\ncrt={}\nvsync={}\nwindow_mode={}\nresolution={}\nsfx_volume={}\nbackground={}\n",
         s.night,
         s.crt,
         s.vsync,
         s.window_mode.serialize(),
         s.resolution.serialize(),
         s.sfx_volume,
+        s.background.serialize(),
     )
 }
 
@@ -166,6 +173,7 @@ pub fn apply_loaded_settings(
     mut win_mode: ResMut<WindowModeSetting>,
     mut res: ResMut<ResolutionSetting>,
     mut sfx_vol: ResMut<SfxVolume>,
+    mut bg: ResMut<BackgroundSetting>,
     mut commands: Commands,
     mut done: Local<bool>,
 ) {
@@ -181,6 +189,7 @@ pub fn apply_loaded_settings(
     win_mode.mode = s.window_mode;
     res.res = s.resolution;
     sfx_vol.0 = s.sfx_volume.clamp(0.0, 1.0);
+    bg.kind = s.background;
     commands.insert_resource(s);
 }
 
@@ -194,9 +203,10 @@ pub fn persist_settings_on_change(
     win_mode: Res<WindowModeSetting>,
     res: Res<ResolutionSetting>,
     sfx_vol: Res<SfxVolume>,
+    bg: Res<BackgroundSetting>,
     mut last: Local<Option<Settings>>,
 ) {
-    let now = Settings::from_modes(&night, &crt, &vsync, &win_mode, &res, &sfx_vol);
+    let now = Settings::from_modes(&night, &crt, &vsync, &win_mode, &res, &sfx_vol, &bg);
     if last.as_ref() == Some(&now) {
         return;
     }

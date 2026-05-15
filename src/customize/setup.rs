@@ -258,6 +258,7 @@ pub fn setup_customize_ui(
     mut commands: Commands,
     scrap: Res<Scrap>,
     palette: Res<Palette>,
+    pixel_font: Res<crate::fonts::PixelFont>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -492,7 +493,7 @@ pub fn setup_customize_ui(
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
 
-    super::tooltip::spawn_customize_tooltip(&mut commands);
+    super::tooltip::spawn_customize_tooltip(&mut commands, &pixel_font);
 }
 
 // ---------- Ancillary tags for misc text ----------

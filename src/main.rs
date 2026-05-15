@@ -33,6 +33,7 @@ mod rendering;
 mod main_menu;
 mod octopus;
 mod onboarding;
+mod fonts;
 mod settings;
 mod sfx;
 mod rune;
@@ -581,6 +582,7 @@ fn main() {
         .insert_resource(VsyncMode::default())
         .insert_resource(modes::WindowModeSetting::default())
         .insert_resource(modes::ResolutionSetting::default())
+        .insert_resource(modes::BackgroundSetting::default())
         .insert_resource(GameMode::default())
         .insert_resource(CameraFollow::default())
         .insert_resource(ViewMode::default())
@@ -594,6 +596,7 @@ fn main() {
         .add_event::<TriggerMapPhase>()
         .add_event::<rune::KillEvent>()
         .insert_resource(AllyPositionsCache::default())
+        .add_systems(Startup, fonts::setup_pixel_font)
         .add_systems(Startup, (
             setup_render, setup_world, setup_ui, setup_map,
             // After setup_map so 5★ polygons exist for reject-sampling.

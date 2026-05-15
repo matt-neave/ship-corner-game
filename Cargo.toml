@@ -79,7 +79,32 @@ getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 
 [profile.dev]
-opt-level = 1
+# Fast-iteration settings for Bevy + Windows/MSVC. The biggest single
+# win is `cargo run --features dev` (Bevy dynamic_linking). After
+# that, these profile knobs trim 20-30% more off incremental builds:
+#
+# - `opt-level = 0`: zero LLVM optimisation passes on our crate.
+#   Deps stay at opt-level=3 via the `package."*"` override below
+#   so the game still runs fast; only ship-game's own code is
+#   unoptimised in dev (irrelevant for gameplay perf — our code is
+#   <1% of total runtime cost).
+# - `debug = "line-tables-only"`: keeps line numbers in panic
+#   backtraces but drops the heavy DWARF type info that bloats the
+#   PDB and slows the linker. The MSVC linker spends a lot of its
+#   time merging debug sections — this is the cheapest way to shrink
+#   the work.
+# - `codegen-units = 256`: rustc splits the crate into more
+#   parallel translation units. More cores busy at once = lower
+#   wall-time on any modern CPU. Hurts the final binary's runtime
+#   perf slightly (less inlining across units) but again irrelevant
+#   in dev. Default for dev is 256 in newer rustc — explicit here
+#   so it doesn't regress if defaults change.
+# - `incremental = true`: cargo's default, just pinned so a global
+#   env override can't quietly disable it.
+opt-level = 0
+debug = "line-tables-only"
+codegen-units = 256
+incremental = true
 
 [profile.dev.package."*"]
 opt-level = 3
@@ -106,6 +131,14 @@ wide_play = []
 # matches the viewport (no follow needed). On → ~1.44× the play
 # space per stage. Try `cargo run --features big_arena`.
 big_arena = []
+# Experimental: render the Standard-weapon turret as a 3-layer
+# sprite-stacked silhouette (base disc + 2 progressively-smaller
+# overlay discs offset along the turret's local +Y). The stack
+# leans with the aim direction, reading as a faux-3D cone seen
+# from a low angle. Build with `cargo run --features stacked_standard_turret`
+# to preview. Off by default — the layers are extra entities per
+# turret slot and the visual change is intentionally noticeable.
+stacked_standard_turret = []
 # Demo-release build. Strips developer-facing debug tools out of
 # the binary: the bottom-right map debug panel (CLAIM / PHASE /
 # SPAWN ALLY / SPAWN BOSS / SPAWN ENEMY / OPEN CUSTOMIZE / ADD

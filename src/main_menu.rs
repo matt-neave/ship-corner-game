@@ -63,31 +63,52 @@ impl Plugin for MainMenuPlugin {
                 Startup,
                 (setup_main_menu_render, setup_main_menu_chrome).chain(),
             )
+            // First-boot menu fleet spawn. Has to be in **PostStartup**
+            // (not Startup with `.after(setup_world)`) because `setup_world`
+            // calls `commands.insert_resource(pm)` — a QUEUED command that
+            // doesn't materialize in the World until the next
+            // `apply_deferred` boundary. `.after()` only adds ordering, not
+            // a flush; so a Startup-ordered spawn would see
+            // `Option<Res<PaletteMaterials>>` as `None` and silently bail
+            // (which is exactly the bug that made the pirates only appear
+            // after a HullSelect→MainMenu round-trip — by then, Startup's
+            // commands had long since flushed).
+            //
+            // PostStartup runs once, after the end-of-Startup apply_deferred,
+            // so every Startup-inserted Resource is visible. The
+            // idempotency check in `spawn_menu_fleet` makes the
+            // `OnEnter(MainMenu)` registration a no-op on first boot
+            // (already spawned here) and the load-bearing path on
+            // re-entries (the fleet got despawned on `OnExit(MainMenu)`).
+            .add_systems(PostStartup, spawn_menu_fleet)
             .add_systems(
                 OnEnter(AppState::MainMenu),
                 (
-                    // Arena wipe MUST run before the fleet spawn or it
-                    // would catch the freshly-spawned hulls on the way
-                    // out. Player ship + chrome cleanup live in their
-                    // own modules (ship::despawn_player_world,
-                    // wired in main.rs) so this stays focused.
+                    // `reset_run_for_restart` despawns every `Ally`-
+                    // tagged entity (it's wiping the dead run's
+                    // recruited fleet) — including the menu pirates
+                    // we're about to spawn. Chaining it FIRST and the
+                    // spawn LAST is what guarantees the fleet survives
+                    // on initial boot. Without the chain, the two
+                    // systems race in parallel and the spawn loses
+                    // about half the time. (`clear_arena_on_main_menu`
+                    // also despawns Allies and is in the same chain
+                    // for the same reason.)
                     (
+                        crate::game_over::reset_run_for_restart,
                         clear_arena_on_main_menu,
                         spawn_menu_fleet,
                     ).chain(),
                     reset_xp_on_main_menu,
-                    crate::game_over::reset_run_for_restart,
                     // One-shot hide for the in-combat HUD chrome.
-                    // No per-frame enforcement needed now that
-                    // `update_wave_ui` is state-gated to skip
-                    // MainMenu — nothing will un-hide the chrome
-                    // until we exit.
+                    // No per-frame enforcement needed now that the
+                    // HUD writers are state-gated to skip MainMenu.
                     hide_gameplay_chrome_for_menu,
                     // PlayCamera gates on `ViewMode::Combat`. Boot
                     // default IS Combat, but returning from Map
-                    // would leave ViewMode::Map and freeze the menu
-                    // fleet's render. One-shot is enough — nothing
-                    // else writes ViewMode during MainMenu.
+                    // would leave `ViewMode::Map` and freeze the menu
+                    // fleet's render. One-shot — nothing else writes
+                    // ViewMode during MainMenu.
                     set_combat_view_for_menu,
                 ),
             )
@@ -259,7 +280,8 @@ pub struct MenuWaveChar { pub idx: u8 }
 pub struct MenuLabel(pub MenuButtonItem);
 
 /// Everything you can click in the menu. Settings flips boolean
-/// modes; WindowMode / Resolution cycle through their presets.
+/// modes; WindowMode / Resolution / Background cycle through their
+/// presets.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MenuButtonItem {
     Play,
@@ -270,6 +292,7 @@ pub enum MenuButtonItem {
     WindowMode,
     Resolution,
     SfxVolume,
+    Background,
     Back,
 }
 
@@ -277,26 +300,52 @@ impl MenuButtonItem {
     fn is_root(self) -> bool { matches!(self, Self::Play | Self::Settings) }
 }
 
-/// Marker on each menu-fleet hull sailing in the play world. Owned
-/// per-ship drift + firing state; the chassis itself is the
-/// in-game-identical `spawn_ally` / `spawn_boss` output. `faction`
-/// drives the bullet visual so the friendly pirate's rounds read
-/// yellow and the enemy boss's read red — same colour grammar as
-/// in-game combat.
+/// Marker on each menu-fleet hull sailing in the play world. Same
+/// chassis output as `spawn_ally` / `spawn_boss`; the menu owns
+/// only the per-ship orbital AI + firing cooldown.
+///
+/// Movement model: each ship orbits the OTHER ship at a fixed engagement
+/// range. Orbit direction is fixed per ship (+1 = CCW, −1 = CW) and
+/// the two ships pick opposing directions so they pass each other
+/// instead of locked in lockstep. Velocity = perpendicular tangent
+/// (orbit) + radial correction (pull in when too far, push out when
+/// too close). The hull rotates each frame to face its current
+/// velocity, just like a real ship maneuvering.
+///
+/// `faction` drives the bullet visual so the friendly pirate's rounds
+/// read yellow and the enemy boss's read red — same colour grammar
+/// as in-combat fire.
 #[derive(Component)]
 pub struct MenuShip {
-    pub drift_speed: f32,
-    pub base_y: f32,
-    pub bob_phase: f32,
-    pub bob_amp: f32,
-    pub bob_rate: f32,
-    pub band: MenuBand,
     pub faction: MenuFaction,
     pub next_fire_at: f32,
+    /// +1.0 for counter-clockwise orbit, −1.0 for clockwise. Both
+    /// ships share the same value so they actually orbit a common
+    /// midpoint instead of drifting parallel.
+    pub orbit_dir: f32,
+    /// Current AI behavior. The state machine cycles Orbit → (Charge
+    /// xor Retreat) → Orbit → ... so the engagement reads as ships
+    /// maneuvering rather than rails-riding a circle.
+    pub phase: MenuShipPhase,
+    /// Anim-clock time at which the current phase expires.
+    pub phase_end_at: f32,
+    /// Last frame's world position. Used to estimate this frame's
+    /// velocity for lead targeting in the fire pass — bullets aim at
+    /// the predicted future target position so they actually connect
+    /// instead of phasing past a moving hull.
+    pub last_pos: Vec2,
 }
 
+/// Behavior state machine for the menu fleet. Each ship cycles
+/// between holding the engagement range (Orbit) and short bursts of
+/// closing (Charge) or peeling away (Retreat). The bursts give the
+/// fight visible variance without a full combat sim.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MenuBand { Upper, Lower }
+pub enum MenuShipPhase {
+    Orbit,
+    Charge,
+    Retreat,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MenuFaction { Friendly, Enemy }
@@ -336,8 +385,8 @@ const SETTINGS_BUTTON_H: f32 =  14.0;
 const SETTINGS_ROW_GAP: f32  =   3.0;
 
 const TITLE_FONT: f32   = 28.0;
-const BUTTON_FONT: f32  = 14.0;
-const SETTINGS_FONT: f32 = 10.0;
+const BUTTON_FONT: f32  = 20.0;
+const SETTINGS_FONT: f32 = 14.0;
 
 // Corner radius for the chunky button containers. Title is plain
 // text now so it has no radius.
@@ -353,7 +402,7 @@ const TITLE_STROKE_OFFSET: f32 = 0.5;
 /// Tuned for `TITLE_FONT = 28.0` with the default Bevy font — at
 /// smaller values neighbouring letters overlap, at larger ones the
 /// title reads as widely-spaced characters instead of a word.
-const TITLE_CHAR_SPACING: f32 = 10.5;
+const TITLE_CHAR_SPACING: f32 = 5.0;
 
 /// Peak vertical bob (spec units) of each glyph in the wave. Half
 /// the stroke thickness so the wave reads as a gentle ripple, not a
@@ -367,13 +416,52 @@ const TITLE_WAVE_RATE: f32 = 4.0;
 /// chaotic look of a too-large phase step.
 const TITLE_WAVE_PHASE_STEP: f32 = 0.55;
 
-// Menu-fleet positioning in world units (these are PLAY_LAYER coords,
-// not menu spec). One friendly pirate up top, one enemy boss pirate
-// down low — the AI tick drifts them and fires across the middle.
+// Menu-fleet spawn positions (PLAY_LAYER world coords). One friendly
+// pirate up top, one enemy boss pirate down low. After spawn, the
+// orbital AI in `tick_menu_ships` takes over and the two converge to
+// circle each other around the play-area centre.
 const MENU_BAND_UPPER_Y: f32 =  55.0;
 const MENU_BAND_LOWER_Y: f32 = -55.0;
-const MENU_WRAP_MIN_X: f32 = -120.0;
-const MENU_WRAP_MAX_X: f32 =  120.0;
+
+/// Distance (world units) each ship tries to hold from its target.
+/// Around the play-area's 200×200 box this puts the orbit radius at
+/// ~35u centred on the midpoint between the two hulls — well inside
+/// the visible play area.
+const MENU_ENGAGEMENT_RANGE: f32 = 70.0;
+/// World units/sec each ship sweeps along its orbital tangent.
+const MENU_ORBIT_SPEED: f32 = 22.0;
+/// Forward speed during a Charge phase — fast closing run.
+const MENU_CHARGE_SPEED: f32 = 60.0;
+/// Backward speed during a Retreat phase — peel-out from target.
+const MENU_RETREAT_SPEED: f32 = 50.0;
+/// Duration range (seconds) for an Orbit phase before flipping to a
+/// burst (Charge or Retreat). Slow base — the orbit is the calm
+/// middle ground.
+const MENU_ORBIT_DURATION_MIN: f32 = 3.0;
+const MENU_ORBIT_DURATION_MAX: f32 = 5.0;
+/// Duration range (seconds) for a burst phase. Short bursts so the
+/// engagement keeps moving without either hull running away.
+const MENU_BURST_DURATION_MIN: f32 = 1.2;
+const MENU_BURST_DURATION_MAX: f32 = 1.8;
+/// Strength of the radial correction that holds the engagement
+/// range. A pure tangent (0.0) lets the orbit drift; a stiff value
+/// (>1.0) snaps it taut. 0.4 lands in the middle — visible breathing
+/// but never spiraling away.
+const MENU_RADIAL_PULL: f32 = 0.4;
+
+/// Distance from world origin past which a ship gets pulled back
+/// toward the centre. Inside this radius the orbit runs free; past
+/// it, the leash kicks in proportional to overshoot. Sized so the
+/// engagement (orbit radius ≈ 35u centred on origin) stays well
+/// inside the play area's ±100u bounds with breathing room.
+const MENU_LEASH_RADIUS: f32 = 70.0;
+/// Strength of the centre-pull leash. The pull is `over * STRENGTH`
+/// per second, so a hull 30u past the leash gets pulled inward at
+/// 18 u/s — enough to dominate the tangential orbit speed (30 u/s)
+/// and bend the orbit back on-screen without snapping rigid.
+const MENU_LEASH_STRENGTH: f32 = 0.6;
+
+/// Speed of cosmetic cannonballs lobbed between the two pirates.
 const MENU_BULLET_SPEED: f32 = 90.0;
 
 // ---------- Colours ----------
@@ -538,11 +626,13 @@ pub fn setup_main_menu_chrome(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    thaleah: Res<crate::fonts::ThaleahFont>,
 ) {
     // ---- Title (no backdrop — per-letter wave with stroke) ----
     // Each glyph is its own Text2d entity tagged with a MenuWaveChar
     // index, so `sync_menu_text` can stagger a sin-bob across them
     // and we get a clean horizontal wave rippling through GUNBOAT-8.
+    // Uses Thaleah Fat for the display-weight title silhouette.
     spawn_wavy_title(
         &mut commands,
         Vec2::new(0.0, TITLE_Y),
@@ -551,6 +641,7 @@ pub fn setup_main_menu_chrome(
         Color::srgb(0.04, 0.05, 0.07),
         TITLE_FONT,
         TITLE_CHAR_SPACING,
+        &thaleah,
     );
 
     // ---- PLAY / SETTINGS buttons (root view) ----
@@ -575,6 +666,7 @@ pub fn setup_main_menu_chrome(
         MenuButtonItem::WindowMode,
         MenuButtonItem::Resolution,
         MenuButtonItem::SfxVolume,
+        MenuButtonItem::Background,
         MenuButtonItem::Back,
     ];
     let total_h = settings_items.len() as f32 * (SETTINGS_BUTTON_H + SETTINGS_ROW_GAP)
@@ -691,6 +783,7 @@ fn spawn_wavy_title(
     stroke_color: Color,
     font_size: f32,
     char_spacing: f32,
+    thaleah: &crate::fonts::ThaleahFont,
 ) {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len() as f32;
@@ -713,11 +806,7 @@ fn spawn_wavy_title(
         ] {
             commands.spawn((
                 Text2d::new(glyph.clone()),
-                TextFont {
-                    font_size,
-                    font_smoothing: FontSmoothing::None,
-                    ..default()
-                },
+                crate::fonts::thaleah_text_font(thaleah, font_size),
                 TextColor(stroke_color),
                 Transform::from_xyz(0.0, 0.0, 99.0),
                 Visibility::Hidden,
@@ -732,11 +821,7 @@ fn spawn_wavy_title(
         // Main glyph — pulses + waves.
         commands.spawn((
             Text2d::new(glyph),
-            TextFont {
-                font_size,
-                font_smoothing: FontSmoothing::None,
-                ..default()
-            },
+            crate::fonts::thaleah_text_font(thaleah, font_size),
             TextColor(color),
             Transform::from_xyz(0.0, 0.0, 100.0),
             Visibility::Hidden,
@@ -904,6 +989,7 @@ pub fn update_menu_label_text(
     win_mode: Res<crate::modes::WindowModeSetting>,
     res: Res<crate::modes::ResolutionSetting>,
     sfx_vol: Res<crate::sfx::SfxVolume>,
+    bg: Res<crate::modes::BackgroundSetting>,
     mut q: Query<(&MenuLabel, &mut Text2d)>,
 ) {
     for (label, mut text) in &mut q {
@@ -916,6 +1002,7 @@ pub fn update_menu_label_text(
             MenuButtonItem::WindowMode => format!("WINDOW: {}", win_mode.mode.label()),
             MenuButtonItem::Resolution => format!("RES: {}",    res.res.label()),
             MenuButtonItem::SfxVolume  => format!("SFX: {}",    sfx_vol.label()),
+            MenuButtonItem::Background => format!("BG: {}",     bg.kind.label()),
             MenuButtonItem::Back       => "BACK".to_string(),
         };
         if text.0 != s { text.0 = s; }
@@ -962,6 +1049,7 @@ pub fn handle_menu_click(
     mut win_mode: ResMut<crate::modes::WindowModeSetting>,
     mut res: ResMut<crate::modes::ResolutionSetting>,
     mut sfx_vol: ResMut<crate::sfx::SfxVolume>,
+    mut bg: ResMut<crate::modes::BackgroundSetting>,
     buttons: Query<(&Transform, &HitArea, &MenuButton)>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) { return; }
@@ -985,6 +1073,7 @@ pub fn handle_menu_click(
             MenuButtonItem::WindowMode => win_mode.mode = win_mode.mode.cycle(),
             MenuButtonItem::Resolution => res.res = res.res.cycle(),
             MenuButtonItem::SfxVolume  => *sfx_vol = sfx_vol.cycle(),
+            MenuButtonItem::Background => bg.kind = bg.kind.cycle(),
             MenuButtonItem::Back       => *view = MainMenuView::Root,
         }
         return;
@@ -1028,6 +1117,7 @@ fn initial_label_for(item: MenuButtonItem) -> &'static str {
         MenuButtonItem::WindowMode => "WINDOW",
         MenuButtonItem::Resolution => "RES",
         MenuButtonItem::SfxVolume  => "SFX",
+        MenuButtonItem::Background => "BG",
         MenuButtonItem::Back       => "BACK",
     }
 }
@@ -1118,7 +1208,15 @@ pub fn spawn_menu_fleet(
     em: Option<Res<EffectMeshes>>,
     mut meshes: ResMut<Assets<Mesh>>,
     difficulty: Res<crate::Difficulty>,
+    // Idempotent: skip if the fleet's already alive. Lets us call
+    // this from BOTH `Startup` (for the initial MainMenu — Bevy 0.16
+    // doesn't reliably fire `OnEnter(InitialState)` early enough for
+    // PaletteMaterials to be visible) AND `OnEnter(MainMenu)` (for
+    // re-entries after gameplay). On the second invocation in either
+    // path, `existing` is non-empty and we no-op.
+    existing: Query<Entity, With<Ally>>,
 ) {
+    if !existing.is_empty() { return; }
     let (Some(pm), Some(em)) = (pm, em) else { return; };
 
     // Friendly pirate, upper band, drifting right. Heading -π/2 ⇒
@@ -1178,56 +1276,167 @@ pub fn tick_menu_ships(
     anim.elapsed += dt;
     let t = anim.elapsed;
 
+    // First-tick tag pass: stamp `MenuShip` onto the freshly-spawned
+    // hulls. Order MUST match `spawn_menu_fleet` (friendly first,
+    // boss second). Both ships share the SAME `orbit_dir` so they
+    // sweep the same angular direction around the midpoint — that's
+    // what produces an actual orbit. Phases stagger by ship so the
+    // two hulls don't burst in lockstep.
     if !untagged.is_empty() {
-        // Parallel to `spawn_menu_fleet` — when you reorder one, reorder both.
-        // (drift_speed, base_y, bob_amp, bob_rate, bob_phase, band, faction, first_fire_offset)
-        let fleet: [(f32, f32, f32, f32, f32, MenuBand, MenuFaction, f32); 2] = [
-            ( 4.0, MENU_BAND_UPPER_Y, 1.4, 0.9, 0.0, MenuBand::Upper, MenuFaction::Friendly, 1.0),
-            (-4.0, MENU_BAND_LOWER_Y, 1.4, 0.9, 1.6, MenuBand::Lower, MenuFaction::Enemy,    2.2),
+        // (faction, first_fire_offset_secs, initial_phase_duration)
+        let fleet: [(MenuFaction, f32, f32); 2] = [
+            (MenuFaction::Friendly, 1.0, 3.5),
+            (MenuFaction::Enemy,    2.2, 5.0),
         ];
         for (idx, e) in untagged.iter().enumerate() {
             let i = idx.min(fleet.len() - 1);
-            let (drift_speed, base_y, bob_amp, bob_rate, bob_phase, band, faction, first_fire) = fleet[i];
+            let (faction, first_fire, initial_orbit) = fleet[i];
             commands.entity(e).insert(MenuShip {
-                drift_speed, base_y, bob_phase, bob_amp, bob_rate,
-                band, faction,
+                faction,
+                orbit_dir: 1.0,
                 next_fire_at: t + first_fire,
+                phase: MenuShipPhase::Orbit,
+                phase_end_at: t + initial_orbit,
+                last_pos: Vec2::ZERO,
             });
         }
     }
 
-    // Snapshot positions + bands so the fire pass can target ships
-    // without contending with the movement pass's mutable borrow.
-    let mut snapshots: Vec<(Entity, MenuBand, Vec2)> = Vec::new();
-    for (e, ship, mut tf) in &mut ships {
-        let mut nx = tf.translation.x + ship.drift_speed * dt;
-        if nx > MENU_WRAP_MAX_X { nx = MENU_WRAP_MIN_X; }
-        if nx < MENU_WRAP_MIN_X { nx = MENU_WRAP_MAX_X; }
-        let ny = ship.base_y
-            + (t * ship.bob_rate + ship.bob_phase).sin() * ship.bob_amp;
-        tf.translation.x = nx;
-        tf.translation.y = ny;
-        snapshots.push((e, ship.band, Vec2::new(nx, ny)));
+    // Snapshot positions AND estimated per-frame velocities so the
+    // fire pass can lead the target (aim where it WILL be after the
+    // bullet's flight). Velocity comes from `(current_pos -
+    // last_pos) / dt`, with last_pos tracked on each MenuShip and
+    // refreshed at the end of the movement pass.
+    let dt_safe = dt.max(1e-6);
+    let snapshots: Vec<(Entity, Vec2, Vec2)> = ships
+        .iter()
+        .map(|(e, ship, tf)| {
+            let pos = tf.translation.truncate();
+            let vel = if ship.last_pos == Vec2::ZERO {
+                // First tick after spawn — last_pos hasn't been
+                // populated yet, so don't claim a velocity. Lead
+                // targeting falls back to "aim at current pos".
+                Vec2::ZERO
+            } else {
+                (pos - ship.last_pos) / dt_safe
+            };
+            (e, pos, vel)
+        })
+        .collect();
+
+    let mut rng = rand::thread_rng();
+
+    // Movement pass with phase state machine. Each ship runs Orbit
+    // (calm middle ground) interspersed with short Charge / Retreat
+    // bursts to break up the predictable circle. A soft pull-toward-
+    // origin leash keeps any phase from walking the engagement off-
+    // screen. Hull rotation tracks current velocity so the silhouette
+    // faces its direction of travel.
+    for (e, mut ship, mut tf) in &mut ships {
+        let pos = tf.translation.truncate();
+        let target_pos = snapshots
+            .iter()
+            .find(|(other, _, _)| *other != e)
+            .map(|(_, p, _)| *p);
+
+        // Phase transition.
+        if t >= ship.phase_end_at {
+            let (next_phase, next_duration) = match ship.phase {
+                MenuShipPhase::Orbit => {
+                    // 50/50 charge vs retreat after each orbit slice.
+                    let burst = if rng.gen_bool(0.5) {
+                        MenuShipPhase::Charge
+                    } else {
+                        MenuShipPhase::Retreat
+                    };
+                    (burst, rng.gen_range(MENU_BURST_DURATION_MIN..MENU_BURST_DURATION_MAX))
+                }
+                _ => (
+                    MenuShipPhase::Orbit,
+                    rng.gen_range(MENU_ORBIT_DURATION_MIN..MENU_ORBIT_DURATION_MAX),
+                ),
+            };
+            ship.phase = next_phase;
+            ship.phase_end_at = t + next_duration;
+        }
+
+        // Velocity by phase.
+        let velocity = match (target_pos, ship.phase) {
+            (Some(tp), MenuShipPhase::Orbit) => {
+                let to_target = tp - pos;
+                let dist = to_target.length().max(0.5);
+                let to_unit = to_target / dist;
+                let tangent = Vec2::new(-to_unit.y, to_unit.x) * ship.orbit_dir;
+                let range_error = (dist - MENU_ENGAGEMENT_RANGE) * MENU_RADIAL_PULL;
+                tangent * MENU_ORBIT_SPEED + to_unit * range_error + leash_force(pos)
+            }
+            (Some(tp), MenuShipPhase::Charge) => {
+                // Close in fast. No range-correction — we want the
+                // overshoot so the next Orbit phase has to recover.
+                let to_unit = (tp - pos).normalize_or_zero();
+                to_unit * MENU_CHARGE_SPEED + leash_force(pos)
+            }
+            (Some(tp), MenuShipPhase::Retreat) => {
+                // Peel away from target. Leash keeps the retreat from
+                // walking off-screen — it'll get pulled back inward
+                // once it's past the leash radius.
+                let to_unit = (tp - pos).normalize_or_zero();
+                -to_unit * MENU_RETREAT_SPEED + leash_force(pos)
+            }
+            (None, _) => Vec2::ZERO,
+        };
+
+        tf.translation.x += velocity.x * dt;
+        tf.translation.y += velocity.y * dt;
+        if velocity.length_squared() > 0.0001 {
+            // spawn_ally's heading convention: 0 = bow on +Y. Match
+            // that here so the hull's prow leads its motion.
+            let heading = (-velocity.x).atan2(velocity.y);
+            tf.rotation = Quat::from_rotation_z(heading);
+        }
+
+        // Refresh last_pos so the next frame's velocity estimate is
+        // accurate. Without this, the fire pass would always read a
+        // zero target velocity and lead-targeting would degrade to
+        // "aim at current position".
+        ship.last_pos = tf.translation.truncate();
     }
 
+    // Firing pass: lead the target so bullets actually connect.
+    // Estimated flight time = distance / bullet speed; predicted
+    // target pos = target.pos + target.vel * flight_time. With
+    // ships orbiting at ~22 u/s and bullets at 90 u/s, a 60-unit
+    // shot has ~0.67s flight time → ~15 unit lead at the orbit
+    // speed. Without leading, every bullet phases past the target.
     let (Some(pm), Some(em)) = (pm, em) else { return; };
-    let mut rng = rand::thread_rng();
     for (firer_e, mut ship, _) in &mut ships {
         if t < ship.next_fire_at { continue; }
-        let candidates: Vec<&(Entity, MenuBand, Vec2)> = snapshots
-            .iter()
-            .filter(|(_, b, _)| *b != ship.band)
-            .collect();
-        if candidates.is_empty() { continue; }
-        let target = candidates[rng.gen_range(0..candidates.len())];
-        let firer_pos = match snapshots.iter().find(|(e, _, _)| *e == firer_e) {
-            Some(s) => s.2,
-            None => continue,
-        };
-        let dir = (target.2 - firer_pos).normalize_or_zero();
+        let firer_snap = snapshots.iter().find(|(e, _, _)| *e == firer_e);
+        let target_snap = snapshots.iter().find(|(other, _, _)| *other != firer_e);
+        let (Some((_, firer_pos, _)), Some((_, target_pos, target_vel))) =
+            (firer_snap, target_snap) else { continue; };
+        let separation = *target_pos - *firer_pos;
+        let flight_time = (separation.length() / MENU_BULLET_SPEED).clamp(0.0, 2.0);
+        let predicted = *target_pos + *target_vel * flight_time;
+        let dir = (predicted - *firer_pos).normalize_or_zero();
         if dir == Vec2::ZERO { continue; }
-        spawn_menu_bullet(&mut commands, &pm, &em, firer_pos, dir, ship.faction);
-        ship.next_fire_at = t + rng.gen_range(2.5..4.5);
+        spawn_menu_bullet(&mut commands, &pm, &em, *firer_pos, dir, ship.faction);
+        ship.next_fire_at = t + rng.gen_range(2.0..3.5);
+    }
+}
+
+/// Soft pull-toward-origin force. Past `MENU_LEASH_RADIUS` from
+/// world origin the returned vector points inward at strength
+/// proportional to overshoot, so any phase that would otherwise walk
+/// the engagement off-screen gets bent back inward. Inside the leash
+/// it returns zero — the orbit runs unconstrained.
+fn leash_force(pos: Vec2) -> Vec2 {
+    let dist_from_origin = pos.length();
+    if dist_from_origin > MENU_LEASH_RADIUS {
+        let over = dist_from_origin - MENU_LEASH_RADIUS;
+        -pos.normalize_or_zero() * over * MENU_LEASH_STRENGTH
+    } else {
+        Vec2::ZERO
     }
 }
 
@@ -1358,6 +1567,7 @@ pub enum SettingsItem {
     WindowMode,
     Resolution,
     SfxVolume,
+    Background,
 }
 
 #[derive(Component)]
@@ -1375,6 +1585,7 @@ pub fn handle_settings_item_click(
     mut win_mode: ResMut<crate::modes::WindowModeSetting>,
     mut res: ResMut<crate::modes::ResolutionSetting>,
     mut sfx_vol: ResMut<crate::sfx::SfxVolume>,
+    mut bg: ResMut<crate::modes::BackgroundSetting>,
 ) {
     for (interaction, item) in &interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
@@ -1385,6 +1596,7 @@ pub fn handle_settings_item_click(
             SettingsItem::WindowMode => win_mode.mode = win_mode.mode.cycle(),
             SettingsItem::Resolution => res.res = res.res.cycle(),
             SettingsItem::SfxVolume  => *sfx_vol = sfx_vol.cycle(),
+            SettingsItem::Background => bg.kind = bg.kind.cycle(),
         }
     }
 }
@@ -1414,6 +1626,7 @@ pub fn update_settings_labels(
     win_mode: Res<crate::modes::WindowModeSetting>,
     res: Res<crate::modes::ResolutionSetting>,
     sfx_vol: Res<crate::sfx::SfxVolume>,
+    bg: Res<crate::modes::BackgroundSetting>,
     mut q: Query<(&SettingsItemLabel, &mut Text)>,
 ) {
     for (label, mut text) in &mut q {
@@ -1424,6 +1637,7 @@ pub fn update_settings_labels(
             SettingsItem::WindowMode => format!("WINDOW: {}", win_mode.mode.label()),
             SettingsItem::Resolution => format!("RES: {}",    res.res.label()),
             SettingsItem::SfxVolume  => format!("SFX: {}",    sfx_vol.label()),
+            SettingsItem::Background => format!("BG: {}",     bg.kind.label()),
         };
         if text.0 != s { text.0 = s; }
     }

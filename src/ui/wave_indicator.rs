@@ -9,7 +9,6 @@
 //! place for when the rule is set.
 
 use bevy::prelude::*;
-use bevy::text::FontSmoothing;
 use bevy::window::PrimaryWindow;
 
 use crate::map::{CombatContext, ViewMode};
@@ -22,7 +21,10 @@ pub struct WaveIndicator;
 const ACCENT: Color = Color::srgb(1.0, 0.85, 0.30);
 const BOSS_RED: Color = Color::srgb(0.95, 0.30, 0.40);
 
-pub fn setup_wave_indicator(mut commands: Commands) {
+pub fn setup_wave_indicator(
+    mut commands: Commands,
+    thaleah: Res<crate::fonts::ThaleahFont>,
+) {
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -31,11 +33,7 @@ pub fn setup_wave_indicator(mut commands: Commands) {
             ..default()
         },
         Text::new("WAVE 1/7"),
-        TextFont {
-            font_size: 14.0,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::thaleah_text_font(&thaleah, 18.0),
         TextColor(ACCENT),
         ZIndex(40),
         Visibility::Hidden,

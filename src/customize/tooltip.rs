@@ -9,7 +9,7 @@
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
 use bevy::sprite::Anchor;
-use bevy::text::{FontSmoothing, TextBounds};
+use bevy::text::TextBounds;
 
 use bevy::ecs::system::SystemParam;
 
@@ -86,6 +86,13 @@ pub struct TooltipDataCtx<'w> {
     /// in the turret tooltip as "Damage last round: X% (N)" so the
     /// player can tell which slots are pulling their weight.
     pub damage_stats: Res<'w, crate::ui::DamageStats>,
+    /// Pixel Operator font handle used for every tooltip glyph.
+    /// Bundled into this ctx so the parent system doesn't blow
+    /// past Bevy's 16-element SystemParam tuple limit — adding
+    /// `Res<PixelFont>` as a separate param pushed
+    /// `update_customize_tooltip` to 17 args and broke the
+    /// `IntoSystem` impl downstream.
+    pub pixel_font: Res<'w, crate::fonts::PixelFont>,
 }
 
 /// Layout snapshot for the main tooltip. Written by
@@ -149,8 +156,11 @@ const TOOLTIP_TEXT_PAD_Y: f32 = 6.0;
 const TOOLTIP_BORDER_PX: f32 = 2.0;
 /// Title + body font sizes (native pixels). Both bumped so labels read
 /// clearly without zooming in.
-const TOOLTIP_TITLE_FONT: f32 = 18.0;
-const TOOLTIP_BODY_FONT: f32 = 14.0;
+// Both sized to integer multiples of 8 so Pixel Operator's
+// 8px-native bitmap glyph design samples cleanly — at non-multiples
+// (e.g. 14 or 18) the font resamples and the edges blur.
+const TOOLTIP_TITLE_FONT: f32 = 32.0;
+const TOOLTIP_BODY_FONT: f32 = 24.0;
 /// Native-pixel cap on body text width — body wraps at word boundaries
 /// when it would exceed this. Generous: prefer a wide single-line box
 /// over wrapping to multiple short lines.
@@ -205,7 +215,7 @@ fn tooltip_bg_color() -> Color {
     Color::srgb(0.13, 0.14, 0.17)
 }
 
-pub fn spawn_customize_tooltip(commands: &mut Commands) {
+pub fn spawn_customize_tooltip(commands: &mut Commands, font: &crate::fonts::PixelFont) {
     // ---------- Synergy banner (stacked above the main tooltip) ----------
     // Same outline+fill+text layout as the main tooltip, just compact
     // (single text line). Sizes are placeholders — `update_customize_tooltip`
@@ -234,11 +244,7 @@ pub fn spawn_customize_tooltip(commands: &mut Commands) {
     ));
     commands.spawn((
         Text2d::new(""),
-        TextFont {
-            font_size: SYNERGY_FONT,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, SYNERGY_FONT),
         TextColor(SYNERGY_DESC_COLOR),
         // Wrap-friendly: justify centred, cap horizontal width so
         // long descriptors break to a second line rather than
@@ -281,11 +287,7 @@ pub fn spawn_customize_tooltip(commands: &mut Commands) {
     // top edge lines up with the fill rectangle minus padding.
     commands.spawn((
         Text2d::new(""),
-        TextFont {
-            font_size: TOOLTIP_TITLE_FONT,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, TOOLTIP_TITLE_FONT),
         TextColor(Color::srgb(1.0, 0.85, 0.30)),
         Anchor::TopCenter,
         Transform::from_xyz(0.0, 0.0, Z_TOOLTIP_TEXT),
@@ -298,11 +300,7 @@ pub fn spawn_customize_tooltip(commands: &mut Commands) {
     // title cleanly.
     commands.spawn((
         Text2d::new(""),
-        TextFont {
-            font_size: TOOLTIP_BODY_FONT,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, TOOLTIP_BODY_FONT),
         TextColor(Color::srgb(0.85, 0.88, 0.94)),
         TextLayout::new_with_justify(JustifyText::Center),
         TextBounds::new_horizontal(TOOLTIP_BODY_MAX_W),
@@ -585,11 +583,7 @@ pub fn update_customize_tooltip(
                 for (segment, color) in segments {
                     p.spawn((
                         TextSpan::new(segment),
-                        TextFont {
-                            font_size: TOOLTIP_BODY_FONT,
-                            font_smoothing: FontSmoothing::None,
-                            ..default()
-                        },
+                        crate::fonts::pixel_text_font(&data.pixel_font, TOOLTIP_BODY_FONT),
                         TextColor(color),
                         CustomizeTooltipBodySpan,
                     ));
@@ -619,6 +613,7 @@ pub fn update_synergy_banner(
     layout: Res<TooltipLayout>,
     viewport: Res<CustomizeViewport>,
     ui_scale: Res<bevy::ui::UiScale>,
+    pixel_font: Res<crate::fonts::PixelFont>,
     synergies: Res<Synergies>,
     discovered: Res<crate::onboarding::DiscoveredSynergies>,
     mut banner_cache: Local<String>,
@@ -900,7 +895,7 @@ pub fn update_synergy_banner(
                     if sec_idx > 0 {
                         p.spawn((
                             TextSpan::new("\n\n".to_string()),
-                            TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                            crate::fonts::pixel_text_font(&pixel_font, SYNERGY_FONT),
                             TextColor(SYNERGY_DESC_COLOR),
                             SynergyBannerSpan,
                         ));
@@ -908,7 +903,7 @@ pub fn update_synergy_banner(
                     // ---- Header line: tag chip + full description ----
                     p.spawn((
                         TextSpan::new(format!("[{}] ", sec.tag.label())),
-                        TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                        crate::fonts::pixel_text_font(&pixel_font, SYNERGY_FONT),
                         TextColor(sec.tag.color()),
                         SynergyBannerSpan,
                     ));
@@ -920,14 +915,14 @@ pub fn update_synergy_banner(
                     for (segment, colour) in colorize_banner_description(sec.description) {
                         p.spawn((
                             TextSpan::new(segment),
-                            TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                            crate::fonts::pixel_text_font(&pixel_font, SYNERGY_FONT),
                             TextColor(colour),
                             SynergyBannerSpan,
                         ));
                     }
                     p.spawn((
                         TextSpan::new("\n".to_string()),
-                        TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                        crate::fonts::pixel_text_font(&pixel_font, SYNERGY_FONT),
                         TextColor(SYNERGY_DESC_COLOR),
                         SynergyBannerSpan,
                     ));
@@ -940,26 +935,26 @@ pub fn update_synergy_banner(
                         let count = (i as u32 + 1) * 2;
                         p.spawn((
                             TextSpan::new(format!("({}) ", count)),
-                            TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                            crate::fonts::pixel_text_font(&pixel_font, SYNERGY_FONT),
                             TextColor(count_color),
                             SynergyBannerSpan,
                         ));
                         p.spawn((
                             TextSpan::new(format!("{} ", v)),
-                            TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                            crate::fonts::pixel_text_font(&pixel_font, SYNERGY_FONT),
                             TextColor(value_color),
                             SynergyBannerSpan,
                         ));
                         p.spawn((
                             TextSpan::new(sec.descriptor.to_string()),
-                            TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                            crate::fonts::pixel_text_font(&pixel_font, SYNERGY_FONT),
                             TextColor(desc_color),
                             SynergyBannerSpan,
                         ));
                         if i < sec.values.len() - 1 {
                             p.spawn((
                                 TextSpan::new("\n".to_string()),
-                                TextFont { font_size: SYNERGY_FONT, font_smoothing: FontSmoothing::None, ..default() },
+                                crate::fonts::pixel_text_font(&pixel_font, SYNERGY_FONT),
                                 TextColor(SYNERGY_DESC_COLOR),
                                 SynergyBannerSpan,
                             ));

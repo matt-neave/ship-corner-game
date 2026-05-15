@@ -74,6 +74,10 @@ impl Plugin for CustomizePlugin {
             // fire on stale positions, producing "random" closes
             // and ghost purchases.
             .add_systems(Update, track_customize_cursor)
+            // Split into two `.add_systems` blocks because a single
+            // 15-element tuple with `.after(track_customize_cursor)`
+            // overflows Bevy's `IntoSystemConfigs` trait-impl limit.
+            // Both halves still order behind the cursor tracker.
             .add_systems(
                 Update,
                 (
@@ -86,6 +90,11 @@ impl Plugin for CustomizePlugin {
                     update_customize_shop,
                     update_customize_tooltip,
                     update_synergy_banner,
+                ).after(track_customize_cursor),
+            )
+            .add_systems(
+                Update,
+                (
                     sync_stats_panel,
                     // After sync_customize_text so the debug-only Hidden
                     // write isn't overwritten by the generic Inherited.

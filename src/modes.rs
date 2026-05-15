@@ -190,6 +190,303 @@ pub struct ResolutionSetting {
     pub last_applied: Option<ResolutionKind>,
 }
 
+// ---------- Background pattern (HashSprite kind) ----------
+
+/// Pattern type painted on the diagonal-tiled backdrop that sits
+/// behind the play sprite. Player can cycle this from settings.
+/// Each variant maps to a generator in `rendering::make_background_image`.
+///
+/// The first six variants are "themed" — they take their colours from the
+/// live palette's `ocean` (and a darkened-derived companion), so they shift
+/// when night mode toggles or the palette changes. Every variant below
+/// the divider hard-codes its own colour pair, giving the player a wide
+/// gallery of distinct looks beyond the default blue.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BackgroundKind {
+    // ---- Themed (palette-driven) ----
+    /// Diagonal hash with the existing 192-tile period.
+    HashDiagonal,
+    /// Diagonal hash mirrored to the opposite slope.
+    HashDiagonalReverse,
+    /// Fine 45-degree hash, much shorter period than the default.
+    HashFine,
+    /// Vertical bars.
+    VerticalStripes,
+    /// Horizontal bands.
+    HorizontalStripes,
+    /// 32-tile crosshatch — busier than the default hash.
+    Checker,
+    /// Large 96-tile checker.
+    LargeChecker,
+    /// Thin crosshatch grid lines on the ocean colour.
+    GridDefault,
+    /// Solid ocean colour, no pattern.
+    Plain,
+
+    // ---- Sand / warm ----
+    /// Cream dots on warm sand.
+    DotsWarm,
+    /// Sinusoidal warm-beige wave bands.
+    WavesSand,
+    /// Terracotta brick pattern.
+    BricksRed,
+    /// Sunset diagonal hash (orange / dusky red).
+    HashSunset,
+    /// Warm amber diagonal hash on deep brown.
+    HashAmber,
+    /// Sparse amber stars on near-black brown — campfire embers.
+    StarsAmber,
+    /// Copper sinusoidal waves over deep brown.
+    WavesCopper,
+
+    /// Thin forest crosshatch grid — bright lime on deep forest.
+    GridGreen,
+    /// Large checker in two forest greens.
+    CheckerForest,
+    /// Bright leaf-green dots stippled on a near-black pine ground.
+    DotsPine,
+    /// Sinusoidal moss bands — yellow-green over deep olive.
+    WavesMoss,
+    /// Diagonal hash in saturated jungle green over deep shadow.
+    HashJungle,
+    /// Sparse leaf-green specks on near-black forest — same star-field
+    /// pattern as `StarsNoir` but with a deep-green palette.
+    StarsLeaf,
+
+    // ---- Purple / neon ----
+    /// Magenta dots on deep purple.
+    DotsNeon,
+    /// Purple sinusoidal waves.
+    WavesPurple,
+    /// Light-violet diagonal hash on deep purple.
+    HashPurple,
+    /// Bright violet stars on near-black violet — twilight sky.
+    StarsViolet,
+    /// Hot-pink grid lines on near-black — synthwave vibe.
+    GridMagenta,
+
+    // ---- Teal / cool ----
+    /// Concentric teal rings.
+    RadialTeal,
+    /// Tiny 8-tile teal checker.
+    MicroCheckerTeal,
+    /// Diagonal hash in mid-teal on deep teal.
+    HashTeal,
+    /// Sinusoidal teal swells.
+    WavesTeal,
+    /// Pale-teal dots stippled on near-black teal — bioluminescent.
+    DotsTeal,
+
+    // ---- Crimson / blood ----
+    /// Bright red diagonal hash on deep blood.
+    HashCrimson,
+    /// Pink dots scattered on near-black red — wound spatter.
+    DotsCrimson,
+
+    // ---- Gold / brass ----
+    /// Bright gold diagonal hash on deep brown-gold.
+    HashGold,
+
+    // ---- Monochrome / noir ----
+    /// Sparse white stars on near-black.
+    StarsNoir,
+    /// Deterministic monochrome noise.
+    NoiseGrey,
+}
+
+impl Default for BackgroundKind {
+    fn default() -> Self { Self::HashDiagonal }
+}
+
+impl BackgroundKind {
+    /// Walk through related variants together: all themed first, then the
+    /// sand group, forest, purple, teal, monochrome — so a player tapping
+    /// the cycle button sees related colour schemes adjacent to each other.
+    pub fn cycle(self) -> Self {
+        match self {
+            // Themed
+            Self::HashDiagonal        => Self::HashDiagonalReverse,
+            Self::HashDiagonalReverse => Self::HashFine,
+            Self::HashFine            => Self::VerticalStripes,
+            Self::VerticalStripes     => Self::HorizontalStripes,
+            Self::HorizontalStripes   => Self::Checker,
+            Self::Checker             => Self::LargeChecker,
+            Self::LargeChecker        => Self::GridDefault,
+            Self::GridDefault         => Self::Plain,
+            // Sand — extended with amber + copper variants.
+            Self::Plain               => Self::DotsWarm,
+            Self::DotsWarm            => Self::WavesSand,
+            Self::WavesSand           => Self::BricksRed,
+            Self::BricksRed           => Self::HashSunset,
+            Self::HashSunset          => Self::HashAmber,
+            Self::HashAmber           => Self::StarsAmber,
+            Self::StarsAmber          => Self::WavesCopper,
+            // Forest — six variants spanning lime / pine / moss /
+            // jungle / starfield palettes.
+            Self::WavesCopper         => Self::GridGreen,
+            Self::GridGreen           => Self::CheckerForest,
+            Self::CheckerForest       => Self::DotsPine,
+            Self::DotsPine            => Self::WavesMoss,
+            Self::WavesMoss           => Self::HashJungle,
+            Self::HashJungle          => Self::StarsLeaf,
+            // Purple — five variants: dots → waves → hash → stars → grid.
+            Self::StarsLeaf           => Self::DotsNeon,
+            Self::DotsNeon            => Self::WavesPurple,
+            Self::WavesPurple         => Self::HashPurple,
+            Self::HashPurple          => Self::StarsViolet,
+            Self::StarsViolet         => Self::GridMagenta,
+            // Teal — five variants: rings → micro-checker → hash → waves → dots.
+            Self::GridMagenta         => Self::RadialTeal,
+            Self::RadialTeal          => Self::MicroCheckerTeal,
+            Self::MicroCheckerTeal    => Self::HashTeal,
+            Self::HashTeal            => Self::WavesTeal,
+            Self::WavesTeal           => Self::DotsTeal,
+            // Crimson / blood
+            Self::DotsTeal            => Self::HashCrimson,
+            Self::HashCrimson         => Self::DotsCrimson,
+            // Gold / brass
+            Self::DotsCrimson         => Self::HashGold,
+            // Monochrome
+            Self::HashGold            => Self::StarsNoir,
+            Self::StarsNoir           => Self::NoiseGrey,
+            Self::NoiseGrey           => Self::HashDiagonal,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::HashDiagonal        => "HASH",
+            Self::HashDiagonalReverse => "HASH-R",
+            Self::HashFine            => "HASH-F",
+            Self::VerticalStripes     => "VERT",
+            Self::HorizontalStripes   => "HORZ",
+            Self::Checker             => "CHECKER",
+            Self::LargeChecker        => "BIGCHECK",
+            Self::GridDefault         => "GRID",
+            Self::Plain               => "PLAIN",
+            Self::DotsWarm            => "DOTSWARM",
+            Self::WavesSand           => "WAVESAND",
+            Self::BricksRed           => "BRICKS",
+            Self::HashSunset          => "SUNSET",
+            Self::HashAmber           => "AMBER",
+            Self::StarsAmber          => "EMBERS",
+            Self::WavesCopper         => "COPPER",
+            Self::GridGreen           => "GRIDGRN",
+            Self::CheckerForest       => "FOREST",
+            Self::DotsPine            => "PINE",
+            Self::WavesMoss           => "MOSS",
+            Self::HashJungle          => "JUNGLE",
+            Self::StarsLeaf           => "LEAVES",
+            Self::DotsNeon            => "NEON",
+            Self::WavesPurple         => "WAVEPRP",
+            Self::HashPurple          => "VIOLET",
+            Self::StarsViolet         => "TWILIGHT",
+            Self::GridMagenta         => "MAGENTA",
+            Self::RadialTeal          => "RINGS",
+            Self::MicroCheckerTeal    => "MICROTL",
+            Self::HashTeal            => "TEAL",
+            Self::WavesTeal           => "WAVETL",
+            Self::DotsTeal            => "BIOLUME",
+            Self::HashCrimson         => "CRIMSON",
+            Self::DotsCrimson         => "SPATTER",
+            Self::HashGold            => "GOLD",
+            Self::StarsNoir           => "STARS",
+            Self::NoiseGrey           => "NOISE",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "hash"      | "hash_diagonal"         => Some(Self::HashDiagonal),
+            "hash_rev"  | "hash_diagonal_reverse" => Some(Self::HashDiagonalReverse),
+            "hash_fine" | "hash_f"                => Some(Self::HashFine),
+            "vertical"  | "vert"                  => Some(Self::VerticalStripes),
+            "horizontal"| "horz"                  => Some(Self::HorizontalStripes),
+            "checker"                             => Some(Self::Checker),
+            "large_checker"  | "bigcheck"         => Some(Self::LargeChecker),
+            "grid"      | "grid_default"          => Some(Self::GridDefault),
+            "plain"                               => Some(Self::Plain),
+            "dots_warm"      | "dotswarm"         => Some(Self::DotsWarm),
+            "waves_sand"     | "wavesand"         => Some(Self::WavesSand),
+            "bricks"    | "bricks_red"            => Some(Self::BricksRed),
+            "sunset"    | "hash_sunset"           => Some(Self::HashSunset),
+            "hash_amber"     | "amber"            => Some(Self::HashAmber),
+            "stars_amber"    | "embers"           => Some(Self::StarsAmber),
+            "waves_copper"   | "copper"           => Some(Self::WavesCopper),
+            "grid_green"     | "gridgrn"          => Some(Self::GridGreen),
+            "checker_forest" | "forest"           => Some(Self::CheckerForest),
+            "dots_pine"      | "pine"             => Some(Self::DotsPine),
+            "waves_moss"     | "moss"             => Some(Self::WavesMoss),
+            "hash_jungle"    | "jungle"           => Some(Self::HashJungle),
+            "stars_leaf"     | "leaves"           => Some(Self::StarsLeaf),
+            "dots_neon"      | "neon"             => Some(Self::DotsNeon),
+            "waves_purple"   | "waveprp"          => Some(Self::WavesPurple),
+            "hash_purple"    | "violet"           => Some(Self::HashPurple),
+            "stars_violet"   | "twilight"         => Some(Self::StarsViolet),
+            "grid_magenta"   | "magenta"          => Some(Self::GridMagenta),
+            "radial_teal"    | "rings"            => Some(Self::RadialTeal),
+            "micro_checker_teal" | "microtl"      => Some(Self::MicroCheckerTeal),
+            "hash_teal"      | "teal"             => Some(Self::HashTeal),
+            "waves_teal"     | "wavetl"           => Some(Self::WavesTeal),
+            "dots_teal"      | "biolume"          => Some(Self::DotsTeal),
+            "hash_crimson"   | "crimson"          => Some(Self::HashCrimson),
+            "dots_crimson"   | "spatter"          => Some(Self::DotsCrimson),
+            "hash_gold"      | "gold"             => Some(Self::HashGold),
+            "stars_noir"     | "stars"            => Some(Self::StarsNoir),
+            "noise_grey"     | "noise"            => Some(Self::NoiseGrey),
+            _ => None,
+        }
+    }
+    pub fn serialize(self) -> &'static str {
+        match self {
+            Self::HashDiagonal        => "hash",
+            Self::HashDiagonalReverse => "hash_rev",
+            Self::HashFine            => "hash_fine",
+            Self::VerticalStripes     => "vertical",
+            Self::HorizontalStripes   => "horizontal",
+            Self::Checker             => "checker",
+            Self::LargeChecker        => "large_checker",
+            Self::GridDefault         => "grid",
+            Self::Plain               => "plain",
+            Self::DotsWarm            => "dots_warm",
+            Self::WavesSand           => "waves_sand",
+            Self::BricksRed           => "bricks",
+            Self::HashSunset          => "sunset",
+            Self::HashAmber           => "hash_amber",
+            Self::StarsAmber          => "stars_amber",
+            Self::WavesCopper         => "waves_copper",
+            Self::GridGreen           => "grid_green",
+            Self::CheckerForest       => "checker_forest",
+            Self::DotsPine            => "dots_pine",
+            Self::WavesMoss           => "waves_moss",
+            Self::HashJungle          => "hash_jungle",
+            Self::StarsLeaf           => "stars_leaf",
+            Self::DotsNeon            => "dots_neon",
+            Self::WavesPurple         => "waves_purple",
+            Self::HashPurple          => "hash_purple",
+            Self::StarsViolet         => "stars_violet",
+            Self::GridMagenta         => "grid_magenta",
+            Self::RadialTeal          => "radial_teal",
+            Self::MicroCheckerTeal    => "micro_checker_teal",
+            Self::HashTeal            => "hash_teal",
+            Self::WavesTeal           => "waves_teal",
+            Self::DotsTeal            => "dots_teal",
+            Self::HashCrimson         => "hash_crimson",
+            Self::DotsCrimson         => "dots_crimson",
+            Self::HashGold            => "hash_gold",
+            Self::StarsNoir           => "stars_noir",
+            Self::NoiseGrey           => "noise_grey",
+        }
+    }
+}
+
+/// Resource holding the player's chosen background pattern. The apply
+/// system in `rendering.rs` watches `kind` + the palette and rebuilds
+/// the hash image whenever the chosen variant changes.
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct BackgroundSetting {
+    pub kind: BackgroundKind,
+    pub last_applied: Option<BackgroundKind>,
+}
+
 // ---------- Marker components ----------
 
 /// CRT scanline overlay sprite — sized to match the play sprite, hidden
