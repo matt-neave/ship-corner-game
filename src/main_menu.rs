@@ -81,6 +81,15 @@ impl Plugin for MainMenuPlugin {
             // (already spawned here) and the load-bearing path on
             // re-entries (the fleet got despawned on `OnExit(MainMenu)`).
             .add_systems(PostStartup, spawn_menu_fleet)
+            // Same OnEnter-doesn't-fire-on-initial-state workaround for
+            // the HUD chrome hide. Without this, the WaveHpUi / XP bar
+            // / FPS / map buttons are visible on the first boot's
+            // landing screen — only hidden after a round-trip into
+            // HullSelect and back. Setting Visibility at PostStartup
+            // (after the chrome entities were Startup-spawned, but
+            // before any Update frame can repaint them) is the
+            // load-bearing fix.
+            .add_systems(PostStartup, hide_gameplay_chrome_for_menu)
             .add_systems(
                 OnEnter(AppState::MainMenu),
                 (
@@ -384,7 +393,7 @@ const SETTINGS_BUTTON_W: f32 = 110.0;
 const SETTINGS_BUTTON_H: f32 =  14.0;
 const SETTINGS_ROW_GAP: f32  =   3.0;
 
-const TITLE_FONT: f32   = 28.0;
+const TITLE_FONT: f32   = 40.0;
 const BUTTON_FONT: f32  = 20.0;
 const SETTINGS_FONT: f32 = 14.0;
 
@@ -407,7 +416,7 @@ const TITLE_CHAR_SPACING: f32 = 5.0;
 /// Peak vertical bob (spec units) of each glyph in the wave. Half
 /// the stroke thickness so the wave reads as a gentle ripple, not a
 /// jumping-letter strobe.
-const TITLE_WAVE_AMP: f32 = 1.6;
+const TITLE_WAVE_AMP: f32 = 1.0;
 /// Wave frequency in rad/sec.
 const TITLE_WAVE_RATE: f32 = 4.0;
 /// Phase offset between adjacent characters in the wave. ~0.55 rad

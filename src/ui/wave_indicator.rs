@@ -33,7 +33,7 @@ pub fn setup_wave_indicator(
             ..default()
         },
         Text::new("WAVE 1/7"),
-        crate::fonts::thaleah_text_font(&thaleah, 18.0),
+        crate::fonts::thaleah_text_font(&thaleah, 32.0),
         TextColor(ACCENT),
         ZIndex(40),
         Visibility::Hidden,
