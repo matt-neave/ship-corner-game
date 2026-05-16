@@ -170,6 +170,7 @@ pub fn recv_packets(
     mut death_relay: DeathRelayInboxes,
     mut xp_inboxes: super::xp_sync::XpInboxes,
     mut pending_ready: ResMut<super::ready::PendingPeerReady>,
+    local_state: Res<bevy::prelude::State<crate::AppState>>,
 ) {
     if matches!(*mode, NetMode::Solo) { return; }
     let Some(session) = session.as_mut() else { return; };
@@ -374,13 +375,43 @@ pub fn recv_packets(
                 if session.is_host { continue; }
                 death_relay.damage_player.0.push((amount, Vec2::new(hit_pos[0], hit_pos[1])));
             }
-            NetMsg::BulletFired { pos, dir, weapon, range } => {
+            NetMsg::FriendlyUnitsSnapshot { from_peer, units } => {
+                // Skip our own loopback (we don't mirror our own
+                // units — we already have the real ones).
+                if from_peer == session.my_id { continue; }
+                // Latest-only per peer. Overwrites any unread prior
+                // snapshot for the same peer — the apply system
+                // despawns + respawns from this entry anyway.
+                death_relay.peer_units.0.insert(from_peer, units);
+            }
+            NetMsg::MortarFired { pos, target, weapon, splash_radius } => {
+                death_relay.signal_fx.0.push(SignalFx::Mortar {
+                    pos: Vec2::new(pos[0], pos[1]),
+                    target: Vec2::new(target[0], target[1]),
+                    weapon, splash_radius,
+                });
+            }
+            NetMsg::BeamFired { origin, dir, length, weapon } => {
+                death_relay.signal_fx.0.push(SignalFx::Beam {
+                    origin: Vec2::new(origin[0], origin[1]),
+                    dir: Vec2::new(dir[0], dir[1]),
+                    length, weapon,
+                });
+            }
+            NetMsg::FlameTick { pos, dir } => {
+                death_relay.signal_fx.0.push(SignalFx::Flame {
+                    pos: Vec2::new(pos[0], pos[1]),
+                    dir: Vec2::new(dir[0], dir[1]),
+                });
+            }
+            NetMsg::BulletFired { pos, dir, weapon, range, target_net_id } => {
                 bullet_inbox.events.push(super::bullets::ReceivedBulletFired {
                     pos: Vec2::new(pos[0], pos[1]),
                     dir: Vec2::new(dir[0], dir[1]),
                     weapon,
                     range,
                     sender_addr: addr,
+                    target_net_id,
                 });
             }
             NetMsg::PeerDied { id } => {
@@ -392,12 +423,15 @@ pub fn recv_packets(
                 bevy::log::info!("multiplayer: peer {id} died (team tracker now: {:?})",
                                  death_relay.team_tracker.dead_peers);
             }
-            NetMsg::PeerReady { id } => {
-                // Every peer tracks the team's ready set so the local
-                // shop UI can render "X / N READY". `drain_ready_inbox`
-                // moves these into TeamReadyTracker; the host's
-                // `host_advance_when_all_ready` reads the same tracker
-                // to make the canonical state transition.
+            NetMsg::PeerReady { id, sender_state } => {
+                // Drop packets where the sender's state doesn't match
+                // ours — those are stale packets from a previous state
+                // that arrived after our `OnEnter` reset. Accepting
+                // them would phantom-ready the sender and let the host
+                // auto-advance on its own click without waiting for
+                // the peer to actually click in the new state.
+                let cur_state_u8 = crate::AppState::to_u8(*local_state.get());
+                if sender_state != cur_state_u8 { continue; }
                 pending_ready.0.push(id);
             }
             NetMsg::PeerRevived { id } => {
@@ -510,6 +544,342 @@ pub struct GhostTurretChild {
     pub slot_index: usize,
 }
 
+// ---------- Autonomous unit sync (heli / shark / octopus) ----------
+
+/// Cadence for `send_friendly_units_snapshot`. Units don't move
+/// dramatically frame-to-frame; 15Hz is sufficient and keeps
+/// bandwidth low (each entry is 13 bytes; a peer with 4 units =
+/// 52 bytes/packet × 15 = ~780 bytes/sec).
+const UNIT_SNAPSHOT_HZ: f32 = 15.0;
+const UNIT_SNAPSHOT_INTERVAL: f32 = 1.0 / UNIT_SNAPSHOT_HZ;
+
+#[derive(Resource, Default)]
+pub struct UnitSnapshotTimer(pub f32);
+
+/// Marker on visual-only mirror entities spawned from a received
+/// `FriendlyUnitsSnapshot`. Lets the apply system find + despawn
+/// the previous frame's mirrors before respawning from the new
+/// snapshot. Carries `peer_id` so each broadcaster's mirrors are
+/// scoped independently.
+#[derive(Component)]
+pub struct PeerUnitMirror {
+    pub peer_id: u8,
+}
+
+/// Per-frame on each peer: send a `FriendlyUnitsSnapshot` of every
+/// autonomous unit we own at `UNIT_SNAPSHOT_HZ`. Other peers spawn
+/// visual mirrors around our ghost ship so they SEE our deployed
+/// helicopters / sharks / octopuses.
+pub fn send_friendly_units_snapshot(
+    time: Res<Time>,
+    mut timer: ResMut<UnitSnapshotTimer>,
+    mode: Res<NetMode>,
+    session: Option<Res<NetSession>>,
+    helis: Query<&GlobalTransform, With<crate::turret::heli::Helicopter>>,
+    sharks: Query<&GlobalTransform, With<crate::turret::sharknet::Shark>>,
+    octs: Query<&GlobalTransform, With<crate::octopus::Octopus>>,
+    flail_heads: Query<&GlobalTransform, With<crate::anchor_flail::AnchorHead>>,
+) {
+    let Some(session) = session else { return };
+    if !matches!(*mode, NetMode::Connected) { return };
+    if !session.welcomed { return; }
+    timer.0 += time.delta_secs();
+    if timer.0 < UNIT_SNAPSHOT_INTERVAL { return; }
+    timer.0 = 0.0;
+
+    let mut units = Vec::new();
+    let push = |out: &mut Vec<super::net::FriendlyUnitEntry>, gtf: &GlobalTransform, kind: super::net::FriendlyUnitKind| {
+        // Use GlobalTransform so child entities (flail heads parented
+        // to slots) resolve to world coordinates. Snapshotting a local
+        // Transform would only give us the in-parent offset.
+        let p = gtf.translation().truncate();
+        let (z, _, _) = gtf.rotation().to_euler(EulerRot::ZYX);
+        out.push(super::net::FriendlyUnitEntry {
+            kind: kind.to_u8(),
+            pos: [p.x, p.y],
+            rot: z,
+        });
+    };
+    for tf in &helis       { push(&mut units, tf, super::net::FriendlyUnitKind::Helicopter); }
+    for tf in &sharks      { push(&mut units, tf, super::net::FriendlyUnitKind::Shark);      }
+    for tf in &octs        { push(&mut units, tf, super::net::FriendlyUnitKind::Octopus);    }
+    for tf in &flail_heads { push(&mut units, tf, super::net::FriendlyUnitKind::FlailHead);  }
+
+    let msg = NetMsg::FriendlyUnitsSnapshot { from_peer: session.my_id, units };
+    for &addr in session.peers.values() {
+        let _ = send_to(&session.sock, addr, &msg);
+    }
+}
+
+/// Receive buffer for `NetMsg::FriendlyUnitsSnapshot`. Latest-only
+/// per peer; the apply system despawn-all-respawns mirrors from it.
+#[derive(Resource, Default)]
+pub struct PeerUnitsInbox(pub std::collections::HashMap<u8, Vec<super::net::FriendlyUnitEntry>>);
+
+/// Drain the inbox + reconcile peer-unit mirrors. Despawns every
+/// existing mirror for each peer that just sent us an update and
+/// respawns from the entries. With ~0–4 units per peer the entity
+/// churn is trivial; saves us from building a per-id diff system.
+///
+/// Visual primitives mirror the corresponding production spawn
+/// (Helicopter / Shark / Octopus body mesh). No AI components —
+/// the unit just sits at the snapshot's pos+rot; the firing AI
+/// runs on the OWNING peer, who broadcasts `BulletFiredEvent`s
+/// for the bullets through the existing path.
+pub fn apply_peer_units_snapshot(
+    mut commands: Commands,
+    pm: Option<Res<crate::palette::PaletteMaterials>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut inbox: ResMut<PeerUnitsInbox>,
+    existing: Query<(Entity, &PeerUnitMirror)>,
+) {
+    if inbox.0.is_empty() { return; }
+    let Some(pm) = pm else { inbox.0.clear(); return };
+
+    for (peer_id, entries) in inbox.0.drain() {
+        // Despawn this peer's previous mirrors before respawning.
+        for (e, m) in &existing {
+            if m.peer_id == peer_id { commands.entity(e).try_despawn(); }
+        }
+        for entry in entries {
+            let Some(kind) = super::net::FriendlyUnitKind::from_u8(entry.kind) else { continue };
+            let pos = Vec2::new(entry.pos[0], entry.pos[1]);
+            // Use the SAME visual-spawn helpers the production code
+            // uses, so the mirror looks pixel-identical to the owning
+            // peer's view. Tag with PeerUnitMirror so a future
+            // snapshot can despawn + respawn cleanly.
+            let entity = match kind {
+                super::net::FriendlyUnitKind::Helicopter => {
+                    crate::turret::heli::spawn_helicopter_visual(
+                        &mut commands, &pm, &mut meshes, pos, entry.rot,
+                    )
+                }
+                super::net::FriendlyUnitKind::Shark => {
+                    crate::turret::sharknet::spawn_shark_visual(
+                        &mut commands, &pm, &mut meshes, &mut materials, pos, false,
+                    )
+                }
+                super::net::FriendlyUnitKind::Octopus => {
+                    crate::octopus::spawn_octopus_visual(
+                        &mut commands, &pm, &mut meshes, pos, false,
+                    )
+                }
+                super::net::FriendlyUnitKind::FlailHead => {
+                    crate::anchor_flail::spawn_flail_head_visual(
+                        &mut commands, &pm, &mut meshes, pos,
+                    )
+                }
+            };
+            // Apply the snapshot rotation (the helper sets a default
+            // for some kinds; the snapshot is authoritative).
+            commands.entity(entity).insert((
+                Transform::from_translation(pos.extend(1.5))
+                    .with_rotation(Quat::from_rotation_z(entry.rot)),
+                PeerUnitMirror { peer_id },
+            ));
+        }
+    }
+}
+
+// ---------- Signal-driven FX: Mortar / Beam / Flame ----------
+
+/// Marker on visual-only effect entities spawned from a received
+/// signal-fx packet, so they don't loop back through any future
+/// detection systems.
+#[derive(Component)]
+pub struct RemoteVisualFx;
+
+/// Per-frame on each peer: find every Flamethrower slot currently
+/// in the `Active` phase and broadcast a `FlameTick` per active
+/// slot. Receivers spawn a flame puff at that position, matching
+/// the visual the owning peer's `flamethrower_tick` produces.
+///
+/// Cadence: every frame the slot is active. One puff per peer per
+/// frame is a steady cone visually; not a perfect particle-for-
+/// particle match with the owning peer's local cone (their
+/// `FLAMETHROWER_PARTICLES_PER_FRAME` is higher), but enough that
+/// remote flamethrowers read as flamethrowers.
+pub fn emit_flame_signals(
+    mode: Res<NetMode>,
+    session: Option<Res<NetSession>>,
+    local_player: Query<(&Transform, &crate::components::Heading), With<crate::components::LocalPlayer>>,
+    slots: Query<(&crate::turret::TurretSlot, &Transform, &crate::flamethrower::Flamethrower)>,
+    cfg: Res<crate::turret::TurretConfig>,
+) {
+    let Some(session) = session else { return };
+    if !matches!(*mode, NetMode::Connected) { return };
+    let Ok((ship_tf, ship_heading)) = local_player.single() else { return };
+    let ship_pos = ship_tf.translation.truncate();
+    let ship_h = ship_heading.0;
+    let cos_h = ship_h.cos();
+    let sin_h = ship_h.sin();
+
+    for (slot, slot_tf, ft) in &slots {
+        if !cfg.slots[slot.index].equipped { continue; }
+        if !matches!(cfg.slots[slot.index].weapon, crate::weapon::WeaponType::Flamethrower) { continue; }
+        if !matches!(ft.phase, crate::flamethrower::FlamethrowerPhase::Active) { continue; }
+
+        let local = slot_tf.translation.truncate();
+        let world_off = Vec2::new(
+            local.x * cos_h - local.y * sin_h,
+            local.x * sin_h + local.y * cos_h,
+        );
+        let slot_world = ship_pos + world_off;
+        let total_angle = ship_h + slot.barrel_angle;
+        let forward = Vec2::new(-total_angle.sin(), total_angle.cos());
+
+        let msg = NetMsg::FlameTick {
+            pos: [slot_world.x, slot_world.y],
+            dir: [forward.x, forward.y],
+        };
+        for &addr in session.peers.values() {
+            let _ = send_to(&session.sock, addr, &msg);
+        }
+    }
+}
+
+/// Per-frame on each peer: detect newly-spawned local mortar shells
+/// + beams and broadcast a signal so other peers spawn visual-only
+/// copies. Flame is handled in `emit_flame_signals` (continuous) and
+/// rockets ride the regular `BulletFired` path (they carry a
+/// `Bullet` component).
+pub fn emit_mortar_and_beam_signals(
+    mode: Res<NetMode>,
+    session: Option<Res<NetSession>>,
+    new_mortars: Query<
+        &crate::turret::mortar::MortarShell,
+        (Added<crate::turret::mortar::MortarShell>, Without<RemoteVisualFx>),
+    >,
+    new_beams: Query<
+        (&Transform, &crate::beam::BeamHit),
+        (Added<crate::beam::Beam>, Without<RemoteVisualFx>),
+    >,
+) {
+    let Some(session) = session else { return };
+    if !matches!(*mode, NetMode::Connected) { return };
+    for shell in &new_mortars {
+        let msg = NetMsg::MortarFired {
+            pos: [shell.origin.x, shell.origin.y],
+            target: [shell.target.x, shell.target.y],
+            weapon: shell.weapon.to_u8(),
+            splash_radius: shell.splash_radius,
+        };
+        for &addr in session.peers.values() {
+            let _ = send_to(&session.sock, addr, &msg);
+        }
+    }
+    for (_tf, hit) in &new_beams {
+        let msg = NetMsg::BeamFired {
+            origin: [hit.origin.x, hit.origin.y],
+            dir: [hit.dir.x, hit.dir.y],
+            length: hit.length,
+            weapon: hit.weapon.to_u8(),
+        };
+        for &addr in session.peers.values() {
+            let _ = send_to(&session.sock, addr, &msg);
+        }
+    }
+}
+
+/// Drain `PendingSignalFx` and spawn visual-only Mortar / Beam /
+/// Flame replicas. The owning peer keeps doing damage locally;
+/// receivers just see the visual.
+pub fn spawn_received_signal_fx(
+    mut commands: Commands,
+    pm: Option<Res<crate::palette::PaletteMaterials>>,
+    em: Option<Res<crate::effects::EffectMeshes>>,
+    mut inbox: ResMut<PendingSignalFx>,
+) {
+    if inbox.0.is_empty() { return; }
+    let (Some(pm), Some(em)) = (pm, em) else { inbox.0.clear(); return; };
+
+    for fx in inbox.0.drain(..) {
+        match fx {
+            SignalFx::Mortar { pos, target, weapon, splash_radius } => {
+                let Some(w) = crate::weapon::WeaponType::from_u8(weapon) else { continue };
+                let outer = pm.bullet_outer_for(w).clone();
+                let inner = pm.bullet_inner_for(w).clone();
+                // Reuse the production spawn — its `MortarShell` will
+                // arc to `target` and explode via the local
+                // `mortar_shell_tick`. Damage on the receiver side is
+                // 0 (we don't apply damage from someone else's shell).
+                crate::turret::mortar::spawn_mortar_shell(
+                    &mut commands, &em, &outer, &inner,
+                    pos, target, w, 0, splash_radius,
+                    None, Vec::new(),
+                );
+            }
+            SignalFx::Beam { origin, dir, length, weapon } => {
+                let Some(w) = crate::weapon::WeaponType::from_u8(weapon) else { continue };
+                let mid_pos = origin + dir * (length / 2.0);
+                let angle = (-dir.x).atan2(dir.y);
+                commands.spawn((
+                    Mesh2d(em.beam.clone()),
+                    MeshMaterial2d(pm.bullet_inner_for(w).clone()),
+                    Transform::from_xyz(mid_pos.x, mid_pos.y, 5.5)
+                        .with_rotation(Quat::from_rotation_z(angle))
+                        .with_scale(Vec3::new(0.0, 1.0, 1.0)),
+                    crate::beam::Beam {
+                        life: crate::balance::BEAM_LIFETIME,
+                        max_life: crate::balance::BEAM_LIFETIME,
+                    },
+                    RenderLayers::layer(PLAY_LAYER),
+                    RemoteVisualFx,
+                ));
+            }
+            SignalFx::Flame { pos, dir } => {
+                // Spawn a single flame puff at the broadcast position.
+                // Fixed constants (no per-puff randomisation) — the
+                // owning peer's flamethrower spawns at FPS rate, so
+                // the receiver getting one consistent puff per tick
+                // reads as a steady cone, even without identical
+                // jitter. Cheaper than dragging the full random
+                // particle params across the wire.
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                let speed: f32 = 140.0;
+                let life: f32 = 0.45;
+                let inner_scale: f32 = rng.gen_range(0.6..1.1);
+                let outer_scale: f32 = inner_scale * 1.6;
+                let pa = (-dir.x).atan2(dir.y);
+                let pdir = Vec2::new(-pa.sin(), pa.cos());
+                let vel_vec = pdir * speed;
+                commands.spawn((
+                    Mesh2d(em.particle.clone()),
+                    MeshMaterial2d(pm.fire_cool.clone()),
+                    Transform {
+                        translation: Vec3::new(pos.x, pos.y, 5.4),
+                        scale: Vec3::new(outer_scale, outer_scale, 1.0),
+                        ..default()
+                    },
+                    crate::effects::HitParticle { life, max_life: life, base_scale: outer_scale },
+                    crate::components::Velocity(vel_vec),
+                    RenderLayers::layer(PLAY_LAYER),
+                ));
+                commands.spawn((
+                    Mesh2d(em.particle.clone()),
+                    MeshMaterial2d(pm.fire_hot.clone()),
+                    Transform {
+                        translation: Vec3::new(pos.x, pos.y, 5.5),
+                        scale: Vec3::new(inner_scale, inner_scale, 1.0),
+                        ..default()
+                    },
+                    crate::effects::HitParticle { life, max_life: life, base_scale: inner_scale },
+                    crate::effects::FireParticle {
+                        mid: pm.fire.clone(),
+                        cool: pm.fire_cool.clone(),
+                        at_mid: false,
+                        at_cool: false,
+                    },
+                    crate::components::Velocity(vel_vec),
+                    RenderLayers::layer(PLAY_LAYER),
+                ));
+            }
+        }
+    }
+}
+
 /// Apply per-turret rotations from the latest `PeerSnapshot` to
 /// each ghost ship's turret base children. Snaps every frame (no
 /// lerp) — at 30Hz Transform cadence the visible step is ~33ms,
@@ -565,13 +935,30 @@ pub const GHOST_HP_SENTINEL: i32 = 1_000_000;
 #[derive(Resource, Default)]
 pub struct PendingPlayerDamage(pub Vec<(i32, Vec2)>);
 
-/// Bundled SystemParam: the death + revive + damage-relay inboxes,
-/// grouped so `recv_packets` stays under Bevy's 16-param cap.
+/// Bundled SystemParam: per-peer inboxes (death + revive + damage
+/// relay + peer-unit snapshots + signal-driven FX). Grouped so
+/// `recv_packets` stays under Bevy's 16-param cap.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct DeathRelayInboxes<'w> {
     pub team_tracker: ResMut<'w, super::death::TeamDeathTracker>,
     pub pending_revive: ResMut<'w, super::death::PendingRevive>,
     pub damage_player: ResMut<'w, PendingPlayerDamage>,
+    pub peer_units: ResMut<'w, PeerUnitsInbox>,
+    pub signal_fx: ResMut<'w, PendingSignalFx>,
+}
+
+/// Receive buffer for signal-driven effect packets (Mortar / Beam /
+/// Flame) that don't fit `BulletFired`'s shape. Drained by
+/// `spawn_received_signal_fx` which creates visual-only replicas.
+#[derive(Resource, Default)]
+pub struct PendingSignalFx(pub Vec<SignalFx>);
+
+/// One queued signal-fx event awaiting visual spawn on the receiver.
+#[derive(Clone, Copy, Debug)]
+pub enum SignalFx {
+    Mortar { pos: Vec2, target: Vec2, weapon: u8, splash_radius: f32 },
+    Beam   { origin: Vec2, dir: Vec2, length: f32, weapon: u8 },
+    Flame  { pos: Vec2, dir: Vec2 },
 }
 
 /// Client-only: drain incoming `DamagePlayer` packets, apply each
@@ -759,7 +1146,7 @@ fn spawn_remote_turret_visuals(
 
         let barrel = commands.spawn((
             Mesh2d(barrel_mesh.clone()),
-            MeshMaterial2d(turret_mat),
+            MeshMaterial2d(turret_mat.clone()),
             Transform::from_xyz(0.0, 1.8, 0.15),
             Visibility::Inherited,
             RenderLayers::layer(PLAY_LAYER),
@@ -771,6 +1158,56 @@ fn spawn_remote_turret_visuals(
             GhostTurretChild { slot_index: i },
         )).id();
         commands.entity(barrel).insert(ChildOf(base));
+
+        // Weapon-specific decorations for ghost turrets — simple
+        // visual hints so the peer's ship reads as having the right
+        // loadout (Blade, Booster, etc.). NOT full production
+        // visuals; just enough silhouette to identify the weapon.
+        match slot.weapon {
+            crate::weapon::WeaponType::Blade => {
+                // Two simple blade arms forming a "+". A more
+                // faithful tiered visual (1/2/3 blades per tier)
+                // would need barrels info; this read as "spinning
+                // blade" is enough for the peer.
+                let arm_mesh = meshes.add(Rectangle::new(1.0, 8.0));
+                let edge_mesh = meshes.add(Rectangle::new(6.0, 1.2));
+                let arm = commands.spawn((
+                    Mesh2d(arm_mesh),
+                    MeshMaterial2d(pm.turret_blade.clone()),
+                    Transform::from_xyz(0.0, 4.0, 0.05),
+                    Visibility::Inherited,
+                    RenderLayers::layer(PLAY_LAYER),
+                    GhostTurretChild { slot_index: i },
+                )).id();
+                commands.entity(arm).insert(ChildOf(base));
+                let edge = commands.spawn((
+                    Mesh2d(edge_mesh),
+                    MeshMaterial2d(pm.turret_blade.clone()),
+                    Transform::from_xyz(0.0, 8.0, 0.1),
+                    Visibility::Inherited,
+                    RenderLayers::layer(PLAY_LAYER),
+                    GhostTurretChild { slot_index: i },
+                )).id();
+                commands.entity(edge).insert(ChildOf(base));
+            }
+            crate::weapon::WeaponType::Booster => {
+                // Brighter ring on top of the deck pad — same
+                // silhouette as the production `BoosterRing`,
+                // just smaller. Reads as "this slot is glowing /
+                // supporting" without needing the pulse system.
+                let ring_mesh = meshes.add(Circle::new(1.5));
+                let ring = commands.spawn((
+                    Mesh2d(ring_mesh),
+                    MeshMaterial2d(pm.turret_booster.clone()),
+                    Transform::from_xyz(0.0, 0.0, 0.2),
+                    Visibility::Inherited,
+                    RenderLayers::layer(PLAY_LAYER),
+                    GhostTurretChild { slot_index: i },
+                )).id();
+                commands.entity(ring).insert(ChildOf(base));
+            }
+            _ => {}
+        }
     }
 }
 

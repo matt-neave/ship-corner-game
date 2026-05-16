@@ -203,13 +203,38 @@ pub fn sync_anchor_flail_decor(
     }
 }
 
+/// Spawn a standalone anchor-head visual at world position `pos` —
+/// used by the MP mirror path. Owner side uses `spawn_anchor_visual`
+/// directly with a parent slot entity; mirrors don't have the slot
+/// hierarchy so this wrapper creates a pivot at world coords and
+/// composes the tier-1 silhouette on top.
+///
+/// Tier defaults to 1 (basic hook) because the FriendlyUnitsSnapshot
+/// carries pos+rot only — barrels/tier isn't synced. Visually a tier
+/// mismatch reads as "they have a fancier anchor than I'm rendering"
+/// which is acceptable.
+pub fn spawn_flail_head_visual(
+    commands: &mut Commands,
+    pm: &PaletteMaterials,
+    meshes: &mut Assets<Mesh>,
+    pos: Vec2,
+) -> Entity {
+    let head = commands.spawn((
+        Transform::from_xyz(pos.x, pos.y, 1.6),
+        Visibility::Inherited,
+        RenderLayers::layer(PLAY_LAYER),
+    )).id();
+    spawn_anchor_visual(commands, meshes, pm, head, 1);
+    head
+}
+
 /// Build the per-tier anchor silhouette. Composition of small
 /// rectangles + triangles around the head pivot.
 ///
 /// - T1: simple triangular hook (flukes only).
 /// - T2: hook + horizontal crossbar (the stock).
 /// - T3: hook + stock + a small back-spike beneath the stock.
-fn spawn_anchor_visual(
+pub fn spawn_anchor_visual(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     pm: &PaletteMaterials,

@@ -82,10 +82,12 @@ use xp_sync::{
     LastBroadcastedXp, LastSeenLocalLevelUps, PendingLevelUpGrants, PendingXpSync,
 };
 use ghost::{
-    apply_ghost_turret_aims, apply_received_player_damage, apply_snapshots, cull_stale_ghosts,
-    despawn_all_ghosts, detect_stale_peers, recv_packets, refresh_ghost_turrets,
-    relay_ghost_damage, send_heartbeat, send_local_transform, spawn_missing_ghosts,
-    HeartbeatTimer, PeerSnapshots, PendingPlayerDamage, TransformSendTimer,
+    apply_ghost_turret_aims, apply_peer_units_snapshot, apply_received_player_damage,
+    apply_snapshots, cull_stale_ghosts, despawn_all_ghosts, detect_stale_peers,
+    emit_flame_signals, emit_mortar_and_beam_signals, recv_packets, refresh_ghost_turrets,
+    relay_ghost_damage, send_friendly_units_snapshot, send_heartbeat, send_local_transform,
+    spawn_missing_ghosts, spawn_received_signal_fx, HeartbeatTimer, PeerSnapshots,
+    PeerUnitsInbox, PendingPlayerDamage, PendingSignalFx, TransformSendTimer, UnitSnapshotTimer,
 };
 use net::{bind_socket, local_lan_ip, send_to, NetMsg, HOST_PORT};
 
@@ -261,6 +263,9 @@ impl Plugin for MultiplayerPlugin {
             .insert_resource(TransformSendTimer::default())
             .insert_resource(HeartbeatTimer::default())
             .insert_resource(PendingPlayerDamage::default())
+            .insert_resource(UnitSnapshotTimer::default())
+            .insert_resource(PeerUnitsInbox::default())
+            .insert_resource(PendingSignalFx::default())
             .insert_resource(NextNetEntityId::default())
             .insert_resource(EnemySnapshotTimer::default())
             .insert_resource(LatestEnemySnapshot::default())
@@ -349,6 +354,23 @@ impl Plugin for MultiplayerPlugin {
                 relay_ghost_damage
                     .after(crate::bullet::bullet_collisions),
                 apply_received_player_damage
+                    .after(recv_packets),
+                // Autonomous-unit (heli / shark / octopus) sync —
+                // each peer broadcasts their unit positions; peers
+                // render visual-only mirrors around the broadcaster's
+                // ghost so deployed units are visible cross-peer.
+                send_friendly_units_snapshot,
+                apply_peer_units_snapshot
+                    .after(recv_packets),
+                // Mortar shells + Railgun beams — signal-driven
+                // visual replication (these don't fire `Bullet`
+                // entities so they slip past `emit_bullet_fired_signals`).
+                emit_mortar_and_beam_signals,
+                // Flamethrower cone — per-frame puff signal per
+                // active flamethrower slot. Continuous (not "Added"-
+                // detectable) so emits each frame the burner is hot.
+                emit_flame_signals,
+                spawn_received_signal_fx
                     .after(recv_packets),
             ).run_if(in_state(AppState::Playing)))
             // Force a one-shot loadout broadcast each time we enter
@@ -1178,6 +1200,9 @@ mod tests {
         app.insert_resource(TransformSendTimer::default());
         app.insert_resource(HeartbeatTimer::default());
         app.insert_resource(PendingPlayerDamage::default());
+        app.insert_resource(UnitSnapshotTimer::default());
+        app.insert_resource(PeerUnitsInbox::default());
+        app.insert_resource(PendingSignalFx::default());
         app.insert_resource(NextNetEntityId::default());
         app.insert_resource(EnemySnapshotTimer::default());
         app.insert_resource(LatestEnemySnapshot::default());
@@ -2592,6 +2617,7 @@ mod tests {
                     dir: bevy::math::Vec2::new(1.0, 0.0), // toward enemy
                     weapon: WeaponType::Standard.to_u8(),
                     range: 80.0,
+                    target_net_id: 0,
                 });
             },
         ).unwrap();
@@ -2833,6 +2859,7 @@ mod tests {
                     dir: bevy::math::Vec2::new(0.0, 1.0),
                     weapon: crate::weapon::WeaponType::Sniper.to_u8(),
                     range: 80.0,
+                    target_net_id: 0,
                 });
             },
         ).unwrap();

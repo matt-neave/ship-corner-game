@@ -183,80 +183,88 @@ pub fn sync_sharknet_sharks(
                 + Vec2::new(phase.cos(), phase.sin()) * 18.0
                 + Vec2::new(lateral_x_for(n, lateral), 0.0);
 
-            // Body: wider, blunter capsule than a regular bullet so
-            // the silhouette reads as a fish, not a torpedo.
-            // (radius=2.0, half-length=3.0 → 4×6 outline.)
-            let body_mesh = meshes.add(Capsule2d::new(2.0, 3.0));
-            let body_mat = pm.shark_body.clone();
-
-            // Tail fluke — mesh AUTHORED with the apex at local
-            // origin so its Transform position can be the junction
-            // with the body, and its rotation pivots around that
-            // junction. Trailing edge extends 5 units behind the
-            // apex, same visual length as the previous mesh.
-            let tail_mesh = meshes.add(Triangle2d::new(
-                Vec2::new( 0.0,  0.0),
-                Vec2::new(-3.0, -5.0),
-                Vec2::new( 3.0, -5.0),
-            ));
-
-            // Dorsal fin — small forward-pointing triangle on top of
-            // the body, slightly aft of the head. Darker than the
-            // body so it reads as a separate fin instead of a body
-            // highlight. Locked to the body's rotation; doesn't
-            // counter-wiggle.
-            let dorsal_mesh = meshes.add(Triangle2d::new(
-                Vec2::new(-0.8, -0.6),
-                Vec2::new( 0.8, -0.6),
-                Vec2::new( 0.0,  1.4),
-            ));
-            let dorsal_mat = materials.add(Color::srgb(0.26, 0.28, 0.32));
-
-            let shark_entity = commands.spawn((
-                Mesh2d(body_mesh),
-                MeshMaterial2d(body_mat.clone()),
-                Transform::from_xyz(initial_pos.x, initial_pos.y, 1.5),
-                Shark {
-                    owner_slot: slot_idx,
-                    lateral_idx: lateral,
-                    state: SharkState::Wander,
-                    state_timer: WANDER_DURATION,
-                    charge_dir: Vec2::Y,
-                    wander_dir: Vec2::Y,
-                    wander_turn_timer: 0.0,
-                    hit_this_charge: Vec::new(),
-                    target: None,
-                    made_contact: false,
-                },
-                RenderLayers::layer(PLAY_LAYER),
-                Visibility::Inherited,
-            )).id();
-
-            // Tail: junction-pivot is at body's rear (y=-2). The
-            // counter-wiggle pass rotates this Transform in opposite
-            // phase to the body, sweeping the trailing edge wide
-            // while the apex stays glued to the body.
-            let tail = commands.spawn((
-                Mesh2d(tail_mesh),
-                MeshMaterial2d(body_mat),
-                Transform::from_xyz(0.0, -2.0, -0.05),
-                SharkTail { shark: shark_entity },
-                RenderLayers::layer(PLAY_LAYER),
-            )).id();
-            commands.entity(tail).insert(ChildOf(shark_entity));
-
-            // Dorsal fin: sits slightly ahead of the body's centre on
-            // local +Y, at a higher z so it stays on top of the body
-            // capsule even when the body wiggles.
-            let dorsal = commands.spawn((
-                Mesh2d(dorsal_mesh),
-                MeshMaterial2d(dorsal_mat),
-                Transform::from_xyz(0.0, 0.2, 0.05),
-                RenderLayers::layer(PLAY_LAYER),
-            )).id();
-            commands.entity(dorsal).insert(ChildOf(shark_entity));
+            let shark_entity = spawn_shark_visual(
+                &mut commands, &pm, &mut meshes, &mut materials,
+                initial_pos, true,
+            );
+            commands.entity(shark_entity).insert(Shark {
+                owner_slot: slot_idx,
+                lateral_idx: lateral,
+                state: SharkState::Wander,
+                state_timer: WANDER_DURATION,
+                charge_dir: Vec2::Y,
+                wander_dir: Vec2::Y,
+                wander_turn_timer: 0.0,
+                hit_this_charge: Vec::new(),
+                target: None,
+                made_contact: false,
+            });
         }
     }
+}
+
+/// Spawn the full shark visual hierarchy (body capsule, tail fluke,
+/// dorsal fin) and return the root entity. Pure visuals — no AI /
+/// damage / state components.
+///
+/// Callers layer their gameplay tags on top:
+/// - `sync_sharknet_sharks` (owner side) → `insert(Shark { … })`
+/// - `apply_peer_units_snapshot` (mirror side) → `insert(PeerUnitMirror { … })`
+///
+/// `with_tail_marker` controls whether the tail child carries the
+/// `SharkTail { shark }` component that drives the counter-wiggle
+/// system. Mirrors don't need the wiggle (they're driven by snapshot
+/// position only), so pass `false` there. Owner side passes `true`.
+pub fn spawn_shark_visual(
+    commands: &mut Commands,
+    pm: &PaletteMaterials,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    pos: Vec2,
+    with_tail_marker: bool,
+) -> Entity {
+    let body_mesh = meshes.add(Capsule2d::new(2.0, 3.0));
+    let body_mat = pm.shark_body.clone();
+    let tail_mesh = meshes.add(Triangle2d::new(
+        Vec2::new( 0.0,  0.0),
+        Vec2::new(-3.0, -5.0),
+        Vec2::new( 3.0, -5.0),
+    ));
+    let dorsal_mesh = meshes.add(Triangle2d::new(
+        Vec2::new(-0.8, -0.6),
+        Vec2::new( 0.8, -0.6),
+        Vec2::new( 0.0,  1.4),
+    ));
+    let dorsal_mat = materials.add(Color::srgb(0.26, 0.28, 0.32));
+
+    let shark_entity = commands.spawn((
+        Mesh2d(body_mesh),
+        MeshMaterial2d(body_mat.clone()),
+        Transform::from_xyz(pos.x, pos.y, 1.5),
+        RenderLayers::layer(PLAY_LAYER),
+        Visibility::Inherited,
+    )).id();
+
+    let tail = commands.spawn((
+        Mesh2d(tail_mesh),
+        MeshMaterial2d(body_mat),
+        Transform::from_xyz(0.0, -2.0, -0.05),
+        RenderLayers::layer(PLAY_LAYER),
+    )).id();
+    if with_tail_marker {
+        commands.entity(tail).insert(SharkTail { shark: shark_entity });
+    }
+    commands.entity(tail).insert(ChildOf(shark_entity));
+
+    let dorsal = commands.spawn((
+        Mesh2d(dorsal_mesh),
+        MeshMaterial2d(dorsal_mat),
+        Transform::from_xyz(0.0, 0.2, 0.05),
+        RenderLayers::layer(PLAY_LAYER),
+    )).id();
+    commands.entity(dorsal).insert(ChildOf(shark_entity));
+
+    shark_entity
 }
 
 /// Per-frame state machine. Free-roam: during Wander each shark

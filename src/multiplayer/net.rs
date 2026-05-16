@@ -174,11 +174,20 @@ pub enum NetMsg {
     /// peer's bullets appear on every screen. Signal-driven (not
     /// AI-driven on the remote side) so timing matches the actual
     /// firing peer instead of drifting.
+    ///
+    /// `target_net_id` is set when the bullet is a HomingMissile —
+    /// it carries the target enemy's `NetEntityId` so the receiver
+    /// can look up the corresponding mirror and attach a local
+    /// `HomingMissile` component to the visual bullet. The visual
+    /// missile then homes locally on the peer's side, matching the
+    /// owner's curving flight path. `0` means "no target" (straight
+    /// bullet; not a missile).
     BulletFired {
         pos:    [f32; 2],
         dir:    [f32; 2],
         weapon: u8,
         range:  f32,
+        target_net_id: u32,
     },
     /// Either → Host: "my local player just died." Host tracks per-
     /// peer alive state in `TeamDeathTracker` and only triggers a
@@ -190,12 +199,15 @@ pub enum NetMsg {
     /// rejoin the action on the next level. Single-target id is
     /// `u8::MAX` for "everyone revives" (the common case).
     PeerRevived { id: u8 },
-    /// Client → Host: "I've finished shopping (clicked CLOSE in
-    /// `Customize`)." Host tracks these in `TeamReadyTracker` and
-    /// only advances to the next state once every peer is ready.
-    /// Host self-reports its own ready locally (no echo back to
-    /// itself).
-    PeerReady { id: u8 },
+    /// Either → others: "I've clicked READY in my current per-peer
+    /// state." `sender_state` is the sender's `AppState::to_u8` at
+    /// send time. Receivers DROP packets where `sender_state` !=
+    /// their local state — otherwise stale broadcasts from the
+    /// previous state (sent in the frame right before the
+    /// all-ready advance fired) repopulate the new state's tracker
+    /// the moment recv_packets drains the UDP buffer, and the host
+    /// auto-advances on its own click without waiting for the peer.
+    PeerReady { id: u8, sender_state: u8 },
     /// Host → all peers: "I just crossed `count` XP threshold(s) —
     /// every peer should add that many picks to their local
     /// `LevelUpsPending`."
@@ -223,6 +235,94 @@ pub enum NetMsg {
         /// particle spawn so the peer sees where they were hit.
         hit_pos: [f32; 2],
     },
+    /// Per-peer broadcast: positions + rotations of every autonomous
+    /// unit (helicopter / shark / octopus) the sender currently has
+    /// deployed. Receivers render visual-only mirrors so the OTHER
+    /// peer sees those units around the broadcaster's ghost ship.
+    ///
+    /// `from_peer` lets receivers filter their own loopback (they
+    /// don't want to mirror their own units).
+    ///
+    /// Snapshot-shaped: the receiver despawns its existing mirrors
+    /// for this peer and respawns from the entries. Cheap because
+    /// each peer fields at most a small handful of units (Helipad +
+    /// SharkNet + Cage slots, usually 0–4 units total).
+    FriendlyUnitsSnapshot {
+        from_peer: u8,
+        units: Vec<FriendlyUnitEntry>,
+    },
+    /// Either → others: "I just fired a mortar shell from `pos` to
+    /// `target`." Receivers spawn a visual-only `MortarShell` that
+    /// follows the same arc + explodes at `target`. No damage
+    /// applied on the receiver side — the owning peer's local
+    /// `mortar_shell_tick` does the damage authoritatively.
+    MortarFired {
+        pos: [f32; 2],
+        target: [f32; 2],
+        weapon: u8,
+        splash_radius: f32,
+    },
+    /// Either → others: "I just fired a railgun beam from `origin`
+    /// in `dir` for `length` units." Receivers spawn a visual-only
+    /// `Beam` that grows then fades over `BEAM_LIFETIME`. No
+    /// `BeamHit` / `BeamPending` so receivers don't double-damage.
+    BeamFired {
+        origin: [f32; 2],
+        dir: [f32; 2],
+        length: f32,
+        weapon: u8,
+    },
+    /// Either → others: "I emitted a frame of flamethrower puffs
+    /// from `pos` in `dir`." One per active flamethrower per frame.
+    /// Receivers spawn the same particle pair (dark outer + hot
+    /// inner) at the same position so the cone reads identically.
+    FlameTick {
+        pos: [f32; 2],
+        dir: [f32; 2],
+    },
+}
+
+/// One entry in a `FriendlyUnitsSnapshot`. `kind` is a small u8
+/// discriminant; see [`FriendlyUnitKind`] for the mapping.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub struct FriendlyUnitEntry {
+    pub kind: u8,
+    pub pos: [f32; 2],
+    pub rot: f32,
+}
+
+/// Wire-format discriminants for autonomous unit kinds. Append-only
+/// like the other to_u8/from_u8 enums in this module — older clients
+/// skip unknown kinds rather than crashing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FriendlyUnitKind {
+    Helicopter,
+    Shark,
+    Octopus,
+    /// AnchorFlail head — the orbiting anchor mass at the end of a
+    /// flail chain. Visual-only on the receiver side; the owning
+    /// peer's tick does the actual hit detection.
+    FlailHead,
+}
+
+impl FriendlyUnitKind {
+    pub fn to_u8(self) -> u8 {
+        match self {
+            FriendlyUnitKind::Helicopter => 0,
+            FriendlyUnitKind::Shark      => 1,
+            FriendlyUnitKind::Octopus    => 2,
+            FriendlyUnitKind::FlailHead  => 3,
+        }
+    }
+    pub fn from_u8(n: u8) -> Option<Self> {
+        Some(match n {
+            0 => FriendlyUnitKind::Helicopter,
+            1 => FriendlyUnitKind::Shark,
+            2 => FriendlyUnitKind::Octopus,
+            3 => FriendlyUnitKind::FlailHead,
+            _ => return None,
+        })
+    }
 }
 
 /// Plain-data mirror of `crate::stats::PlayerStats`. Each `Stat` has

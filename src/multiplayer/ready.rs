@@ -81,11 +81,18 @@ pub fn announce_local_ready(
     mode: Res<NetMode>,
     session: Option<Res<NetSession>>,
     local: Res<LocalReadyState>,
+    state: Res<State<AppState>>,
 ) {
     let Some(session) = session else { return };
     if !matches!(*mode, NetMode::Connected) { return };
     if !local.ready { return; }
-    let msg = NetMsg::PeerReady { id: session.my_id };
+    let msg = NetMsg::PeerReady {
+        id: session.my_id,
+        // Stamp our current state — receivers drop packets that
+        // don't match their own local state, killing the stale-
+        // packet phantom-ready bug at the source.
+        sender_state: state.get().to_u8(),
+    };
     for &addr in session.peers.values() {
         if let Err(e) = send_to(&session.sock, addr, &msg) {
             bevy::log::warn!("multiplayer: PeerReady send failed: {e}");

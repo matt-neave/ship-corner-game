@@ -59,7 +59,7 @@ const MISSILE_SPEED: f32 = 60.0;
 const MISSILE_RANGE: f32 = 300.0;
 /// Max angular adjustment per second. Small enough that fast Scouts can
 /// break lock by juking at the right moment.
-const MISSILE_TURN_RATE: f32 = 3.0;
+pub const MISSILE_TURN_RATE: f32 = 3.0;
 
 fn spawn_homing_missile(
     commands: &mut Commands,

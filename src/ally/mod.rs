@@ -65,7 +65,7 @@ pub use mine::{
 };
 pub use missile::{
     homing_missile_track, missile_launcher_fire, spawn_homing_missile_full,
-    MissileLauncher,
+    HomingMissile, MissileLauncher,
 };
 pub use oil::{
     oil_slick_burn_tick, oil_slick_grow_tick, oil_tanker_cycle,

@@ -74,6 +74,14 @@ pub fn detect_local_death(
     session: Option<Res<NetSession>>,
     mut local_death: ResMut<LocalDeathState>,
     local: Query<(Entity, &Health), With<LocalPlayer>>,
+    // Autonomous units owned by the local player. Despawn alongside
+    // the ship so the visual matches the "we're dead" state — sharks
+    // shouldn't keep swimming after their owner sinks. Mirrors on
+    // the OTHER peer will also disappear via the next
+    // FriendlyUnitsSnapshot (we no longer have any units to report).
+    helis: Query<Entity, With<crate::turret::heli::Helicopter>>,
+    sharks: Query<Entity, With<crate::turret::sharknet::Shark>>,
+    octs: Query<Entity, With<crate::octopus::Octopus>>,
 ) {
     // Solo: single-player death path (level_complete_check) handles
     // it. Don't double-process.
@@ -93,6 +101,9 @@ pub fn detect_local_death(
     // Transition alive → dead.
     local_death.dead = true;
     commands.entity(local_entity).despawn();
+    for e in helis.iter().chain(sharks.iter()).chain(octs.iter()) {
+        commands.entity(e).try_despawn();
+    }
 
     // Tell the host we died. (Self-send included if host is
     // local — host's recv_packets handles the host's own dying

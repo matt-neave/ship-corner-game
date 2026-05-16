@@ -126,18 +126,14 @@ pub fn apply_state_change(
 ///
 /// Pass-through (client participates locally):
 /// - `Playing` / `Lobby` / `MainMenu`
-/// - `Customize` — each peer runs their own shop with their own
-///   scrap / RNG / TurretConfig; sync only happens at READY-time
-///   via the per-peer broadcasts in `multiplayer::loadout`.
-/// - `LevelUp` — each peer picks their own buff card. Pending
-///   levelups arrive per-peer via [`multiplayer::xp_sync::
-///   LevelUpGranted`].
-/// - `HullSelect` — each peer picks their own hull. Stats are local
-///   already (per-peer PlayerStats), and turret slot positions are
-///   global, so per-peer hull choice falls out naturally.
+/// - `Customize` / `LevelUp` / `HullSelect` — per-peer states
+/// - `GameOver` / `Win` — end-of-run screens belong on BOTH peers'
+///   screens so they both see the result. (Used to map to
+///   `WaitingForHost`, which left the dead client stuck on the
+///   "YOU DIED" overlay forever instead of seeing GAME OVER.)
 ///
 /// Everything else (Map, StageComplete, BossReward, BossIntro,
-/// GameOver, Paused, Win) maps to `WaitingForHost`.
+/// Paused) maps to `WaitingForHost`.
 pub fn client_state_for(host: AppState) -> AppState {
     match host {
         AppState::Playing
@@ -145,7 +141,9 @@ pub fn client_state_for(host: AppState) -> AppState {
         | AppState::MainMenu
         | AppState::Customize
         | AppState::LevelUp
-        | AppState::HullSelect => host,
+        | AppState::HullSelect
+        | AppState::GameOver
+        | AppState::Win => host,
         _ => AppState::WaitingForHost,
     }
 }
@@ -202,7 +200,8 @@ mod tests {
 
     /// Host-only flow states map to WaitingForHost on the client.
     /// Per-peer states (Customize/LevelUp/HullSelect) are excluded —
-    /// each peer runs their own UI.
+    /// each peer runs their own UI. GameOver/Win are excluded so
+    /// end-of-run screens land on both peers.
     #[test]
     fn client_state_for_maps_host_menus_to_waiting() {
         for host_state in [
@@ -211,8 +210,6 @@ mod tests {
             AppState::BossReward,
             AppState::BossIntro,
             AppState::Paused,
-            AppState::GameOver,
-            AppState::Win,
         ] {
             assert_eq!(
                 client_state_for(host_state),

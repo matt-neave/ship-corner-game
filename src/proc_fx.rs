@@ -51,4 +51,8 @@ pub struct BulletFiredEvent {
     /// Effective range. Receivers use it to pick a matching lifetime
     /// so the visual fades at the same time as the firing peer's.
     pub range:  f32,
+    /// For homing missiles: the target enemy's `NetEntityId.0`.
+    /// `0` means "no target / not a missile" — receivers spawn a
+    /// straight visual bullet in that case.
+    pub target_net_id: u32,
 }

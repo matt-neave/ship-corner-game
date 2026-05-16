@@ -324,7 +324,6 @@ pub fn sync_octopus_units(
 
     let Ok(ship_tf) = ship_q.single() else { return; };
     let ship_pos = ship_tf.translation.truncate();
-    let body_mesh = meshes.add(Circle::new(OCTOPUS_BODY_RADIUS));
 
     for (idx, slot) in cfg.slots.iter().enumerate() {
         if !slot.equipped { continue; }
@@ -337,18 +336,35 @@ pub fn sync_octopus_units(
         let phase = (idx as f32) * std::f32::consts::TAU / 8.0;
         let init_pos = ship_pos + Vec2::new(phase.cos(), phase.sin()) * 14.0;
 
-        let body = commands.spawn((
-            Mesh2d(body_mesh.clone()),
-            MeshMaterial2d(pm.octopus_body.clone()),
-            Transform::from_xyz(init_pos.x, init_pos.y, 1.5),
-            Octopus { owner_slot: idx, spawn_cd: 0.0 },
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
+        let body = spawn_octopus_visual(&mut commands, &pm, &mut meshes, init_pos, true);
+        commands.entity(body).insert(Octopus { owner_slot: idx, spawn_cd: 0.0 });
+    }
+}
 
-        // Spawn a flat drift trail behind the body — same ribbon
-        // shape as the boat trail but shorter / thinner, so the
-        // direction of travel reads at a glance without dominating
-        // the visual.
+/// Spawn the octopus body (circle mesh) and optionally a drift
+/// trail. Returns the body entity. Pure visuals — no AI / gameplay
+/// components.
+///
+/// `with_trail = false` for mirrors (the trail's update system reads
+/// the body's Transform every frame; for snapshot-driven mirrors a
+/// trail would only sample at the 15Hz snapshot cadence, looking
+/// chunky — better to skip it).
+pub fn spawn_octopus_visual(
+    commands: &mut Commands,
+    pm: &PaletteMaterials,
+    meshes: &mut Assets<Mesh>,
+    pos: Vec2,
+    with_trail: bool,
+) -> Entity {
+    let body_mesh = meshes.add(Circle::new(OCTOPUS_BODY_RADIUS));
+    let body = commands.spawn((
+        Mesh2d(body_mesh),
+        MeshMaterial2d(pm.octopus_body.clone()),
+        Transform::from_xyz(pos.x, pos.y, 1.5),
+        RenderLayers::layer(PLAY_LAYER),
+    )).id();
+
+    if with_trail {
         let trail_mesh = meshes.add(empty_dynamic_mesh());
         commands.spawn((
             Mesh2d(trail_mesh),
@@ -362,6 +378,8 @@ pub fn sync_octopus_units(
             RenderLayers::layer(PLAY_LAYER),
         ));
     }
+
+    body
 }
 
 /// Sample-and-rebuild the octopus drift ribbon. Despawn orphan
