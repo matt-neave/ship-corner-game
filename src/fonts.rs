@@ -35,7 +35,7 @@ pub fn setup_pixel_font(asset_server: Res<AssetServer>, mut commands: Commands) 
     // 1:1 with the bitmap glyph shapes and stay crisp. At
     // non-multiples (14 / 18) the font resamples and edges blur.
     commands.insert_resource(PixelFont(
-        asset_server.load("fonts/pixel_operator/PixelOperator.ttf"),
+        asset_server.load("fonts/pixel_operator/PixelOperator8.ttf"),
     ));
     commands.insert_resource(ThaleahFont(
         asset_server.load("fonts/ThaleahFat/ThaleahFat.ttf"),

@@ -17,7 +17,6 @@
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
 use bevy::sprite::Anchor;
-use bevy::text::FontSmoothing;
 
 use crate::balance::{CUSTOMIZE_LAYER, UPSCALE_LAYER};
 use crate::stats::{PlayerStats, StatKind};
@@ -66,7 +65,7 @@ const DEBUG_BTN_HIT: f32 = 6.0;
 /// `right_edge_x` is the x-coordinate of the column's right edge in
 /// spec coords; `top_y` is the centre y of the first row. The whole
 /// column flows downward by `ROW_STEP` per row.
-pub fn spawn_stats_panel(commands: &mut Commands, right_edge_x: f32, top_y: f32) {
+pub fn spawn_stats_panel(commands: &mut Commands, font: &crate::fonts::PixelFont, right_edge_x: f32, top_y: f32) {
     let label_x = right_edge_x - ROW_WIDTH;
     let value_x = right_edge_x;
     // Row-wide hover hit area covers label + value (not the debug
@@ -75,10 +74,10 @@ pub fn spawn_stats_panel(commands: &mut Commands, right_edge_x: f32, top_y: f32)
     let hover_size = Vec2::new(ROW_WIDTH, ROW_STEP);
     for (i, &kind) in StatKind::ALL.iter().enumerate() {
         let y = top_y - i as f32 * ROW_STEP;
-        spawn_debug_button(commands, Vec2::new(label_x + MINUS_OFFSET, y), kind, -1);
-        spawn_debug_button(commands, Vec2::new(label_x + PLUS_OFFSET, y), kind, 1);
-        spawn_label(commands, Vec2::new(label_x, y), kind.label());
-        spawn_value(commands, Vec2::new(value_x, y), kind);
+        spawn_debug_button(commands, font, Vec2::new(label_x + MINUS_OFFSET, y), kind, -1);
+        spawn_debug_button(commands, font, Vec2::new(label_x + PLUS_OFFSET, y), kind, 1);
+        spawn_label(commands, font, Vec2::new(label_x, y), kind.label());
+        spawn_value(commands, font, Vec2::new(value_x, y), kind);
         commands.spawn((
             Transform::from_translation(Vec3::new(hover_centre_x, y, 2.0)),
             HitArea { size: hover_size },
@@ -173,14 +172,10 @@ pub fn sync_stats_panel(
     }
 }
 
-fn spawn_label(commands: &mut Commands, spec_pos: Vec2, text: &str) {
+fn spawn_label(commands: &mut Commands, font: &crate::fonts::PixelFont, spec_pos: Vec2, text: &str) {
     commands.spawn((
         Text2d::new(text),
-        TextFont {
-            font_size: LABEL_FONT,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, LABEL_FONT),
         // Brighter near-white so the stat names are easy to read
         // against the dark customize backdrop. Previously a muted
         // mid-gray that washed out at small sizes.
@@ -194,7 +189,7 @@ fn spawn_label(commands: &mut Commands, spec_pos: Vec2, text: &str) {
     ));
 }
 
-fn spawn_debug_button(commands: &mut Commands, spec_pos: Vec2, kind: StatKind, dir: i32) {
+fn spawn_debug_button(commands: &mut Commands, font: &crate::fonts::PixelFont, spec_pos: Vec2, kind: StatKind, dir: i32) {
     let glyph = if dir > 0 { "+" } else { "-" };
     // Visible glyph (text on UPSCALE_LAYER). Toggled visible by the
     // shared `CustomizeText` sync AND by `sync_stat_debug_visibility`
@@ -202,11 +197,7 @@ fn spawn_debug_button(commands: &mut Commands, spec_pos: Vec2, kind: StatKind, d
     // `+/-` controls only appear after the player presses `#`.
     commands.spawn((
         Text2d::new(glyph),
-        TextFont {
-            font_size: LABEL_FONT,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, LABEL_FONT),
         TextColor(Color::srgb(0.85, 0.88, 0.94)),
         Anchor::Center,
         Transform::from_xyz(0.0, 0.0, 100.0),
@@ -254,14 +245,10 @@ pub fn sync_stat_debug_visibility(
     }
 }
 
-fn spawn_value(commands: &mut Commands, spec_pos: Vec2, kind: StatKind) {
+fn spawn_value(commands: &mut Commands, font: &crate::fonts::PixelFont, spec_pos: Vec2, kind: StatKind) {
     commands.spawn((
         Text2d::new(""),
-        TextFont {
-            font_size: VALUE_FONT,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, VALUE_FONT),
         TextColor(Color::srgb(1.0, 0.85, 0.30)),
         Anchor::CenterRight,
         Transform::from_xyz(0.0, 0.0, 100.0),

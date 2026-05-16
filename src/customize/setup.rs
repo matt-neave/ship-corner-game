@@ -24,7 +24,6 @@
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
 use bevy::sprite::MeshMaterial2d;
-use bevy::text::FontSmoothing;
 
 use crate::balance::{
     CUSTOMIZE_INTERNAL_H, CUSTOMIZE_INTERNAL_W, CUSTOMIZE_LAYER, HULL_LEN, HULL_WIDTH,
@@ -282,6 +281,7 @@ pub fn setup_customize_ui(
     );
     spawn_text(
         &mut commands,
+        &pixel_font,
         scrap_pos,
         format!("SCRAP {}", scrap.0),
         Color::srgb(1.0, 0.85, 0.30),
@@ -314,7 +314,7 @@ pub fn setup_customize_ui(
         Z_TILE_BG,
         super::CustomizeCloseBtn,
     );
-    spawn_text(&mut commands, close_pos, "CLOSE", Color::WHITE, 14.0, CloseLabelTag);
+    spawn_text(&mut commands, &pixel_font, close_pos, "CLOSE", Color::WHITE, 14.0, CloseLabelTag);
     commands.spawn((
         Transform::from_translation(close_pos.extend(Z_TILE_BG)),
         HitArea { size: Vec2::new(34.0, 12.0) },
@@ -340,12 +340,12 @@ pub fn setup_customize_ui(
     // sits clearly below the SCRAP counter (both top-left). The previous
     // y=76 placed SHOP at y=90 vs SCRAP at y=88 — they overlapped.
     let shop_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 40.0;
-    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y + 14.0), "SHOP", Color::srgb(1.0, 0.85, 0.30), 18.0, ShopHeaderTag);
-    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y), "TURRETS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
+    spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y + 14.0), "SHOP", Color::srgb(1.0, 0.85, 0.30), 18.0, ShopHeaderTag);
+    spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y), "TURRETS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
     for idx in 0..3usize {
         let x = shop_x + (idx as f32 - 1.0) * (SHOP_TILE + tile_gap);
         let y = shop_top_y - 16.0;
-        spawn_shop_turret_tile(&mut commands, &mut meshes, &mut materials, idx, Vec2::new(x, y));
+        spawn_shop_turret_tile(&mut commands, &mut meshes, &mut materials, &pixel_font, idx, Vec2::new(x, y));
     }
     // Vertical layout — each row leaves room for its tile body PLUS
     // its name + cost label below before the next section header. The
@@ -353,21 +353,21 @@ pub fn setup_customize_ui(
     // 14 below that, etc. Bumping any of these requires checking the
     // labels (`spawn_shop_*_tile` apply offsets relative to the tile
     // pos) for overlap with the next row's header.
-    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y - 52.0), "RUNES", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
+    spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y - 52.0), "RUNES", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
     for idx in 0..2usize {
         // Wider gap between the two rune sockets so the larger
         // name labels under them have room to breathe.
         let x = shop_x + (idx as f32 - 0.5) * (SOCKET + 22.0);
         let y = shop_top_y - 68.0;
-        spawn_shop_rune_tile(&mut commands, &mut meshes, &mut materials, idx, Vec2::new(x, y));
+        spawn_shop_rune_tile(&mut commands, &mut meshes, &mut materials, &pixel_font, idx, Vec2::new(x, y));
     }
 
     // Stat-modifier cards — 3 click-to-buy options below the runes.
     // Header sits well above the card-row top so the taller mod
     // cards (now 36 spec px tall to fit trade-off labels) don't
     // creep up over the "MODS" text.
-    spawn_text(&mut commands, Vec2::new(shop_x, shop_top_y - 92.0), "MODS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
-    super::shop_mods::spawn_mod_cards(&mut commands, shop_x, shop_top_y - 122.0);
+    spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y - 92.0), "MODS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
+    super::shop_mods::spawn_mod_cards(&mut commands, &pixel_font, shop_x, shop_top_y - 122.0);
 
     // Reroll button — sits at the bottom of the shop column. Costs
     // `SHOP_REROLL_COST` scrap (`drag::SHOP_REROLL_COST`); refills every
@@ -388,6 +388,7 @@ pub fn setup_customize_ui(
     );
     spawn_text(
         &mut commands,
+        &pixel_font,
         reroll_pos,
         format!("REROLL {}", super::drag::SHOP_REROLL_COST),
         Color::WHITE,
@@ -415,7 +416,7 @@ pub fn setup_customize_ui(
         // Game port (-X) → spec +Y (top).
         let spec = Vec2::new(gy * SHIP_SCALE, -gx * SHIP_SCALE);
         let pos = ship_centre + spec;
-        spawn_ship_slot(&mut commands, &mut meshes, &mut materials, slot, pos);
+        spawn_ship_slot(&mut commands, &mut meshes, &mut materials, &pixel_font, slot, pos);
         spawn_rune_triplet_for_slot(&mut commands, &mut meshes, &mut materials, slot, pos);
     }
 
@@ -424,7 +425,7 @@ pub fn setup_customize_ui(
     // top row begins below the CLOSE button.
     let stats_right_edge = canvas_half_w - 6.0;
     let stats_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 28.0;
-    super::stats_panel::spawn_stats_panel(&mut commands, stats_right_edge, stats_top_y);
+    super::stats_panel::spawn_stats_panel(&mut commands, &pixel_font, stats_right_edge, stats_top_y);
 
     // ---------- Sell strip ----------
     // Stacked two-line block below the ship: bold "SELL" header on
@@ -470,6 +471,7 @@ pub fn setup_customize_ui(
     // the strip).
     spawn_text(
         &mut commands,
+        &pixel_font,
         sell_pos,
         "SELL",
         Color::WHITE,
@@ -478,6 +480,7 @@ pub fn setup_customize_ui(
     );
     spawn_text(
         &mut commands,
+        &pixel_font,
         sell_pos,
         "",
         Color::srgb(1.00, 0.85, 0.30),
@@ -584,6 +587,7 @@ pub fn spawn_container<M: Component + Copy>(
 
 fn spawn_text<M: Component>(
     commands: &mut Commands,
+    font: &crate::fonts::PixelFont,
     spec_pos: Vec2,
     text: impl Into<String>,
     color: Color,
@@ -592,11 +596,7 @@ fn spawn_text<M: Component>(
 ) -> Entity {
     commands.spawn((
         Text2d::new(text),
-        TextFont {
-            font_size,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, font_size),
         TextColor(color),
         // Initial position; the per-frame sync system rewrites this from
         // `CustomizeTextSpec * viewport.display_scale`.
@@ -632,6 +632,7 @@ fn spawn_ship_slot(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
+    font: &crate::fonts::PixelFont,
     slot: usize,
     pos: Vec2,
 ) {
@@ -650,6 +651,7 @@ fn spawn_ship_slot(
     // text so it stays sharp; updater rewrites the digit from `cfg.barrels`.
     spawn_text(
         commands,
+        font,
         pos,
         "1",
         Color::WHITE,
@@ -798,6 +800,7 @@ fn spawn_shop_turret_tile(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
+    font: &crate::fonts::PixelFont,
     idx: usize,
     pos: Vec2,
 ) {
@@ -811,6 +814,7 @@ fn spawn_shop_turret_tile(
     // Centred number on the inner turret = barrel level.
     spawn_text(
         commands,
+        font,
         pos,
         "1",
         Color::WHITE,
@@ -823,6 +827,7 @@ fn spawn_shop_turret_tile(
     // Updater clears it when the slot is sold or being dragged out.
     spawn_text(
         commands,
+        font,
         pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 6.0),
         format!("{}", super::drag::SHOP_TURRET_COST),
         Color::srgb(1.0, 0.85, 0.30),
@@ -833,6 +838,7 @@ fn spawn_shop_turret_tile(
     // line further down).
     spawn_text(
         commands,
+        font,
         pos + Vec2::new(0.0, -SHOP_TILE * 0.5 - 16.0),
         "---",
         Color::WHITE,
@@ -856,11 +862,7 @@ fn spawn_shop_turret_tile(
     ));
     commands.spawn((
         Text2d::new("AOE"),
-        TextFont {
-            font_size: 7.0,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, 7.0),
         TextColor(Color::srgb(0.10, 0.05, 0.02)),
         Transform::from_xyz(0.0, 0.0, Z_AOE_TAG_TEXT),
         Visibility::Hidden,
@@ -940,6 +942,7 @@ fn spawn_shop_rune_tile(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
+    font: &crate::fonts::PixelFont,
     idx: usize,
     pos: Vec2,
 ) {
@@ -978,6 +981,7 @@ fn spawn_shop_rune_tile(
     // breathing room between sockets.
     spawn_text(
         commands,
+        font,
         pos + Vec2::new(0.0, -SOCKET * 0.5 - 7.0),
         "---",
         Color::WHITE,
@@ -987,6 +991,7 @@ fn spawn_shop_rune_tile(
     // Cost label below the name. Gold accent.
     spawn_text(
         commands,
+        font,
         pos + Vec2::new(0.0, -SOCKET * 0.5 - 18.0),
         format!("{}", super::drag::SHOP_ITEM_COST),
         Color::srgb(1.0, 0.85, 0.30),
@@ -1015,11 +1020,7 @@ fn spawn_shop_rune_tile(
     ));
     commands.spawn((
         Text2d::new("AOE"),
-        TextFont {
-            font_size: 7.0,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, 7.0),
         TextColor(Color::srgb(0.10, 0.05, 0.02)),
         Transform::from_xyz(0.0, 0.0, Z_AOE_TAG_TEXT),
         Visibility::Hidden,

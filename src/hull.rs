@@ -128,7 +128,7 @@ pub enum Hull {
 impl Hull {
     pub fn label(self) -> &'static str {
         match self {
-            Hull::Default     => "STANDARD",
+            Hull::Default     => "GUNBOAT-8",
             Hull::GlassCannon => "GLASS CANNON",
             Hull::Rammer      => "RAMMER",
             Hull::Dreadnought => "DREADNOUGHT",

@@ -19,7 +19,7 @@ pub use hud::{
     sync_ally_hp_bars, update_ally_hp_values, update_fps_text, update_hp_bar_pixel_scale,
     update_hp_subdividers, update_map_button, update_score_text, update_vsync_label,
     update_wave_ui, AllyHpRow, CameraFollowButton, FpsText, ReturnToMapButton, ScoreText,
-    WaveHpUi,
+    VsyncButton, WaveHpUi,
 };
 pub use damage_panel::{
     reset_damage_stats, setup_damage_panel, sync_damage_panel_visibility,

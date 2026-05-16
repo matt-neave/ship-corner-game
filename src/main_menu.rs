@@ -133,6 +133,16 @@ impl Plugin for MainMenuPlugin {
             // Cursor tracker on its own so every click handler can
             // .after() it without re-listing every system here.
             .add_systems(Update, track_menu_cursor)
+            // Re-assert chrome hidden every frame while on the menu.
+            // Several Update systems (`update_map_button`, `update_wave_ui`,
+            // etc.) flip Visibility on resource-changed; without this
+            // gate, the HP bar / corner buttons re-appear the first
+            // time their dependent resources fire `is_changed()`.
+            // Only writes when `*v != Hidden`, so cost is negligible.
+            .add_systems(
+                Update,
+                hide_gameplay_chrome_for_menu.run_if(in_state(AppState::MainMenu)),
+            )
             .add_systems(
                 Update,
                 (
@@ -257,12 +267,19 @@ pub struct MenuTextSpec(pub Vec2);
 #[derive(Component, Clone, Copy)]
 pub struct HitArea { pub size: Vec2 }
 
-/// Marker on every menu button's background-container mesh entities
-/// (each container is 6 meshes sharing one material). Lets the
-/// visual sync system tint them on hover / press without iterating
-/// every chrome entity in the menu.
-#[derive(Component, Clone, Copy)]
-pub struct MenuButtonBg { pub item: MenuButtonItem }
+/// Material + label handles for a single menu button. Lives on the
+/// hit-test entity (alongside `HitArea` + `MenuButton`) so the visual
+/// sync system can retint the fill / outline materials and nudge the
+/// label on press without re-querying the menu's mesh entities.
+#[derive(Component)]
+pub struct MenuButtonVisuals {
+    pub fill:          Handle<ColorMaterial>,
+    pub outline:       Option<Handle<ColorMaterial>>,
+    pub label:         Entity,
+    /// Spec-space Y of the label at rest. The press nudge writes
+    /// `MenuTextSpec.y = label_base_y - PRESS_NUDGE`.
+    pub label_base_y:  f32,
+}
 
 /// Marker on the single hit-test entity per button. Holds the
 /// `HitArea` + the `MenuButtonItem` so the click router can route
@@ -478,6 +495,42 @@ const MENU_BULLET_SPEED: f32 = 90.0;
 fn bg_button_color()       -> Color { Color::srgb(0.20, 0.22, 0.28) }
 fn bg_button_hover_color() -> Color { Color::srgb(0.28, 0.31, 0.40) }
 fn bg_button_press_color() -> Color { Color::srgb(0.35, 0.40, 0.52) }
+
+/// Outline ring color at rest — same dark-navy as the title's drop
+/// shadow stroke, so the button frame shares the title's visual
+/// vocabulary instead of inventing a third dark tone.
+fn outline_button_color()       -> Color { Color::srgb(0.102, 0.110, 0.173) }
+/// Hover lifts the outline to a mid-blue so the frame "wakes up"
+/// alongside the lightened fill.
+fn outline_button_hover_color() -> Color { Color::srgb(0.45, 0.55, 0.70) }
+/// Press dims the outline back toward the resting dark — the press
+/// state reads as "the button accepts the click" through the fill
+/// brightening and the label dropping, not the outline glowing
+/// further.
+fn outline_button_press_color() -> Color { Color::srgb(0.18, 0.22, 0.30) }
+
+/// Outline thickness in spec units (= chunky-pixel units). 1.0 paints
+/// a clean 1-pixel frame at the menu's native resolution.
+const BUTTON_OUTLINE_THICKNESS: f32 = 1.0;
+
+/// Spec-space Y nudge applied to the button label when its button is
+/// pressed. One chunky pixel down — same vocabulary as classic
+/// pixel-art tactile buttons.
+const BUTTON_PRESS_LABEL_NUDGE: f32 = 1.0;
+
+/// Returns the palette every chunky menu button shares — fill +
+/// outline tints for idle / hover / press. Single definition so the
+/// settings-panel buttons can adopt the same look without duplication.
+fn menu_button_palette() -> crate::menu_kit::ChunkyButtonPalette {
+    crate::menu_kit::ChunkyButtonPalette {
+        idle_fill:     bg_button_color(),
+        hover_fill:    bg_button_hover_color(),
+        press_fill:    bg_button_press_color(),
+        idle_outline:  outline_button_color(),
+        hover_outline: outline_button_hover_color(),
+        press_outline: outline_button_press_color(),
+    }
+}
 
 // ---------- Render pipeline setup ----------
 
@@ -696,70 +749,66 @@ pub fn setup_main_menu_chrome(
     }
 }
 
-/// Helper: spawn a chunky-rounded container (6 meshes sharing one
-/// material) PLUS a centred text label PLUS a hit-test marker. The
-/// background container is tagged `MenuButtonBg` so the hover/press
-/// tint can recolour it without re-querying every container child.
+/// Spawn one menu button: chunky rounded panel + outline ring + label,
+/// plus a dimensionless hit-test entity that carries the routing
+/// markers and the material/label handles the visual sync system
+/// needs. The visual chrome itself is delegated to `menu_kit` so other
+/// screens can reuse it; this function is the *menu-specific*
+/// composition (routing enum, view tag, label spec).
 fn spawn_menu_button(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
+    commands:  &mut Commands,
+    meshes:    &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
-    centre: Vec2,
-    size: Vec2,
-    item: MenuButtonItem,
-    label: &str,
+    centre:    Vec2,
+    size:      Vec2,
+    item:      MenuButtonItem,
+    label:     &str,
     font_size: f32,
     is_root_view: bool,
 ) {
-    // 6-mesh container, all sharing one material handle so a single
-    // `materials.get_mut` retints the whole rounded rectangle on hover.
-    let mat = materials.add(bg_button_color());
-    let circle = meshes.add(Circle::new(BUTTON_RADIUS));
-    let h_rect = meshes.add(Rectangle::new(size.x, (size.y - 2.0 * BUTTON_RADIUS).max(0.0)));
-    let v_rect = meshes.add(Rectangle::new((size.x - 2.0 * BUTTON_RADIUS).max(0.0), size.y));
-    let half = ((size - Vec2::splat(2.0 * BUTTON_RADIUS)).max(Vec2::ZERO)) * 0.5;
-
-    // Per-part view tag is inserted inline in `spawn_part!` below
-    // since the chained `EntityCommands` type isn't holdable across
-    // multiple inserts cleanly.
-
-    macro_rules! spawn_part {
-        ($mesh:expr, $offset:expr) => {{
-            let e = commands.spawn((
-                Mesh2d($mesh),
-                MeshMaterial2d(mat.clone()),
-                Transform::from_translation((centre + $offset).extend(Z_BG)),
-                RenderLayers::layer(MAIN_MENU_LAYER),
-                Visibility::Inherited,
-                MenuChrome,
-                MenuButtonBg { item },
-            )).id();
-            if is_root_view {
-                commands.entity(e).insert(RootViewChrome);
-            } else {
-                commands.entity(e).insert(SettingsViewChrome);
-            }
-        }}
+    let palette = menu_button_palette();
+    let style = crate::menu_kit::ChunkyPanelStyle {
+        fill:              palette.idle_fill,
+        radius:            BUTTON_RADIUS,
+        outline_color:     palette.idle_outline,
+        outline_thickness: BUTTON_OUTLINE_THICKNESS,
+    };
+    let handles = crate::menu_kit::spawn_chunky_panel(
+        commands, meshes, materials, centre, size, &style, MAIN_MENU_LAYER, Z_BG,
+    );
+    // The panel helper doesn't know about menu chrome tags; stamp them
+    // on every spawned mesh so the view-visibility + cleanup queries
+    // still cover them.
+    for &e in handles.fill_entities.iter().chain(handles.outline_entities.iter()) {
+        commands.entity(e).insert(MenuChrome);
+        if is_root_view {
+            commands.entity(e).insert(RootViewChrome);
+        } else {
+            commands.entity(e).insert(SettingsViewChrome);
+        }
     }
-    spawn_part!(h_rect, Vec2::ZERO);
-    spawn_part!(v_rect, Vec2::ZERO);
-    for offset in [
-        Vec2::new(-half.x, -half.y),
-        Vec2::new( half.x, -half.y),
-        Vec2::new(-half.x,  half.y),
-        Vec2::new( half.x,  half.y),
-    ] {
-        spawn_part!(circle.clone(), offset);
-    }
+
+    // Crisp text label on UPSCALE_LAYER. Spawned before the hit entity
+    // so the hit can store the label's entity id.
+    let label_extra = (MenuLabel(item),);
+    let label_entity = spawn_menu_text_with_view_returning(
+        commands, centre, label, Color::srgb(0.96, 0.96, 0.96),
+        font_size, label_extra, is_root_view,
+    );
 
     // Hit-test entity: dimensionless transform at the button centre
-    // carrying the HitArea + MenuButton + view tag.
+    // carrying the HitArea + routing marker + visuals handles.
     let hit = commands.spawn((
         Transform::from_translation(centre.extend(Z_FG)),
         HitArea { size },
         MenuButton { item },
+        MenuButtonVisuals {
+            fill:          handles.fill_material,
+            outline:       handles.outline_material,
+            label:         label_entity,
+            label_base_y:  centre.y,
+        },
         MenuChrome,
-        // Inherit visibility so a hidden sub-page can't be clicked.
         Visibility::Inherited,
     )).id();
     if is_root_view {
@@ -767,13 +816,6 @@ fn spawn_menu_button(
     } else {
         commands.entity(hit).insert(SettingsViewChrome);
     }
-
-    // Crisp text label on UPSCALE_LAYER.
-    let extra_tags = (MenuLabel(item),);
-    spawn_menu_text_with_view(
-        commands, centre, label, Color::srgb(0.96, 0.96, 0.96),
-        font_size, extra_tags, is_root_view,
-    );
 }
 
 /// Spawn the wavy title as a stack of per-letter Text2d entities. Each
@@ -847,7 +889,12 @@ fn spawn_wavy_title(
 /// Variant of `spawn_menu_text` that also stamps the view tag —
 /// `RootViewChrome` or `SettingsViewChrome` — so the per-view
 /// visibility toggle hides text on the right page.
-fn spawn_menu_text_with_view<B: Bundle>(
+/// Spawn one chunky-pixel text entity on the upscale render layer.
+/// `spec_pos` is in spec units (menu internal coords); `sync_menu_text`
+/// reads it each frame to project onto the upscale layer. Returns the
+/// spawned entity so callers (like `spawn_menu_button`) can keep a
+/// handle to it for per-state effects like the press-down nudge.
+fn spawn_menu_text_with_view_returning<B: Bundle>(
     commands: &mut Commands,
     spec_pos: Vec2,
     text: impl Into<String>,
@@ -855,7 +902,7 @@ fn spawn_menu_text_with_view<B: Bundle>(
     font_size: f32,
     extra: B,
     is_root_view: bool,
-) {
+) -> Entity {
     let e = commands.spawn((
         Text2d::new(text),
         TextFont {
@@ -876,6 +923,7 @@ fn spawn_menu_text_with_view<B: Bundle>(
     } else {
         commands.entity(e).insert(SettingsViewChrome);
     }
+    e
 }
 
 // ---------- Per-frame UI sync ----------
@@ -942,25 +990,27 @@ pub fn sync_menu_view_visibility(
     }
 }
 
-/// Tint each button's material based on hover / press state. One
-/// material per button (shared across the 6 container meshes), so one
-/// `materials.get_mut` retints the whole rounded rectangle.
+/// Per-frame: tint each button's fill + outline materials based on
+/// hover / press, and nudge the label down 1 spec-pixel on press. One
+/// material per button (shared across the rounded panel's six meshes,
+/// and another for the outline ring), so a single `materials.get_mut`
+/// retints the whole shape.
 pub fn update_menu_button_visuals(
     open: Res<MainMenuOpen>,
     view: Res<MainMenuView>,
     viewport: Res<MainMenuViewport>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    bg_q: Query<(&MenuButtonBg, &MeshMaterial2d<ColorMaterial>)>,
-    buttons: Query<(&Transform, &HitArea, &MenuButton)>,
+    buttons: Query<(&Transform, &HitArea, &MenuButton, &MenuButtonVisuals)>,
+    mut text_specs: Query<&mut MenuTextSpec>,
 ) {
     if !open.0 { return; }
-    // Find which button (if any) the cursor is over, in the currently
-    // visible view.
+    use crate::menu_kit::{apply_button_visual_state, ChunkyPanelHandles, ButtonVisualState};
+
     let active_view_root = *view == MainMenuView::Root;
     let mut hovered_item: Option<MenuButtonItem> = None;
     if let Some(cursor) = viewport.spec_cursor {
-        for (tf, hit, btn) in &buttons {
+        for (tf, hit, btn, _) in &buttons {
             let in_view = if active_view_root { btn.item.is_root() } else { !btn.item.is_root() };
             if !in_view { continue; }
             let c = tf.translation.truncate();
@@ -972,17 +1022,40 @@ pub fn update_menu_button_visuals(
         }
     }
     let pressed = mouse.pressed(MouseButton::Left);
-    for (bg, mat) in &bg_q {
-        let in_view = if active_view_root { bg.item.is_root() } else { !bg.item.is_root() };
-        let want = if !in_view {
-            bg_button_color()
-        } else if Some(bg.item) == hovered_item {
-            if pressed { bg_button_press_color() } else { bg_button_hover_color() }
+    let palette = menu_button_palette();
+
+    for (_, _, btn, visuals) in &buttons {
+        let in_view = if active_view_root { btn.item.is_root() } else { !btn.item.is_root() };
+        let state = if !in_view {
+            ButtonVisualState::Idle
+        } else if Some(btn.item) == hovered_item {
+            if pressed { ButtonVisualState::Press } else { ButtonVisualState::Hover }
         } else {
-            bg_button_color()
+            ButtonVisualState::Idle
         };
-        if let Some(m) = materials.get_mut(&mat.0) {
-            if m.color != want { m.color = want; }
+        // Reconstruct a thin handles view so the kit helper can do the
+        // retint without re-querying the world. The Vec fields are
+        // unused by `apply_button_visual_state` — only the material
+        // handles matter.
+        let handles_view = ChunkyPanelHandles {
+            fill_material:    visuals.fill.clone(),
+            outline_material: visuals.outline.clone(),
+            fill_entities:    Vec::new(),
+            outline_entities: Vec::new(),
+        };
+        apply_button_visual_state(&mut materials, &handles_view, &palette, state);
+
+        // Label nudge on press — write through `MenuTextSpec` so
+        // `sync_menu_text` picks up the new Y on the same frame.
+        if let Ok(mut spec) = text_specs.get_mut(visuals.label) {
+            let want_y = if matches!(state, ButtonVisualState::Press) {
+                visuals.label_base_y - BUTTON_PRESS_LABEL_NUDGE
+            } else {
+                visuals.label_base_y
+            };
+            if (spec.0.y - want_y).abs() > f32::EPSILON {
+                spec.0.y = want_y;
+            }
         }
     }
 }
@@ -1175,6 +1248,7 @@ type MenuChromeHidden = Or<(
     With<crate::xp::XpBarRoot>,
     With<crate::ui::ScoreText>,
     With<crate::ui::FpsText>,
+    With<crate::ui::VsyncButton>,
     With<crate::ui::WaveHpUi>,
     With<crate::ui::AllyHpRow>,
     With<crate::ui::ReturnToMapButton>,

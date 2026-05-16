@@ -31,6 +31,7 @@ mod palette;
 mod pause;
 mod rendering;
 mod main_menu;
+mod menu_kit;
 mod octopus;
 mod onboarding;
 mod fonts;

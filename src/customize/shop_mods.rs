@@ -9,7 +9,6 @@
 
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
-use bevy::text::FontSmoothing;
 
 use crate::balance::{CUSTOMIZE_LAYER, UPSCALE_LAYER};
 use crate::stats::PlayerStats;
@@ -68,16 +67,16 @@ pub struct ShopModTextSpan { pub idx: usize }
 pub struct ShopModCostText { pub idx: usize, pub spec_pos: Vec2 }
 
 /// Spawn three card slots centred on `centre_x` at the given `y`.
-pub fn spawn_mod_cards(commands: &mut Commands, centre_x: f32, y: f32) {
+pub fn spawn_mod_cards(commands: &mut Commands, font: &crate::fonts::PixelFont, centre_x: f32, y: f32) {
     let step = MOD_CARD_W + MOD_CARD_GAP;
     for idx in 0..3usize {
         let x = centre_x + (idx as f32 - 1.0) * step;
         let pos = Vec2::new(x, y);
-        spawn_card(commands, idx, pos);
+        spawn_card(commands, font, idx, pos);
     }
 }
 
-fn spawn_card(commands: &mut Commands, idx: usize, spec_pos: Vec2) {
+fn spawn_card(commands: &mut Commands, font: &crate::fonts::PixelFont, idx: usize, spec_pos: Vec2) {
     commands.spawn((
         Sprite {
             color: Color::WHITE,
@@ -102,11 +101,7 @@ fn spawn_card(commands: &mut Commands, idx: usize, spec_pos: Vec2) {
     ));
     commands.spawn((
         Text2d::new(""),
-        TextFont {
-            font_size: 14.0,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, 14.0),
         TextColor(Color::srgb(1.0, 0.85, 0.30)),
         // Centre the two-line value/name pair so each line stacks
         // on its own row inside the card.
@@ -121,11 +116,7 @@ fn spawn_card(commands: &mut Commands, idx: usize, spec_pos: Vec2) {
     let cost_spec = spec_pos + Vec2::new(0.0, -MOD_CARD_H * 0.5 - 6.0);
     commands.spawn((
         Text2d::new(""),
-        TextFont {
-            font_size: 10.0,
-            font_smoothing: FontSmoothing::None,
-            ..default()
-        },
+        crate::fonts::pixel_text_font(font, 10.0),
         TextColor(Color::srgb(1.0, 0.85, 0.30)),
         Transform::from_xyz(0.0, 0.0, Z_TEXT),
         Visibility::Hidden,
@@ -147,6 +138,7 @@ pub fn update_shop_mod_cards(
     open: Res<CustomizeOpen>,
     viewport: Res<CustomizeViewport>,
     ui_scale: Res<bevy::ui::UiScale>,
+    pixel_font: Res<crate::fonts::PixelFont>,
     shop: Option<Res<CustomizeShop>>,
     mut text_cache: Local<[Option<String>; 3]>,
     existing_spans: Query<(Entity, &ShopModTextSpan)>,
@@ -250,11 +242,7 @@ pub fn update_shop_mod_cards(
                             };
                             p.spawn((
                                 TextSpan::new(txt),
-                                TextFont {
-                                    font_size: 14.0,
-                                    font_smoothing: FontSmoothing::None,
-                                    ..default()
-                                },
+                                crate::fonts::pixel_text_font(&pixel_font, 14.0),
                                 TextColor(line_color),
                                 ShopModTextSpan { idx: slot.idx },
                             ));

@@ -38,6 +38,11 @@ pub struct FpsText;
 #[derive(Component)]
 pub struct VsyncLabel;
 
+/// Marker on the VSYNC toggle button root — lets the main-menu chrome
+/// hider include it alongside FPS / MAP / FOLLOW.
+#[derive(Component)]
+pub struct VsyncButton;
+
 /// Marker for the "MAP" button — visibility toggled so it only appears
 /// while in Combat view.
 #[derive(Component)]
@@ -121,6 +126,7 @@ pub fn setup_hud(commands: &mut Commands) {
         BackgroundColor(Color::NONE),
         BorderColor(UI_TEXT_DIM),
         SlotButton { kind: ButtonKind::ToggleVsync },
+        VsyncButton,
     ))
     .with_children(|b| {
         b.spawn((

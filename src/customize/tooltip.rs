@@ -154,13 +154,14 @@ const TOOLTIP_TEXT_PAD_X: f32 = 14.0;
 const TOOLTIP_TEXT_PAD_Y: f32 = 6.0;
 /// Native-pixel thickness of the white outline ring around the fill.
 const TOOLTIP_BORDER_PX: f32 = 2.0;
-/// Title + body font sizes (native pixels). Both bumped so labels read
-/// clearly without zooming in.
-// Both sized to integer multiples of 8 so Pixel Operator's
-// 8px-native bitmap glyph design samples cleanly — at non-multiples
-// (e.g. 14 or 18) the font resamples and the edges blur.
-const TOOLTIP_TITLE_FONT: f32 = 32.0;
-const TOOLTIP_BODY_FONT: f32 = 24.0;
+/// Title + body font sizes (native pixels). Sized to integer multiples
+/// of 8 so PixelOperator8's bitmap glyph design samples cleanly — at
+/// non-multiples (e.g. 14 or 18) the font resamples and the edges
+/// blur. PixelOperator8 renders ~33% taller per nominal `font_size`
+/// than the regular cut, so these are one grid step smaller than they
+/// were when the regular cut was loaded.
+const TOOLTIP_TITLE_FONT: f32 = 16.0;
+const TOOLTIP_BODY_FONT: f32 = 12.0;
 /// Native-pixel cap on body text width — body wraps at word boundaries
 /// when it would exceed this. Generous: prefer a wide single-line box
 /// over wrapping to multiple short lines.
@@ -174,9 +175,13 @@ const TOOLTIP_BODY_MAX_W: f32 = 380.0;
 /// of slightly wider tooltips than strictly needed.
 const TOOLTIP_CHAR_W: f32 = 0.72;
 /// Vertical line-height multiplier for the wrapped body — turns
-/// `body_font * lines` into the total body block height. Tight so
-/// multi-line tooltips don't read as towers of whitespace.
-const TOOLTIP_LINE_HEIGHT_MULT: f32 = 1.1;
+/// `body_font * lines` into the total body block height. Bevy text
+/// adds a near-constant leading per line on top of the font size, so
+/// at small font sizes (12) that fixed leading dominates more of the
+/// per-line height than at the originally-tuned 24. 1.3 keeps the
+/// footer line inside the box at body=12 without leaving towers of
+/// whitespace at the larger sizes.
+const TOOLTIP_LINE_HEIGHT_MULT: f32 = 1.3;
 
 /// Native-pixel font size for the synergy banner text. Matched to
 /// `TOOLTIP_BODY_FONT` so the banner reads as a natural sibling
