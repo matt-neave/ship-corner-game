@@ -539,7 +539,7 @@ fn spawn_enemy_mirror(
         // Carry the same Enemy struct as a real enemy so the existing
         // bullet-collision query (`With<Enemy>`) matches. AI fields
         // are present but never written — no AI system runs on the
-        // client.
+        // client (gated to not-is_client in main.rs).
         Enemy {
             variant,
             state: EnemyState::Approach,
@@ -551,18 +551,24 @@ fn spawn_enemy_mirror(
         Health(hp),
         // PreviousHp lets the local `track_enemy_damage_for_hp_bars`
         // system spawn / refresh the HP-bar overlay when the mirror's
-        // Health drops (the next snapshot delivers the new HP). Without
-        // this, mirror enemies never show a health bar on the client.
+        // Health drops via snapshot.
         crate::enemy::PreviousHp(hp),
         Faction(FactionKind::Enemy),
         NetEntityId(id),
-        // HitFx drives the white-flash visual on damage. Same setup
-        // as a real enemy so the client sees the same "I'm being hit"
-        // feedback when the mirror's HP drops via snapshot.
+        // HitFx drives the white-flash visual on damage.
         crate::effects::HitFx::new(body_mat.clone()).with_rest_scale(scale),
+        // Velocity is REQUIRED by `bullet_collisions`' enemies query
+        // (`&mut Velocity`). Without it the mirror is invisible to
+        // friendly bullets — collisions silently miss → no damage
+        // events → `relay_damage_to_host` has nothing to relay →
+        // client peer can't damage anything. Initial value zero;
+        // never mutated on the client (enemy_ai is host-gated).
+        crate::components::Velocity(Vec2::ZERO),
+        // Heading is read by spike-plate damage reduction even though
+        // it's an enemy entity in some queries. Cheap to include.
+        crate::components::Heading(heading),
         // Tight bounding box matches the body footprint so client-side
-        // bullet collisions can detect the mirror (damage is relayed
-        // to host; this collision drives local visual feedback).
+        // bullet collisions detect the mirror.
         crate::rune::FireExtent(Vec2::new(
             ENEMY_WIDTH * 0.5 * scale,
             ENEMY_LEN * 0.5 * scale,
@@ -593,6 +599,31 @@ fn spawn_enemy_mirror(
             RenderLayers::layer(PLAY_LAYER),
         )).id();
         commands.entity(barrel).insert(ChildOf(base));
+    }
+
+    // Bomber: bright warhead at the bow — same visual telegraph as
+    // the host-side spawn. Without this the mirror reads as a
+    // generic enemy and the player can't tell it's a ram threat.
+    if variant == EnemyVariant::Bomber {
+        let warhead = commands.spawn((
+            Mesh2d(em.bomber_warhead.clone()),
+            MeshMaterial2d(pm.bullet_enemy.clone()),
+            Transform::from_xyz(0.0, ENEMY_LEN / 2.0 - 1.0, 0.2),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(warhead).insert(ChildOf(id_entity));
+    }
+
+    // Rammer: smaller warhead, same mesh shrunk down.
+    if variant == EnemyVariant::Rammer {
+        let warhead = commands.spawn((
+            Mesh2d(em.bomber_warhead.clone()),
+            MeshMaterial2d(pm.bullet_enemy.clone()),
+            Transform::from_xyz(0.0, ENEMY_LEN / 2.0 - 1.5, 0.2)
+                .with_scale(Vec3::splat(0.6)),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(warhead).insert(ChildOf(id_entity));
     }
 
     id_entity

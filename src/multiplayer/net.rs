@@ -205,6 +205,18 @@ pub enum NetMsg {
     /// the link out during otherwise-quiet states (Paused, Lobby,
     /// menus). Body-less by design — a "you're still here" signal.
     Heartbeat,
+    /// Host → specific peer: "you just took `amount` damage —
+    /// apply it to your local player." Triggered by an enemy bullet
+    /// hitting the host-side ghost of that peer. The peer's local
+    /// `bullet_collisions` never sees enemy bullets (enemy AI is
+    /// host-only), so this is the only path damage from enemies
+    /// reaches the client's player.
+    DamagePlayer {
+        amount: i32,
+        /// World position of the hit — used for the local hit-flash
+        /// particle spawn so the peer sees where they were hit.
+        hit_pos: [f32; 2],
+    },
 }
 
 /// Plain-data mirror of `crate::stats::PlayerStats`. Each `Stat` has

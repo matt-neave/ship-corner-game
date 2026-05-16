@@ -125,7 +125,10 @@ pub fn reset_run_for_restart(
     mut pending: ResMut<crate::xp::LevelUpsPending>,
     mut seen_variants: ResMut<crate::onboarding::SeenVariants>,
     selected_hull: Res<crate::hull::SelectedHull>,
-    mut friendly: Query<&mut crate::components::Health, With<crate::components::Friendly>>,
+    // LocalPlayer (not just Friendly) so the host's `single_mut()`
+    // doesn't Err with two Friendlies in MP (local + remote-peer
+    // ghost).
+    mut friendly: Query<&mut crate::components::Health, With<crate::components::LocalPlayer>>,
     arena: Query<
         Entity,
         Or<(

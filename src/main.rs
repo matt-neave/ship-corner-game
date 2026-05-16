@@ -429,7 +429,11 @@ fn enter_combat_view(mut view: ResMut<map::ViewMode>) {
 /// or GameOver→Playing — those paths don't pass through `Map`.
 fn refill_and_clean_for_next_stage(
     stats: Res<stats::PlayerStats>,
-    mut friendly: Query<&mut components::Health, With<components::Friendly>>,
+    // LocalPlayer (not just Friendly) — host has two Friendlies in
+    // MP (local + remote-peer ghost). `single_mut()` on plain
+    // Friendly would Err and silently skip the HP refill, leaving
+    // the host's player with whatever HP they had at stage end.
+    mut friendly: Query<&mut components::Health, With<components::LocalPlayer>>,
     arena: Query<
         Entity,
         Or<(

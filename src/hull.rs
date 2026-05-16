@@ -797,7 +797,10 @@ pub fn exit_hull_select(
     q: Query<Entity, With<HullSelectRoot>>,
     selected: Res<SelectedHull>,
     mut stats: ResMut<PlayerStats>,
-    mut friendly: Query<&mut crate::components::Health, With<crate::components::Friendly>>,
+    mut friendly: Query<
+        &mut crate::components::Health,
+        (With<crate::components::LocalPlayer>, Without<crate::multiplayer::ghost::RemoteGhost>),
+    >,
 ) {
     for e in &q {
         commands.entity(e).despawn();
@@ -814,7 +817,10 @@ pub fn exit_hull_select(
 pub fn sync_hull_apply(
     selected: Res<SelectedHull>,
     mut stats: ResMut<PlayerStats>,
-    mut friendly: Query<&mut crate::components::Health, With<crate::components::Friendly>>,
+    mut friendly: Query<
+        &mut crate::components::Health,
+        (With<crate::components::LocalPlayer>, Without<crate::multiplayer::ghost::RemoteGhost>),
+    >,
 ) {
     apply_selected_hull(&selected, &mut stats, &mut friendly);
 }
@@ -826,7 +832,14 @@ pub fn sync_hull_apply(
 fn apply_selected_hull(
     selected: &SelectedHull,
     stats: &mut PlayerStats,
-    friendly: &mut Query<&mut crate::components::Health, With<crate::components::Friendly>>,
+    // LocalPlayer + Without<RemoteGhost> so a hull pick in MP
+    // doesn't crush the host's ghost-of-peer Health back to the
+    // host's max_hp (which triggers the `relay_ghost_damage`
+    // insta-kill chain).
+    friendly: &mut Query<
+        &mut crate::components::Health,
+        (With<crate::components::LocalPlayer>, Without<crate::multiplayer::ghost::RemoteGhost>),
+    >,
 ) {
     *stats = PlayerStats::default();
     selected.0.apply(stats);
@@ -836,14 +849,23 @@ fn apply_selected_hull(
     }
 }
 
-/// Belt-and-braces clamp: every frame, hold the friendly's `Health.0`
-/// to ≤ `stats.max_hp()`. Catches any case where a stat downgrade
-/// (hull pick, debug-panel HP-stat decrement) left the live HP
-/// stale above the new cap, which would otherwise display as
-/// `100/50`-style mismatches in the bar.
+/// Belt-and-braces clamp: every frame, hold the local friendly's
+/// `Health.0` to ≤ `stats.max_hp()`. Catches any case where a stat
+/// downgrade (hull pick, debug-panel HP-stat decrement) left the
+/// live HP stale above the new cap.
+///
+/// `Without<RemoteGhost>` is critical in MP: the host-side ghost
+/// has `Health(GHOST_HP_SENTINEL = 1_000_000)` as a damage absorber
+/// for `relay_ghost_damage`. Without this exclusion, the clamp
+/// would crush the ghost's HP from 1_000_000 down to the player's
+/// `max_hp` every frame, the relay would interpret that as a
+/// 999_925-damage hit, cap it at max_hp, and one-shot the peer.
 pub fn clamp_hp_to_max(
     stats: Res<PlayerStats>,
-    mut friendly: Query<&mut crate::components::Health, With<crate::components::Friendly>>,
+    mut friendly: Query<
+        &mut crate::components::Health,
+        (With<crate::components::Friendly>, Without<crate::multiplayer::ghost::RemoteGhost>),
+    >,
 ) {
     let max = stats.max_hp();
     for mut h in &mut friendly {

@@ -82,9 +82,10 @@ use xp_sync::{
     LastBroadcastedXp, LastSeenLocalLevelUps, PendingLevelUpGrants, PendingXpSync,
 };
 use ghost::{
-    apply_snapshots, cull_stale_ghosts, despawn_all_ghosts, detect_stale_peers, recv_packets,
-    refresh_ghost_turrets, send_heartbeat, send_local_transform, spawn_missing_ghosts,
-    HeartbeatTimer, PeerSnapshots, TransformSendTimer,
+    apply_received_player_damage, apply_snapshots, cull_stale_ghosts, despawn_all_ghosts,
+    detect_stale_peers, recv_packets, refresh_ghost_turrets, relay_ghost_damage, send_heartbeat,
+    send_local_transform, spawn_missing_ghosts, HeartbeatTimer, PeerSnapshots,
+    PendingPlayerDamage, TransformSendTimer,
 };
 use net::{bind_socket, local_lan_ip, send_to, NetMsg, HOST_PORT};
 
@@ -165,12 +166,32 @@ pub struct HostStatus {
 
 /// Text the player is typing into the JOIN IP entry. Captured by
 /// `capture_join_ip_keys`; rendered by the main-menu UI.
-#[derive(Resource, Default)]
+///
+/// Default pre-fills with the dev LAN host for fast playtesting
+/// (no need to type a full IP every launch). `capture_join_ip_keys`
+/// clears the buffer when the player presses any input key so the
+/// prefill doesn't get prepended to real typing.
+#[derive(Resource)]
 pub struct JoinIpEntry {
     pub buf: String,
     /// Set to `Some(msg)` to display an error under the input (e.g.
     /// "couldn't reach host"). Cleared on next keystroke.
     pub last_error: Option<String>,
+    /// True until the player has typed their first character. When
+    /// they do, `capture_join_ip_keys` clears the prefill instead
+    /// of appending to it. Reset to true on each entry to the
+    /// JoinIp screen.
+    pub prefill: bool,
+}
+
+impl Default for JoinIpEntry {
+    fn default() -> Self {
+        Self {
+            buf: "192.168.1.252:49333".to_string(),
+            last_error: None,
+            prefill: true,
+        }
+    }
 }
 
 /// The local player's display name. Sent in `Hello` (clients) or
@@ -239,6 +260,7 @@ impl Plugin for MultiplayerPlugin {
             .insert_resource(PeerSnapshots::default())
             .insert_resource(TransformSendTimer::default())
             .insert_resource(HeartbeatTimer::default())
+            .insert_resource(PendingPlayerDamage::default())
             .insert_resource(NextNetEntityId::default())
             .insert_resource(EnemySnapshotTimer::default())
             .insert_resource(LatestEnemySnapshot::default())
@@ -318,12 +340,31 @@ impl Plugin for MultiplayerPlugin {
             // during a long pause. Runs unconditionally; the system
             // short-circuits on Solo / not-yet-connected.
             .add_systems(Update, send_heartbeat)
+            // Host: watch the ghost-of-peer entities for HP drops and
+            // forward the damage to the corresponding peer. Runs after
+            // bullet_collisions so the same frame's hits are batched.
+            // Client: drain incoming DamagePlayer packets into the
+            // local Friendly's Health.
+            .add_systems(Update, (
+                relay_ghost_damage
+                    .after(crate::bullet::bullet_collisions),
+                apply_received_player_damage
+                    .after(recv_packets),
+            ).run_if(in_state(AppState::Playing)))
             // Force a one-shot loadout broadcast each time we enter
             // Playing / Lobby so peers who never opened the shop
             // still push their default `TurretConfig` + `PlayerStats`
             // out for ghost rendering on the other side.
             .add_systems(OnEnter(AppState::Playing), force_initial_loadout_broadcast)
             .add_systems(OnEnter(AppState::Lobby),   force_initial_loadout_broadcast)
+            // Reset the player-damage inbox on entry to Playing so
+            // any leftover relayed damage from a previous round /
+            // stage transition can't insta-kill the peer on respawn.
+            // (Stale packets can sit unread during host-only states
+            // like Map / StageComplete that the apply system skips.)
+            .add_systems(OnEnter(AppState::Playing), |mut inbox: ResMut<PendingPlayerDamage>| {
+                inbox.0.clear();
+            })
             .add_systems(Update, (
                 spawn_missing_ghosts,
                 refresh_ghost_turrets,
@@ -725,14 +766,25 @@ fn capture_join_ip_keys(
         *mode = NetMode::Solo;
         entry.buf.clear();
         entry.last_error = None;
+        entry.prefill = true;
         return;
     }
     if keys.just_pressed(KeyCode::Backspace) {
-        entry.buf.pop();
+        // First backspace on the prefill clears the whole buffer
+        // instead of just one character — easier to overwrite the
+        // default IP than backspacing through every digit.
+        if entry.prefill {
+            entry.buf.clear();
+            entry.prefill = false;
+        } else {
+            entry.buf.pop();
+        }
         entry.last_error = None;
         return;
     }
     if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) {
+        // Don't reset prefill — submitting the prefill as-is is
+        // exactly the dev-shortcut use case.
         start_joining(&mut commands, &mut mode, &mut entry, &local_name);
         return;
     }
@@ -751,9 +803,17 @@ fn capture_join_ip_keys(
         (KeyCode::Semicolon, ':'),
     ];
     for (k, c) in digit_pressed {
-        if keys.just_pressed(k) && entry.buf.len() < 22 {
-            entry.buf.push(c);
-            entry.last_error = None;
+        if keys.just_pressed(k) {
+            // First real keystroke clears the prefill so the user's
+            // typed IP replaces the default, doesn't append to it.
+            if entry.prefill {
+                entry.buf.clear();
+                entry.prefill = false;
+            }
+            if entry.buf.len() < 22 {
+                entry.buf.push(c);
+                entry.last_error = None;
+            }
         }
     }
 }
@@ -1112,6 +1172,7 @@ mod tests {
         app.insert_resource(PeerSnapshots::default());
         app.insert_resource(TransformSendTimer::default());
         app.insert_resource(HeartbeatTimer::default());
+        app.insert_resource(PendingPlayerDamage::default());
         app.insert_resource(NextNetEntityId::default());
         app.insert_resource(EnemySnapshotTimer::default());
         app.insert_resource(LatestEnemySnapshot::default());
@@ -1390,17 +1451,21 @@ mod tests {
             .peers
             .insert(1, client_addr);
 
-        // Each peer spawns its own Friendly at a distinct position so
-        // we can tell whose snapshot we're looking at by the coords.
+        // Each peer spawns its own LocalPlayer at a distinct position
+        // so we can tell whose snapshot we're looking at by the coords.
+        // `send_local_transform` queries `With<LocalPlayer>` (not
+        // `Friendly`) to avoid the multi-Friendly Err on the host.
         let host_pos = bevy::math::Vec2::new(10.0, 20.0);
         let client_pos = bevy::math::Vec2::new(-30.0, -40.0);
         host.world_mut().spawn((
             Friendly,
+            crate::components::LocalPlayer,
             Heading(0.0),
             Transform::from_xyz(host_pos.x, host_pos.y, 0.0),
         ));
         client.world_mut().spawn((
             Friendly,
+            crate::components::LocalPlayer,
             Heading(0.0),
             Transform::from_xyz(client_pos.x, client_pos.y, 0.0),
         ));
@@ -3935,7 +4000,7 @@ mod tests {
 
         let mut world = bevy::ecs::world::World::new();
         world.insert_resource(NetMode::JoiningEntry);
-        world.insert_resource(JoinIpEntry { buf: "not an ip".to_string(), last_error: None });
+        world.insert_resource(JoinIpEntry { buf: "not an ip".to_string(), last_error: None, prefill: false });
         world.insert_resource(LocalPlayerName::default());
 
         world
@@ -3973,7 +4038,6 @@ mod tests {
 #[cfg(test)]
 mod full_plugin_tests {
     use super::*;
-    use bevy::prelude::*;
     use crate::AppState;
 
     /// Build a peer app the same way production does — register
@@ -3995,11 +4059,25 @@ mod full_plugin_tests {
         app.add_plugins(bevy::MinimalPlugins);
         app.add_plugins(bevy::state::app::StatesPlugin);
         app.init_state::<AppState>();
-        // Bevy 0.16's bevy_ui requires the assets plugin to be present
-        // before any system reads `Assets<Mesh>` etc. Adding only
-        // `MinimalPlugins` skips it, so insert the asset stores
-        // manually as empty defaults — production reads them via
-        // `Option<ResMut<Assets<Mesh>>>` and bails on None.
+        // `Assets<Mesh>` / `Assets<ColorMaterial>` / `Assets<Font>`
+        // are required by several plugin systems that take them as
+        // hard `ResMut<...>` params. AssetPlugin provides them.
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<bevy::prelude::Mesh>();
+        app.init_asset::<bevy::prelude::ColorMaterial>();
+        app.init_asset::<bevy::text::Font>();
+        app.init_asset::<bevy::image::Image>();
+        // InputPlugin provides `ButtonInput<KeyCode>` / `MouseButton`
+        // that the UI capture systems (`capture_name_keys`,
+        // `capture_join_ip_keys`, ESC handlers) read.
+        app.add_plugins(bevy::input::InputPlugin::default());
+
+        // Stub the font resources the overlay setup systems read.
+        // The handles don't need to point at real assets — bevy_ui
+        // silently renders empty text without a font, fine for
+        // headless tests that don't paint pixels.
+        app.insert_resource(crate::fonts::PixelFont(Handle::default()));
+        app.insert_resource(crate::fonts::ThaleahFont(Handle::default()));
 
         // Gameplay resources MultiplayerPlugin's systems read.
         app.insert_resource(crate::stats::PlayerStats::default());
@@ -4010,6 +4088,7 @@ mod full_plugin_tests {
         app.insert_resource(crate::xp::LevelUpReturn::default());
         app.insert_resource(crate::Scrap::default());
         app.insert_resource(crate::stage_complete::ScrapEarnedThisStage::default());
+        app.insert_resource(crate::Difficulty::default());
         // Production registers these via their own plugins; insert
         // directly so MultiplayerPlugin's systems can read them.
         app.add_event::<crate::proc_fx::ProcFxFired>();
@@ -4019,18 +4098,21 @@ mod full_plugin_tests {
         // Now register the real plugin.
         app.add_plugins(MultiplayerPlugin);
 
-        // Replace the random ephemeral port the plugin would have
-        // taken with one we control. Easier than driving the START
-        // button — we synthesise the session ourselves and the
-        // plugin's systems treat it as if the handshake completed.
+        // CRITICAL: run one update() before installing the session
+        // so the initial `OnEnter(AppState::MainMenu)` fires while
+        // we're still in `NetMode::Solo`. `teardown_on_exit` (now
+        // hooked to OnEnter(MainMenu)) early-bails on Solo, so it's
+        // a no-op. Then we install the session + flip Connected.
+        // Without this dance, the very first update tears down the
+        // session we just put in.
+        app.update();
+
+        // Synthesise the session as if the handshake completed.
         let sock = super::net::bind_socket(None).expect("bind ephemeral socket");
         let mut peers = std::collections::HashMap::new();
         if let Some(host_addr) = host_addr_for_client {
             peers.insert(0u8, host_addr);
         }
-        // Drop the default NetSession that... actually MpPlugin
-        // doesn't insert one; only `start_hosting` / `start_joining`
-        // do. So this is the first insert.
         app.insert_resource(NetSession {
             sock,
             my_id: if is_host { 0 } else { 1 },
@@ -4041,8 +4123,6 @@ mod full_plugin_tests {
             last_seen: std::collections::HashMap::new(),
         });
         app.insert_resource(NetMode::Connected);
-        // Suppress an unused-import-style warning in case
-        // SystemState isn't used after refactors.
         let _ = std::any::type_name::<SystemState<()>>();
 
         app

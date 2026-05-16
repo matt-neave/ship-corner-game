@@ -5,3 +5,4 @@ Next steps (agentically where possible)
 - Add a 'dodge' stat? with limit
 - Hustle rune should use the [autonomous] tag.
 - Make cascade green?
+- Armour (reduce damage, again with limit)

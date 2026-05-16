@@ -105,7 +105,11 @@ pub fn send_local_transform(
     mut timer: ResMut<TransformSendTimer>,
     mode: Res<NetMode>,
     session: Option<Res<NetSession>>,
-    local: Query<(&Transform, &crate::components::Heading), With<crate::components::Friendly>>,
+    // `LocalPlayer` (not just Friendly) — the host has TWO Friendly
+    // entities (local + ghost-of-peer). `single()` on Friendly Errs
+    // and silently bails, so the host never sends Transform updates
+    // and the client's view of the host's ship never moves.
+    local: Query<(&Transform, &crate::components::Heading), With<crate::components::LocalPlayer>>,
 ) {
     if matches!(*mode, NetMode::Solo) { return; }
     let Some(session) = session else { return; };
@@ -143,8 +147,7 @@ pub fn recv_packets(
     mut loadout_inboxes: super::loadout::LoadoutInboxes,
     mut pending_wave: ResMut<super::wave::PendingWaveState>,
     mut bullet_inbox: ResMut<super::bullets::BulletFiredInbox>,
-    mut team_tracker: ResMut<super::death::TeamDeathTracker>,
-    mut pending_revive: ResMut<super::death::PendingRevive>,
+    mut death_relay: DeathRelayInboxes,
     mut xp_inboxes: super::xp_sync::XpInboxes,
     mut pending_ready: ResMut<super::ready::PendingPeerReady>,
 ) {
@@ -339,6 +342,13 @@ pub fn recv_packets(
                 // arm exists so the unhandled-variant warning
                 // doesn't fire.
             }
+            NetMsg::DamagePlayer { amount, hit_pos } => {
+                // Client only — only the host emits these (host's
+                // ghost-of-peer absorbing damage from local enemy
+                // bullets). Silently drop on host.
+                if session.is_host { continue; }
+                death_relay.damage_player.0.push((amount, Vec2::new(hit_pos[0], hit_pos[1])));
+            }
             NetMsg::BulletFired { pos, dir, weapon, range } => {
                 bullet_inbox.events.push(super::bullets::ReceivedBulletFired {
                     pos: Vec2::new(pos[0], pos[1]),
@@ -353,9 +363,9 @@ pub fn recv_packets(
                 // they only need to know about peer deaths if we
                 // ever spectate someone (not in this phase).
                 if !session.is_host { continue; }
-                team_tracker.dead_peers.insert(id);
+                death_relay.team_tracker.dead_peers.insert(id);
                 bevy::log::info!("multiplayer: peer {id} died (team tracker now: {:?})",
-                                 team_tracker.dead_peers);
+                                 death_relay.team_tracker.dead_peers);
             }
             NetMsg::PeerReady { id } => {
                 // Every peer tracks the team's ready set so the local
@@ -371,7 +381,7 @@ pub fn recv_packets(
                 // common stage-transition-revives-everyone case.
                 if session.is_host { continue; }
                 if id == super::death::REVIVE_ALL || id == session.my_id {
-                    pending_revive.0 = true;
+                    death_relay.pending_revive.0 = true;
                 }
             }
         }
@@ -421,15 +431,32 @@ pub fn spawn_missing_ghosts(
             RemoteGhost { id },
             crate::components::Faction(crate::components::FactionKind::Friendly),
         ));
-        // On the host, every connected client's ship gets the
-        // `Friendly` marker so the host's enemy-AI targeting queries
-        // (`With<Friendly>, Without<Ally>`) see two valid player
-        // ships instead of one. The remote ship has no Velocity /
-        // Heading components, so `friendly_movement` skips it
-        // naturally; it has no `TurretSlot` children, so the
-        // turret-fire AI skips too. Only enemy targeting activates.
+        // On the host, every connected client's ship gets the full
+        // damage-absorbing kit so enemy bullets actually hit it:
+        // - `Friendly` so AI targets + `bullet_collisions`' friendly
+        //   query matches.
+        // - `Health` + `HitFx` + `Heading` — required by the
+        //   `bullet_collisions` enemy-bullet branch's `&mut Health`
+        //   etc. (the ghost would otherwise be invisible to bullets,
+        //   so enemies aimed at the client peer would never deal
+        //   damage anywhere — the bug "non-host peer not receiving
+        //   damage").
+        // - `GhostDamageRelay { peer_id, last_seen_hp }` — used by
+        //   `relay_ghost_damage` to detect HP drops and send a
+        //   `DamagePlayer` packet to the corresponding peer, who
+        //   applies the delta to its OWN local `Friendly` Health.
+        //
+        // `GHOST_HP_SENTINEL` is well above any real player HP so
+        // the ghost can absorb arbitrary damage without dying on
+        // the host side — true HP lives on the peer.
         if is_host {
-            ec.insert(crate::components::Friendly);
+            ec.insert((
+                crate::components::Friendly,
+                crate::components::Health(GHOST_HP_SENTINEL),
+                crate::components::Heading(snap.rot),
+                crate::effects::HitFx::new(pm.hull.clone()),
+                GhostDamageRelay { peer_id: id, last_seen_hp: GHOST_HP_SENTINEL },
+            ));
         }
         let ship = ec.id();
 
@@ -450,6 +477,140 @@ pub fn spawn_missing_ghosts(
 /// touching the hull entity.
 #[derive(Component)]
 pub struct GhostTurretChild;
+
+/// Component on the host's ghost-of-peer hull that drives the
+/// "damage taken by the ghost → broadcast to peer" relay path. The
+/// host's ghost has a sentinel-high `Health` so it absorbs all
+/// incoming damage without dying; `relay_ghost_damage` watches for
+/// drops, computes the delta, sends a [`super::net::NetMsg::DamagePlayer`]
+/// to `peer_id`, and resets `last_seen_hp` to the new value.
+///
+/// `last_seen_hp` lives inside this component (not as a separate
+/// `PreviousHp`) so the production HP-bar systems don't think the
+/// ghost just took damage and try to draw an HP bar over it.
+#[derive(Component)]
+pub struct GhostDamageRelay {
+    pub peer_id: u8,
+    pub last_seen_hp: i32,
+}
+
+/// Sentinel HP for host-side ghost ships. Much higher than any real
+/// player HP so the ghost absorbs arbitrary cumulative damage on the
+/// host without crossing zero. The actual peer's HP lives on the
+/// peer; the host only acts as a damage-attribution router.
+pub const GHOST_HP_SENTINEL: i32 = 1_000_000;
+
+/// Receive buffer for `NetMsg::DamagePlayer`. Populated by
+/// `recv_packets` on the client side, drained by
+/// `apply_received_player_damage` which applies the damage to the
+/// local Friendly + spawns local hit fx.
+#[derive(Resource, Default)]
+pub struct PendingPlayerDamage(pub Vec<(i32, Vec2)>);
+
+/// Bundled SystemParam: the death + revive + damage-relay inboxes,
+/// grouped so `recv_packets` stays under Bevy's 16-param cap.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct DeathRelayInboxes<'w> {
+    pub team_tracker: ResMut<'w, super::death::TeamDeathTracker>,
+    pub pending_revive: ResMut<'w, super::death::PendingRevive>,
+    pub damage_player: ResMut<'w, PendingPlayerDamage>,
+}
+
+/// Client-only: drain incoming `DamagePlayer` packets, apply each
+/// to the local Friendly's Health (via the standard damage helper
+/// + Shield absorption), and spawn the same hit-particle visual a
+/// host-side enemy-bullet impact would.
+///
+/// Each packet's amount is capped at the player's CURRENT HP so
+/// any bug in the host-side ghost damage accumulation can only
+/// kill the player once (not insta-kill repeatedly). The cap also
+/// papers over the spawn-time race where the ghost might briefly
+/// be in a bad position relative to enemies.
+pub fn apply_received_player_damage(
+    mut commands: Commands,
+    mode: Res<NetMode>,
+    session: Option<Res<NetSession>>,
+    pm: Option<Res<crate::palette::PaletteMaterials>>,
+    em: Option<Res<crate::effects::EffectMeshes>>,
+    mut inbox: ResMut<PendingPlayerDamage>,
+    player_stats: Res<crate::stats::PlayerStats>,
+    mut local: Query<(
+        &mut crate::components::Health,
+        &mut crate::effects::HitFx,
+        Option<&mut crate::stats::Shield>,
+    ), With<crate::components::LocalPlayer>>,
+) {
+    let Some(session) = session else { return };
+    if !matches!(*mode, NetMode::Connected) || session.is_host { return; }
+    if inbox.0.is_empty() { return; }
+    let Some(pm) = pm else { inbox.0.clear(); return; };
+    let Some(em) = em else { inbox.0.clear(); return; };
+    let Ok((mut hp, mut fx, mut shield_opt)) = local.single_mut() else {
+        inbox.0.clear();
+        return;
+    };
+    let mut rng = rand::thread_rng();
+    let max_hp = player_stats.max_hp();
+    for (raw_amount, hit_pos) in inbox.0.drain(..) {
+        // Defensive: cap any single packet at max-HP so an
+        // accumulation bug on the host side can't insta-kill the
+        // peer. A single 1-shot of the player's whole HP bar is
+        // still possible (rammer impact, oil pool, etc.) — but
+        // never *more* than that from one relay.
+        let capped = raw_amount.clamp(0, max_hp);
+        if raw_amount > max_hp {
+            bevy::log::warn!(
+                "apply_received_player_damage: capped oversized relay {} → {} (max_hp); likely a host-side accumulation bug",
+                raw_amount, max_hp,
+            );
+        }
+        let after_shield = shield_opt
+            .as_mut()
+            .map(|s| s.absorb(capped))
+            .unwrap_or(capped);
+        crate::bullet::apply_damage(&mut hp, &mut fx, after_shield);
+        crate::effects::spawn_hit_particles(
+            &mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng,
+        );
+    }
+}
+
+/// Host-only: detect HP drops on ghost ships (caused by enemy bullets
+/// hitting them via `bullet_collisions`) and forward the damage to
+/// the corresponding peer via `DamagePlayer`. Resets the ghost's HP
+/// back to the sentinel after each relay so future hits register
+/// fresh deltas.
+///
+/// Why per-frame poll instead of a `Changed<Health>` filter: bullets
+/// can hit the ghost multiple times per frame, and we want the SUM
+/// of those hits as one packet rather than separate writes.
+pub fn relay_ghost_damage(
+    session: Option<Res<super::NetSession>>,
+    mode: Res<super::NetMode>,
+    mut ghosts: Query<(
+        &mut GhostDamageRelay,
+        &mut crate::components::Health,
+        &Transform,
+    )>,
+) {
+    let Some(session) = session else { return };
+    if !matches!(*mode, super::NetMode::Connected) || !session.is_host { return; }
+    for (mut relay, mut hp, tf) in &mut ghosts {
+        if hp.0 >= relay.last_seen_hp { continue; }
+        let dmg = relay.last_seen_hp - hp.0;
+        let pos = tf.translation.truncate();
+        let msg = super::net::NetMsg::DamagePlayer {
+            amount: dmg,
+            hit_pos: [pos.x, pos.y],
+        };
+        if let Some(&addr) = session.peers.get(&relay.peer_id) {
+            let _ = super::net::send_to(&session.sock, addr, &msg);
+        }
+        // Reset for next round of accumulation.
+        hp.0 = GHOST_HP_SENTINEL;
+        relay.last_seen_hp = GHOST_HP_SENTINEL;
+    }
+}
 
 /// When a peer's [`PeerLoadouts`] entry changes (they bought a new
 /// turret in their shop), despawn the old turret children on their
