@@ -185,6 +185,81 @@ pub enum Rune {
 }
 
 impl Rune {
+    /// Stable wire-format discriminant for multiplayer damage relay.
+    /// Order is load-bearing — renumbering breaks compatibility with
+    /// peers running an older build. Append new variants at the end,
+    /// never reorder. A unit test
+    /// (`crate::multiplayer::enemies::tests::rune_discriminants_are_unique`)
+    /// guards against accidental clashes.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Rune::Fire             =>  0,
+            Rune::Frost            =>  1,
+            Rune::Shock            =>  2,
+            Rune::Echo             =>  3,
+            Rune::Cascade          =>  4,
+            Rune::Conduit          =>  5,
+            Rune::Resonate         =>  6,
+            Rune::TargetFurthest   =>  7,
+            Rune::TargetHighestHp  =>  8,
+            Rune::TargetLowestHp   =>  9,
+            Rune::TargetCarousel   => 10,
+            Rune::Splash           => 11,
+            Rune::Vampire          => 12,
+            Rune::Ward             => 13,
+            Rune::Bleed            => 14,
+            Rune::Blast            => 15,
+            Rune::Hustle           => 16,
+            Rune::Pierce           => 17,
+            Rune::Greed            => 18,
+            Rune::Executioner      => 19,
+            Rune::Opener           => 20,
+            Rune::Leftovers        => 21,
+            Rune::Star             => 22,
+            Rune::Thirst           => 23,
+            Rune::Medic            => 24,
+            Rune::Rally            => 25,
+            Rune::Thorns           => 26,
+        }
+    }
+    /// Inverse of `to_u8`. Returns `None` for unknown numbers (peer
+    /// running a future build with a new rune) so callers can
+    /// silently skip rather than panic.
+    pub fn from_u8(n: u8) -> Option<Self> {
+        Some(match n {
+             0 => Rune::Fire,
+             1 => Rune::Frost,
+             2 => Rune::Shock,
+             3 => Rune::Echo,
+             4 => Rune::Cascade,
+             5 => Rune::Conduit,
+             6 => Rune::Resonate,
+             7 => Rune::TargetFurthest,
+             8 => Rune::TargetHighestHp,
+             9 => Rune::TargetLowestHp,
+            10 => Rune::TargetCarousel,
+            11 => Rune::Splash,
+            12 => Rune::Vampire,
+            13 => Rune::Ward,
+            14 => Rune::Bleed,
+            15 => Rune::Blast,
+            16 => Rune::Hustle,
+            17 => Rune::Pierce,
+            18 => Rune::Greed,
+            19 => Rune::Executioner,
+            20 => Rune::Opener,
+            21 => Rune::Leftovers,
+            22 => Rune::Star,
+            23 => Rune::Thirst,
+            24 => Rune::Medic,
+            25 => Rune::Rally,
+            26 => Rune::Thorns,
+            _ => return None,
+        })
+    }
+}
+
+impl Rune {
     pub fn label(self) -> &'static str {
         match self {
             Rune::Fire             => tr("rune_fire"),
@@ -389,6 +464,7 @@ impl Rune {
         on_resonate: &Query<&OnResonate>,
         enemy_snap: &[(Entity, Vec2, f32)],
         rng: &mut rand::rngs::ThreadRng,
+        proc_fx: &mut bevy::ecs::event::EventWriter<crate::proc_fx::ProcFxFired>,
     ) {
         match self {
             Rune::Fire | Rune::Frost | Rune::Bleed => {
@@ -424,6 +500,14 @@ impl Rune {
                     crate::bullet::spawn_lightning_arc(
                         commands, em, &pm.shock, ev.hit_pos, target_pos,
                     );
+                    // Broadcast the transient visual to other peers
+                    // (no-op on single-player — no system reads the
+                    // event in that case; auto-dropped after 2 frames).
+                    proc_fx.write(crate::proc_fx::ProcFxFired {
+                        kind: crate::proc_fx::kind::SHOCK_ARC,
+                        from: ev.hit_pos,
+                        to:   target_pos,
+                    });
                     let mut next_procced = ev.procced.clone();
                     next_procced.push(Rune::Shock);
                     chain.push(crate::bullet::DamageEvent {

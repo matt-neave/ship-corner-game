@@ -59,6 +59,10 @@ rand = "0.8"
 # and `dirs` reads OS config paths that don't exist in a browser. The
 # call sites in `modes.rs` + `settings.rs` are cfg-gated to compile to
 # no-ops on wasm32.
+#
+# Multiplayer (`multiplayer/`) is also native-only — UDP sockets don't
+# exist in browsers. The whole module is `#[cfg(not(target_arch = "wasm32"))]`
+# in main.rs so the WASM build never compiles its deps.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Bevy 0.16 uses winit 0.30 internally; we depend on the same version directly
 # to access ResizeDirection / drag_window for the borderless desktop-mode window.
@@ -67,6 +71,16 @@ winit = "0.30"
 # %APPDATA%\ship-game on Windows / ~/.config on Linux / ~/Library/Application
 # Support on macOS — no hand-rolled OS branching.
 dirs = "5"
+# Multiplayer message serialization. 1.x is the stable bincode line;
+# 2.x is a major rewrite that's not worth the migration cost for a
+# fixed tiny enum.
+bincode = "1"
+serde = { version = "1", features = ["derive"] }
+# Look up the host machine's LAN IP so the HOST screen can display it
+# for the joining player to type in. The std-library trick of binding
+# a UDP socket and `connect()`-ing to a public IP works on all OSes
+# but feels hacky — this crate wraps the OS-specific calls cleanly.
+local-ip-address = "0.6"
 
 # WASM-only deps. `getrandom` is a transitive dep of `rand`; on
 # wasm32-unknown-unknown it can't access an OS entropy source by

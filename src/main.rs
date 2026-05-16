@@ -32,6 +32,9 @@ mod pause;
 mod rendering;
 mod main_menu;
 mod menu_kit;
+mod proc_fx;
+#[cfg(not(target_arch = "wasm32"))]
+mod multiplayer;
 mod octopus;
 mod onboarding;
 mod fonts;
@@ -168,6 +171,58 @@ pub enum AppState {
     /// Minimal end-of-run overlay; exiting back to MainMenu runs the
     /// same fresh-run reset as the GameOver path.
     Win,
+    /// Multiplayer lobby — host + connected clients sit here between
+    /// the handshake and the START button. Roster, kick, leave, and
+    /// (host-only) START controls live in `multiplayer/lobby.rs`. The
+    /// host enters on clicking HOST; clients enter on receiving
+    /// Welcome. Both transition to Playing simultaneously when the
+    /// host clicks START (via `StateChange` broadcast).
+    Lobby,
+}
+
+impl AppState {
+    /// Stable wire-format discriminant for multiplayer state-sync.
+    /// Append-only — renumbering breaks compatibility with peers
+    /// running an older build. Used by `NetMsg::StateChange` so a
+    /// host's state transitions can drive matching transitions on
+    /// every client.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            AppState::MainMenu       => 0,
+            AppState::Playing        => 1,
+            AppState::StageComplete  => 2,
+            AppState::LevelUp        => 3,
+            AppState::HullSelect     => 4,
+            AppState::Customize      => 5,
+            AppState::Map            => 6,
+            AppState::Paused         => 7,
+            AppState::GameOver       => 8,
+            AppState::BossReward     => 9,
+            AppState::BossIntro      => 10,
+            AppState::Win            => 11,
+            AppState::Lobby          => 12,
+        }
+    }
+    /// Inverse of `to_u8`. `None` for unknown discriminants so older
+    /// clients can silently skip unknown future states.
+    pub fn from_u8(n: u8) -> Option<Self> {
+        Some(match n {
+             0 => AppState::MainMenu,
+             1 => AppState::Playing,
+             2 => AppState::StageComplete,
+             3 => AppState::LevelUp,
+             4 => AppState::HullSelect,
+             5 => AppState::Customize,
+             6 => AppState::Map,
+             7 => AppState::Paused,
+             8 => AppState::GameOver,
+             9 => AppState::BossReward,
+            10 => AppState::BossIntro,
+            11 => AppState::Win,
+            12 => AppState::Lobby,
+             _ => return None,
+        })
+    }
 }
 
 /// Owns the in-combat-view Update schedule. Pulled out of the main
@@ -203,6 +258,13 @@ impl Plugin for CombatSimPlugin {
                 friendly_ram_damage,
                 stats::shield_recharge_system,
                 bomber_detonate,
+                // Client gates: enemies on the client are authored by
+                // the host's snapshots, so the local wave + boss spawn
+                // systems must NOT run there (they'd double-spawn). On
+                // host or solo, both run normally.
+                #[cfg(not(target_arch = "wasm32"))]
+                (spawn_enemies, boss_chaos_spawn).run_if(not(multiplayer::enemies::is_client)),
+                #[cfg(target_arch = "wasm32")]
                 (spawn_enemies, boss_chaos_spawn),
             )
                 .run_if(in_combat_view),
@@ -516,6 +578,15 @@ fn main() {
             customize::CustomizePlugin,
             hull::HullSelectPlugin,
         ))
+        // Multiplayer plugin is native-only — UDP sockets don't exist
+        // in browsers, and `bincode` / `local-ip-address` are cfg-
+        // gated out of the WASM build's deps in Cargo.toml.
+        .add_plugins({
+            #[cfg(not(target_arch = "wasm32"))]
+            { multiplayer::MultiplayerPlugin }
+            #[cfg(target_arch = "wasm32")]
+            { bevy::app::EmptyPlugin }
+        })
         .add_plugins((
             anchor_flail::AnchorFlailPlugin,
             flamethrower::FlamethrowerPlugin,
@@ -596,6 +667,7 @@ fn main() {
         .insert_resource(DebugClaimMode::default())
         .add_event::<TriggerMapPhase>()
         .add_event::<rune::KillEvent>()
+        .add_event::<proc_fx::ProcFxFired>()
         .insert_resource(AllyPositionsCache::default())
         .add_systems(Startup, fonts::setup_pixel_font)
         .add_systems(Startup, (

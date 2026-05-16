@@ -518,6 +518,7 @@ pub fn process_damage_events(
     >,
     on_conduit: Query<&OnConduit>,
     on_resonate: Query<&OnResonate>,
+    mut proc_fx: EventWriter<crate::proc_fx::ProcFxFired>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
@@ -554,7 +555,7 @@ pub fn process_damage_events(
             future_stun,
             &enemy_snap, &mut enemies, &mut friendly, &mut vampire_acc,
             &mut greed_acc, &mut *scrap_w.total, &mut *scrap_w.earned,
-            &on_conduit, &on_resonate, &mut rng,
+            &on_conduit, &on_resonate, &mut rng, &mut proc_fx,
         );
 
         // Was the hit lethal? Read the target's HP back via the
@@ -640,6 +641,7 @@ fn process_damage_event(
     on_conduit: &Query<&OnConduit>,
     on_resonate: &Query<&OnResonate>,
     rng: &mut rand::rngs::ThreadRng,
+    proc_fx: &mut EventWriter<crate::proc_fx::ProcFxFired>,
 ) {
     let Ok((_, _, en, mut h, mut fx, _)) = enemies.get_mut(ev.target) else { return; };
     if h.0 <= 0 { return; } // already dead from an earlier hit this frame
@@ -775,6 +777,13 @@ fn process_damage_event(
         // Blast AOE reads as a distinct "explosive" cue independent
         // of the host weapon's bullet colour.
         spawn_blast_ring(commands, em, &pm.blast, ev.hit_pos, radius, rng);
+        // Blast is a single-point AOE — `to == from` signals "no
+        // second endpoint" to the receive-side spawn logic.
+        proc_fx.write(crate::proc_fx::ProcFxFired {
+            kind: crate::proc_fx::kind::BLAST_RING,
+            from: ev.hit_pos,
+            to:   ev.hit_pos,
+        });
     }
 
     // Lethal-only branch: Cascade is the one rune that fires *because*
@@ -847,6 +856,11 @@ fn process_damage_event(
             let Some((target, target_pos, _)) = next else { break };
             excluded.push(target);
             spawn_lightning_arc(commands, em, &pm.bullet_friendly_outer, ev.hit_pos, target_pos);
+            proc_fx.write(crate::proc_fx::ProcFxFired {
+                kind: crate::proc_fx::kind::CASCADE,
+                from: ev.hit_pos,
+                to:   target_pos,
+            });
             chain.push(DamageEvent {
                 target,
                 amount: ev.amount,
@@ -910,7 +924,7 @@ fn process_damage_event(
         // sit alongside it as parallel methods.
         rune.apply_proc(
             stacks, &ev, chain, commands, player_stats, pm, em,
-            on_resonate, enemy_snap, rng,
+            on_resonate, enemy_snap, rng, proc_fx,
         );
     }
 }

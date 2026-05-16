@@ -167,6 +167,22 @@ impl Plugin for MainMenuPlugin {
                     .run_if(in_state(AppState::MainMenu))
                     .after(track_menu_cursor),
             )
+            // Multiplayer click router — native-only sibling of
+            // handle_menu_click. Splitting it out keeps both systems
+            // under Bevy's 16-SystemParam ceiling.
+            .add_systems(
+                Update,
+                {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        handle_mp_menu_clicks
+                            .run_if(in_state(AppState::MainMenu))
+                            .after(track_menu_cursor)
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    { || {} }
+                },
+            )
             // Shared bevy_ui settings-button handlers — used by the
             // pause-menu's settings panel (which is still bevy_ui).
             // Registered here, not in `pause`, because the click
@@ -311,6 +327,8 @@ pub struct MenuLabel(pub MenuButtonItem);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MenuButtonItem {
     Play,
+    Host,
+    Join,
     Settings,
     Night,
     Crt,
@@ -323,7 +341,9 @@ pub enum MenuButtonItem {
 }
 
 impl MenuButtonItem {
-    fn is_root(self) -> bool { matches!(self, Self::Play | Self::Settings) }
+    fn is_root(self) -> bool {
+        matches!(self, Self::Play | Self::Host | Self::Join | Self::Settings)
+    }
 }
 
 /// Marker on each menu-fleet hull sailing in the play world. Same
@@ -397,11 +417,14 @@ const Z_BG: f32 = 1.0;
 const Z_FG: f32 = 2.0;
 
 /// Y where each row of root-view chrome sits, in spec units (0 = centre,
-/// +Y = up). Title above zero, PLAY below it, SETTINGS below that.
-/// Title is naked text (drop-shadowed) — no backdrop slab.
+/// +Y = up). Title above zero, then PLAY / HOST / JOIN / SETTINGS
+/// stacked below it. Title is naked text (drop-shadowed) — no backdrop
+/// slab.
 const TITLE_Y: f32     =  60.0;
-const PLAY_Y: f32      =   0.0;
-const SETTINGS_Y: f32  = -22.0;
+const PLAY_Y: f32      =  22.0;
+const HOST_Y: f32      =   0.0;
+const JOIN_Y: f32      = -22.0;
+const SETTINGS_Y: f32  = -44.0;
 
 const BUTTON_W: f32 = 72.0;
 const BUTTON_H: f32 = 16.0;
@@ -706,11 +729,21 @@ pub fn setup_main_menu_chrome(
         &thaleah,
     );
 
-    // ---- PLAY / SETTINGS buttons (root view) ----
+    // ---- PLAY / HOST / JOIN / SETTINGS buttons (root view) ----
     spawn_menu_button(
         &mut commands, &mut meshes, &mut materials,
         Vec2::new(0.0, PLAY_Y), Vec2::new(BUTTON_W, BUTTON_H),
         MenuButtonItem::Play, "PLAY", BUTTON_FONT, true,
+    );
+    spawn_menu_button(
+        &mut commands, &mut meshes, &mut materials,
+        Vec2::new(0.0, HOST_Y), Vec2::new(BUTTON_W, BUTTON_H),
+        MenuButtonItem::Host, "HOST", BUTTON_FONT, true,
+    );
+    spawn_menu_button(
+        &mut commands, &mut meshes, &mut materials,
+        Vec2::new(0.0, JOIN_Y), Vec2::new(BUTTON_W, BUTTON_H),
+        MenuButtonItem::Join, "JOIN", BUTTON_FONT, true,
     );
     spawn_menu_button(
         &mut commands, &mut meshes, &mut materials,
@@ -1077,6 +1110,8 @@ pub fn update_menu_label_text(
     for (label, mut text) in &mut q {
         let s = match label.0 {
             MenuButtonItem::Play       => "PLAY".to_string(),
+            MenuButtonItem::Host       => "HOST".to_string(),
+            MenuButtonItem::Join       => "JOIN".to_string(),
             MenuButtonItem::Settings   => "SETTINGS".to_string(),
             MenuButtonItem::Night      => format!("NIGHT: {}", on_off(night.active)),
             MenuButtonItem::Crt        => format!("CRT: {}",   on_off(crt.active)),
@@ -1148,6 +1183,11 @@ pub fn handle_menu_click(
 
         match btn.item {
             MenuButtonItem::Play       => next_state.set(AppState::HullSelect),
+            // HOST / JOIN routing lives in `handle_mp_menu_clicks` —
+            // splitting it out keeps `handle_menu_click` under Bevy's
+            // 16-`SystemParam` limit (the MP resources push us over).
+            MenuButtonItem::Host       => { /* see handle_mp_menu_clicks */ }
+            MenuButtonItem::Join       => { /* see handle_mp_menu_clicks */ }
             MenuButtonItem::Settings   => *view = MainMenuView::Settings,
             MenuButtonItem::Night      => night.active = !night.active,
             MenuButtonItem::Crt        => crt.active = !crt.active,
@@ -1189,9 +1229,64 @@ pub fn play_menu_click_sound(
     }
 }
 
+/// Sibling click router for HOST / JOIN — split out of
+/// `handle_menu_click` because the multiplayer resources push the
+/// main handler over Bevy's 16-`SystemParam` limit. Same hit-test
+/// shape, narrower button match. Native-only signature; the WASM
+/// build still has the buttons in the chrome but this system
+/// isn't registered there (see `MainMenuPlugin::build`).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn handle_mp_menu_clicks(
+    mouse: Res<ButtonInput<MouseButton>>,
+    viewport: Res<MainMenuViewport>,
+    view: Res<MainMenuView>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut commands: Commands,
+    mut net_mode: ResMut<crate::multiplayer::NetMode>,
+    mut host_status: ResMut<crate::multiplayer::HostStatus>,
+    mut roster: ResMut<crate::multiplayer::LobbyRoster>,
+    local_name: Res<crate::multiplayer::LocalPlayerName>,
+    buttons: Query<(&Transform, &HitArea, &MenuButton)>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) { return; }
+    let Some(cursor) = viewport.spec_cursor else { return };
+    let active_view_root = *view == MainMenuView::Root;
+    for (tf, hit, btn) in &buttons {
+        let in_view = if active_view_root { btn.item.is_root() } else { !btn.item.is_root() };
+        if !in_view { continue; }
+        let c = tf.translation.truncate();
+        let half = hit.size * 0.5;
+        if (cursor.x - c.x).abs() > half.x { continue; }
+        if (cursor.y - c.y).abs() > half.y { continue; }
+
+        match btn.item {
+            MenuButtonItem::Host => {
+                if let Err(e) = crate::multiplayer::start_hosting(
+                    &mut commands, &mut net_mode, &mut host_status,
+                    &mut roster, &local_name,
+                ) {
+                    bevy::log::error!("multiplayer: HOST failed: {e}");
+                } else {
+                    // HOST jumps the host straight into the lobby.
+                    // First joiner triggers a Welcome reply, then both
+                    // peers are in Lobby when handshake polling ticks.
+                    next_state.set(AppState::Lobby);
+                }
+            }
+            MenuButtonItem::Join => {
+                *net_mode = crate::multiplayer::NetMode::JoiningEntry;
+            }
+            _ => continue,
+        }
+        return;
+    }
+}
+
 fn initial_label_for(item: MenuButtonItem) -> &'static str {
     match item {
         MenuButtonItem::Play       => "PLAY",
+        MenuButtonItem::Host       => "HOST",
+        MenuButtonItem::Join       => "JOIN",
         MenuButtonItem::Settings   => "SETTINGS",
         MenuButtonItem::Night      => "NIGHT",
         MenuButtonItem::Crt        => "CRT",

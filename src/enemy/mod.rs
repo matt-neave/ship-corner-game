@@ -132,6 +132,39 @@ pub enum EnemyVariant {
 }
 
 impl EnemyVariant {
+    /// Stable wire-format discriminant for multiplayer snapshots.
+    /// Order is load-bearing — changing a number breaks compatibility
+    /// with peers running an older build. Append new variants at the
+    /// end, never renumber existing ones.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            EnemyVariant::Standard  => 0,
+            EnemyVariant::Heavy     => 1,
+            EnemyVariant::Scout     => 2,
+            EnemyVariant::Bomber    => 3,
+            EnemyVariant::Rammer    => 4,
+            EnemyVariant::Sniper    => 5,
+            EnemyVariant::Artillery => 6,
+        }
+    }
+    /// Inverse of `to_u8`. Returns `None` for unknown numbers (peer
+    /// running a future build with a new variant); caller should
+    /// silently skip those mirrors rather than panic.
+    pub fn from_u8(n: u8) -> Option<Self> {
+        Some(match n {
+            0 => EnemyVariant::Standard,
+            1 => EnemyVariant::Heavy,
+            2 => EnemyVariant::Scout,
+            3 => EnemyVariant::Bomber,
+            4 => EnemyVariant::Rammer,
+            5 => EnemyVariant::Sniper,
+            6 => EnemyVariant::Artillery,
+            _ => return None,
+        })
+    }
+}
+
+impl EnemyVariant {
     pub fn hp(self) -> i32 {
         // Tuned so HP escalates with introduction order: a player
         // shouldn't see the tankiest variant until they've cleared
