@@ -323,15 +323,18 @@ fn spawn_leave_button(parent: &mut ChildSpawnerCommands, font: &crate::fonts::Pi
     });
 }
 
-/// START click → host transitions Lobby → Playing. State sync
-/// (`broadcast_state_change`) carries clients along.
+/// START click → host transitions Lobby → HullSelect. State sync
+/// (`broadcast_state_change`) carries clients along; each peer
+/// picks their own hull, then the per-peer ready check (in
+/// `multiplayer::ready`) advances HullSelect → Playing for everyone
+/// together.
 pub fn handle_start_click(
     interactions: Query<&Interaction, (Changed<Interaction>, With<StartButton>)>,
     mut next: ResMut<NextState<AppState>>,
 ) {
     for interaction in &interactions {
         if matches!(interaction, Interaction::Pressed) {
-            next.set(AppState::Playing);
+            next.set(AppState::HullSelect);
             return;
         }
     }

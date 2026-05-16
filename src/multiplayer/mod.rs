@@ -3955,3 +3955,377 @@ mod tests {
                 "no session inserted on failure");
     }
 }
+
+// ============================================================
+//  Full-plugin integration tests
+// ============================================================
+//
+// These tests use the **real** `MultiplayerPlugin::build` (not the
+// cherry-picked subset in `build_peer_app`). Catches the class of
+// bug the cherry-picked fixture misses — system runs on the wrong
+// peer because production gates differ from test gates, OnExit /
+// OnEnter hooks fire when they shouldn't, etc.
+//
+// Cost: the fixture has to insert *every* resource the plugin's
+// systems read, plus stubs for graphics resources whose absence
+// would crash systems that don't already check via `Option<Res<_>>`.
+
+#[cfg(test)]
+mod full_plugin_tests {
+    use super::*;
+    use bevy::prelude::*;
+    use crate::AppState;
+
+    /// Build a peer app the same way production does — register
+    /// `MultiplayerPlugin` directly so the schedule matches main.rs
+    /// 1:1, then insert the minimum supporting resources that
+    /// production gameplay systems read.
+    ///
+    /// Skips: rendering, font loading, palette materials. Anything
+    /// that needs `Assets<Mesh>` is `Option<Res<...>>`-guarded
+    /// inside the systems and silently bails in tests — that's the
+    /// same pattern the existing `build_peer_app` relies on.
+    fn build_full_plugin_peer(
+        is_host: bool,
+        host_addr_for_client: Option<std::net::SocketAddr>,
+    ) -> App {
+        use bevy::ecs::system::SystemState;
+
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.add_plugins(bevy::state::app::StatesPlugin);
+        app.init_state::<AppState>();
+        // Bevy 0.16's bevy_ui requires the assets plugin to be present
+        // before any system reads `Assets<Mesh>` etc. Adding only
+        // `MinimalPlugins` skips it, so insert the asset stores
+        // manually as empty defaults — production reads them via
+        // `Option<ResMut<Assets<Mesh>>>` and bails on None.
+
+        // Gameplay resources MultiplayerPlugin's systems read.
+        app.insert_resource(crate::stats::PlayerStats::default());
+        app.insert_resource(crate::turret::TurretConfig::default());
+        app.insert_resource(crate::map::CombatContext::default());
+        app.insert_resource(crate::xp::Xp::default());
+        app.insert_resource(crate::xp::LevelUpsPending::default());
+        app.insert_resource(crate::xp::LevelUpReturn::default());
+        app.insert_resource(crate::Scrap::default());
+        app.insert_resource(crate::stage_complete::ScrapEarnedThisStage::default());
+        // Production registers these via their own plugins; insert
+        // directly so MultiplayerPlugin's systems can read them.
+        app.add_event::<crate::proc_fx::ProcFxFired>();
+        app.add_event::<crate::proc_fx::BulletFiredEvent>();
+        app.insert_resource(crate::bullet::PendingDamageQueue::default());
+
+        // Now register the real plugin.
+        app.add_plugins(MultiplayerPlugin);
+
+        // Replace the random ephemeral port the plugin would have
+        // taken with one we control. Easier than driving the START
+        // button — we synthesise the session ourselves and the
+        // plugin's systems treat it as if the handshake completed.
+        let sock = super::net::bind_socket(None).expect("bind ephemeral socket");
+        let mut peers = std::collections::HashMap::new();
+        if let Some(host_addr) = host_addr_for_client {
+            peers.insert(0u8, host_addr);
+        }
+        // Drop the default NetSession that... actually MpPlugin
+        // doesn't insert one; only `start_hosting` / `start_joining`
+        // do. So this is the first insert.
+        app.insert_resource(NetSession {
+            sock,
+            my_id: if is_host { 0 } else { 1 },
+            peers,
+            next_peer_id: if is_host { 1 } else { 0 },
+            welcomed: true,
+            is_host,
+            last_seen: std::collections::HashMap::new(),
+        });
+        app.insert_resource(NetMode::Connected);
+        // Suppress an unused-import-style warning in case
+        // SystemState isn't used after refactors.
+        let _ = std::any::type_name::<SystemState<()>>();
+
+        app
+    }
+
+    /// `lockstep` analogue for these full-plugin apps. Same shape
+    /// as the older test fixture's helper.
+    fn lockstep(host: &mut App, client: &mut App, ticks: usize) {
+        for _ in 0..ticks {
+            host.update();
+            client.update();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn peer_port(app: &App) -> u16 {
+        app.world().resource::<NetSession>().sock.local_addr().unwrap().port()
+    }
+
+    /// Smoke test: the full plugin actually builds without panicking
+    /// and the basic state-sync pipeline works between two real-
+    /// plugin apps. This is the cheapest catch for "plugin
+    /// registration is broken" — any future change that breaks
+    /// MultiplayerPlugin::build fails this test loudly.
+    #[test]
+    fn full_plugin_smoke_state_sync() {
+        let mut host = build_full_plugin_peer(true, None);
+        let host_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&host)).parse().unwrap();
+        let mut client = build_full_plugin_peer(false, Some(host_addr));
+        let client_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&client)).parse().unwrap();
+        host.world_mut().resource_mut::<NetSession>().peers.insert(1, client_addr);
+
+        // Both peers transition into Playing through the real
+        // schedule. State sync must carry them along.
+        host.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Playing);
+        lockstep(&mut host, &mut client, 30);
+
+        assert_eq!(*host.world().resource::<State<AppState>>().get(), AppState::Playing,
+            "host enters Playing");
+        assert_eq!(*client.world().resource::<State<AppState>>().get(), AppState::Playing,
+            "client follows host into Playing via real broadcast_state_change");
+    }
+
+    /// Regression: the per-peer ready check in HullSelect must wait
+    /// for BOTH peers to flip `LocalReadyState.ready` before host
+    /// advances HullSelect → Playing. Earlier playtests reported
+    /// the host advancing solo. Uses the real plugin so we see the
+    /// exact production behaviour.
+    #[test]
+    fn full_plugin_hullselect_waits_for_all_peers() {
+        use super::ready::LocalReadyState;
+
+        let mut host = build_full_plugin_peer(true, None);
+        let host_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&host)).parse().unwrap();
+        let mut client = build_full_plugin_peer(false, Some(host_addr));
+        let client_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&client)).parse().unwrap();
+        host.world_mut().resource_mut::<NetSession>().peers.insert(1, client_addr);
+        for app in [&mut host, &mut client] {
+            let mut r = app.world_mut().resource_mut::<LobbyRoster>();
+            r.by_id.insert(0, "HOST".into());
+            r.by_id.insert(1, "CLIENT".into());
+        }
+
+        // Both peers in HullSelect (state sync will carry the
+        // client; host transitions directly via NextState).
+        host.world_mut().resource_mut::<NextState<AppState>>().set(AppState::HullSelect);
+        lockstep(&mut host, &mut client, 15);
+        assert_eq!(*host.world().resource::<State<AppState>>().get(), AppState::HullSelect);
+        assert_eq!(*client.world().resource::<State<AppState>>().get(), AppState::HullSelect);
+
+        // Only the host clicks READY — host_advance_when_all_ready
+        // must NOT fire (client hasn't readied). Critical: if this
+        // assert fails, host has advanced without the client, which
+        // is the "doesn't wait" symptom from playtesting.
+        host.world_mut().resource_mut::<LocalReadyState>().ready = true;
+        lockstep(&mut host, &mut client, 20);
+        assert_eq!(
+            *host.world().resource::<State<AppState>>().get(),
+            AppState::HullSelect,
+            "host MUST stay in HullSelect while waiting on the client peer",
+        );
+
+        // Now client readies too — advance fires on host, state
+        // sync carries the client to Playing.
+        client.world_mut().resource_mut::<LocalReadyState>().ready = true;
+        lockstep(&mut host, &mut client, 25);
+        assert_eq!(
+            *host.world().resource::<State<AppState>>().get(),
+            AppState::Playing,
+            "host advances once every peer is ready",
+        );
+        assert_eq!(
+            *client.world().resource::<State<AppState>>().get(),
+            AppState::Playing,
+            "client follows the host's advance",
+        );
+    }
+
+    /// Same shape as the above, for Customize. The shop ready
+    /// check failing was one of the playtest reports.
+    #[test]
+    fn full_plugin_customize_waits_for_all_peers() {
+        use super::ready::LocalReadyState;
+
+        let mut host = build_full_plugin_peer(true, None);
+        let host_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&host)).parse().unwrap();
+        let mut client = build_full_plugin_peer(false, Some(host_addr));
+        let client_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&client)).parse().unwrap();
+        host.world_mut().resource_mut::<NetSession>().peers.insert(1, client_addr);
+        for app in [&mut host, &mut client] {
+            let mut r = app.world_mut().resource_mut::<LobbyRoster>();
+            r.by_id.insert(0, "HOST".into());
+            r.by_id.insert(1, "CLIENT".into());
+        }
+
+        host.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Customize);
+        lockstep(&mut host, &mut client, 15);
+
+        host.world_mut().resource_mut::<LocalReadyState>().ready = true;
+        lockstep(&mut host, &mut client, 20);
+        assert_eq!(*host.world().resource::<State<AppState>>().get(), AppState::Customize,
+            "host stays in Customize while waiting on client");
+
+        client.world_mut().resource_mut::<LocalReadyState>().ready = true;
+        lockstep(&mut host, &mut client, 25);
+        assert_eq!(*host.world().resource::<State<AppState>>().get(), AppState::Map,
+            "host advances to Map once all peers ready");
+    }
+
+    /// Regression: pause must NOT disconnect the client. Earlier
+    /// playtest reported peer 0 disconnected on host pause. Root
+    /// cause was `teardown_on_exit` on OnExit(Playing). Now hooked
+    /// to OnEnter(MainMenu). This test asserts the new behaviour
+    /// against the real plugin's schedule.
+    #[test]
+    fn full_plugin_pause_keeps_session_alive() {
+        let mut host = build_full_plugin_peer(true, None);
+        let host_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&host)).parse().unwrap();
+        let mut client = build_full_plugin_peer(false, Some(host_addr));
+        let client_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&client)).parse().unwrap();
+        host.world_mut().resource_mut::<NetSession>().peers.insert(1, client_addr);
+
+        host.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Playing);
+        client.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Playing);
+        lockstep(&mut host, &mut client, 5);
+
+        // Host pauses.
+        host.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Paused);
+        lockstep(&mut host, &mut client, 15);
+
+        // Session must still exist on both peers — no Bye sent, no
+        // mode reset to Solo.
+        assert!(host.world().contains_resource::<NetSession>(),
+            "host session must NOT be torn down on pause");
+        assert!(client.world().contains_resource::<NetSession>(),
+            "client session must NOT be torn down on pause");
+        assert!(matches!(*host.world().resource::<NetMode>(), NetMode::Connected),
+            "host NetMode must stay Connected on pause");
+        assert!(matches!(*client.world().resource::<NetMode>(), NetMode::Connected),
+            "client NetMode must stay Connected on pause");
+    }
+
+    /// Regression: tearing down ONLY on `OnEnter(MainMenu)` means
+    /// transitioning through any non-MainMenu state (Customize,
+    /// LevelUp, Map, etc.) keeps the session alive. Asserts the
+    /// session survives a round-trip through several states.
+    #[test]
+    fn full_plugin_state_transitions_keep_session_alive() {
+        let mut host = build_full_plugin_peer(true, None);
+        let host_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&host)).parse().unwrap();
+        let mut client = build_full_plugin_peer(false, Some(host_addr));
+        let client_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&client)).parse().unwrap();
+        host.world_mut().resource_mut::<NetSession>().peers.insert(1, client_addr);
+
+        for state in [
+            AppState::Playing,
+            AppState::Customize,
+            AppState::Map,
+            AppState::Playing,
+            AppState::LevelUp,
+            AppState::Customize,
+            AppState::HullSelect,
+        ] {
+            host.world_mut().resource_mut::<NextState<AppState>>().set(state);
+            lockstep(&mut host, &mut client, 10);
+            assert!(host.world().contains_resource::<NetSession>(),
+                "session survives transition to {state:?}");
+            assert!(client.world().contains_resource::<NetSession>(),
+                "client session survives transition to {state:?}");
+        }
+
+        // Finally — transitioning to MainMenu DOES tear down. This
+        // is the load-bearing behaviour the other asserts depend on.
+        host.world_mut().resource_mut::<NextState<AppState>>().set(AppState::MainMenu);
+        host.update();
+        host.update();
+        assert!(!host.world().contains_resource::<NetSession>(),
+            "OnEnter(MainMenu) MUST tear the session down");
+    }
+
+    /// Regression: when host is in Customize for >5 seconds (real
+    /// shop time), the heartbeat keeps client's `last_seen` for the
+    /// host fresh, so `detect_stale_peers` doesn't fire after the
+    /// 5s timeout. Uses real plugin schedule so the heartbeat
+    /// registration is exercised.
+    #[test]
+    fn full_plugin_heartbeat_prevents_idle_timeout() {
+        let mut host = build_full_plugin_peer(true, None);
+        let host_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&host)).parse().unwrap();
+        let mut client = build_full_plugin_peer(false, Some(host_addr));
+        let client_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&client)).parse().unwrap();
+        host.world_mut().resource_mut::<NetSession>().peers.insert(1, client_addr);
+
+        // Both in Customize (per-peer state; nobody is sending
+        // enemy snapshots or transforms — only heartbeats keep
+        // the link warm).
+        host.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Customize);
+        client.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Customize);
+        lockstep(&mut host, &mut client, 5);
+
+        // Simulate idle by back-dating last_seen on the client side
+        // to just-below-timeout. The next heartbeat from host should
+        // refresh it. (Real-time test would need 5s of wall clock;
+        // back-dating is the standard test fixture trick.)
+        let near_timeout = std::time::Instant::now()
+            - std::time::Duration::from_secs_f32(PEER_TIMEOUT_SECS - 0.5);
+        client.world_mut()
+            .resource_mut::<NetSession>()
+            .last_seen
+            .insert(0, near_timeout);
+
+        // Several heartbeat cycles. (HEARTBEAT_INTERVAL_SECS=1.0;
+        // lockstep advances Time::delta_secs by the lockstep sleep,
+        // ~5ms × 30 = 150ms — not enough for the timer to elapse,
+        // but enough to drain any in-flight packets. Force a
+        // longer-elapsed window by manually advancing Time.)
+        for _ in 0..40 {
+            host.update();
+            client.update();
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+
+        // Heartbeats since the back-date should have updated
+        // last_seen well within the timeout window.
+        let now = std::time::Instant::now();
+        let age = now.duration_since(
+            client.world().resource::<NetSession>().last_seen.get(&0).copied().unwrap_or(now)
+        ).as_secs_f32();
+        assert!(age < PEER_TIMEOUT_SECS,
+            "heartbeat must keep last_seen fresh; age was {age}s");
+        // Connection still alive on both sides.
+        assert!(client.world().contains_resource::<NetSession>(),
+            "client must not have been kicked");
+    }
+
+    /// Regression: gates added in main.rs prevent the client from
+    /// running enemy simulation on mirrors. The plugin doesn't add
+    /// those gates — main.rs does. This test confirms the
+    /// `is_client` helper used by those gates returns the right
+    /// value with the real plugin's `NetSession` setup.
+    #[test]
+    fn full_plugin_is_client_helper_correct_for_both_peers() {
+        use bevy::ecs::system::RunSystemOnce;
+        use super::enemies::is_client;
+
+        let mut host = build_full_plugin_peer(true, None);
+        let mut client = build_full_plugin_peer(false, None);
+
+        let host_is_client = host.world_mut().run_system_once(is_client).unwrap();
+        let client_is_client = client.world_mut().run_system_once(is_client).unwrap();
+        assert!(!host_is_client, "host must not register as client");
+        assert!(client_is_client, "client must register as client");
+    }
+}

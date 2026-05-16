@@ -261,32 +261,68 @@ impl Plugin for CombatSimPlugin {
                 // enemy AI / fire system reads it this frame.
                 update_ally_positions_cache,
                 friendly_movement,
-                enemy_ai,
                 tick_stunned,
                 apply_velocity,
-                friendly_ram_damage,
                 stats::shield_recharge_system,
-                bomber_detonate,
-                // Client gates: enemies on the client are authored by
-                // the host's snapshots, so the local wave + boss spawn
-                // systems must NOT run there (they'd double-spawn). On
-                // host or solo, both run normally.
+                // Host-authoritative enemy simulation. Client mirrors
+                // are visual-only — their Transform/HP are driven by
+                // EnemySnapshot. Running these on the client too
+                // would (a) spawn duplicate enemy bullets from the
+                // mirror's position (peer takes ~2x damage), (b)
+                // write Velocity that fights `smooth_mirror_transforms`,
+                // and (c) cause `enemy_death_check` to grant scrap
+                // from a race window between HP=0 snapshot and the
+                // omit-from-next-snapshot reconcile.
                 #[cfg(not(target_arch = "wasm32"))]
-                (spawn_enemies, boss_chaos_spawn).run_if(not(multiplayer::enemies::is_client)),
+                (
+                    enemy_ai,
+                    friendly_ram_damage,
+                    bomber_detonate,
+                    spawn_enemies,
+                    boss_chaos_spawn,
+                ).run_if(not(multiplayer::enemies::is_client)),
                 #[cfg(target_arch = "wasm32")]
-                (spawn_enemies, boss_chaos_spawn),
+                (
+                    enemy_ai,
+                    friendly_ram_damage,
+                    bomber_detonate,
+                    spawn_enemies,
+                    boss_chaos_spawn,
+                ),
             )
                 .run_if(in_combat_view),
         );
 
         // ---- Projectile / turret group ----
+        //
+        // Enemy-side firing (enemy_fire, sniper_*, artillery_*,
+        // enemy_landmine_tick) is host-authoritative: the host fires
+        // the enemy's bullets, the bullets that hit the local player
+        // do the damage locally. The client never spawns enemy
+        // bullets from mirrors. If it did, both peers would
+        // experience independent firing salvos from the same enemy
+        // and the client would take ~double damage.
+        //
+        // Friendly-side firing (turret_aim_fire, helicopter_ai,
+        // shark_ai, mortar_shell_tick, bullet_update) runs on both
+        // peers — each peer drives their OWN ship's turrets and
+        // bullets locally; damage to mirrors is relayed to host.
         app.add_systems(
             Update,
             (
                 sync_turret_config,
-                // beam_apply_damage needs the BeamPending entities spawned
-                // by turret_aim_fire to be visible this frame.
                 (turret_aim_fire, beam_apply_damage).chain(),
+                bullet_update,
+                mortar_shell_tick,
+                (sync_helipad_helicopters, sync_helipad_nose_barrels, helicopter_ai).chain(),
+                (sync_sharknet_sharks, shark_ai, shark_contact_damage).chain(),
+            )
+                .run_if(in_combat_view),
+        );
+        // Host-only enemy firing — see comment above.
+        app.add_systems(
+            Update,
+            (
                 enemy_fire,
                 sniper_fire,
                 sniper_aim_line_tick,
@@ -294,21 +330,9 @@ impl Plugin for CombatSimPlugin {
                 artillery_fire,
                 artillery_shell_tick,
                 enemy_landmine_tick,
-                bullet_update,
-                mortar_shell_tick,
-                // HeliPad slots: sync the "one helicopter per equipped slot"
-                // invariant first so a freshly spawned heli ticks this frame
-                // in `helicopter_ai`. `.chain()` inserts the command-flush
-                // sync point that makes that hand-off safe.
-                (sync_helipad_helicopters, sync_helipad_nose_barrels, helicopter_ai).chain(),
-                // SharkNet autonomous unit: same shape as HeliPad — sync
-                // existence first, then AI tick, then contact-damage
-                // collision pass. Chained for the same command-flush
-                // reason: freshly-spawned sharks need their Transform
-                // visible before the AI moves them this frame.
-                (sync_sharknet_sharks, shark_ai, shark_contact_damage).chain(),
             )
-                .run_if(in_combat_view),
+                .run_if(in_combat_view)
+                .run_if(not(multiplayer::enemies::is_client)),
         );
 
         // ---- Damage pipeline ----
@@ -343,12 +367,22 @@ impl Plugin for CombatSimPlugin {
                         tick_on_medic,
                     )
                         .chain(),
+                    // Host-authoritative: client mirrors are despawned by
+                    // `apply_enemy_snapshot`'s reconcile pass when the
+                    // host's snapshot omits an id. Running death-check
+                    // on client would double-despawn AND grant scrap
+                    // from a race window between HP=0 and the omit.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    enemy_death_check.run_if(not(multiplayer::enemies::is_client)),
+                    #[cfg(target_arch = "wasm32")]
                     enemy_death_check,
                     // Safety net: catches enemies that an AI bug
                     // has thrown out of bounds before they stall
-                    // try_advance_fighting forever. Runs AFTER
-                    // enemy_death_check so the same frame can handle
-                    // both real kills + runaway despawns.
+                    // try_advance_fighting forever. Also host-only —
+                    // mirrors don't have AI to misbehave.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    cull_runaway_enemies.run_if(not(multiplayer::enemies::is_client)),
+                    #[cfg(target_arch = "wasm32")]
                     cull_runaway_enemies,
                 )
                     .chain(),
