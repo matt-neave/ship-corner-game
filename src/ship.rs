@@ -356,7 +356,21 @@ pub fn friendly_movement(
     buffs: Res<crate::rune::BuffStacks>,
     enemies: Query<&Transform, (With<Enemy>, Without<Friendly>)>,
     play_camera: Query<&Transform, (With<crate::palette::PlayCamera>, Without<Friendly>, Without<Enemy>)>,
-    mut q: Query<(&mut Transform, &mut Velocity, &mut Heading), With<Friendly>>,
+    // LocalPlayer only — the ghost (other peer's ship) is moved by
+    // snapshots, not by local input. Iterating all Friendlies here
+    // would yank the ghost around on every cursor move.
+    // `Without<Enemy>` + `Without<PlayCamera>` make this statically
+    // disjoint from the read-only Transform queries above for
+    // Bevy's parameter-conflict checker.
+    mut q: Query<
+        (&mut Transform, &mut Velocity, &mut Heading),
+        (
+            With<crate::components::LocalPlayer>,
+            Without<crate::multiplayer::ghost::RemoteGhost>,
+            Without<Enemy>,
+            Without<crate::palette::PlayCamera>,
+        ),
+    >,
 ) {
     let dt = time.delta_secs();
     let Ok(win) = windows.single() else { return; };
@@ -601,27 +615,27 @@ pub fn friendly_ram_damage(
         Without<Friendly>,
     >,
 ) {
-    let Ok((fe, f_tf, f_heading, mut fh, mut ffx, f_shield, f_self_grace)) = friendly.single_mut() else { return };
-    let f_pos = f_tf.translation.truncate();
-    let hull_yaw = f_heading.0;
     let dt = time.delta_secs();
+    // MP: host has TWO Friendlies (local + remote-peer ghost). The
+    // old `single_mut()` Err'd and skipped contact damage entirely
+    // — that's why "bullets work but rams don't" on host. Iterate
+    // every friendly so both ships take their own contact hits;
+    // `relay_ghost_damage` forwards the ghost's damage to the peer.
+    for (fe, f_tf, f_heading, mut fh, mut ffx, f_shield, f_self_grace) in &mut friendly {
+        let f_pos = f_tf.translation.truncate();
+        let hull_yaw = f_heading.0;
 
-    // Tick the ship's own collision-grace so a sustained overlap can't
-    // chunk us 60 times a second. We still fire screenshake + enemy
-    // damage on each enemy's individual grace expiry, but only chip
-    // the ship once per `RAM_GRACE` window regardless of how many
-    // enemies are pressed against it at the same time.
-    let mut self_grace_remaining = f_self_grace.as_ref().map(|g| g.remaining).unwrap_or(0.0);
-    if let Some(mut g) = f_self_grace {
-        g.remaining -= dt;
-        if g.remaining <= 0.0 {
-            commands.entity(fe).remove::<RamSelfGrace>();
-            self_grace_remaining = 0.0;
-        } else {
-            self_grace_remaining = g.remaining;
+        let mut self_grace_remaining = f_self_grace.as_ref().map(|g| g.remaining).unwrap_or(0.0);
+        if let Some(mut g) = f_self_grace {
+            g.remaining -= dt;
+            if g.remaining <= 0.0 {
+                commands.entity(fe).remove::<RamSelfGrace>();
+                self_grace_remaining = 0.0;
+            } else {
+                self_grace_remaining = g.remaining;
+            }
         }
-    }
-    let mut shield_opt = f_shield;
+        let mut shield_opt = f_shield;
 
     for (e, etf, en, mut h, mut fx, grace) in &mut enemies {
         // Tick down any active enemy grace and skip damage while it's hot.
@@ -671,6 +685,7 @@ pub fn friendly_ram_damage(
             }
         }
     }
+    }  // end per-friendly loop
 }
 
 /// Mirror of `RamGrace` but on the friendly ship. Throttles

@@ -1283,9 +1283,14 @@ pub fn bomber_detonate(
         let contact_damage = difficulty.scale_damage(contact_damage_base);
         let bp = btf.translation.truncate();
 
-        // Friendly first — preferred target if in range.
+        // Friendly first — preferred target if in range. In MP the
+        // host has TWO Friendlies (local + remote-peer ghost); the
+        // OLD `single_mut()` Err'd and skipped contact damage
+        // entirely. Now iterate and damage every friendly within
+        // the blast radius (ghost included — `relay_ghost_damage`
+        // forwards its share to the peer).
         let mut detonated = false;
-        if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
+        for (ftf, mut h, mut fx) in &mut friendly {
             if bp.distance(ftf.translation.truncate()) < radius {
                 fx.pulse();
                 h.0 = (h.0 - contact_damage).max(0);

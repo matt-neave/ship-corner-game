@@ -286,7 +286,18 @@ pub fn turret_aim_fire(
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
     mut thirst: ResMut<crate::rune::ThirstPending>,
-    ship_q: Query<(&Transform, &Heading), With<Friendly>>,
+    // LocalPlayer (not just Friendly) — the host has two Friendly
+    // entities in MP (local + remote-peer ghost). `single()` would
+    // Err and the system would bail every frame → the host's
+    // turrets never aim or fire.
+    // `Without<TurretSlot>` + `Without<TurretBarrel>` make this
+    // statically disjoint from the mut Transform `turrets` query
+    // below (Bevy's parameter-conflict checker doesn't know
+    // LocalPlayer implies Friendly).
+    ship_q: Query<
+        (&Transform, &Heading),
+        (With<crate::components::LocalPlayer>, Without<TurretSlot>, Without<TurretBarrel>),
+    >,
     enemies: Query<(Entity, &Transform, &Faction, &Health), With<Enemy>>,
     mut turrets: Query<
         (Entity, &mut TurretSlot, &mut Transform, &Visibility),
