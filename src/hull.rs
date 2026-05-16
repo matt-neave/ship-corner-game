@@ -17,7 +17,7 @@
 use bevy::prelude::*;
 
 use crate::stats::PlayerStats;
-use crate::ui_kit::{self, theme};
+use crate::ui_kit::{self, theme, ChunkyButtonStyle};
 use crate::AppState;
 
 /// Owns the hull-select / dockyard screen: the two pick-state
@@ -332,16 +332,18 @@ pub fn enter_hull_select(
     map_size: Res<crate::map::MapSize>,
     difficulty: Res<crate::Difficulty>,
     hull_preview: Res<crate::dockyard_view::HullPreviewImage>,
+    pixel_font: Res<crate::fonts::PixelFont>,
 ) {
     // Detail panel reflects the hover preview when present, else the
     // committed selection. The hull-tile grid below reads
     // `SelectedHull` directly for its highlight state.
     let panel_hull = preview.0.unwrap_or(selected.0);
-    spawn_overlay(commands, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0);
+    spawn_overlay(commands, &pixel_font, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0);
 }
 
 fn spawn_overlay(
     mut commands: Commands,
+    font: &crate::fonts::PixelFont,
     panel_hull: Hull,
     selected_hull: Hull,
     map_size: crate::map::MapSize,
@@ -389,11 +391,12 @@ fn spawn_overlay(
                         align_items: AlignItems::Center,
                         justify_content: JustifyContent::Center,
                         padding: UiRect::all(Val::Px(theme::PAD_LG)),
-                        border: UiRect::all(Val::Px(theme::BORDER_W)),
+                        border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                         ..default()
                     },
                     BackgroundColor(theme::SURFACE_RAISED),
-                    BorderColor(theme::BORDER_SUBTLE),
+                    BorderColor(theme::CHUNKY_OUTLINE),
+                    BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
                 ))
                 .with_children(|card| {
                     spawn_ship_preview(card, hull_preview_image);
@@ -409,14 +412,15 @@ fn spawn_overlay(
                         justify_content: JustifyContent::FlexStart,
                         padding: UiRect::all(Val::Px(theme::PAD_LG * 1.5)),
                         row_gap: Val::Px(theme::GAP_MD),
-                        border: UiRect::all(Val::Px(theme::BORDER_W)),
+                        border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                         ..default()
                     },
                     BackgroundColor(theme::SURFACE_RAISED),
-                    BorderColor(theme::BORDER_SUBTLE),
+                    BorderColor(theme::CHUNKY_OUTLINE),
+                    BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
                 ))
                 .with_children(|info| {
-                    spawn_detail_content(info, panel_hull);
+                    spawn_detail_content(info, font, panel_hull);
                 });
 
                 // --- RHS: voyage + PLAY + BACK ---
@@ -429,88 +433,100 @@ fn spawn_overlay(
                         justify_content: JustifyContent::FlexStart,
                         padding: UiRect::all(Val::Px(theme::PAD_LG * 1.5)),
                         row_gap: Val::Px(theme::GAP_MD),
-                        border: UiRect::all(Val::Px(theme::BORDER_W)),
+                        border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                         ..default()
                     },
                     BackgroundColor(theme::SURFACE_RAISED),
-                    BorderColor(theme::BORDER_SUBTLE),
+                    BorderColor(theme::CHUNKY_OUTLINE),
+                    BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
                 ))
                 .with_children(|run| {
-                    run.spawn(ui_kit::label(
+                    run.spawn(ui_kit::pixel_label(
+                        font,
                         "VOYAGE LENGTH",
                         theme::FONT_LG,
                         theme::ACCENT,
                     ));
                     for &size in crate::map::MapSize::ALL {
-                        spawn_map_size_pill(run, size, size == map_size);
+                        spawn_map_size_pill(run, font, size, size == map_size);
                     }
                     run.spawn((
                         Node {
                             margin: UiRect::top(Val::Px(theme::GAP_MD)),
                             ..default()
                         },
-                        ui_kit::label(
+                        ui_kit::pixel_label(
+                            font,
                             "DIFFICULTY",
                             theme::FONT_LG,
                             theme::ACCENT,
                         ),
                     ));
                     for &value in crate::Difficulty::VALUES {
-                        spawn_difficulty_pill(run, value, value == difficulty.0);
+                        spawn_difficulty_pill(run, font, value, value == difficulty.0);
                     }
                     // Spacer pushes PLAY + BACK to the card bottom.
                     run.spawn(Node {
                         flex_grow: 1.0,
                         ..default()
                     });
-                    spawn_play_button(run);
-                    spawn_back_button(run);
+                    spawn_play_button(run, font);
+                    spawn_back_button(run, font);
                 });
             });
 
             // ============ BOTTOM HALF — hull-tile grid ============
+            // Outer container is just the layout shell that inherits
+            // the top-half's screen-edge gap; the frame styling lives
+            // on the inner node so the chunky border sits inset from
+            // the screen, matching the inset of the three top-half
+            // panels.
             root.spawn((
                 Node {
                     width: Val::Percent(100.0),
                     height: Val::Percent(50.0),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Stretch,
-                    padding: UiRect::axes(Val::Px(theme::PAD_LG), Val::Px(theme::PAD_MD)),
-                    row_gap: Val::Px(theme::GAP_SM),
+                    padding: UiRect::all(Val::Px(theme::PAD_LG)),
                     ..default()
                 },
                 BackgroundColor(Color::NONE),
             ))
-            .with_children(|bottom| {
-                bottom.spawn((
-                    Text::new("SELECT VESSEL"),
-                    TextFont {
-                        font_size: theme::FONT_LG,
-                        font_smoothing: bevy::text::FontSmoothing::None,
-                        ..default()
-                    },
-                    TextColor(theme::ON_SURFACE_DIM),
+            .with_children(|outer| {
+                outer.spawn((
                     Node {
-                        margin: UiRect::left(Val::Px(theme::PAD_SM)),
+                        flex_grow: 1.0,
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Stretch,
+                        padding: UiRect::all(Val::Px(theme::PAD_LG * 1.5)),
+                        row_gap: Val::Px(theme::GAP_MD),
+                        border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                         ..default()
                     },
-                ));
-                bottom.spawn((
-                    Node {
-                        flex_direction: FlexDirection::Row,
-                        flex_wrap: FlexWrap::Wrap,
-                        align_content: AlignContent::FlexStart,
-                        column_gap: Val::Px(theme::GAP_SM),
-                        row_gap: Val::Px(theme::GAP_SM),
-                        padding: UiRect::all(Val::Px(theme::PAD_SM)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::NONE),
+                    BackgroundColor(theme::SURFACE_RAISED),
+                    BorderColor(theme::CHUNKY_OUTLINE),
+                    BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
                 ))
-                .with_children(|grid| {
-                    for &hull in HULL_ORDER {
-                        spawn_hull_tile(grid, hull, hull == selected_hull);
-                    }
+                .with_children(|bottom| {
+                    bottom.spawn(ui_kit::pixel_label(
+                        font, "SELECT VESSEL", theme::FONT_LG, theme::ON_SURFACE_DIM,
+                    ));
+                    bottom.spawn((
+                        Node {
+                            flex_direction: FlexDirection::Row,
+                            flex_wrap: FlexWrap::Wrap,
+                            align_content: AlignContent::FlexStart,
+                            column_gap: Val::Px(theme::GAP_SM),
+                            row_gap: Val::Px(theme::GAP_SM),
+                            ..default()
+                        },
+                        BackgroundColor(Color::NONE),
+                    ))
+                    .with_children(|grid| {
+                        for &hull in HULL_ORDER {
+                            spawn_hull_tile(grid, font, hull, hull == selected_hull);
+                        }
+                    });
                 });
             });
         });
@@ -576,8 +592,10 @@ fn preview_hull_color(hull: Hull) -> Color {
     }
 }
 
-/// Large PLAY action button. Click handled by `handle_play_click`.
-fn spawn_play_button(parent: &mut ChildSpawnerCommands) {
+/// Large PLAY action button — primary CTA. Sea-green chunky button;
+/// hover lifts toward fresh lime so the eye lands on it.
+fn spawn_play_button(parent: &mut ChildSpawnerCommands, font: &crate::fonts::PixelFont) {
+    let style = ChunkyButtonStyle::cta();
     parent
         .spawn((
             Button,
@@ -585,20 +603,24 @@ fn spawn_play_button(parent: &mut ChildSpawnerCommands) {
                 padding: UiRect::axes(Val::Px(theme::PAD_LG), Val::Px(theme::PAD_MD)),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                border: UiRect::all(Val::Px(theme::BORDER_W * 2.0)),
+                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                 ..default()
             },
-            BackgroundColor(theme::ACCENT),
-            BorderColor(theme::ACCENT),
+            BackgroundColor(style.idle_fill),
+            BorderColor(style.idle_outline),
+            BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
+            style,
             HullPlayButton,
         ))
         .with_children(|b| {
-            b.spawn(ui_kit::label("PLAY", theme::FONT_LG, Color::BLACK));
+            b.spawn(ui_kit::pixel_label(font, "PLAY", theme::FONT_LG, theme::ON_CTA));
         });
 }
 
-/// BACK action button (subtler than PLAY).
-fn spawn_back_button(parent: &mut ChildSpawnerCommands) {
+/// BACK action button — neutral chunky button, smaller padding so it
+/// reads as the secondary affordance next to PLAY.
+fn spawn_back_button(parent: &mut ChildSpawnerCommands, font: &crate::fonts::PixelFont) {
+    let style = ChunkyButtonStyle::neutral();
     parent
         .spawn((
             Button,
@@ -607,26 +629,29 @@ fn spawn_back_button(parent: &mut ChildSpawnerCommands) {
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 align_self: AlignSelf::Center,
-                border: UiRect::all(Val::Px(theme::BORDER_W)),
+                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                 ..default()
             },
-            BackgroundColor(theme::SURFACE_RAISED),
-            BorderColor(theme::BORDER_SUBTLE),
+            BackgroundColor(style.idle_fill),
+            BorderColor(style.idle_outline),
+            BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
+            style,
             HullBackButton,
         ))
         .with_children(|b| {
-            b.spawn(ui_kit::label("BACK", theme::FONT_MD, theme::ON_SURFACE));
+            b.spawn(ui_kit::pixel_label(font, "BACK", theme::FONT_MD, theme::ON_SURFACE));
         });
 }
 
-/// One tile in the bottom-grid hull picker. Small square button with
-/// the hull's name centred — Brotato style. `selected` flips the
-/// border / background to the accent so the active pick is obvious.
-fn spawn_hull_tile(parent: &mut ChildSpawnerCommands, hull: Hull, selected: bool) {
-    let (bg, border, text_color) = if selected {
-        (theme::ACCENT, theme::ACCENT, Color::BLACK)
+/// One tile in the bottom-grid hull picker. Selected tile gets the
+/// accent fill *locked* across all interaction states so hovering it
+/// doesn't preview an unselected look; unselected tiles use the
+/// neutral chunky palette so hover lifts the fill + outline.
+fn spawn_hull_tile(parent: &mut ChildSpawnerCommands, font: &crate::fonts::PixelFont, hull: Hull, selected: bool) {
+    let (style, text_color) = if selected {
+        (ChunkyButtonStyle::locked(theme::CTA_FILL, theme::CHUNKY_OUTLINE), theme::ON_CTA)
     } else {
-        (theme::SURFACE_RAISED, theme::BORDER_SUBTLE, theme::ON_SURFACE)
+        (ChunkyButtonStyle::neutral(), theme::ON_SURFACE)
     };
     parent
         .spawn((
@@ -635,32 +660,36 @@ fn spawn_hull_tile(parent: &mut ChildSpawnerCommands, hull: Hull, selected: bool
                 width: Val::Px(110.0),
                 height: Val::Px(64.0),
                 padding: UiRect::all(Val::Px(theme::PAD_SM)),
-                border: UiRect::all(Val::Px(theme::BORDER_W * 1.5)),
+                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(bg),
-            BorderColor(border),
+            BackgroundColor(style.idle_fill),
+            BorderColor(style.idle_outline),
+            BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
+            style,
             HullCard(hull),
         ))
         .with_children(|t| {
-            t.spawn(ui_kit::label(hull.label(), theme::FONT_MD, text_color));
+            t.spawn(ui_kit::pixel_label(font, hull.label(), theme::FONT_MD, text_color));
         });
 }
 
-/// One difficulty pill (0 / 1 / 2). Same visual treatment as the
-/// VOYAGE LENGTH pills above.
+/// One difficulty pill (0 / 1 / 2). Active pill uses the locked
+/// accent style (no hover shift); inactive pills use the neutral
+/// chunky style.
 fn spawn_difficulty_pill(
     parent: &mut ChildSpawnerCommands,
+    font: &crate::fonts::PixelFont,
     value: u8,
     active: bool,
 ) {
-    let (bg, border, label_color) = if active {
-        (theme::ACCENT, theme::ACCENT, Color::BLACK)
+    let (style, label_color) = if active {
+        (ChunkyButtonStyle::locked(theme::CTA_FILL, theme::CHUNKY_OUTLINE), theme::ON_CTA)
     } else {
-        (theme::SURFACE_RAISED, theme::BORDER_SUBTLE, theme::ON_SURFACE)
+        (ChunkyButtonStyle::neutral(), theme::ON_SURFACE)
     };
     let label = crate::Difficulty(value).label();
     parent
@@ -668,72 +697,71 @@ fn spawn_difficulty_pill(
             Button,
             Node {
                 padding: UiRect::axes(Val::Px(theme::PAD_MD), Val::Px(theme::PAD_SM)),
-                border: UiRect::all(Val::Px(theme::BORDER_W)),
+                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(bg),
-            BorderColor(border),
+            BackgroundColor(style.idle_fill),
+            BorderColor(style.idle_outline),
+            BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
+            style,
             DifficultyButton(value),
         ))
         .with_children(|pill| {
-            pill.spawn(ui_kit::label(label, theme::FONT_MD, label_color));
+            pill.spawn(ui_kit::pixel_label(font, label, theme::FONT_MD, label_color));
         });
 }
 
-/// One map-size pill. Stacked vertically with its siblings, laid out
-/// as a single horizontal row: label on the left, detail on the
-/// right. Active pill gets a rope border + lighter wood fill.
+/// One map-size pill. Active pill uses the locked accent style; the
+/// rest fall back to the neutral chunky palette that hover-lifts.
 fn spawn_map_size_pill(
     parent: &mut ChildSpawnerCommands,
+    font: &crate::fonts::PixelFont,
     size: crate::map::MapSize,
     active: bool,
 ) {
-    let (bg, border, label_color) = if active {
-        (theme::ACCENT, theme::ACCENT, Color::BLACK)
+    let (style, label_color) = if active {
+        (ChunkyButtonStyle::locked(theme::CTA_FILL, theme::CHUNKY_OUTLINE), theme::ON_CTA)
     } else {
-        (theme::SURFACE_RAISED, theme::BORDER_SUBTLE, theme::ON_SURFACE)
+        (ChunkyButtonStyle::neutral(), theme::ON_SURFACE)
     };
     parent
         .spawn((
             Button,
             Node {
                 padding: UiRect::axes(Val::Px(theme::PAD_MD), Val::Px(theme::PAD_SM)),
-                border: UiRect::all(Val::Px(theme::BORDER_W)),
+                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(bg),
-            BorderColor(border),
+            BackgroundColor(style.idle_fill),
+            BorderColor(style.idle_outline),
+            BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
+            style,
             MapSizeButton(size),
         ))
         .with_children(|pill| {
-            pill.spawn(ui_kit::label(size.label(), theme::FONT_MD, label_color));
+            pill.spawn(ui_kit::pixel_label(font, size.label(), theme::FONT_MD, label_color));
         });
 }
 
 /// Right-panel content (title + tagline + buffs + nerfs + PLAY).
-/// Lives inside the existing `HullDetailPanel` Node — caller is the
+/// Lives inside the existing detail panel Node — caller is the
 /// `with_children` closure of that node, so this fn spawns the
 /// children directly.
-fn spawn_detail_content(panel: &mut ChildSpawnerCommands, hull: Hull) {
-    panel.spawn(ui_kit::label(
+fn spawn_detail_content(panel: &mut ChildSpawnerCommands, font: &crate::fonts::PixelFont, hull: Hull) {
+    panel.spawn(ui_kit::pixel_label(
+        font,
         hull.label(),
         DETAIL_TITLE_FONT,
         theme::ACCENT,
     ));
     panel.spawn((
-        Text::new(hull.tagline()),
-        TextFont {
-            font_size: DETAIL_TAGLINE_FONT,
-            font_smoothing: bevy::text::FontSmoothing::None,
-            ..default()
-        },
-        TextColor(theme::ON_SURFACE_DIM),
+        ui_kit::pixel_label(font, hull.tagline(), DETAIL_TAGLINE_FONT, theme::ON_SURFACE_DIM),
         Node {
             margin: UiRect::bottom(Val::Px(theme::GAP_SM)),
             ..default()
@@ -742,29 +770,13 @@ fn spawn_detail_content(panel: &mut ChildSpawnerCommands, hull: Hull) {
 
     // Buffs — palette lime so they pop against the dark card.
     for b in hull.buffs() {
-        panel.spawn((
-            Text::new(b.to_string()),
-            TextFont {
-                font_size: DETAIL_BULLET_FONT,
-                font_smoothing: bevy::text::FontSmoothing::None,
-                ..default()
-            },
-            TextColor(theme::BUFF_FG),
-        ));
+        panel.spawn(ui_kit::pixel_label(font, b.to_string(), DETAIL_BULLET_FONT, theme::BUFF_FG));
     }
 
     // Nerfs — palette orange (red would dissolve into the dark
     // surface at this font size).
     for n in hull.nerfs() {
-        panel.spawn((
-            Text::new(n.to_string()),
-            TextFont {
-                font_size: DETAIL_BULLET_FONT,
-                font_smoothing: bevy::text::FontSmoothing::None,
-                ..default()
-            },
-            TextColor(theme::NERF_FG),
-        ));
+        panel.spawn(ui_kit::pixel_label(font, n.to_string(), DETAIL_BULLET_FONT, theme::NERF_FG));
     }
 }
 
@@ -922,6 +934,7 @@ pub fn sync_hull_select_on_change(
     q: Query<Entity, With<HullSelectRoot>>,
     state: Res<State<crate::AppState>>,
     hull_preview: Res<crate::dockyard_view::HullPreviewImage>,
+    pixel_font: Res<crate::fonts::PixelFont>,
 ) {
     if !selected.is_changed()
         && !preview.is_changed()
@@ -936,7 +949,7 @@ pub fn sync_hull_select_on_change(
         commands.entity(e).despawn();
     }
     let panel_hull = preview.0.unwrap_or(selected.0);
-    spawn_overlay(commands, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0);
+    spawn_overlay(commands, &pixel_font, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0);
 }
 
 /// Click handler — commit the player's pick to the `MapSize` resource.

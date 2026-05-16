@@ -698,6 +698,7 @@ fn main() {
             update_fps_text,
             update_vsync_label,
             ui_button_system,
+            ui_kit::update_chunky_button_visuals,
             // Sub-tuple keeps the outer count under Bevy's 20-system cap.
             (
                 sync_ui_scale,
