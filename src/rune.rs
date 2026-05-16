@@ -550,6 +550,11 @@ impl Rune {
                 crate::effects::spawn_hit_particles(
                     commands, em, &pm.shock, ev.hit_pos, 4, 35.0, rng,
                 );
+                proc_fx.write(crate::proc_fx::ProcFxFired {
+                    kind: crate::proc_fx::kind::CONDUIT,
+                    from: ev.hit_pos,
+                    to:   ev.hit_pos,
+                });
             }
             Rune::Resonate => {
                 // Add `stacks` Resonate stacks on this hit (capped),
@@ -563,6 +568,11 @@ impl Rune {
                 crate::effects::spawn_hit_particles(
                     commands, em, &pm.bullet_sniper, ev.hit_pos, 3, 30.0, rng,
                 );
+                proc_fx.write(crate::proc_fx::ProcFxFired {
+                    kind: crate::proc_fx::kind::RESONATE,
+                    from: ev.hit_pos,
+                    to:   ev.hit_pos,
+                });
             }
             // Targeting runes are passive — read at aim time by
             // `turret_aim_fire`, never proc on hit.

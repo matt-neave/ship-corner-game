@@ -298,6 +298,18 @@ pub fn spawn_proc_fx_visuals(
                     &mut commands, &em, &pm.blast, ev.from, ev.from,
                 );
             }
+            k if k == crate::proc_fx::kind::CONDUIT => {
+                let mut rng = rand::thread_rng();
+                crate::effects::spawn_hit_particles(
+                    &mut commands, &em, &pm.shock, ev.from, 4, 35.0, &mut rng,
+                );
+            }
+            k if k == crate::proc_fx::kind::RESONATE => {
+                let mut rng = rand::thread_rng();
+                crate::effects::spawn_hit_particles(
+                    &mut commands, &em, &pm.bullet_sniper, ev.from, 3, 30.0, &mut rng,
+                );
+            }
             _ => {
                 bevy::log::warn!("multiplayer: unknown ProcFx kind {}", ev.kind);
             }

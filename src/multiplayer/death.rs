@@ -218,7 +218,10 @@ pub fn sync_spectator_overlay(
     thaleah: Option<Res<crate::fonts::ThaleahFont>>,
     existing: Query<Entity, With<SpectatorOverlay>>,
 ) {
-    // Show only when dead AND in Playing (don't bleed into menus).
+    // Show only when dead AND in Playing (don't bleed into menus —
+    // particularly GameOver, where the host-side team-wipe transitions
+    // straight from Playing without us re-entering a state that
+    // re-runs this gate).
     let should_show = local_death.dead && *state.get() == AppState::Playing;
     let already_shown = !existing.is_empty();
 

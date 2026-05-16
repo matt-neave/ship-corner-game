@@ -2,25 +2,36 @@
 
 Ship-game's multiplayer is **LAN-first peer-to-peer over UDP**, hand-rolled with `bincode` messages — no replication crate, no relay service. The whole module lives in `src/multiplayer/` and is gated `#[cfg(not(target_arch = "wasm32"))]` so the browser build stays single-player.
 
-This document covers the design, the wire format, how to play, and what's planned next.
+This document covers the design, the wire format, how to play, and what's missing.
 
 ---
 
-## Authority model at a glance
+## Authority model
 
-| What                     | Where it lives                          | How it propagates                                            |
-| ------------------------ | --------------------------------------- | ------------------------------------------------------------ |
-| Your boat                | Your laptop                             | You send `Transform` packets at 30 Hz; peer ghosts you       |
-| Their boat               | Their laptop                            | They send `Transform`; you render a "ghost" hull             |
-| Enemies                  | **Host only** runs spawn / AI / death   | Host sends `EnemySnapshot` at 20 Hz; client mirrors entities |
-| Damage                   | **Host authoritative**                  | Client's bullets emit `DamageEnemy { weapon, runes }` to host; host runs the full damage pipeline including procs; HP + status bits propagate back in the next snapshot |
-| Stateful procs (Fire/Frost/Bleed) | **Host authoritative**         | Snapshot carries 3-bit bitmask; client adds/removes the matching components on mirrors so local DOT systems tick |
-| Transient procs (Shock arc, Cascade, Blast) | **Whoever rolls broadcasts**  | `OutgoingProcFxQueue` → `ProcFx` packet → host re-broadcasts to all peers → each renders local visual on receipt |
-| AppState (menu/screens)  | **Host drives**                         | Host's `AppState` transitions emit `StateChange`; clients follow via `NextState`                          |
-| Customize loadout        | **Phase 3 (in progress)** — currently divergent | Each peer has their own default hull and shop                |
-| Map / waves              | **Phase 3 (later)** — currently divergent | Each peer has their own map; client sees no wave UI          |
+Per-peer where it makes sense, host-authoritative for shared world state. The split is deliberate — see [[project-mp-authority-split]] memory for the why.
 
-We **trust the peers** — there's no validation that a peer isn't lying about their position or kill count. This is fine because the design target is "play with a friend you trust", not anti-cheat-grade competitive play.
+| What | Where it lives | How it propagates |
+| ---- | -------------- | ----------------- |
+| Your boat (position, heading, turret aims) | Your laptop | `Transform` packets at 30Hz; receivers ghost you |
+| Your local stats, turret loadout, scrap | Your laptop | Broadcast on change; receivers store per-peer (no overwrite of own) |
+| Your shop / loot rolls / RNG / customize | Your laptop | Not synced — runs independently per peer |
+| Your level-up card picks | Your laptop | Local pending counter, ready-check before advance |
+| Your hull pick at run start | Your laptop | Per-peer HullSelect, ready-check |
+| Your autonomous units (heli, shark, octopus, flail) | Your laptop | Position snapshot at 15Hz; receivers spawn visual mirrors |
+| Your bullets fired | Your laptop | `BulletFired` signal; receivers spawn damage=0 visuals |
+| Enemies | **Host** runs spawn / AI / death | `EnemySnapshot` at 20Hz; clients mirror entities by `NetEntityId` |
+| Damage to enemies | **Host authoritative** | Client bullets queue `DamageEnemy` with weapon + runes; host applies authoritatively |
+| Damage to peers from enemy bullets | **Host detects on ghost** | Host's enemy bullets hit ghost-of-peer (Health=sentinel); `relay_ghost_damage` sends `DamagePlayer { amount, hit_pos }` to that peer |
+| Stateful procs (Fire/Frost/Bleed) | **Host authoritative** | Snapshot status_flags bitmask; clients reconcile components |
+| Transient procs (Shock arc, Cascade, Blast ring) | **Whoever rolls broadcasts** | `ProcFx` packet → host re-broadcasts → each peer spawns local visual |
+| Wave clock | **Host authoritative** | `WaveStateSync`; client grants own scrap on Fighting→Cooldown edge |
+| XP / level | **Host authoritative** | `XpSync` mirrors current+level; bar is shared |
+| LevelUpsPending | **Edge-triggered from host** | `LevelUpGranted { count }` — additive, never clobbers local picks |
+| AppState transitions | **Host drives** (mostly) | `StateChange`; per-peer states (Customize/LevelUp/HullSelect/GameOver/Win) pass through to clients; everything else maps to `WaitingForHost`. Pause is bidirectional. |
+| Team death | **Host aggregates** | `PeerDied` → `TeamDeathTracker`; GameOver fires only when EVERY peer is dead |
+| Revive on stage transition | **Host broadcasts** | `PeerRevived { id: REVIVE_ALL }` on entry to StageComplete |
+
+**Trust model:** we trust the peers. No validation that a peer isn't lying about position or kill count. Design target is "play with a friend you trust", not anti-cheat-grade competitive play.
 
 ---
 
@@ -28,37 +39,42 @@ We **trust the peers** — there's no validation that a peer isn't lying about t
 
 ### Set your name first
 
-On the main menu, type A-Z / 0-9 to edit your display name (status banner shows `YOUR NAME: ___`). Default is `PLAYER`; the first keystroke wipes it. Capped at 16 chars. The name follows you into the lobby roster and rides every `Hello` packet.
+Main menu shows a `YOUR NAME` card. Type A-Z / 0-9 to edit. Default is `PLAYER`; first keystroke wipes it. Capped at 16 chars. Name follows you into the lobby roster and rides every `Hello` packet.
 
 ### Host
 
 1. Launch the game on laptop A.
-2. (Optional) Set your name.
-3. From the main menu, click **HOST**.
-4. You drop straight into the **Lobby** screen. The status banner shows `HOSTING ON 192.168.x.x:49333` and your name appears in the roster with a `[HOST]` badge.
-5. Tell your friend the IP.
-6. As they join, their name appears in the roster.
-7. Click **START** when ready — both peers transition to `Playing` simultaneously via state-sync broadcast.
+2. (Optional) set your name.
+3. Click **HOST**. You drop straight into the **Lobby**. Status banner shows `HOSTING ON 192.168.x.x:49333`.
+4. Tell your friend the IP.
+5. As they join, their name appears in the roster.
+6. Click **START** when ready — both peers transition to **HullSelect** simultaneously. Each peer picks their own hull, clicks READY, then transitions to Playing once everyone is ready.
 
 ### Client (joiner)
 
-1. Launch the game on laptop B (same Wi-Fi / LAN as host).
-2. (Optional) Set your name.
-3. From the main menu, click **JOIN**.
-4. Type the host IP. Allowed keys: digits, `.`, `:`. Backspace deletes; Enter submits; Esc cancels.
-5. On a successful handshake, you land in the **Lobby** next to the host. Banner reads `WAITING FOR HOST TO START...`.
-6. When host clicks START, you transition into `Playing` together.
+1. Launch the game on laptop B (same LAN as host).
+2. (Optional) set your name.
+3. Click **JOIN**. Default IP is the dev-LAN address; first keystroke clears it (or backspace).
+4. Type the host IP, press Enter.
+5. On handshake, you land in the **Lobby** next to the host.
+6. When host clicks START, both peers transition through HullSelect → ready check → Playing.
+
+### Per-peer screens (Customize / LevelUp / HullSelect)
+
+Both peers enter these states together (via state sync). Each peer interacts independently — own scrap, own loot, own picks. A small "X / N READY" overlay shows live ready count. The host advances to the next state only when EVERY peer has clicked READY; until then a "WAITING FOR PARTNER..." subtitle appears under your local ready button.
+
+### Pause
+
+Either peer can pause. The pause broadcasts so both peers freeze together. ESC on the WaitingForHost overlay is **inert** (was previously kicking peers out; don't accidentally LEAVE).
 
 ### Leaving / kicking
 
-- **LEAVE button** (or `Esc` in lobby) — tears down session, returns you to MainMenu. Notifies peers via `Bye` so their rosters shrink immediately.
-- **KICK button** (host only, next to each non-host roster row) — sends `Kicked { reason }` to that peer. Kicked peer returns to MainMenu with the reason shown in the JOIN status banner's error field.
+- **LEAVE button** — tears down session, returns to MainMenu. Notifies peers via `Bye`.
+- **KICK button** (host only) — sends `Kicked { reason }`. Kicked peer returns to MainMenu with the reason shown.
 
 ### Internet play
 
-The same code path works over the public internet **the moment the host port-forwards UDP `49333` on their router**. The client then connects to the host's public IP. There is no relay service, no NAT-punching — if both peers are behind symmetric NATs without port forwarding, the handshake will never complete.
-
-For a hobby use-case, port forwarding is fine. If you ever need NAT-free internet play, that's a future Phase X.
+LAN code-path works over the internet the moment the host port-forwards UDP `49333`. No relay service, no NAT-punching — symmetric NATs without forwarding won't handshake. Easiest workaround for cross-internet test: Tailscale or similar VPN — the LAN IPs work transparently.
 
 ---
 
@@ -68,264 +84,246 @@ For a hobby use-case, port forwarding is fine. If you ever need NAT-free interne
 
 ```
 src/multiplayer/
-├── mod.rs       # Plugin, NetMode state machine, NetSession resource,
-│                # connect/join entry points, handshake polling.
-├── net.rs       # UDP socket + NetMsg wire format + bincode serde.
-├── ghost.rs     # RemoteGhost component, peer Transform sync, send/recv,
-│                # ghost spawn/cull. Tags host-side ghost as Friendly so
-│                # enemies engage it.
-├── enemies.rs   # NetEntityId, host-side enemy snapshot send, client-side
-│                # mirror spawn/update/despawn.
-└── ui.rs        # bevy_ui status overlay shown during Hosting / JoiningEntry
-                 # / JoiningWait states.
+├── mod.rs         # MultiplayerPlugin, NetMode, NetSession, handshake,
+│                  # join-IP entry, host/client setup, lobby state
+├── net.rs         # UDP socket + NetMsg wire format + bincode
+├── ghost.rs       # PeerSnapshots, peer Transform sync (incl. turret rotations),
+│                  # ghost spawn, ghost damage relay (DamagePlayer),
+│                  # autonomous unit snapshot, signal-fx (mortar/beam/flame),
+│                  # heartbeat keepalive
+├── enemies.rs     # NetEntityId, EnemySnapshot send/apply, mirror spawn,
+│                  # damage relay (DamageEnemy), proc fx broadcast
+├── bullets.rs     # BulletFired signal, send/recv/relay, homing rocket sync
+├── state_sync.rs  # AppState broadcast + apply, bidirectional pause
+├── loadout.rs     # Per-peer PlayerStats + TurretConfig broadcast,
+│                  # PeerLoadouts for ghost visual rendering
+├── wave.rs        # WaveStateSync, client-side scrap on Fighting→Cooldown
+├── xp_sync.rs     # XpSync (current + level) + LevelUpGranted (additive)
+├── death.rs       # LocalDeathState, TeamDeathTracker, spectator overlay,
+│                  # revive on stage transition
+├── ready.rs       # LocalReadyState, TeamReadyTracker, per-peer ready check
+│                  # (Customize / LevelUp / HullSelect), live X/N overlay
+├── lobby.rs       # Lobby + WaitingForHost UI, START/KICK/LEAVE handlers
+└── ui.rs          # Main-menu status card (name editor / hosting / joining),
+                   # lag indicator
 ```
 
 ### `NetMode` state machine
 
-```text
-   ┌──────┐  click HOST                          ┌──────────────┐
-   │ Solo │ ───────────────────────────────────► │   Hosting    │
-   └──────┘                                       │ (socket bound│
-      ▲                                           │  waiting for │
-      │  ESC / disconnect                         │  Hello)      │
-      │                                           └──────────────┘
-      │                                                  │
-      │                                  Hello received  │
-      │                                                  ▼
-      │                                       ┌────────────────────┐
-      │                                       │  Connected (host)  │
-      │                                       └────────────────────┘
+```
+   ┌──────┐ click HOST                ┌──────────────┐  Hello rcvd  ┌──────────────┐
+   │ Solo │ ─────────────────────────►│   Hosting    │ ───────────► │ Connected    │
+   └──────┘                           │ (socket bound│              │ (host=true)  │
+      ▲                               │  waiting)    │              └──────────────┘
+      │                               └──────────────┘
       │
-      │            click JOIN                  ┌─────────────────┐
-      │      ─────────────────────────────►    │  JoiningEntry   │
-      │                                        │ (typing IP)     │
-      │                                        └─────────────────┘
-      │                                                │
-      │                                Enter pressed   │
-      │                                                ▼
-      │                                       ┌─────────────────┐
-      │                                       │  JoiningWait    │
-      │                                       │ (Hello sent,    │
-      │                                       │  waiting for    │
-      │                                       │  Welcome)       │
-      │                                       └─────────────────┘
-      │                                                │
-      │                                Welcome rcvd    │
-      │                                                ▼
-      │                                       ┌─────────────────────┐
-      └─────────────────────── OnExit(Playing) ──── Connected (client) ┐
-                                              └─────────────────────┘
+      │ click JOIN     ┌──────────────┐ Enter   ┌──────────────┐  Welcome rcvd  ┌──────────────┐
+      │ ──────────────►│ JoiningEntry │ ──────► │ JoiningWait  │ ─────────────► │ Connected    │
+      │                │ (typing IP)  │         │ (Hello sent) │                │ (host=false) │
+      │                └──────────────┘         └──────────────┘                └──────────────┘
+      │
+      └──── OnEnter(MainMenu): teardown_on_exit drops session, mode→Solo
 ```
 
 Every non-`Solo` state has the UDP socket bound. `Solo` is the resting state — single-player runs untouched.
 
 ### Connection lifecycle
 
-1. **Bind.** `start_hosting` / `start_joining` create a `UdpSocket` (host on `49333`, client on an ephemeral port) and stash it in the `NetSession` resource. Both also seed `LobbyRoster` with the local name. All sockets are non-blocking.
-2. **Handshake.** Client sends `NetMsg::Hello { name }` to the host. Host receives, allocates a peer id, replies with `NetMsg::Welcome { your_id, host_name, existing_peers }`. Host broadcasts `NetMsg::PeerJoined { id, name }` to every already-connected client so all rosters update. Both peers set `NetSession.welcomed = true`; the next frame, `tick_handshake` flips `NetMode` to `Connected` and (if still on the menu) transitions `AppState::MainMenu → Lobby`.
-3. **Lobby (`AppState::Lobby`).** Both peers see the chunky-styled roster, host status banner, START + LEAVE + KICK buttons. Late joiners go through the same handshake; existing peers receive `PeerJoined` and update.
-4. **START.** Host's START button triggers `Lobby → Playing`. `broadcast_state_change` sends `NetMsg::StateChange { state: Playing.to_u8() }`; clients receive and call `NextState.set(Playing)`. Both peers end up in `Playing` within ~one tick.
-5. **Steady state (`Playing`).**
-   - Each peer broadcasts `NetMsg::Transform` at `TRANSFORM_SEND_HZ = 30` (every ~33 ms).
-   - Host broadcasts `NetMsg::EnemySnapshot` at `ENEMY_SNAPSHOT_HZ = 20` (every 50 ms).
-   - Receivers drain the socket every frame.
-6. **Leave / Kick / Teardown.**
-   - **LEAVE** (or `Esc` in lobby) calls `tear_down_session` → sends `NetMsg::Bye` to each peer, drops `NetSession`, flips `NetMode → Solo`, returns to `MainMenu`.
-   - **KICK** (host only) sends `NetMsg::Kicked { reason }` to one peer; removes them from `peers` + roster; broadcasts `PeerLeft { id }` to remaining peers so their rosters shrink.
-   - Kicked peer's `recv_packets` sets `PendingKick`; `handle_received_kick` tears down their session + returns them to `MainMenu` with the reason in `JoinIpEntry.last_error`.
+1. **Bind.** `start_hosting` / `start_joining` create a `UdpSocket` (host on `49333`, client on ephemeral) and stash in `NetSession`. Sockets are non-blocking.
+2. **Handshake.** Client sends `Hello { name }`. Host allocates peer id, replies `Welcome { your_id, host_name, existing_peers }`. Host broadcasts `PeerJoined` to other clients. Both peers set `welcomed=true`; `tick_handshake` flips `NetMode → Connected` next frame.
+3. **Lobby.** Both peers see the chunky-styled roster + START / LEAVE / KICK buttons.
+4. **START.** Host transitions `Lobby → HullSelect`. State sync carries the client.
+5. **HullSelect (per-peer).** Each peer picks their hull, clicks READY. Host advances to `Playing` when all peers ready.
+6. **Playing.** Each peer broadcasts `Transform` at 30Hz (including per-turret rotations). Host broadcasts `EnemySnapshot` at 20Hz. Each peer broadcasts `FriendlyUnitsSnapshot` at 15Hz. `Heartbeat` at 1Hz keeps idle links alive. Bullets / mortars / beams / flames fire signal packets on creation.
+7. **Wave clear.** Host advances Fighting → Cooldown. Wave state syncs. Clients grant their own +1 scrap on the edge.
+8. **Stage clear.** Host enters StageComplete → optional BossReward → optional LevelUp → Customize → Map. Per-peer states (LevelUp / Customize) gate exit on team ready-check.
+9. **Death.** Local death sets `LocalDeathState.dead = true`, despawns local Friendly + autonomous units, sends `PeerDied`. Host aggregates; GameOver fires only when EVERY peer dead. Survivor sees a "YOU DIED — WAITING FOR PARTNER" overlay; dead peer respawns on next stage transition (`PeerRevived { REVIVE_ALL }`).
+10. **Disconnect.** `Bye` on clean exit. `detect_stale_peers` removes peers silent for > 5s (with heartbeat keeping liveness fresh). Client receiving `Bye` from host triggers `PendingKick("host disconnected")`.
+
+### Tear-down on `OnEnter(MainMenu)` (NOT `OnExit(Playing)`)
+
+`teardown_on_exit` + `despawn_all_ghosts` + `despawn_all_mirrors` + `reset_death_state` are hooked to `OnEnter(MainMenu)`. Hooking on `OnExit(Playing)` was a bug — pause / customize / levelup / hullselect all leave Playing too, and tearing the session down on those transitions would send Bye to peers and drop the local mode to Solo.
 
 ### Why hand-rolled instead of `bevy_replicon`?
 
-We considered `bevy_replicon` (component-level replication via traits) and rejected it for this game's MVP:
-
-- Two-player position sync is ~150 lines of code with raw UDP + `bincode`. Pulling a replication crate would add ~5 deps and a learning curve for one screen of payload.
-- Replicon is server-authoritative by default. For per-player authoritative motion (each peer drives their own boat) we'd be working against the grain.
-- The wire format here is small and stable. We control it directly; bytes-on-the-wire tests are easy to write.
-
-If Phase 3 (shared customize state) grows enough that hand-rolling becomes unwieldy, we can revisit. For Phase 1 + 2 the raw approach is the right size.
+Two-player position sync is ~150 lines with raw UDP + `bincode`. The wire format is small, stable, and bytes-on-the-wire testable. Replicon is server-authoritative by default; per-peer-authoritative motion would fight the grain. For the design target (2-4 players, LAN, "trust your friend"), the raw approach is the right size. Reconsider if the wire format grows past a couple hundred LOC.
 
 ---
 
 ## Wire format
 
-Every packet is a single bincode-serialized `NetMsg`. Packets are tiny (under ~32 bytes for the connection-state messages, under ~720 bytes for a 30-enemy snapshot) so we don't bother with fragmentation, ACKs, or sequence numbers — lost packets are fine because every Transform / EnemySnapshot is a full state snapshot that supersedes the previous one.
+Every packet is a single bincode-serialized `NetMsg`. Packets are tiny (under ~50 bytes for most; the largest is `EnemySnapshot` at ~700 bytes for 30 enemies). No fragmentation, no ACKs, no sequence numbers — every snapshot is full state that supersedes the previous one. Lost packets are fine.
 
 ```rust
 enum NetMsg {
-    Hello { name: String },                      // client → host on connect
-    Welcome {                                    // host → client reply
-        your_id: u8,
-        host_name: String,
-        existing_peers: Vec<(u8, String)>,       // other lobby members
-    },
-    PeerJoined { id: u8, name: String },         // host → existing peers
-    PeerLeft { id: u8 },                         // host → other peers on drop/kick
-    Kicked { reason: String },                   // host → kicked client
-    Transform { id, pos: [f32; 2], rot: f32 },   // every 33 ms, every peer
-    Bye { id },                                  // either → both on clean exit
-    EnemySnapshot { entries: Vec<EnemyEntry> },  // host → client every 50 ms
-    DamageEnemy {                                // client → host on hit
-        enemy_id: u32,
-        amount: i32,
-        hit_pos: [f32; 2],
-        weapon: u8,           // WeaponType::to_u8
-        runes: Vec<u8>,       // Rune::to_u8 per element
-    },
-    ProcFx {                                     // transient effect broadcast
-        kind: u8,             // proc_fx_kind discriminant
-        from: [f32; 2],
-        to: [f32; 2],
-    },
-    StateChange { state: u8 },                   // host → client AppState sync
+    // Connection / lobby
+    Hello { name: String },
+    Welcome { your_id: u8, host_name: String, existing_peers: Vec<(u8, String)> },
+    PeerJoined { id: u8, name: String },
+    PeerLeft { id: u8 },
+    Kicked { reason: String },
+    Bye { id: u8 },
+    Heartbeat,                                            // 1Hz keepalive
+
+    // Per-peer motion + per-turret aims (30Hz)
+    Transform { id: u8, pos: [f32; 2], rot: f32, turret_rots: [f32; 8] },
+
+    // Host → all: enemy state (20Hz)
+    EnemySnapshot { entries: Vec<EnemyEntry> },
+
+    // Client → host: damage relay
+    DamageEnemy { enemy_id: u32, amount: i32, hit_pos: [f32; 2],
+                  weapon: u8, runes: Vec<u8> },
+
+    // Host → specific peer: damage to that peer's ghost (host-side enemy bullet
+    // hit ghost; relay the damage to the peer's local Friendly)
+    DamagePlayer { amount: i32, hit_pos: [f32; 2] },
+
+    // Either → others: transient procs (Shock arc, Cascade, Blast ring)
+    ProcFx { kind: u8, from: [f32; 2], to: [f32; 2] },
+
+    // State sync (host broadcasts most; client may broadcast Paused/Playing)
+    StateChange { state: u8 },                            // AppState::to_u8
+
+    // Per-peer broadcasts (every peer; receivers store keyed by sender id)
+    PlayerStatsSync   { from_peer: u8, stats: SerializedPlayerStats },
+    TurretConfigSync  { from_peer: u8, slots: [SerializedSlotCfg; 8] },
+
+    // Wave state (host → all, on change)
+    WaveStateSync { wave_idx: u32, wave_count: u32, phase: u8, remaining: u32 },
+
+    // XP (host → all, on change)
+    XpSync           { current: u32, level: u32 },        // shared bar
+    LevelUpGranted   { count: u8 },                       // additive, edge
+
+    // Ready check (every peer; sender_state stamps so receivers drop stale
+    // packets from the previous state — phantom-ready prevention)
+    PeerReady { id: u8, sender_state: u8 },
+
+    // Co-op death
+    PeerDied { id: u8 },
+    PeerRevived { id: u8 },                               // REVIVE_ALL = 0xFF
+
+    // Bullets fired (signal-driven, replaces "spawn AI on remote")
+    BulletFired { pos: [f32; 2], dir: [f32; 2], weapon: u8, range: f32,
+                  target_net_id: u32 },                   // 0 = no target
+
+    // Per-peer autonomous units (heli, shark, octopus, flail head) — 15Hz
+    FriendlyUnitsSnapshot { from_peer: u8, units: Vec<FriendlyUnitEntry> },
+
+    // Signal-driven FX (don't fire Bullet entities, can't ride BulletFired)
+    MortarFired { pos: [f32; 2], target: [f32; 2], weapon: u8, splash_radius: f32 },
+    BeamFired   { origin: [f32; 2], dir: [f32; 2], length: f32, weapon: u8 },
+    FlameTick   { pos: [f32; 2], dir: [f32; 2] },
 }
 
 struct EnemyEntry {
-    id:           u32,    // NetEntityId (stable across snapshots)
-    kind:         u8,     // EnemyVariant::to_u8 — append-only enum
-    pos:          [f32; 2],
-    rot:          f32,
-    hp:           i32,
-    status_flags: u8,     // bit 0=OnFire, 1=OnFrost, 2=OnBleed
+    id: u32,                  // NetEntityId, stable across snapshots
+    kind: u8,                 // EnemyVariant::to_u8 — append-only
+    pos: [f32; 2],
+    rot: f32,
+    hp: i32,
+    status_flags: u8,         // bit 0=OnFire, 1=OnFrost, 2=OnBleed
+    boss_class: u8,           // ShipClass::to_u8 for bosses; NOT_A_BOSS otherwise
 }
+
+struct FriendlyUnitEntry {
+    kind: u8,                 // FriendlyUnitKind::to_u8
+    pos: [f32; 2],
+    rot: f32,
+}
+enum FriendlyUnitKind { Helicopter, Shark, Octopus, FlailHead }
 ```
 
 ### Append-only discriminants
 
-Three enums carry stable wire-format discriminants, all with the same rule: **append only, never renumber**. A unit test (`*_discriminants_are_unique` / `*_u8_round_trip`) guards each one against accidental clashes in CI.
+Stable wire-format enums (NEVER renumber existing variants — append only):
 
-- `EnemyVariant::to_u8` / `from_u8` — 7 variants today
-- `Rune::to_u8` / `from_u8` — 27 variants today
-- `WeaponType::to_u8` / `from_u8` — 20 variants today
-- `AppState::to_u8` / `from_u8` — 12 variants today
-- `proc_fx_kind::{SHOCK_ARC, CASCADE, BLAST_RING}` — 3 kinds today
+- `EnemyVariant::to_u8` / `from_u8`
+- `Rune::to_u8` / `from_u8`
+- `WeaponType::to_u8` / `from_u8`
+- `AppState::to_u8` / `from_u8`
+- `ShipClass::to_u8` / `from_u8` (for boss replication)
+- `FriendlyUnitKind::to_u8` / `from_u8`
+- `proc_fx_kind` (SHOCK_ARC, CASCADE, BLAST_RING)
 
-**Backwards compatibility.** The `EnemyVariant` discriminants are stable — adding a new variant means appending it with a fresh `u8` and updating `from_u8`. Renumbering existing variants will break peers running an older build. A unit test (`enemy_variant_discriminants_are_unique`) guards against accidental clashes.
-
-**Forward compatibility.** Receivers handling `EnemyEntry` call `EnemyVariant::from_u8(kind).expect(...)` → `from_u8` returns `None` for unknown values, and the mirror system silently skips them. So a new client connecting to an old host doesn't crash if the old host sends a variant the client *would* know about — the issue is reversed (new host → old client could send unknown variants, which the client silently skips).
+Each is guarded by a `*_round_trip` / `*_discriminants_are_unique` unit test in CI. `from_u8` returns `None` for unknown numbers — forward-compat for older clients receiving a future variant.
 
 ### Port
 
-UDP `49333`. Picked from the IANA dynamic range to avoid clashing with anything well-known. The constant is in `src/multiplayer/net.rs::HOST_PORT` — change it once if you ever need to move.
+UDP `49333`. Constant in `src/multiplayer/net.rs::HOST_PORT`.
+
+---
+
+## Visual-spawn refactor (mirrors look identical)
+
+Autonomous units (helicopter, shark, octopus, flail head) and ghost ships use **shared visual-spawn helpers** so peers see pixel-identical visuals without code duplication:
+
+```rust
+// pure visual — no AI / gameplay components
+pub fn spawn_<unit>_visual(commands, pm, meshes, pos, ...) -> Entity;
+
+// production sync: visual + gameplay
+let e = spawn_helicopter_visual(...);
+commands.entity(e).insert((Helicopter { ... }, /* AI, fire */));
+
+// MP mirror apply: visual + marker only
+let e = spawn_helicopter_visual(...);
+commands.entity(e).insert(PeerUnitMirror { peer_id });
+```
+
+Helpers live in `turret/heli.rs::spawn_helicopter_visual`, `turret/sharknet.rs::spawn_shark_visual`, `octopus::spawn_octopus_visual`, `anchor_flail::spawn_flail_head_visual`. Any future visual change propagates to mirrors automatically.
+
+Ghost ships use the same `pm.hull` material as the local ship (no cyan tint). Turret children spawn from `PeerLoadouts[peer_id].turret`. Per-turret rotations apply each frame from `PeerSnapshot.turret_rots`. Weapon-specific decorations (Blade arms, Booster ring) layer on top.
 
 ---
 
 ## Testing
 
-Tests live alongside their module via `#[cfg(test)] mod tests`. Run with:
-
 ```bash
 cargo test --bin ship-game multiplayer
 ```
 
-Coverage breaks down into:
+Current coverage (161+ tests):
 
-- **Wire-format round-trips** — every `NetMsg` variant + `EnemyEntry` serialize → deserialize → assert equal. Catches accidental field reorders or type changes.
-- **`EnemyVariant` discriminant stability** — round-trip every variant, assert no duplicates, assert `from_u8` returns `None` for unknown numbers.
-- **UDP loopback** — bind two `127.0.0.1` sockets, send a `NetMsg`, drain on the other, verify the source address + decoded message. Also covers the malformed-packet drop path.
-- **Socket sanity** — `bind_socket(None)` returns an ephemeral non-zero port; sockets are non-blocking (`recv_from` returns `WouldBlock` immediately).
-- **IP parser** — `parse_join_addr` accepts bare IPv4, `ip:port`, IPv6, surrounding whitespace; rejects garbage; emits a friendly error on empty input.
-- **State predicates** — `is_host_connected` / `is_client_connected` truth tables.
-- **Ghost tint** — deterministic, clamps to `[0, 1]`, visibly differs from the source hull colour.
-- **Snapshot buffer** — `LatestEnemySnapshot::take()` consume-once semantics.
+- **Wire-format round-trips** for every `NetMsg` variant + nested structs
+- **Discriminant stability** for `EnemyVariant`, `Rune`, `WeaponType`, `AppState`, `ShipClass`, `FriendlyUnitKind`
+- **UDP loopback** — bind two `127.0.0.1` sockets, send a message, verify decode + sender address
+- **Socket sanity** — `bind_socket(None)` returns ephemeral non-zero port; non-blocking
+- **IP parser** — bare IPv4, `ip:port`, IPv6, whitespace, garbage rejection
+- **State predicates** — `is_host_connected`, `is_client`, `in_mp_session`
+- **State sync mapping** — `client_state_for` per-peer pass-through (Playing/Lobby/MainMenu/Customize/LevelUp/HullSelect/GameOver/Win); host-only menus → WaitingForHost
+- **Per-peer loadout** — host + client mutate independently; broadcast deposits in `PeerLoadouts`, doesn't overwrite own resources; mid-shop changes settle to final config; every rune variant survives the round-trip
+- **Ready check** — host stays until all peers ready; LevelUp honours `LevelUpReturn` override; HullSelect → Playing; ready count visible to all peers
+- **Pause sync** — bidirectional; either peer pausing freezes the team; session survives pause
+- **State-transition safety** — session survives all per-peer state transitions; OnEnter(MainMenu) tears down
+- **Heartbeat keepalive** — idle window doesn't kick peers
+- **Disconnect detection** — `detect_stale_peers` removes peers silent > timeout; host timeout signals client kick path
+- **XP sync** — host's current+level mirrors to client; `LevelUpGranted` additive, not clobbered by `XpSync` resync
+- **Wave clear scrap** — client grants own scrap on Fighting→Cooldown edge
+- **Damage relay** — client → host via `DamageEnemy`; full rune + weapon payload; host re-applies authoritatively
+- **Boss replication** — boss carries `ShipClass` in snapshot; client renders correct hull
+- **Co-op death** — `PeerDied` lands in host tracker; team wipe triggers GameOver; revive on stage transition; `level_fail_check` skips in MP
+- **Full happy-path integration** — `e2e_full_happy_path_lobby_to_next_stage` walks both peers through Lobby → Playing → enemy → damage → wave clear → LevelUp + ready → Customize + ready → Map
+- **Full-plugin integration tests** — `multiplayer::full_plugin_tests` uses the REAL `MultiplayerPlugin::build` (not the cherry-picked test fixture) to catch system-registration bugs the cherry-picked fixture misses
 
-If you add a new `NetMsg` variant, **add a round-trip test for it**. If you add a new `EnemyVariant`, **add an entry to `enemy_variant_u8_round_trip`** — both tests run in CI via `cargo test` and will fail loudly if you forget.
+If you add a new `NetMsg` variant, **add a round-trip test**. If you change a discriminant enum, **the existing tests will catch any clash or unknown-variant regression** automatically.
 
 ---
 
-## What's not done yet
+## What's NOT done
 
-### Phase 2.6 (shipped): proc replication
+### Known gaps (visible)
 
-Two-pronged design — **stateful** procs ride the snapshot, **transient** procs ride a dedicated broadcast event. See "Replication patterns" section below the wire-format spec.
+- **No NAT-punching.** Internet play needs port-forwarding or a VPN like Tailscale.
 
-**Damage relay now carries weapon + runes.** `DamageEnemy` packets serialise `WeaponType::to_u8` plus `Vec<u8>` rune discriminants. Host receives, deserialises back into typed values, and pushes to `PendingDamageQueue` with the full payload — so the existing `process_damage_events` pipeline rolls procs authoritatively on the host side. `OnFire`/`OnFrost`/`OnBleed`/`OnConduit`/`OnResonate` components are added on host enemies, and the next snapshot's `status_flags` bitmask carries the Fire/Frost/Bleed bits back to every client.
+### Deferred (not blocking gameplay)
 
-**Stateful procs reconcile via snapshot bitmask.** `EnemyEntry::status_flags` carries one bit per stateful proc kind. `send_enemy_snapshot` reads `Has<OnFire>` / `Has<OnFrost>` / `Has<OnBleed>` on each host enemy and packs the result. `apply_enemy_snapshot` on the client adds/removes the matching components on its mirrors based on the bits, so the client's existing `tick_on_fire` / `tick_on_frost` / `tick_on_bleed` systems light up the local DOT visuals + tick damage. The DOT damage that ticks on the client also goes through `relay_damage_to_host` (because the mirror is the target), so the host stays authoritative on HP.
+- **Reconnection.** A peer that drops mid-game can't rejoin into the live state. They have to reconnect through the lobby, which won't be in `Lobby` state if the rest are mid-game.
+- **Mid-game join.** Joining a host already in Playing/Customize lands the new peer with no enemy backfill, no current loadout state, etc. Probably should reject in the `Hello` arm if state != Lobby.
+- **Boarders (Blackbeard boss).** When a host-side Blackbeard boss launches a boarding party at the host's ship, peers don't see the boarder dots or the rope. Damage still relays via the standard `relay_ghost_damage` path if the boss happens to target a peer's ghost. Visual-only gap.
 
-**Transient procs broadcast via ProcFx.** New `ProcFx { kind, from, to }` packet for one-frame visuals (Shock arc, Cascade explosion, Blast ring). Gameplay code fires a `ProcFxFired` event (defined in `src/proc_fx.rs`); the `send_proc_fx` system reads events via `EventReader` and emits packets (clients send to host, host broadcasts to all). `recv_packets` lands them in `ProcFxInbox`. A host-side `relay_proc_fx_to_peers` re-broadcasts received events to peers other than the sender. **All three transient-proc call sites are wired**: Shock chain (`rune.rs::apply_proc`), Cascade (`bullet.rs::process_damage_event`), Blast ring (`bullet.rs::process_damage_event`). The `ProcFxFired` event is non-multiplayer-gated so single-player and wasm builds emit (and Bevy auto-drops) the events without coupling gameplay code to the multiplayer module.
+### Future, larger work
 
-### Phase 3 foundation (shipped): AppState sync
-
-Host broadcasts every `AppState` transition via `NetMsg::StateChange { state: u8 }`; clients receive and trigger their own `NextState` to match. `broadcast_state_change` watches `Res<State<AppState>>` for changes and emits one packet per transition (not per frame). `apply_state_change` drains the inbox and calls `next.set(target)`.
-
-This is the load-bearing primitive future Phase 3 work builds on. Without it, the host clicking PLAY (MainMenu → HullSelect) leaves the client stuck on MainMenu. With it, the lockstep menu / map / customize flow Just Works.
-
-### Phase 2.5 (shipped): damage relay
-
-Client bullets now damage host enemies via the relay path:
-
-1. `relay_damage_to_host` runs **between** `bullet_collisions` and `process_damage_events`. It scans the local `PendingDamageQueue`; for every event whose target carries a `NetEntityId`, it serialises a `NetMsg::DamageEnemy { enemy_id, amount, hit_pos }` packet, sends to the host, and **removes the event from the local queue** so the client doesn't apply phantom damage to a mirror that the next snapshot is about to overwrite anyway.
-2. Host's `recv_packets` routes incoming `DamageEnemy` into a `PendingDamageRelay` buffer.
-3. `apply_relayed_damage` (host only) drains the buffer each frame, looks up the target enemy by `NetEntityId`, and pushes onto the host's own `PendingDamageQueue` via `push_initial`. The normal damage pipeline then runs as usual.
-4. Host's next `EnemySnapshot` (50 ms cadence) carries the new HP back to the client; the mirror updates.
-
-**Latency:** at LAN RTT (~5 ms), the player won't notice. On a 150 ms internet link, the HP drop visibly lags the hit particle by half a snapshot window — still playable.
-
-**Phase 2.5 limitation — procs don't relay.** `DamageEnemy` carries only the raw amount; weapon + runes + source metadata aren't included. Consequences:
-
-- The client's own bullet-fire path still rolls procs locally (Fire DOT, Shock chains, Cascade…) and shows them on the client's screen.
-- The host applies the **base damage only** — host-side does not also proc the runes, so DOT/chain damage from a client's rune-loaded hit doesn't show up in subsequent snapshots.
-- Net effect: client sees full local proc visuals; the underlying HP only decreases by the base damage. For "neat looking" but slightly underpowered runes, that's the current trade-off.
-
-Fixing this means extending `DamageEnemy` with a serialised rune list + `WeaponType`, plus making the host's `apply_relayed_damage` use those instead of the `&[]` / `Standard` stubs. Add a `weapon: u8` discriminant for `WeaponType` and bincode the rune list — straightforward but it's its own task.
-
-### Phase 4 (shipped): client-passive + visual fidelity
-
-1. **Client damage visuals now fire** — `relay_damage_to_host` no longer strips the local event. The damage pipeline runs locally on the client AND the event is relayed to the host. Hit FX, particles, hit-flash all appear immediately on the client side; the host's next snapshot overwrites the client's local HP with the authoritative value.
-2. **`AppState::WaitingForHost`** — new state for clients sitting on a passive overlay while the host drives single-player flow (Customize / HullSelect / Map / etc). `state_sync::client_state_for` maps host's AppState to the client's passive equivalent.
-3. **WaitingForHost overlay** — chunky bevy_ui with Thaleah header, host-name subtitle, and a LEAVE button. Same vocabulary as the lobby chrome.
-4. **Loadout sync (PlayerStats + TurretConfig)** — host's local `PlayerStats` and `TurretConfig` resources broadcast on `is_changed()` via `PlayerStatsSync` / `TurretConfigSync` messages. Client overwrites local copies. Both peers now have identical loadouts.
-5. **Wave state sync** — `WaveStateSync { idx, count, phase, remaining }` broadcast on change. Client's `CombatContext`'s indicator-relevant fields update, so the wave UI shows host's truth instead of 0/0.
-6. **Host-disconnect cleanup** — when client receives `Bye` from peer id 0 (host left), client triggers `PendingKick` ("host disconnected") so `handle_received_kick` returns to MainMenu cleanly.
-7. **Integration test** — `e2e_full_mock_round_integration` walks two apps through: handshake → start → wave begins → enemy spawns → client damages → enemy dies → wave advances. Headless and fast.
-
-### Phase 5.5 (shipped): signal-driven bullet replication
-
-When a peer's turret fires a bullet, every other peer should see the same shot land. We use a **signal-driven** design rather than running fake turret AI on each peer's view of the remote ship — the firing peer is the source of truth for "I fired right now in this direction", and other peers replay the moment.
-
-The pipeline:
-1. **Detection**: `emit_bullet_fired_signals` watches for `Added<Bullet>` (Bevy auto-detects newly-spawned bullets) and emits `BulletFiredEvent { pos, dir, weapon, range }`. The `Without<RemoteVisualBullet>` filter ensures received-bullet spawns don't re-emit (no infinite loop).
-2. **Broadcast**: `send_bullet_fired` reads events, packetises as `NetMsg::BulletFired`, sends. Clients send to host (id 0); host broadcasts directly.
-3. **Relay**: `relay_bullet_fired` (host-only) re-broadcasts incoming packets to every peer except the sender, so a 3-player session works.
-4. **Spawn**: `spawn_received_bullets` drains `BulletFiredInbox` and spawns a damage=0 visual bullet via the production `spawn_combat_bullet` shape. `damage=0` means `push_initial` bails on hit so no double damage. The bullet is tagged `RemoteVisualBullet` so step 1's filter skips it.
-
-This decouples the visual from the local AI. A peer might lose connection for half a second; bullets queued during that window arrive late but at the right world coordinates rather than at "wherever the AI would have computed". No drift.
-
-### Phase 5 (shipped): real main boats with synced visuals
-
-The "ghost ship" is now a full visual replica of the local boat.
-- `spawn_missing_ghosts` builds: cyan-tinted hull mesh + per-equipped-slot turret base + barrel meshes as children. Reads from local `TurretConfig` (which the Phase 4 sync keeps in lock-step with the host).
-- Remote ship still has `Friendly` tag (so enemy AI targets it) + new `Faction(Friendly)` for parity with the local ship's component set.
-- **Disambiguation**: new `LocalPlayer` marker in `components.rs` is added only to the local `spawn_player_world` ship. Multiplayer's remote-peer ship gets `Friendly` but NOT `LocalPlayer`, so `single()`-using queries (trail, helicopter, sharknet, octopus, etc.) switched from `With<Friendly>` to `With<LocalPlayer>` to skip the remote ship safely.
-- **Phase 5 limitation**: remote turret visuals are static (no rotation, no firing). Their turret meshes exist as children but lack `TurretSlot` components, so the firing AI doesn't pick them up. Adding remote turret firing would double-damage every enemy (host already simulates damage authoritatively from the actual other peer's relays) without careful gating — that's Phase 5.5.
-
-### Phase 6 (shipped): co-op death model
-
-Per the actual gameplay needs (not the "shared customize" we originally roadmapped):
-
-- **`detect_local_death`** watches `LocalPlayer`'s Health each frame in multiplayer mode. On 0 HP: sets `LocalDeathState.dead = true`, despawns the local Friendly, sends `NetMsg::PeerDied { id }` to host. Single-player path (`level_complete_check` → GameOver) runs unchanged.
-- **Host tracks team alive** via `TeamDeathTracker { dead_peers: HashSet<u8> }`. Populated from `PeerDied` packets + the host's own death via `host_track_own_death`. Stays in sync with the `LobbyRoster`.
-- **`host_check_team_wipe`** transitions the host to `AppState::GameOver` only when EVERY peer in the roster is in the dead set. State-sync broadcasts the transition to clients. One peer dying = the dying peer spectates; both dying = game over.
-- **Spectator overlay** — `sync_spectator_overlay` shows a translucent "YOU DIED — WAITING FOR YOUR PARTNER — RESPAWNS NEXT STAGE" overlay when local death is set + AppState is Playing. Thaleah header, chunky subtitle text. Hides automatically on respawn.
-- **Revive on stage transition** — `host_broadcast_revive_on_stage_complete` fires on host's entry to `AppState::StageComplete`. Broadcasts `NetMsg::PeerRevived { id: REVIVE_ALL }` and clears the team tracker. Dead peers' `apply_received_revive` consumes the signal, sets `LocalDeathState.dead = false`. Their Friendly respawns the next time `spawn_player_world` runs (which is `OnEnter(Playing)` — the standard path after StageComplete).
-- **Critical bug fix that came out of this**: `level_complete_check` (death detector) and `apply_camera_follow` were both using `friendly.single()`. With two Friendlies on the host (local + remote-peer ship), both silently bailed. **Death detection was completely broken in MP before Phase 6.** Switched both to `With<LocalPlayer>`.
-
-### Phase 7 (later): shared loadout management + map sync
-
-The **foundation** (AppState sync) is in. Remaining chunks, in rough dependency order:
-
-1. **Plumb `OutgoingProcFx` from rune code.** Push to the queue at each transient-proc spawn site in `rune.rs` (Shock chain, Cascade explosion, Blast ring). Small but invasive. Without it, the infrastructure exists but no actual proc visuals broadcast.
-2. **Map seed sync.** Either send the seed at game start and have both peers run deterministic map gen, or replicate the full map state once on `OnEnter(Playing)`. Requires auditing map gen for non-determinism (random sources, frame-order-dependent decisions).
-3. **Shared loadout.** Replicate `PlayerStats`, equipped weapons per slot, equipped runes per socket, and mods. Decide UX: lockstep (both see same shop, either can spend) vs mirror (each customizes independently). Lockstep is simpler to spec and matches the shared-run framing.
-4. **Shared XP / scrap / level-up.** Pool resources. Either player's kill adds to the shared XP pool. LevelUp screen drives off shared XP.
-5. **Wave / level progression sync.** Host's `CombatContext` drives waves; clients receive wave-state updates so the wave indicator UI agrees.
-
-### Phase X (deferred, optional): internet without port forwarding
-
-Either ship a relay service (free TURN, custom UDP relay, or Steam Sockets if we ever Steam-ify) or integrate a NAT-punch library (`matchbox` over WebRTC works in browsers too). Each has its own ops cost. Not blocking the local-multiplayer demo.
-
-### Known cosmetic issues (post-Phase 4)
-
-- Client may see enemies appear at world positions outside their local map's section polygons because each peer's map is generated independently. Phase 6 map seed sync will fix it.
-- Transient proc visuals (Shock arc, Cascade explosion, Blast ring) propagate end-to-end. Host's procs fire `ProcFxFired` events → `send_proc_fx` packetises them → peers receive into `ProcFxInbox` → `spawn_proc_fx_visuals` drains and spawns the local visual. Blast specifically still uses the lightning-arc visual as a placeholder on receive because `spawn_blast_ring` is private to `bullet.rs`; making it public is a one-line follow-up.
-- Client's remote-player rendering is still the lightweight `RemoteGhost` (cyan tinted hull, no turrets). Phase 5 swaps it for a full Friendly ship with turret children driven by the synced loadout.
+- **Public-internet play.** Either ship a STUN/TURN relay or integrate `matchbox` / Steam Sockets. Each has ops cost.
+- **More than 2 peers.** The wire format supports it (peer_id is u8); the actual gameplay UI has been built + tested with 2. Some assumptions (e.g. `roster.by_id.len()` for the ready denominator) work for N, but the lobby UI layout is two-row.

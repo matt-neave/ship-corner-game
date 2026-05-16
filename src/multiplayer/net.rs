@@ -280,12 +280,46 @@ pub enum NetMsg {
         pos: [f32; 2],
         dir: [f32; 2],
     },
+    /// Host → all: "an enemy just died worth `scrap` scrap." Every
+    /// peer (including host's own self-loop is skipped) grants the
+    /// scrap locally. Without this, only the host's `enemy_death_check`
+    /// awards per-kill scrap (Greed rune drops, boss bounty); the
+    /// client only ever gets wave-clear scrap (+1 each Fighting→Cooldown),
+    /// so client + host scrap totals drift over a run.
+    ScrapAwarded { scrap: u32 },
+    /// Either → others: "an octopus tentacle just emerged at `pos`."
+    /// Receivers spawn the same emerge → slap → retreat tentacle
+    /// chain visual at that position; the receiver's mirror tentacle
+    /// carries `target: None` so the damage branch in `tentacle_tick`
+    /// stays no-op (damage runs only on the owner via the real
+    /// tentacle).
+    TentacleSlap { pos: [f32; 2] },
+    /// Either → others: "I (peer `source_peer`) just landed a
+    /// HarpoonTip on the enemy with `target_net_id`." Receivers
+    /// spawn a `RemoteHarpoonChain` between their ghost of
+    /// `source_peer` and their mirror of the target so the chain
+    /// pull is visible cross-peer. `is_boss` selects the lifetime
+    /// (1s for bosses, 4s otherwise) to match the owner's tether.
+    HarpoonAttached {
+        source_peer:   u8,
+        target_net_id: u32,
+        is_boss:       bool,
+    },
 }
 
 /// One entry in a `FriendlyUnitsSnapshot`. `kind` is a small u8
 /// discriminant; see [`FriendlyUnitKind`] for the mapping.
+///
+/// `seq` is a peer-stable index (sender assigns 0..N in a stable
+/// order each frame, partitioned by kind). Receivers key persistent
+/// mirror entities by `(from_peer, seq)` so the SAME mirror entity
+/// survives across snapshots — required for the per-frame lerp in
+/// `smooth_peer_unit_mirrors`. Without `seq`, the apply system
+/// despawn-and-respawned every 15Hz tick, which looked like a
+/// pop-and-restart of motion (especially visible on the flail head).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub struct FriendlyUnitEntry {
+    pub seq: u32,
     pub kind: u8,
     pub pos: [f32; 2],
     pub rot: f32,

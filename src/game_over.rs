@@ -53,7 +53,11 @@ pub struct GameOverMainMenuButton;
 #[derive(Component)]
 pub struct GameOverQuitButton;
 
-pub fn enter_game_over(mut commands: Commands, mut sfx: crate::sfx::SfxPlayer) {
+pub fn enter_game_over(
+    mut commands: Commands,
+    mut sfx: crate::sfx::SfxPlayer,
+    thaleah: Option<Res<crate::fonts::ThaleahFont>>,
+) {
     sfx.play(crate::sfx::Sfx::GameOver);
     commands
         .spawn((
@@ -81,11 +85,28 @@ pub fn enter_game_over(mut commands: Commands, mut sfx: crate::sfx::SfxPlayer) {
             Button,
         ))
         .with_children(|root| {
-            root.spawn(ui_kit::label(
-                "GAME OVER",
-                theme::FONT_LG * 1.8,
-                Color::srgb(0.95, 0.30, 0.30),
-            ));
+            // Match the multiplayer "YOU DIED" overlay's typography
+            // (Thaleah Fat + red + drop shadow) so transitioning
+            // from a per-peer death overlay to the team-wipe GameOver
+            // reads as the same beat in the same voice.
+            if let Some(thaleah) = thaleah.as_deref() {
+                root.spawn((
+                    Text::new("GAME OVER"),
+                    crate::fonts::thaleah_text_font(thaleah, 80.0),
+                    TextColor(Color::srgb(0.95, 0.30, 0.30)),
+                    TextShadow {
+                        offset: Vec2::splat(2.0),
+                        color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+                    },
+                ));
+            } else {
+                // Fallback while fonts are still loading on first frame.
+                root.spawn(ui_kit::label(
+                    "GAME OVER",
+                    theme::FONT_LG * 1.8,
+                    Color::srgb(0.95, 0.30, 0.30),
+                ));
+            }
 
             root.spawn((ui_kit::button(theme::SURFACE_RAISED), RestartButton))
                 .with_children(|b| {

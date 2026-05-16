@@ -76,7 +76,10 @@ use ready::{
     track_own_ready, reset_ready_state_on_enter, sync_ready_overlay,
     LocalReadyState, PendingPeerReady, TeamReadyTracker,
 };
-use wave::{apply_wave_state, broadcast_wave_state, LastBroadcastedWaveState, PendingWaveState};
+use wave::{
+    apply_received_scrap, apply_wave_state, broadcast_scrap_delta, broadcast_wave_state,
+    LastBroadcastedScrap, LastBroadcastedWaveState, PendingScrapAwards, PendingWaveState,
+};
 use xp_sync::{
     apply_received_level_up_grants, apply_received_xp, broadcast_level_up_grants, broadcast_xp,
     LastBroadcastedXp, LastSeenLocalLevelUps, PendingLevelUpGrants, PendingXpSync,
@@ -84,10 +87,13 @@ use xp_sync::{
 use ghost::{
     apply_ghost_turret_aims, apply_peer_units_snapshot, apply_received_player_damage,
     apply_snapshots, cull_stale_ghosts, despawn_all_ghosts, detect_stale_peers,
-    emit_flame_signals, emit_mortar_and_beam_signals, recv_packets, refresh_ghost_turrets,
-    relay_ghost_damage, send_friendly_units_snapshot, send_heartbeat, send_local_transform,
-    spawn_missing_ghosts, spawn_received_signal_fx, HeartbeatTimer, PeerSnapshots,
-    PeerUnitsInbox, PendingPlayerDamage, PendingSignalFx, TransformSendTimer, UnitSnapshotTimer,
+    emit_flame_signals, emit_harpoon_signals, emit_mortar_and_beam_signals,
+    emit_tentacle_signals, recv_packets, refresh_ghost_turrets, relay_ghost_damage,
+    send_friendly_units_snapshot, send_heartbeat, send_local_transform,
+    smooth_peer_unit_mirrors, spawn_missing_ghosts, spawn_received_harpoon_chains,
+    spawn_received_signal_fx, HeartbeatTimer, PendingHarpoonAttaches,
+    PeerSnapshots, PeerUnitsInbox, PendingPlayerDamage, PendingSignalFx, TransformSendTimer,
+    UnitSnapshotTimer,
 };
 use net::{bind_socket, local_lan_ip, send_to, NetMsg, HOST_PORT};
 
@@ -256,6 +262,13 @@ pub struct MultiplayerPlugin;
 
 impl Plugin for MultiplayerPlugin {
     fn build(&self, app: &mut App) {
+        // OctopusPlugin / HarpoonPlugin also register these events
+        // for the in-game path; init them here too so the network
+        // bridges' EventReaders validate in test harnesses that
+        // don't include those plugins. `add_event` is idempotent —
+        // registering twice is fine.
+        app.add_event::<crate::octopus::TentacleSlapEvent>();
+        app.add_event::<crate::harpoon::HarpoonAttachedEvent>();
         app.insert_resource(NetMode::default())
             .insert_resource(HostStatus::default())
             .insert_resource(JoinIpEntry::default())
@@ -281,6 +294,9 @@ impl Plugin for MultiplayerPlugin {
             .insert_resource(PeerLoadouts::default())
             .insert_resource(PendingWaveState::default())
             .insert_resource(LastBroadcastedWaveState::default())
+            .insert_resource(PendingScrapAwards::default())
+            .insert_resource(LastBroadcastedScrap::default())
+            .insert_resource(PendingHarpoonAttaches::default())
             .insert_resource(PendingXpSync::default())
             .insert_resource(LastBroadcastedXp::default())
             .insert_resource(PendingLevelUpGrants::default())
@@ -323,6 +339,8 @@ impl Plugin for MultiplayerPlugin {
                 apply_received_turret_config,
                 broadcast_wave_state,
                 apply_wave_state,
+                broadcast_scrap_delta,
+                apply_received_scrap,
                 broadcast_xp,
                 apply_received_xp,
                 broadcast_level_up_grants,
@@ -355,17 +373,36 @@ impl Plugin for MultiplayerPlugin {
                     .after(crate::bullet::bullet_collisions),
                 apply_received_player_damage
                     .after(recv_packets),
-                // Autonomous-unit (heli / shark / octopus) sync —
+                // Autonomous-unit (heli / shark / octopus / flail) sync —
                 // each peer broadcasts their unit positions; peers
                 // render visual-only mirrors around the broadcaster's
                 // ghost so deployed units are visible cross-peer.
+                // `smooth_peer_unit_mirrors` lerps Transform toward
+                // the latest snapshot pose so the 15Hz cadence
+                // doesn't pop visually.
                 send_friendly_units_snapshot,
                 apply_peer_units_snapshot
                     .after(recv_packets),
+                smooth_peer_unit_mirrors
+                    .after(apply_peer_units_snapshot),
                 // Mortar shells + Railgun beams — signal-driven
                 // visual replication (these don't fire `Bullet`
                 // entities so they slip past `emit_bullet_fired_signals`).
                 emit_mortar_and_beam_signals,
+                // Octopus tentacle slap — owner emits a
+                // TentacleSlapEvent on each spawn; the multiplayer
+                // bridge here forwards it as `NetMsg::TentacleSlap`
+                // so receivers spawn the same visual.
+                emit_tentacle_signals,
+                // Harpoon attach — owner emits a HarpoonAttachedEvent
+                // from `bullet_collisions`; the bridge looks up the
+                // target's NetEntityId and broadcasts
+                // `NetMsg::HarpoonAttached` so peers can spawn a
+                // `RemoteHarpoonChain` between their ghost-of-owner
+                // and the target's mirror.
+                emit_harpoon_signals,
+                spawn_received_harpoon_chains
+                    .after(recv_packets),
                 // Flamethrower cone — per-frame puff signal per
                 // active flamethrower slot. Continuous (not "Added"-
                 // detectable) so emits each frame the burner is hot.
@@ -386,6 +423,14 @@ impl Plugin for MultiplayerPlugin {
             // like Map / StageComplete that the apply system skips.)
             .add_systems(OnEnter(AppState::Playing), |mut inbox: ResMut<PendingPlayerDamage>| {
                 inbox.0.clear();
+            })
+            // Reset the host's scrap-broadcast baseline so the next
+            // tick re-seeds against the current local pool — without
+            // this, scrap broadcast carries over from a previous
+            // session / run and either misses gains or floods the
+            // wire with the entire balance as a phantom "earned".
+            .add_systems(OnEnter(AppState::Playing), |mut last: ResMut<LastBroadcastedScrap>| {
+                last.valid = false;
             })
             .add_systems(Update, (
                 spawn_missing_ghosts,
@@ -452,6 +497,14 @@ impl Plugin for MultiplayerPlugin {
                     .before(bullets::spawn_received_bullets),
                 bullets::spawn_received_bullets
                     .after(relay_bullet_fired),
+                // Per-frame re-resolve of remote homing rockets'
+                // targets by NetEntityId. Runs after
+                // apply_enemy_snapshot so mirrors recreated this
+                // frame are visible in the lookup, and before
+                // homing_missile_track (in the gameplay loop) so
+                // the steering reads the freshly-resolved entity.
+                bullets::resolve_remote_homing_targets
+                    .after(apply_enemy_snapshot),
                 // ---- Co-op death model ----
                 // Order: detect_local_death runs every frame, sets
                 // dead flag + sends PeerDied. host_track_own_death
@@ -464,8 +517,14 @@ impl Plugin for MultiplayerPlugin {
                 host_check_team_wipe.after(recv_packets),
                 apply_received_revive,
                 host_broadcast_revive_on_stage_complete,
-                sync_spectator_overlay,
             ).run_if(in_state(AppState::Playing)))
+            // The spectator overlay sync runs unconditionally so
+            // the "YOU DIED" overlay despawns the frame we leave
+            // Playing (esp. host-side team-wipe → GameOver, which
+            // wouldn't re-enter Playing to trigger the cleanup
+            // branch). Its internal `should_show` gate keeps the
+            // overlay scoped to "dead AND in Playing".
+            .add_systems(Update, sync_spectator_overlay)
             // On exit from Playing (death, pause-then-quit, etc.) tear
             // Hook session-end cleanup to `OnEnter(MainMenu)` — the
             // ONLY transition that means "this MP session is really
@@ -1154,7 +1213,9 @@ mod tests {
         apply_received_revive, detect_local_death, host_broadcast_revive_on_stage_complete,
         host_check_team_wipe, host_track_own_death,
     };
-    use super::wave::{apply_wave_state, broadcast_wave_state};
+    use super::wave::{
+        apply_received_scrap, apply_wave_state, broadcast_scrap_delta, broadcast_wave_state,
+    };
     use super::xp_sync::{
         apply_received_level_up_grants, apply_received_xp, broadcast_level_up_grants,
         broadcast_xp,
@@ -1223,6 +1284,9 @@ mod tests {
         app.insert_resource(PeerLoadouts::default());
         app.insert_resource(super::wave::PendingWaveState::default());
         app.insert_resource(super::wave::LastBroadcastedWaveState::default());
+        app.insert_resource(super::wave::PendingScrapAwards::default());
+        app.insert_resource(super::wave::LastBroadcastedScrap::default());
+        app.insert_resource(super::ghost::PendingHarpoonAttaches::default());
         app.insert_resource(super::xp_sync::PendingXpSync::default());
         app.insert_resource(super::xp_sync::LastBroadcastedXp::default());
         app.insert_resource(super::xp_sync::PendingLevelUpGrants::default());
@@ -1352,6 +1416,8 @@ mod tests {
             apply_received_xp,
             broadcast_level_up_grants,
             apply_received_level_up_grants,
+            broadcast_scrap_delta,
+            apply_received_scrap,
         ).chain().after(recv_packets));
         // Group 5 — ready check. Runs unconditionally in test
         // fixture (production gates on Customize). Cheap — early-bails
@@ -3485,7 +3551,12 @@ mod tests {
     /// Client grants +1 scrap locally on Fighting → Cooldown
     /// transition via WaveStateSync. Scrap is per-peer (no host
     /// authority); without this the client would always end up
-    /// poorer than the host after every wave.
+    /// Wave-clear scrap parity: in production the host's
+    /// `try_advance_fighting` grants the host +1 scrap on the
+    /// Fighting→Cooldown transition AND broadcasts the new wave
+    /// phase. `broadcast_scrap_delta` then ships the +1 to the
+    /// client. The CombatContext phase change is purely visual on
+    /// the client; the parity comes from the scrap broadcast.
     #[test]
     fn e2e_client_grants_scrap_on_wave_clear_via_state_sync() {
         use crate::map::{CombatContext, WavePhase};
@@ -3499,19 +3570,13 @@ mod tests {
             format!("127.0.0.1:{}", peer_port(&client)).parse().unwrap();
         host.world_mut().resource_mut::<NetSession>().peers.insert(1, client_addr);
 
-        // Pin client's starting scrap. Host's starting state irrelevant.
+        // Seed scrap baseline so broadcast_scrap_delta has a `last`
+        // to diff against.
+        lockstep(&mut host, &mut client, 1);
         let client_scrap_before = client.world().resource::<Scrap>().0;
 
-        // Seed client to start in Fighting so the next sync brings
-        // Cooldown (the transition we care about). The fixture's
-        // CombatContext starts in Spawning by default, which would
-        // skip the transition gate (prev != Fighting).
-        {
-            let mut c = client.world_mut().resource_mut::<CombatContext>();
-            c.wave_phase = WavePhase::Fighting;
-        }
-
-        // Host flips to Cooldown — wave_state_sync will broadcast.
+        // Host wave clear: phase Fighting→Cooldown AND host grants
+        // itself +1 (what `try_advance_fighting` does in production).
         {
             let mut c = host.world_mut().resource_mut::<CombatContext>();
             c.wave_idx = 0;
@@ -3519,6 +3584,7 @@ mod tests {
             c.wave_phase = WavePhase::Cooldown;
             c.wave_remaining = 0;
         }
+        host.world_mut().resource_mut::<Scrap>().0 += 1;
 
         lockstep(&mut host, &mut client, 30);
 
@@ -3526,12 +3592,88 @@ mod tests {
         assert_eq!(
             client_scrap_after,
             client_scrap_before + 1,
-            "client should grant +1 scrap on the Fighting→Cooldown sync",
+            "client should gain +1 scrap from the broadcast_scrap_delta path",
         );
         assert_eq!(
             client.world().resource::<CombatContext>().wave_phase,
             WavePhase::Cooldown,
             "client's phase should reflect the host's Cooldown",
+        );
+    }
+
+    /// Per-kill scrap parity: host's `Scrap` grows (e.g. Greed-rune
+    /// drop or boss bounty in production); `broadcast_scrap_delta`
+    /// detects the rising edge and ships a `ScrapAwarded { scrap }`
+    /// packet; client's `apply_received_scrap` adds it to local
+    /// pool. Without this, only wave-clear scrap reaches the client
+    /// and totals diverge over a run.
+    #[test]
+    fn e2e_host_scrap_delta_replicates_to_client() {
+        use crate::Scrap;
+        use super::wave::LastBroadcastedScrap;
+        let mut host = build_peer_app(true, None, true);
+        let host_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&host)).parse().unwrap();
+        let mut client = build_peer_app(false, Some(host_addr), true);
+        let client_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&client)).parse().unwrap();
+        host.world_mut().resource_mut::<NetSession>().peers.insert(1, client_addr);
+
+        // Seed the host's baseline so the first tick captures the
+        // current value (default 0). One tick is enough for the
+        // seed-on-first-run path to flip `valid=true`.
+        lockstep(&mut host, &mut client, 1);
+
+        let client_before = client.world().resource::<Scrap>().0;
+        // Simulate a per-kill drop on the host (Greed roll, boss bounty, etc.).
+        host.world_mut().resource_mut::<Scrap>().0 += 5;
+        lockstep(&mut host, &mut client, 10);
+
+        let client_after = client.world().resource::<Scrap>().0;
+        assert_eq!(
+            client_after, client_before + 5,
+            "client's local scrap should track the host's rising delta",
+        );
+        let last = host.world().resource::<LastBroadcastedScrap>();
+        assert!(last.valid, "host's broadcaster should have seeded");
+        assert_eq!(last.value, 5, "host should remember the latest broadcasted value");
+
+        // A second delta should also propagate (not just the first).
+        host.world_mut().resource_mut::<Scrap>().0 += 3;
+        lockstep(&mut host, &mut client, 10);
+        assert_eq!(
+            client.world().resource::<Scrap>().0,
+            client_before + 8,
+            "second delta should also propagate",
+        );
+    }
+
+    /// Scrap decrements on the host (e.g. customize purchases) must
+    /// NOT debit the client — each peer spends their own scrap
+    /// independently. Only gains broadcast.
+    #[test]
+    fn e2e_host_scrap_decrement_does_not_debit_client() {
+        use crate::Scrap;
+        let mut host = build_peer_app(true, None, true);
+        let host_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&host)).parse().unwrap();
+        let mut client = build_peer_app(false, Some(host_addr), true);
+        let client_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", peer_port(&client)).parse().unwrap();
+        host.world_mut().resource_mut::<NetSession>().peers.insert(1, client_addr);
+
+        // Pre-seed both sides so we can observe a spend.
+        host.world_mut().resource_mut::<Scrap>().0 = 50;
+        client.world_mut().resource_mut::<Scrap>().0 = 30;
+        lockstep(&mut host, &mut client, 1);
+
+        // Host spends in shop.
+        host.world_mut().resource_mut::<Scrap>().0 -= 10;
+        lockstep(&mut host, &mut client, 10);
+
+        assert_eq!(
+            client.world().resource::<Scrap>().0, 30,
+            "client's scrap unchanged by host's spend",
         );
     }
 

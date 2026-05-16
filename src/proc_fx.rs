@@ -32,6 +32,12 @@ pub mod kind {
     pub const SHOCK_ARC:  u8 = 0;
     pub const CASCADE:    u8 = 1;
     pub const BLAST_RING: u8 = 2;
+    /// Conduit rune proc — small shock-coloured particle burst on
+    /// the hit position. `to == from`.
+    pub const CONDUIT:    u8 = 3;
+    /// Resonate rune proc — small sniper-coloured particle burst
+    /// on the hit position. `to == from`.
+    pub const RESONATE:   u8 = 4;
 }
 
 /// Signal: the local player just fired a bullet from a turret. Emit

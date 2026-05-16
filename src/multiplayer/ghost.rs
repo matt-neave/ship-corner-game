@@ -404,6 +404,25 @@ pub fn recv_packets(
                     dir: Vec2::new(dir[0], dir[1]),
                 });
             }
+            NetMsg::TentacleSlap { pos } => {
+                death_relay.signal_fx.0.push(SignalFx::Tentacle {
+                    pos: Vec2::new(pos[0], pos[1]),
+                });
+            }
+            NetMsg::ScrapAwarded { scrap } => {
+                // Client-only — host's grants already updated its
+                // local Scrap before the broadcast went out.
+                if session.is_host { continue; }
+                death_relay.pending_scrap.0.push(scrap);
+            }
+            NetMsg::HarpoonAttached { source_peer, target_net_id, is_boss } => {
+                // Skip our own loopback — the local
+                // `attach_harpoon` already spawned the real chain.
+                if source_peer == session.my_id { continue; }
+                death_relay.pending_harpoon.0.push(
+                    (source_peer, target_net_id, is_boss),
+                );
+            }
             NetMsg::BulletFired { pos, dir, weapon, range, target_net_id } => {
                 bullet_inbox.events.push(super::bullets::ReceivedBulletFired {
                     pos: Vec2::new(pos[0], pos[1]),
@@ -557,13 +576,26 @@ const UNIT_SNAPSHOT_INTERVAL: f32 = 1.0 / UNIT_SNAPSHOT_HZ;
 pub struct UnitSnapshotTimer(pub f32);
 
 /// Marker on visual-only mirror entities spawned from a received
-/// `FriendlyUnitsSnapshot`. Lets the apply system find + despawn
-/// the previous frame's mirrors before respawning from the new
-/// snapshot. Carries `peer_id` so each broadcaster's mirrors are
-/// scoped independently.
+/// `FriendlyUnitsSnapshot`. `(peer_id, seq)` is the stable key the
+/// apply system uses to match a snapshot entry to its persistent
+/// mirror entity, so the same Transform can be lerped smoothly
+/// across snapshots instead of despawn-and-respawned every tick.
+/// `kind` lets the apply system detect kind changes (slot's weapon
+/// swapped: heli → shark) and rebuild the visual when needed.
 #[derive(Component)]
 pub struct PeerUnitMirror {
     pub peer_id: u8,
+    pub seq: u32,
+    pub kind: u8,
+}
+
+/// Latest received pose for a `PeerUnitMirror`. `smooth_peer_unit_mirrors`
+/// lerps the entity's Transform toward this each frame so the 15Hz
+/// snapshot cadence reads as smooth motion instead of choppy snaps.
+#[derive(Component, Clone, Copy)]
+pub struct PeerUnitTarget {
+    pub pos: Vec2,
+    pub rot: f32,
 }
 
 /// Per-frame on each peer: send a `FriendlyUnitsSnapshot` of every
@@ -588,17 +620,17 @@ pub fn send_friendly_units_snapshot(
     timer.0 = 0.0;
 
     let mut units = Vec::new();
-    let push = |out: &mut Vec<super::net::FriendlyUnitEntry>, gtf: &GlobalTransform, kind: super::net::FriendlyUnitKind| {
-        // Use GlobalTransform so child entities (flail heads parented
-        // to slots) resolve to world coordinates. Snapshotting a local
-        // Transform would only give us the in-parent offset.
+    let mut next_seq: u32 = 0;
+    let mut push = |out: &mut Vec<super::net::FriendlyUnitEntry>, gtf: &GlobalTransform, kind: super::net::FriendlyUnitKind| {
         let p = gtf.translation().truncate();
         let (z, _, _) = gtf.rotation().to_euler(EulerRot::ZYX);
         out.push(super::net::FriendlyUnitEntry {
+            seq: next_seq,
             kind: kind.to_u8(),
             pos: [p.x, p.y],
             rot: z,
         });
+        next_seq += 1;
     };
     for tf in &helis       { push(&mut units, tf, super::net::FriendlyUnitKind::Helicopter); }
     for tf in &sharks      { push(&mut units, tf, super::net::FriendlyUnitKind::Shark);      }
@@ -632,24 +664,54 @@ pub fn apply_peer_units_snapshot(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut inbox: ResMut<PeerUnitsInbox>,
-    existing: Query<(Entity, &PeerUnitMirror)>,
+    mut existing: Query<(Entity, &mut PeerUnitMirror, &mut PeerUnitTarget)>,
 ) {
     if inbox.0.is_empty() { return; }
     let Some(pm) = pm else { inbox.0.clear(); return };
 
     for (peer_id, entries) in inbox.0.drain() {
-        // Despawn this peer's previous mirrors before respawning.
-        for (e, m) in &existing {
-            if m.peer_id == peer_id { commands.entity(e).try_despawn(); }
+        // Build a lookup from this peer's existing mirrors by seq for
+        // O(1) match-and-update. Entities seen in `entries` get their
+        // target refreshed in place (no despawn → smooth lerp).
+        // Anything not seen is despawned at the end.
+        let mut seen: std::collections::HashMap<u32, Entity> = std::collections::HashMap::new();
+        let mut by_seq: std::collections::HashMap<u32, (Entity, u8)> = std::collections::HashMap::new();
+        for (e, m, _) in existing.iter() {
+            if m.peer_id == peer_id {
+                by_seq.insert(m.seq, (e, m.kind));
+            }
         }
+
         for entry in entries {
-            let Some(kind) = super::net::FriendlyUnitKind::from_u8(entry.kind) else { continue };
+            let Some(kind_enum) = super::net::FriendlyUnitKind::from_u8(entry.kind) else { continue };
             let pos = Vec2::new(entry.pos[0], entry.pos[1]);
-            // Use the SAME visual-spawn helpers the production code
-            // uses, so the mirror looks pixel-identical to the owning
-            // peer's view. Tag with PeerUnitMirror so a future
-            // snapshot can despawn + respawn cleanly.
-            let entity = match kind {
+
+            // Look up an existing mirror with the same seq AND kind.
+            // Kind mismatch → owner's loadout changed (rare), tear
+            // down + respawn so the visual matches the new kind.
+            let prev = by_seq.get(&entry.seq).copied();
+            let reuse = match prev {
+                Some((e, k)) if k == entry.kind => Some(e),
+                Some((e, _)) => { commands.entity(e).try_despawn(); None }
+                None => None,
+            };
+
+            if let Some(e) = reuse {
+                // In-place update — just refresh the target. The
+                // `smooth_peer_unit_mirrors` system lerps Transform
+                // each frame; we don't touch it here.
+                if let Ok((_, _, mut tgt)) = existing.get_mut(e) {
+                    tgt.pos = pos;
+                    tgt.rot = entry.rot;
+                }
+                seen.insert(entry.seq, e);
+                continue;
+            }
+
+            // New seq → spawn via the shared visual helper. Initial
+            // Transform = the snapshot pose (smoother has nothing to
+            // lerp from on frame 1).
+            let entity = match kind_enum {
                 super::net::FriendlyUnitKind::Helicopter => {
                     crate::turret::heli::spawn_helicopter_visual(
                         &mut commands, &pm, &mut meshes, pos, entry.rot,
@@ -671,14 +733,44 @@ pub fn apply_peer_units_snapshot(
                     )
                 }
             };
-            // Apply the snapshot rotation (the helper sets a default
-            // for some kinds; the snapshot is authoritative).
             commands.entity(entity).insert((
                 Transform::from_translation(pos.extend(1.5))
                     .with_rotation(Quat::from_rotation_z(entry.rot)),
-                PeerUnitMirror { peer_id },
+                PeerUnitMirror { peer_id, seq: entry.seq, kind: entry.kind },
+                PeerUnitTarget { pos, rot: entry.rot },
             ));
+            seen.insert(entry.seq, entity);
         }
+
+        // Despawn any mirror this peer had that wasn't in the new
+        // snapshot — unit was destroyed / unequipped on the owner.
+        for (seq, (e, _)) in &by_seq {
+            if !seen.contains_key(seq) { commands.entity(*e).try_despawn(); }
+        }
+    }
+}
+
+/// Per-frame: lerp each peer-unit mirror's Transform toward its
+/// `PeerUnitTarget`. Frame-rate independent exp decay so the visual
+/// speed is the same at 30fps and 144fps. Eliminates the every-67ms
+/// pop the 15Hz snapshot cadence would otherwise cause — especially
+/// visible on the flail head, which orbits its slot fast enough
+/// that raw snaps look choppy.
+///
+/// Tuned to reach ~95% of the target in ~80ms — fast enough that
+/// the visual tracks the broadcaster's truth, slow enough that
+/// direction changes don't snap.
+pub fn smooth_peer_unit_mirrors(
+    time: Res<Time>,
+    mut q: Query<(&PeerUnitTarget, &mut Transform), With<PeerUnitMirror>>,
+) {
+    const BASE_PER_FRAME: f32 = 0.45;
+    let t = (time.delta_secs() * 60.0 * BASE_PER_FRAME).clamp(0.0, 1.0);
+    for (target, mut tf) in &mut q {
+        tf.translation.x += (target.pos.x - tf.translation.x) * t;
+        tf.translation.y += (target.pos.y - tf.translation.y) * t;
+        let want = Quat::from_rotation_z(target.rot);
+        tf.rotation = tf.rotation.slerp(want, t);
     }
 }
 
@@ -782,13 +874,62 @@ pub fn emit_mortar_and_beam_signals(
     }
 }
 
+/// Per-frame on each peer: drain `HarpoonAttachedEvent`s emitted
+/// by the local `bullet_collisions` HarpoonTip branch and
+/// broadcast a `NetMsg::HarpoonAttached { source_peer,
+/// target_net_id, is_boss }` to peers. Receivers spawn a
+/// `RemoteHarpoonChain` between their ghost-of-source-peer and
+/// their mirror-of-target so the chain visual is visible cross-peer.
+pub fn emit_harpoon_signals(
+    mode: Res<NetMode>,
+    session: Option<Res<NetSession>>,
+    mut events: EventReader<crate::harpoon::HarpoonAttachedEvent>,
+    net_ids: Query<&super::enemies::NetEntityId>,
+) {
+    let Some(session) = session else { events.clear(); return };
+    if !matches!(*mode, NetMode::Connected) { events.clear(); return };
+    for ev in events.read() {
+        let Ok(nid) = net_ids.get(ev.target) else { continue };
+        let msg = NetMsg::HarpoonAttached {
+            source_peer:   session.my_id,
+            target_net_id: nid.0,
+            is_boss:       ev.is_boss,
+        };
+        for &addr in session.peers.values() {
+            let _ = send_to(&session.sock, addr, &msg);
+        }
+    }
+}
+
+/// Per-frame on each peer: drain `TentacleSlapEvent`s emitted by
+/// the local `octopus_spawn_tentacles` and broadcast a
+/// `NetMsg::TentacleSlap { pos }` to peers so they can render the
+/// same visual on their side. Damage stays local — receivers spawn
+/// `target: None` mirror tentacles whose `tentacle_tick` damage
+/// branch never enters.
+pub fn emit_tentacle_signals(
+    mode: Res<NetMode>,
+    session: Option<Res<NetSession>>,
+    mut events: EventReader<crate::octopus::TentacleSlapEvent>,
+) {
+    let Some(session) = session else { events.clear(); return };
+    if !matches!(*mode, NetMode::Connected) { events.clear(); return };
+    for ev in events.read() {
+        let msg = NetMsg::TentacleSlap { pos: [ev.pos.x, ev.pos.y] };
+        for &addr in session.peers.values() {
+            let _ = send_to(&session.sock, addr, &msg);
+        }
+    }
+}
+
 /// Drain `PendingSignalFx` and spawn visual-only Mortar / Beam /
-/// Flame replicas. The owning peer keeps doing damage locally;
-/// receivers just see the visual.
+/// Flame / Tentacle replicas. The owning peer keeps doing damage
+/// locally; receivers just see the visual.
 pub fn spawn_received_signal_fx(
     mut commands: Commands,
     pm: Option<Res<crate::palette::PaletteMaterials>>,
     em: Option<Res<crate::effects::EffectMeshes>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut inbox: ResMut<PendingSignalFx>,
 ) {
     if inbox.0.is_empty() { return; }
@@ -827,6 +968,25 @@ pub fn spawn_received_signal_fx(
                     RenderLayers::layer(PLAY_LAYER),
                     RemoteVisualFx,
                 ));
+            }
+            SignalFx::Tentacle { pos } => {
+                // Visual-only mirror. `target: None` keeps the
+                // damage branch in `tentacle_tick` a no-op; the
+                // existing animation pipeline (update_tentacle_segments
+                // + per-phase scale tick) drives the rest.
+                let entity = crate::octopus::spawn_tentacle_visual(
+                    &mut commands, &pm, &mut meshes, pos, 0.0,
+                );
+                commands.entity(entity).insert(crate::octopus::OctopusTentacle {
+                    source: Entity::PLACEHOLDER,
+                    target: None,
+                    phase: crate::octopus::TentaclePhase::Emerge,
+                    timer: crate::octopus::TENTACLE_EMERGE_TIME,
+                    damage: 0,
+                    damage_dealt: true,
+                    runes: Vec::new(),
+                    whip_from: 0.0,
+                });
             }
             SignalFx::Flame { pos, dir } => {
                 // Spawn a single flame puff at the broadcast position.
@@ -877,6 +1037,46 @@ pub fn spawn_received_signal_fx(
                 ));
             }
         }
+    }
+}
+
+/// Drain `PendingHarpoonAttaches` and spawn a peer-side
+/// `RemoteHarpoonChain` for each — anchored between this peer's
+/// ghost of `source_peer` and this peer's mirror with the matching
+/// `target_net_id`. Skips silently if either lookup misses (e.g.
+/// the mirror got culled between fire and packet arrival); the
+/// alternative would be a chain pinned to a dead entity.
+pub fn spawn_received_harpoon_chains(
+    mut commands: Commands,
+    pm: Option<Res<crate::palette::PaletteMaterials>>,
+    em: Option<Res<crate::effects::EffectMeshes>>,
+    mut inbox: ResMut<PendingHarpoonAttaches>,
+    ghosts: Query<(Entity, &RemoteGhost)>,
+    enemies: Query<(Entity, &super::enemies::NetEntityId), With<crate::enemy::Enemy>>,
+) {
+    if inbox.0.is_empty() { return; }
+    let (Some(pm), Some(em)) = (pm, em) else { inbox.0.clear(); return; };
+
+    for (source_peer, target_net_id, is_boss) in inbox.0.drain(..) {
+        let Some((src_e, _)) = ghosts.iter().find(|(_, g)| g.id == source_peer) else { continue };
+        let Some((tgt_e, _)) = enemies.iter().find(|(_, nid)| nid.0 == target_net_id) else { continue };
+        let lifetime = if is_boss {
+            crate::harpoon::HARPOON_TETHER_LIFETIME_BOSS
+        } else {
+            crate::harpoon::HARPOON_TETHER_LIFETIME
+        };
+        commands.spawn((
+            Mesh2d(em.beam.clone()),
+            MeshMaterial2d(pm.harpoon_chain.clone()),
+            // Z = 4.4 — same layering as the owner-side chain.
+            Transform::from_xyz(0.0, 0.0, 4.4),
+            crate::harpoon::RemoteHarpoonChain {
+                source: src_e,
+                target: tgt_e,
+                lifetime,
+            },
+            bevy::render::view::RenderLayers::layer(crate::balance::PLAY_LAYER),
+        ));
     }
 }
 
@@ -945,7 +1145,16 @@ pub struct DeathRelayInboxes<'w> {
     pub damage_player: ResMut<'w, PendingPlayerDamage>,
     pub peer_units: ResMut<'w, PeerUnitsInbox>,
     pub signal_fx: ResMut<'w, PendingSignalFx>,
+    pub pending_scrap: ResMut<'w, super::wave::PendingScrapAwards>,
+    pub pending_harpoon: ResMut<'w, PendingHarpoonAttaches>,
 }
+
+/// Receive buffer for `NetMsg::HarpoonAttached`. Drained by
+/// `spawn_received_harpoon_chains` which finds the matching ghost
+/// of `source_peer` + mirror with `target_net_id` and spawns a
+/// `RemoteHarpoonChain` between them.
+#[derive(Resource, Default)]
+pub struct PendingHarpoonAttaches(pub Vec<(u8, u32, bool)>);
 
 /// Receive buffer for signal-driven effect packets (Mortar / Beam /
 /// Flame) that don't fit `BulletFired`'s shape. Drained by
@@ -956,9 +1165,10 @@ pub struct PendingSignalFx(pub Vec<SignalFx>);
 /// One queued signal-fx event awaiting visual spawn on the receiver.
 #[derive(Clone, Copy, Debug)]
 pub enum SignalFx {
-    Mortar { pos: Vec2, target: Vec2, weapon: u8, splash_radius: f32 },
-    Beam   { origin: Vec2, dir: Vec2, length: f32, weapon: u8 },
-    Flame  { pos: Vec2, dir: Vec2 },
+    Mortar   { pos: Vec2, target: Vec2, weapon: u8, splash_radius: f32 },
+    Beam     { origin: Vec2, dir: Vec2, length: f32, weapon: u8 },
+    Flame    { pos: Vec2, dir: Vec2 },
+    Tentacle { pos: Vec2 },
 }
 
 /// Client-only: drain incoming `DamagePlayer` packets, apply each

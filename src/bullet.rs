@@ -327,6 +327,7 @@ pub fn bullet_collisions(
     enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
     mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>, &crate::components::Heading), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
+    mut harpoon_attached: EventWriter<crate::harpoon::HarpoonAttachedEvent>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
@@ -404,6 +405,13 @@ pub fn bullet_collisions(
                         if let Ok((fe, _, _, _, _, _)) = friendly.single() {
                             crate::harpoon::attach_harpoon(
                                 &mut commands, &em, &pm, fe, ee, is_boss,
+                            );
+                            // Owner-side signal for the multiplayer
+                            // bridge to broadcast as `NetMsg::HarpoonAttached`.
+                            // Peers spawn a `RemoteHarpoonChain` between
+                            // the ghost-of-owner and the target's mirror.
+                            harpoon_attached.write(
+                                crate::harpoon::HarpoonAttachedEvent { target: ee, is_boss },
                             );
                         }
                     }

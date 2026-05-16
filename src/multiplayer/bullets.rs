@@ -31,6 +31,15 @@ use super::{NetMode, NetSession};
 #[derive(Component, Clone, Copy, Debug)]
 pub struct RemoteVisualBullet;
 
+/// Sticks to remote homing rockets so we can re-resolve the original
+/// target by `NetEntityId` each frame. The base `HomingMissile` only
+/// remembers an `Entity`, which goes stale if the mirror despawns
+/// (host culled the enemy off-screen) and respawns in a later
+/// snapshot — without this, the visual rocket would fall back to
+/// the nearest-enemy re-acquire and drift off the intended target.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct RemoteHomingTargetId(pub u32);
+
 /// Per-frame: detect newly-spawned bullets that belong to the local
 /// player and emit `BulletFiredEvent`. `Added<Bullet>` fires once
 /// per bullet, the frame it's spawned. We exclude already-tagged
@@ -226,17 +235,61 @@ pub fn spawn_received_bullets(
         // bullet curves toward the same enemy on this peer's side.
         // The local `homing_missile_track` system handles the
         // per-frame turn; damage stays 0 (visual only).
+        //
+        // Also tag the bullet with `RemoteHomingTargetId` so
+        // `resolve_remote_homing_targets` can re-acquire the
+        // original target by NetEntityId if the mirror was
+        // missing at spawn (snapshot race) or gets recreated
+        // later (host culled enemy off-screen, snapshot re-adds it).
         if ev.target_net_id != 0 {
             let mut target_entity: Option<Entity> = None;
             for (e, nid) in &net_id_lookup {
                 if nid.0 == ev.target_net_id { target_entity = Some(e); break; }
             }
-            commands.entity(bullet).insert(crate::ally::HomingMissile {
-                target: target_entity,
-                turn_rate: crate::ally::missile::MISSILE_TURN_RATE,
-                target_faction: FactionKind::Enemy,
-                homing_delay: 0.3,
-            });
+            commands.entity(bullet).insert((
+                crate::ally::HomingMissile {
+                    target: target_entity,
+                    turn_rate: crate::ally::missile::MISSILE_TURN_RATE,
+                    target_faction: FactionKind::Enemy,
+                    homing_delay: 0.3,
+                },
+                RemoteHomingTargetId(ev.target_net_id),
+            ));
+        }
+    }
+}
+
+/// Per-frame on each peer: walk every remote homing visual that's
+/// missing its target (or whose cached target points at a now-dead
+/// entity) and re-resolve it against the live mirror table by
+/// `NetEntityId`. Without this, a rocket whose mirror was missing
+/// at spawn time (snapshot race) or got despawned mid-flight
+/// (host culled the enemy off-screen, then re-added it) would
+/// permanently fall through to nearest-enemy re-acquire and look
+/// like a dumb bullet instead of seeking its intended target.
+pub fn resolve_remote_homing_targets(
+    mut q: Query<(&RemoteHomingTargetId, &mut crate::ally::HomingMissile)>,
+    net_id_lookup: Query<(Entity, &crate::multiplayer::enemies::NetEntityId)>,
+) {
+    if q.is_empty() { return; }
+    for (tag, mut homing) in &mut q {
+        let still_valid = homing.target.is_some_and(|e| {
+            net_id_lookup
+                .get(e)
+                .map(|(_, nid)| nid.0 == tag.0)
+                .unwrap_or(false)
+        });
+        if still_valid { continue; }
+        // Cached target is stale (mirror despawned or never resolved).
+        // Clear it first so the nearest-enemy fallback in
+        // `homing_missile_track` kicks in if the original target
+        // can't be found this frame either.
+        homing.target = None;
+        for (e, nid) in &net_id_lookup {
+            if nid.0 == tag.0 {
+                homing.target = Some(e);
+                break;
+            }
         }
     }
 }

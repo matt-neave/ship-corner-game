@@ -76,7 +76,7 @@ fn max_tentacles(barrels: u8) -> usize {
 
 /// Tentacle lifecycle — animation phases. Total visible time per
 /// tentacle = EMERGE + SLAP + RETREAT (~0.6s).
-const TENTACLE_EMERGE_TIME: f32 = 0.18;
+pub const TENTACLE_EMERGE_TIME: f32 = 0.18;
 const TENTACLE_SLAP_TIME:   f32 = 0.14;
 const TENTACLE_RETREAT_TIME: f32 = 0.22;
 /// Length (world units) of the visible tentacle when fully out.
@@ -204,24 +204,82 @@ pub struct OctopusPlugin;
 
 impl Plugin for OctopusPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (
-                sync_cage_decor,
-                sync_octopus_units,
-                octopus_ai,
-                octopus_spawn_tentacles,
-                tentacle_tick,
-                // Must run after `tentacle_tick` so segments read
-                // the just-decremented timer + phase to compute the
-                // current extension — without `.after`, Bevy can
-                // freely run them in parallel and segment poses lag
-                // a frame behind the phase transition.
-                update_tentacle_segments.after(tentacle_tick),
-                update_octopus_trail,
-            ),
-        );
+        app.add_event::<TentacleSlapEvent>()
+            .add_systems(
+                Update,
+                (
+                    sync_cage_decor,
+                    sync_octopus_units,
+                    octopus_ai,
+                    octopus_spawn_tentacles,
+                    tentacle_tick,
+                    // Must run after `tentacle_tick` so segments read
+                    // the just-decremented timer + phase to compute the
+                    // current extension — without `.after`, Bevy can
+                    // freely run them in parallel and segment poses lag
+                    // a frame behind the phase transition.
+                    update_tentacle_segments.after(tentacle_tick),
+                    update_octopus_trail,
+                ),
+            );
     }
+}
+
+/// Fired by `octopus_spawn_tentacles` each time a real tentacle
+/// emerges. The multiplayer layer reads this event and broadcasts a
+/// `NetMsg::TentacleSlap { pos }` to peers so they can spawn the
+/// same visual on their side; in Solo no listener consumes it and
+/// the event is dropped harmlessly.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct TentacleSlapEvent {
+    pub pos: Vec2,
+}
+
+/// Spawn the tentacle visual hierarchy at `spawn_pos`: a transform
+/// anchor (no mesh) plus `TENTACLE_SEGMENTS` child segment circles
+/// in their curled rest pose. Returns the anchor entity so the
+/// caller can attach an `OctopusTentacle` component appropriate to
+/// the spawn site.
+///
+/// Owner side: attach an `OctopusTentacle` carrying the real
+/// target / source / damage / runes. `tentacle_tick` will animate
+/// it AND apply the slap-phase damage.
+///
+/// Receiver side: attach an `OctopusTentacle` with `target: None`
+/// (no follow, no damage) so the same animation pipeline drives the
+/// purely-visual replica.
+pub fn spawn_tentacle_visual(
+    commands: &mut Commands,
+    pm: &PaletteMaterials,
+    meshes: &mut Assets<Mesh>,
+    spawn_pos: Vec2,
+    whip_from: f32,
+) -> Entity {
+    let seg_mesh = meshes.add(Circle::new(TENTACLE_SEG_RADIUS));
+    let parent = commands.spawn((
+        Transform {
+            translation: Vec3::new(spawn_pos.x, spawn_pos.y, 1.6),
+            rotation: Quat::from_rotation_z(whip_from),
+            // Start "underwater" — Y scale 0 grows to 1 during
+            // Emerge so the chain seems to rise from below.
+            scale: Vec3::new(1.0, 0.0, 1.0),
+        },
+        // Required for child-transform propagation on entities that
+        // don't carry a mesh of their own.
+        Visibility::Inherited,
+    )).id();
+    for idx in 0..TENTACLE_SEGMENTS {
+        let (cx, cy) = CURLED_SEGMENTS[idx];
+        let seg = commands.spawn((
+            Mesh2d(seg_mesh.clone()),
+            MeshMaterial2d(pm.octopus_leg.clone()),
+            Transform::from_xyz(cx, cy, 0.0),
+            RenderLayers::layer(PLAY_LAYER),
+            TentacleSegment { idx: idx as u8 },
+        )).id();
+        commands.entity(seg).insert(ChildOf(parent));
+    }
+    parent
 }
 
 /// Per-frame: place every tentacle segment along the curled →
@@ -498,17 +556,12 @@ pub fn octopus_spawn_tentacles(
     enemies: Query<(Entity, &Transform, &crate::components::Health), (With<Enemy>, Without<Octopus>)>,
     tentacles: Query<&OctopusTentacle>,
     mut octopuses: Query<(Entity, &Transform, &mut Octopus)>,
+    mut slap_w: EventWriter<TentacleSlapEvent>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
-    // Tentacle visual is a chain of `TENTACLE_SEGMENTS` small
-    // circles, arranged along a question-mark curl during Emerge
-    // and linearly interpolated to a straight column over Slap.
-    // The chain reads as a real tentacle silhouette (curl + strike)
-    // far better than a single capsule pivoting on its base.
-    let seg_mesh = meshes.add(Circle::new(TENTACLE_SEG_RADIUS));
     let ship_pos = ship_q.single()
         .map(|t| t.translation.truncate())
         .unwrap_or(Vec2::ZERO);
@@ -577,50 +630,25 @@ pub fn octopus_spawn_tentacles(
         let spawn_pos = target_pos + jitter;
         let whip_from = rng.gen_range(-0.6_f32..0.6);
 
-        // Parent is the logical tentacle — invisible itself (no
-        // mesh of its own), it just anchors world position +
-        // rotation and propagates Y-scale to its segment children
-        // for the rise/sink animation. Per-segment in-frame
-        // positions are driven each tick by
-        // `update_tentacle_segments`.
-        let tentacle_entity = commands.spawn((
-            Transform {
-                translation: Vec3::new(spawn_pos.x, spawn_pos.y, 1.6),
-                rotation: Quat::from_rotation_z(whip_from),
-                // Start "underwater" — Y scale 0 grows to 1 during
-                // Emerge so the chain seems to rise from below.
-                scale: Vec3::new(1.0, 0.0, 1.0),
-            },
-            // Required for child-transform propagation on entities
-            // that don't carry a mesh of their own.
-            Visibility::Inherited,
-            OctopusTentacle {
-                source: oct_entity,
-                target: Some(target_entity),
-                phase: TentaclePhase::Emerge,
-                timer: TENTACLE_EMERGE_TIME,
-                damage: s.damage.max(1),
-                damage_dealt: false,
-                runes: s_runes.clone(),
-                whip_from,
-            },
-        )).id();
+        let tentacle_entity = spawn_tentacle_visual(
+            &mut commands, &pm, &mut meshes, spawn_pos, whip_from,
+        );
+        commands.entity(tentacle_entity).insert(OctopusTentacle {
+            source: oct_entity,
+            target: Some(target_entity),
+            phase: TentaclePhase::Emerge,
+            timer: TENTACLE_EMERGE_TIME,
+            damage: s.damage.max(1),
+            damage_dealt: false,
+            runes: s_runes.clone(),
+            whip_from,
+        });
 
-        // Segment circles. Each starts in its CURLED pose; the
-        // per-tick segment updater lerps toward STRAIGHT during the
-        // Slap phase. Shared mesh + material so spawning all 6 is
-        // cheap.
-        for idx in 0..TENTACLE_SEGMENTS {
-            let (cx, cy) = CURLED_SEGMENTS[idx];
-            let seg = commands.spawn((
-                Mesh2d(seg_mesh.clone()),
-                MeshMaterial2d(pm.octopus_leg.clone()),
-                Transform::from_xyz(cx, cy, 0.0),
-                RenderLayers::layer(PLAY_LAYER),
-                TentacleSegment { idx: idx as u8 },
-            )).id();
-            commands.entity(seg).insert(ChildOf(tentacle_entity));
-        }
+        // Broadcast the spawn position so connected peers can render
+        // the same visual on their side. Damage stays local — the
+        // peer's mirror carries `target: None` so its
+        // `tentacle_tick` damage branch is a no-op.
+        slap_w.write(TentacleSlapEvent { pos: spawn_pos });
 
         // Light water-bubble cue at the emerge point — kept small
         // (3 motes at low speed) so it reads as "something's

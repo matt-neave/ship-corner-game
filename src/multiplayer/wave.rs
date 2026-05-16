@@ -72,37 +72,96 @@ pub fn broadcast_wave_state(
 /// host's authoritative values. Other CombatContext fields stay at
 /// their local defaults (the client doesn't simulate waves).
 ///
-/// Side-effect: when the host's phase transitions Fighting →
-/// Cooldown, grant the client +1 scrap locally. Scrap is fully
-/// deterministic per-peer in this codebase (no host-authoritative
-/// scrap broadcast); the wave-clear bonus normally fires from the
-/// host's `try_advance_fighting` site and we mirror it here so
-/// clients earn the same per-wave bounty.
+/// Scrap parity is handled separately by `broadcast_scrap_delta` +
+/// `apply_received_scrap` — when the host's wave-clear path grants
+/// +1, the broadcaster sees the rising edge and ships a
+/// `ScrapAwarded` packet. We don't grant scrap here or we'd double-
+/// count.
 pub fn apply_wave_state(
     mode: Res<NetMode>,
     session: Option<Res<NetSession>>,
     mut pending: ResMut<PendingWaveState>,
     combat: Option<ResMut<CombatContext>>,
-    mut scrap_w: crate::stage_complete::ScrapWriter,
 ) {
     let Some(session) = session else { return };
     if !matches!(*mode, NetMode::Connected) || session.is_host { return; }
     let Some(mut combat) = combat else { return };
     let Some((idx, count, phase_u8, remaining)) = pending.0.take() else { return };
 
-    let prev_phase = combat.wave_phase;
     combat.wave_idx       = idx       as u8;
     combat.wave_count     = count     as u8;
     combat.wave_remaining = remaining;
     if let Some(phase) = WavePhase::from_u8(phase_u8) {
         combat.wave_phase = phase;
-        // Wave just cleared on the host — grant the client's local
-        // scrap so it matches. Skips the cosmetic flicker case
-        // where the same packet arrives twice by gating on the
-        // ACTUAL phase change.
-        if prev_phase == WavePhase::Fighting && phase == WavePhase::Cooldown {
-            scrap_w.grant(1);
+    }
+}
+
+// ---------- Per-kill scrap parity ----------
+
+/// Tracks the host's last-broadcasted `Scrap.0` so `broadcast_scrap_delta`
+/// can compute and ship the delta whenever the host's pool grows
+/// (per-kill drops, Greed procs, boss bounty, customize spend).
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct LastBroadcastedScrap {
+    pub value: u32,
+    pub valid: bool,
+}
+
+/// Host-only: detect rising-edges in `Scrap.0` and broadcast the
+/// delta to peers as `NetMsg::ScrapAwarded { scrap }`. Without this,
+/// only the wave-clear path grants scrap on client; per-kill drops
+/// (Greed rune) + boss bounties run host-only and divergent scrap
+/// totals accumulate over a run.
+///
+/// Decrements (player spent in shop) DON'T broadcast — each peer
+/// spends their own scrap independently. We only sync gains.
+pub fn broadcast_scrap_delta(
+    mode: Res<NetMode>,
+    session: Option<Res<NetSession>>,
+    scrap: Res<crate::Scrap>,
+    mut last: ResMut<LastBroadcastedScrap>,
+) {
+    let Some(session) = session else { return };
+    if !matches!(*mode, NetMode::Connected) || !session.is_host { return; }
+    if !last.valid {
+        // Seed on first run so a fresh session doesn't broadcast
+        // the entire starting balance as a "you just earned this."
+        last.value = scrap.0;
+        last.valid = true;
+        return;
+    }
+    if scrap.0 > last.value {
+        let delta = scrap.0 - last.value;
+        let msg = NetMsg::ScrapAwarded { scrap: delta };
+        for &addr in session.peers.values() {
+            let _ = super::net::send_to(&session.sock, addr, &msg);
         }
+    }
+    last.value = scrap.0;
+}
+
+/// Receive buffer for `NetMsg::ScrapAwarded`. Drained by
+/// `apply_received_scrap` which adds the amount to the local
+/// `Scrap.0` so the client's total tracks the host's gains.
+#[derive(Resource, Default)]
+pub struct PendingScrapAwards(pub Vec<u32>);
+
+/// Client-only: add each received scrap award to the local pool.
+/// Skipped on host (host's own grants already updated local Scrap
+/// before the broadcast was emitted).
+pub fn apply_received_scrap(
+    mode: Res<NetMode>,
+    session: Option<Res<NetSession>>,
+    mut inbox: ResMut<PendingScrapAwards>,
+    mut scrap_w: crate::stage_complete::ScrapWriter,
+) {
+    let Some(session) = session else { return };
+    if !matches!(*mode, NetMode::Connected) || session.is_host {
+        inbox.0.clear();
+        return;
+    }
+    for amount in inbox.0.drain(..) {
+        scrap_w.grant(amount);
     }
 }
 
