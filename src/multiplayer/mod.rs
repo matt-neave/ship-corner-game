@@ -82,10 +82,10 @@ use xp_sync::{
     LastBroadcastedXp, LastSeenLocalLevelUps, PendingLevelUpGrants, PendingXpSync,
 };
 use ghost::{
-    apply_received_player_damage, apply_snapshots, cull_stale_ghosts, despawn_all_ghosts,
-    detect_stale_peers, recv_packets, refresh_ghost_turrets, relay_ghost_damage, send_heartbeat,
-    send_local_transform, spawn_missing_ghosts, HeartbeatTimer, PeerSnapshots,
-    PendingPlayerDamage, TransformSendTimer,
+    apply_ghost_turret_aims, apply_received_player_damage, apply_snapshots, cull_stale_ghosts,
+    despawn_all_ghosts, detect_stale_peers, recv_packets, refresh_ghost_turrets,
+    relay_ghost_damage, send_heartbeat, send_local_transform, spawn_missing_ghosts,
+    HeartbeatTimer, PeerSnapshots, PendingPlayerDamage, TransformSendTimer,
 };
 use net::{bind_socket, local_lan_ip, send_to, NetMsg, HOST_PORT};
 
@@ -369,6 +369,10 @@ impl Plugin for MultiplayerPlugin {
                 spawn_missing_ghosts,
                 refresh_ghost_turrets,
                 apply_snapshots,
+                // Apply per-turret rotations from the latest peer
+                // snapshot so ghost turrets visually track the peer's
+                // live aim instead of sitting at their mount angle.
+                apply_ghost_turret_aims,
                 cull_stale_ghosts,
                 send_local_transform,
                 assign_net_ids,
@@ -724,12 +728,13 @@ fn tick_handshake(
                 NetMsg::PeerLeft { id } if !session.is_host => {
                     roster.by_id.remove(&id);
                 }
-                NetMsg::Transform { id, pos, rot } => {
+                NetMsg::Transform { id, pos, rot, turret_rots } => {
                     snapshots.0.insert(
                         id,
                         ghost::PeerSnapshot {
                             pos: Vec2::new(pos[0], pos[1]),
                             rot,
+                            turret_rots,
                             last_seen: now,
                         },
                     );

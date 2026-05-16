@@ -506,7 +506,6 @@ pub fn teardown_waiting_overlay(
 /// overlay's LEAVE button + ESC work without a duplicate system.
 pub fn handle_leave_click_any_mp(
     interactions: Query<&Interaction, (Changed<Interaction>, With<LeaveButton>)>,
-    keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<AppState>>,
     mut commands: Commands,
     mut mode: ResMut<NetMode>,
@@ -520,9 +519,13 @@ pub fn handle_leave_click_any_mp(
     );
     if !in_mp_screen { return; }
 
+    // LEAVE button only — ESC used to also tear the session down
+    // here, which made an idle key-press during WaitingForHost
+    // (e.g. while the host is in the map) silently kick you to
+    // MainMenu. Now ESC is inert on these screens; you must click
+    // LEAVE deliberately.
     let clicked = interactions.iter().any(|i| matches!(i, Interaction::Pressed));
-    let esc     = keys.just_pressed(KeyCode::Escape);
-    if !clicked && !esc { return; }
+    if !clicked { return; }
 
     super::tear_down_session(&mut commands, &mut mode, session.as_deref());
     roster.by_id.clear();

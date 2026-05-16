@@ -156,16 +156,26 @@ pub fn host_advance_when_all_ready(
     next.set(target);
 }
 
-/// Clear `LocalReadyState` + `TeamReadyTracker` on entry to a
-/// per-peer ready-gated state (Customize / LevelUp / HullSelect).
+/// Clear `LocalReadyState` + `TeamReadyTracker` + the inbound
+/// `PendingPeerReady` packet buffer on entry to a per-peer
+/// ready-gated state (Customize / LevelUp / HullSelect).
+///
 /// Without this, a stale ready from the previous visit would
 /// auto-advance the team before anyone had a chance to interact.
+/// Without ALSO clearing `PendingPeerReady`, in-flight PeerReady
+/// packets from the previous state (sent in the frame right
+/// before the all-ready advance fired) would land in the new
+/// state's drain and falsely register the sender as "ready"
+/// before they've clicked anything — the "host sees 1/2 ready
+/// when the client hasn't clicked yet" symptom.
 pub fn reset_ready_state_on_enter(
     mut local: ResMut<LocalReadyState>,
     mut tracker: ResMut<TeamReadyTracker>,
+    mut inbox: ResMut<PendingPeerReady>,
 ) {
     local.ready = false;
     tracker.ready_peers.clear();
+    inbox.0.clear();
 }
 
 /// Marker on the ready-indicator overlay root entity.

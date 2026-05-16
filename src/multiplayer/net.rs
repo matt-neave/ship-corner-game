@@ -66,6 +66,12 @@ pub enum NetMsg {
         pos: [f32; 2],
         /// Z-rotation in radians (matches `Heading` in this codebase).
         rot: f32,
+        /// World-space Z-rotation of each turret base (slot 0..7).
+        /// Slot not equipped or not visible → arbitrary value
+        /// (receivers ignore the slot via `PeerLoadouts`). Lets the
+        /// ghost ship's turrets visually track the peer's live aim
+        /// instead of sitting at their mount-angle defaults.
+        turret_rots: [f32; 8],
     },
     /// Either peer → other peer(s). Voluntary disconnect notice so
     /// the receivers can despawn the ghost immediately instead of
@@ -430,14 +436,21 @@ mod tests {
 
     #[test]
     fn netmsg_transform_round_trip() {
-        let msg = NetMsg::Transform { id: 7, pos: [123.5, -456.25], rot: 1.5 };
+        let turret_rots = [0.1, 0.2, 0.3, 0.4, -0.1, -0.2, -0.3, -0.4];
+        let msg = NetMsg::Transform {
+            id: 7,
+            pos: [123.5, -456.25],
+            rot: 1.5,
+            turret_rots,
+        };
         let bytes = bincode::serialize(&msg).unwrap();
         let back: NetMsg = bincode::deserialize(&bytes).unwrap();
         match back {
-            NetMsg::Transform { id, pos, rot } => {
+            NetMsg::Transform { id, pos, rot, turret_rots: tr } => {
                 assert_eq!(id, 7);
                 assert_eq!(pos, [123.5, -456.25]);
                 assert_eq!(rot, 1.5);
+                assert_eq!(tr, turret_rots);
             }
             _ => panic!("wrong variant"),
         }
@@ -750,10 +763,14 @@ mod tests {
     fn fixed_connection_messages_have_stable_size() {
         let bye_bytes = bincode::serialize(&NetMsg::Bye { id: 0 }).unwrap();
         let xform_bytes = bincode::serialize(&NetMsg::Transform {
-            id: 0, pos: [0.0; 2], rot: 0.0,
+            id: 0, pos: [0.0; 2], rot: 0.0, turret_rots: [0.0; 8],
         }).unwrap();
         assert_eq!(bye_bytes.len(),    5, "Bye     tag + u8");
-        assert_eq!(xform_bytes.len(), 17, "Transform tag + u8 + 2*f32 + f32");
+        // 49 bytes measured; the small over-count vs the naive
+        // tag + u8 + 12 + 32 = 45 estimate is bincode framing on
+        // the fixed-size arrays. Hardcoded so wire-format drift
+        // is caught early.
+        assert_eq!(xform_bytes.len(), 49, "Transform packet size drift");
     }
 
     /// Hello + Welcome carry variable-length names but stay well under

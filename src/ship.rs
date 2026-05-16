@@ -69,6 +69,15 @@ pub fn spawn_player_world(
     pm: Res<PaletteMaterials>,
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
+    // In MP, `LocalDeathState.dead = true` means we've been killed and
+    // are in spectate mode. We must NOT respawn the local Friendly
+    // on every `OnEnter(Playing)` — that would revive the dead peer
+    // mid-stage on the very first between-wave LevelUp bounce
+    // (Playing → LevelUp → Playing). Revive only happens on stage
+    // transition via `host_broadcast_revive_on_stage_complete`,
+    // which clears `LocalDeathState.dead` before the next
+    // `OnEnter(Playing)`.
+    local_death: Res<crate::multiplayer::death::LocalDeathState>,
     existing: Query<Entity, With<Friendly>>,
 ) {
     // Discard the unused-binding warning on the default (no-feature)
@@ -76,6 +85,7 @@ pub fn spawn_player_world(
     #[cfg(not(feature = "stacked_standard_turret"))]
     let _ = &mut materials;
     if !existing.is_empty() { return; }
+    if local_death.dead { return; }
 
     // 1px play-area border drawn around the *arena* (z=6 so it always
     // frames the action). With `big_arena` the border tracks the

@@ -46,10 +46,16 @@ pub struct RemoteGhost {
 /// Latest known transform for a peer. Updated by `recv_packets`; read
 /// by `apply_snapshots` to drive the ghost entity. `last_seen` drives
 /// the timeout cleanup in `cull_stale_ghosts`.
+///
+/// `turret_rots` carries each turret base's local rotation so the
+/// ghost ship's turret children visually track the peer's live aim.
+/// Index = TurretSlot.index; unequipped slots store 0.0 and are
+/// ignored on apply.
 #[derive(Clone, Copy)]
 pub struct PeerSnapshot {
     pub pos: Vec2,
     pub rot: f32,
+    pub turret_rots: [f32; 8],
     pub last_seen: Instant,
 }
 
@@ -110,6 +116,7 @@ pub fn send_local_transform(
     // and silently bails, so the host never sends Transform updates
     // and the client's view of the host's ship never moves.
     local: Query<(&Transform, &crate::components::Heading), With<crate::components::LocalPlayer>>,
+    turret_slots: Query<(&crate::turret::TurretSlot, &Transform)>,
 ) {
     if matches!(*mode, NetMode::Solo) { return; }
     let Some(session) = session else { return; };
@@ -118,10 +125,23 @@ pub fn send_local_transform(
     timer.0 = 0.0;
 
     let Ok((tf, heading)) = local.single() else { return; };
+
+    // Pack each local turret base's LOCAL rotation (its Transform.rotation
+    // is set by `turret_aim_fire` to track the nearest enemy each frame).
+    // Slot index → array slot. Unequipped slots stay at 0.0 — receivers
+    // ignore them via `PeerLoadouts`.
+    let mut turret_rots = [0.0_f32; 8];
+    for (slot, ttf) in &turret_slots {
+        if slot.index >= 8 { continue; }
+        let (z, _, _) = ttf.rotation.to_euler(EulerRot::ZYX);
+        turret_rots[slot.index] = z;
+    }
+
     let msg = NetMsg::Transform {
         id: session.my_id,
         pos: [tf.translation.x, tf.translation.y],
         rot: heading.0,
+        turret_rots,
     };
     for &addr in session.peers.values() {
         if let Err(e) = send_to(&session.sock, addr, &msg) {
@@ -238,10 +258,15 @@ pub fn recv_packets(
                 if session.is_host { continue; }
                 pending_kick.0 = Some(reason);
             }
-            NetMsg::Transform { id, pos, rot } => {
+            NetMsg::Transform { id, pos, rot, turret_rots } => {
                 snapshots.0.insert(
                     id,
-                    PeerSnapshot { pos: Vec2::new(pos[0], pos[1]), rot, last_seen: now },
+                    PeerSnapshot {
+                        pos: Vec2::new(pos[0], pos[1]),
+                        rot,
+                        turret_rots,
+                        last_seen: now,
+                    },
                 );
             }
             NetMsg::Bye { id } => {
@@ -475,8 +500,41 @@ pub fn spawn_missing_ghosts(
 /// `spawn_remote_turret_visuals`. Lets `refresh_ghost_turrets`
 /// find and despawn them when the peer's loadout changes, without
 /// touching the hull entity.
+///
+/// `slot_index` lets `apply_ghost_turret_aims` map a turret base
+/// entity back to its slot so it can apply the correct rotation
+/// from `PeerSnapshot.turret_rots`. Barrels store the parent base's
+/// index too — harmless duplicate, simpler than separate markers.
 #[derive(Component)]
-pub struct GhostTurretChild;
+pub struct GhostTurretChild {
+    pub slot_index: usize,
+}
+
+/// Apply per-turret rotations from the latest `PeerSnapshot` to
+/// each ghost ship's turret base children. Snaps every frame (no
+/// lerp) — at 30Hz Transform cadence the visible step is ~33ms,
+/// fine for a turret that's already moving at most a few degrees
+/// per frame.
+///
+/// Only rotates BASE entities (slot_index lookup is identity-based).
+/// Barrels are children of bases and inherit the rotation
+/// automatically through the Transform hierarchy.
+pub fn apply_ghost_turret_aims(
+    snapshots: Res<PeerSnapshots>,
+    ghosts: Query<(&RemoteGhost, &Children)>,
+    mut bases: Query<(&GhostTurretChild, &mut Transform), Without<RemoteGhost>>,
+) {
+    for (ghost, children) in &ghosts {
+        let Some(snap) = snapshots.0.get(&ghost.id) else { continue };
+        for child in children.iter() {
+            if let Ok((tag, mut tf)) = bases.get_mut(child) {
+                let want = snap.turret_rots[tag.slot_index];
+                let q = Quat::from_rotation_z(want);
+                if tf.rotation != q { tf.rotation = q; }
+            }
+        }
+    }
+}
 
 /// Component on the host's ghost-of-peer hull that drives the
 /// "damage taken by the ghost → broadcast to peer" relay path. The
@@ -695,7 +753,7 @@ fn spawn_remote_turret_visuals(
                 .with_rotation(Quat::from_rotation_z(mount)),
             Visibility::Inherited,
             RenderLayers::layer(PLAY_LAYER),
-            GhostTurretChild,
+            GhostTurretChild { slot_index: i },
         )).id();
         commands.entity(base).insert(ChildOf(ship));
 
@@ -705,7 +763,12 @@ fn spawn_remote_turret_visuals(
             Transform::from_xyz(0.0, 1.8, 0.15),
             Visibility::Inherited,
             RenderLayers::layer(PLAY_LAYER),
-            GhostTurretChild,
+            // Barrel inherits its parent base's rotation via the
+            // transform hierarchy; `apply_ghost_turret_aims` only
+            // touches bases. Still tag with the slot index so
+            // `refresh_ghost_turrets`' despawn-by-marker query
+            // catches it.
+            GhostTurretChild { slot_index: i },
         )).id();
         commands.entity(barrel).insert(ChildOf(base));
     }
@@ -850,6 +913,7 @@ mod tests {
             PeerSnapshot {
                 pos: Vec2::new(10.0, 20.0),
                 rot: 0.5,
+                turret_rots: [0.0; 8],
                 last_seen: Instant::now(),
             },
         );
