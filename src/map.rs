@@ -186,6 +186,26 @@ pub enum WavePhase {
     Cooldown,
 }
 
+impl WavePhase {
+    /// Stable wire-format discriminant for multiplayer wave sync.
+    /// Append-only — same rules as the other `to_u8` enums.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            WavePhase::Spawning => 0,
+            WavePhase::Fighting => 1,
+            WavePhase::Cooldown => 2,
+        }
+    }
+    pub fn from_u8(n: u8) -> Option<Self> {
+        Some(match n {
+            0 => WavePhase::Spawning,
+            1 => WavePhase::Fighting,
+            2 => WavePhase::Cooldown,
+            _ => return None,
+        })
+    }
+}
+
 /// Seconds of breathing room between waves. Kept short so cleared
 /// arenas don't feel like a wait — the player wants to keep shooting.
 pub const BETWEEN_WAVES_DURATION: f32 = 0.6;
@@ -268,6 +288,39 @@ impl CombatContext {
         self.is_boss_wave = crate::balance::is_boss_wave(self.wave_idx, self.wave_count);
         // Spawning state will refill on next tick.
         self.pending_spawns.clear();
+    }
+
+    /// Pure-logic half of the spawner's Fighting branch. Returns true
+    /// iff the phase just transitioned Fighting → Cooldown (caller
+    /// then performs the side-effects: grant scrap, queue level-ups).
+    ///
+    /// The early-return on the non-Fighting phase is intentional —
+    /// the caller drives the state machine via a match, but extracting
+    /// the transition here lets unit tests assert it without dragging
+    /// in the spawner's graphics deps. Catches the regression class
+    /// where a stuck wave silently never advances.
+    pub fn try_advance_fighting(&mut self, enemy_count: usize) -> bool {
+        if self.wave_phase != WavePhase::Fighting { return false; }
+        if enemy_count != 0 { return false; }
+        self.wave_phase = WavePhase::Cooldown;
+        self.wave_cd = BETWEEN_WAVES_DURATION;
+        true
+    }
+
+    /// Pure-logic half of the spawner's Cooldown branch. Returns true
+    /// iff the cooldown finished AND this isn't the last wave — i.e.,
+    /// `advance_wave` was called. On the last wave, returns false
+    /// (the level-complete check takes over there).
+    pub fn try_advance_cooldown(&mut self, dt: f32) -> bool {
+        if self.wave_phase != WavePhase::Cooldown { return false; }
+        self.wave_cd -= dt;
+        if self.wave_cd > 0.0 { return false; }
+        if self.wave_idx + 1 < self.wave_count {
+            self.advance_wave();
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -742,4 +795,129 @@ pub(crate) fn point_in_polygon(p: Vec2, poly: &[Vec2]) -> bool {
         j = i;
     }
     inside
+}
+
+#[cfg(test)]
+mod wave_state_tests {
+    //! Regression tests for the wave state machine. Specifically
+    //! the Fighting → Cooldown → AdvanceWave / hold-on-last-wave
+    //! transitions that previously lived inside `spawn_enemies` and
+    //! were untestable without graphics deps.
+    //!
+    //! Each test is named for the stuck-state class it would catch.
+
+    use super::*;
+
+    fn fresh_ctx(wave_idx: u8, wave_count: u8) -> CombatContext {
+        let mut c = CombatContext::default();
+        // Override `reset_for`-supplied values so tests can pin the
+        // wave layout independently of `balance::waves_for_stars`.
+        c.wave_idx = wave_idx;
+        c.wave_count = wave_count;
+        c
+    }
+
+    #[test]
+    fn fighting_advances_to_cooldown_when_field_clear() {
+        let mut c = fresh_ctx(0, 3);
+        c.wave_phase = WavePhase::Fighting;
+        c.wave_cd = 0.0;
+
+        assert!(c.try_advance_fighting(0), "field empty → should transition");
+        assert_eq!(c.wave_phase, WavePhase::Cooldown);
+        assert_eq!(c.wave_cd, BETWEEN_WAVES_DURATION);
+    }
+
+    #[test]
+    fn fighting_holds_when_enemies_still_alive() {
+        let mut c = fresh_ctx(0, 3);
+        c.wave_phase = WavePhase::Fighting;
+
+        for n in 1..=10 {
+            assert!(!c.try_advance_fighting(n), "enemy_count={n}: no transition");
+            assert_eq!(c.wave_phase, WavePhase::Fighting);
+        }
+    }
+
+    #[test]
+    fn fighting_branch_is_phase_gated() {
+        // Calling try_advance_fighting on a Spawning / Cooldown ctx
+        // must not silently transition. This guards against
+        // accidentally double-running the branch from a stray site.
+        for phase in [WavePhase::Spawning, WavePhase::Cooldown] {
+            let mut c = fresh_ctx(0, 3);
+            c.wave_phase = phase;
+            assert!(!c.try_advance_fighting(0));
+            assert_eq!(c.wave_phase, phase);
+        }
+    }
+
+    #[test]
+    fn cooldown_advances_next_wave_when_timer_elapses() {
+        let mut c = fresh_ctx(0, 3);
+        c.wave_phase = WavePhase::Cooldown;
+        c.wave_cd = 0.5;
+
+        assert!(!c.try_advance_cooldown(0.3), "cd still positive");
+        assert_eq!(c.wave_phase, WavePhase::Cooldown);
+
+        assert!(c.try_advance_cooldown(0.3), "cd elapsed → next wave");
+        assert_eq!(c.wave_phase, WavePhase::Spawning);
+        assert_eq!(c.wave_idx, 1);
+    }
+
+    #[test]
+    fn cooldown_holds_on_last_wave() {
+        // On the LAST wave, cooldown elapsing must NOT advance the
+        // wave (no more waves) — level_complete_check takes over.
+        let mut c = fresh_ctx(2, 3);
+        c.wave_phase = WavePhase::Cooldown;
+        c.wave_cd = 0.1;
+
+        assert!(!c.try_advance_cooldown(0.5), "last wave: no advance");
+        assert_eq!(c.wave_phase, WavePhase::Cooldown,
+            "phase must NOT silently flip back to Spawning");
+        assert_eq!(c.wave_idx, 2, "wave_idx must not advance past wave_count-1");
+    }
+
+    #[test]
+    fn cooldown_branch_is_phase_gated() {
+        // Calling try_advance_cooldown while in Fighting/Spawning is
+        // a no-op. Catches the bug where a tick from the wrong branch
+        // silently drains wave_cd.
+        for phase in [WavePhase::Spawning, WavePhase::Fighting] {
+            let mut c = fresh_ctx(0, 3);
+            c.wave_phase = phase;
+            c.wave_cd = 1.0;
+            assert!(!c.try_advance_cooldown(0.5));
+            assert_eq!(c.wave_cd, 1.0, "wave_cd must NOT drain in {phase:?}");
+        }
+    }
+
+    #[test]
+    fn full_round_trip_fighting_to_next_wave_spawning() {
+        // End-to-end: Fighting (1 enemy) → field clears (0 enemies)
+        // → Cooldown ticks down → AdvanceWave → Spawning. This is the
+        // stuck-state regression: if any step silently fails to fire,
+        // the wave is stuck.
+        let mut c = fresh_ctx(0, 3);
+        c.wave_phase = WavePhase::Fighting;
+
+        // Frame N: enemy still alive.
+        assert!(!c.try_advance_fighting(1));
+
+        // Frame N+1: enemy died.
+        assert!(c.try_advance_fighting(0));
+        assert_eq!(c.wave_phase, WavePhase::Cooldown);
+
+        // Drain cooldown across a few frames at 30fps.
+        let dt = 1.0 / 30.0;
+        let mut advanced = false;
+        for _ in 0..120 {
+            if c.try_advance_cooldown(dt) { advanced = true; break; }
+        }
+        assert!(advanced, "cooldown never elapsed");
+        assert_eq!(c.wave_phase, WavePhase::Spawning);
+        assert_eq!(c.wave_idx, 1);
+    }
 }

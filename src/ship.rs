@@ -12,7 +12,7 @@ use crate::balance::{
     HULL_HALF_LEN, HULL_LEN, HULL_WIDTH,
     PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
 };
-use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
+use crate::components::{Faction, FactionKind, Friendly, Health, Heading, LocalPlayer, Velocity};
 use crate::effects::{EffectMeshes, HitFx};
 use crate::enemy::Enemy;
 use crate::modes::play_area_screen_rect;
@@ -121,6 +121,11 @@ pub fn spawn_player_world(
         Transform::from_xyz(0.0, 0.0, 1.0),
         Visibility::Inherited,
         Friendly,
+        // LocalPlayer disambiguates from multiplayer's remote-peer
+        // ship (which is also Friendly so enemies target it, but
+        // shouldn't be driven by local input or counted in trail /
+        // HUD single() queries).
+        LocalPlayer,
         Faction(FactionKind::Friendly),
         Health(stats.max_hp()),
         Velocity(Vec2::new(0.0, stats.move_speed.effective())),

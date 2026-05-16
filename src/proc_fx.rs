@@ -33,3 +33,22 @@ pub mod kind {
     pub const CASCADE:    u8 = 1;
     pub const BLAST_RING: u8 = 2;
 }
+
+/// Signal: the local player just fired a bullet from a turret. Emit
+/// this event from the firing code path so multiplayer can replay
+/// the moment on other peers without trusting their RNG / timing.
+/// Receivers spawn a *visual-only* replica (damage = 0) so the
+/// authoritative damage flow stays via `DamageEnemy` relay.
+///
+/// Marked non-multiplayer so single-player builds emit + auto-drop
+/// the events with no coupling to networking code.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct BulletFiredEvent {
+    pub pos:    Vec2,
+    pub dir:    Vec2,
+    /// `WeaponType::to_u8` for stable wire format.
+    pub weapon: u8,
+    /// Effective range. Receivers use it to pick a matching lifetime
+    /// so the visual fades at the same time as the firing peer's.
+    pub range:  f32,
+}

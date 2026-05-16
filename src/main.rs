@@ -72,7 +72,7 @@ use effects::{
 use enemy::{
     artillery_fire, artillery_shell_tick, bomber_detonate, boss_chaos_spawn,
     enemy_ai,
-    enemy_death_check, enemy_fire, enemy_landmine_tick, setup_enemy_hp_bar_assets,
+    cull_runaway_enemies, enemy_death_check, enemy_fire, enemy_landmine_tick, setup_enemy_hp_bar_assets,
     setup_spawn_indicator_assets, sniper_aim_line_tick, sniper_fire, sniper_turret_aim,
     spawn_enemies, tick_spawn_indicators, track_enemy_damage_for_hp_bars, update_enemy_hp_bars,
 };
@@ -178,6 +178,13 @@ pub enum AppState {
     /// Welcome. Both transition to Playing simultaneously when the
     /// host clicks START (via `StateChange` broadcast).
     Lobby,
+    /// Multiplayer client-only — host is in a state the client
+    /// doesn't participate in (Customize / HullSelect / Map / etc).
+    /// Client sees a "WAITING FOR HOST" overlay until host returns
+    /// to Playing. Stops the client from accidentally interacting
+    /// with host-only menus and frees the client from running their
+    /// own divergent menu logic.
+    WaitingForHost,
 }
 
 impl AppState {
@@ -201,6 +208,7 @@ impl AppState {
             AppState::BossIntro      => 10,
             AppState::Win            => 11,
             AppState::Lobby          => 12,
+            AppState::WaitingForHost => 13,
         }
     }
     /// Inverse of `to_u8`. `None` for unknown discriminants so older
@@ -220,6 +228,7 @@ impl AppState {
             10 => AppState::BossIntro,
             11 => AppState::Win,
             12 => AppState::Lobby,
+            13 => AppState::WaitingForHost,
              _ => return None,
         })
     }
@@ -335,6 +344,12 @@ impl Plugin for CombatSimPlugin {
                     )
                         .chain(),
                     enemy_death_check,
+                    // Safety net: catches enemies that an AI bug
+                    // has thrown out of bounds before they stall
+                    // try_advance_fighting forever. Runs AFTER
+                    // enemy_death_check so the same frame can handle
+                    // both real kills + runaway despawns.
+                    cull_runaway_enemies,
                 )
                     .chain(),
                 // Track damage frame-to-frame to spawn / refresh enemy
@@ -668,6 +683,7 @@ fn main() {
         .add_event::<TriggerMapPhase>()
         .add_event::<rune::KillEvent>()
         .add_event::<proc_fx::ProcFxFired>()
+        .add_event::<proc_fx::BulletFiredEvent>()
         .insert_resource(AllyPositionsCache::default())
         .add_systems(Startup, fonts::setup_pixel_font)
         .add_systems(Startup, (

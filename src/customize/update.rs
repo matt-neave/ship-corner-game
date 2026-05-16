@@ -629,7 +629,9 @@ pub fn handle_close_click(
     mouse: Res<ButtonInput<MouseButton>>,
     drag: Res<super::drag::DragState>,
     open: Res<CustomizeOpen>,
+    mode: Res<crate::multiplayer::NetMode>,
     mut next: ResMut<NextState<crate::AppState>>,
+    mut local_ready: ResMut<crate::multiplayer::ready::LocalReadyState>,
     close_q: Query<(&Transform, &super::setup::HitArea), With<super::CustomizeCloseBtn>>,
 ) {
     if !open.open {
@@ -650,12 +652,16 @@ pub fn handle_close_click(
             && cursor.y >= centre.y - half.y
             && cursor.y <= centre.y + half.y
         {
-            // Closing the shop drops the player onto the map between
-            // stages — they pick the next section to attack rather
-            // than getting yanked straight into combat. The `OnExit(Map)`
-            // hook refills HP + clears the arena when they enter a
-            // section.
-            next.set(crate::AppState::Map);
+            // Solo: advance straight to Map.
+            // Multiplayer: flip our ready flag. `host_advance_when_all_ready`
+            // (on the host) transitions to Map only once every peer is
+            // ready; clients stay in Customize showing a "waiting on
+            // partner..." overlay.
+            if matches!(*mode, crate::multiplayer::NetMode::Solo) {
+                next.set(crate::AppState::Map);
+            } else {
+                local_ready.ready = true;
+            }
             return;
         }
     }

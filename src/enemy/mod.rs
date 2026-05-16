@@ -711,9 +711,7 @@ pub fn spawn_enemies(
             }
         }
         crate::map::WavePhase::Fighting => {
-            if enemies.iter().count() == 0 {
-                combat_ctx.wave_phase = crate::map::WavePhase::Cooldown;
-                combat_ctx.wave_cd = crate::map::BETWEEN_WAVES_DURATION;
+            if combat_ctx.try_advance_fighting(enemies.iter().count()) {
                 // Fixed +1 scrap per cleared wave — the bulk of the
                 // economy alongside interest + boss bounty. `grant`
                 // updates the live total + the stage tally together.
@@ -732,11 +730,7 @@ pub fn spawn_enemies(
             }
         }
         crate::map::WavePhase::Cooldown => {
-            combat_ctx.wave_cd -= dt;
-            if combat_ctx.wave_cd > 0.0 { return; }
-            if combat_ctx.wave_idx + 1 < combat_ctx.wave_count {
-                combat_ctx.advance_wave();
-            }
+            combat_ctx.try_advance_cooldown(dt);
         }
     }
 }
@@ -987,8 +981,17 @@ pub fn enemy_ai(
     >,
 ) {
     let dt = time.delta_secs();
-    let Ok(ftf) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
+    // MP: the host has TWO Friendly entities (local + remote-peer's
+    // mirror). `single()` would Err out and the system would bail
+    // every frame, leaving Velocity at its last value — enemies
+    // drift off-screen forever and the wave never advances. Collect
+    // every Friendly's position and let `nearest_target` pick the
+    // closest one per enemy so both player ships pull aggro.
+    let friendly_positions: Vec<Vec2> = friendly
+        .iter()
+        .map(|t| t.translation.truncate())
+        .collect();
+    if friendly_positions.is_empty() { return; }
     let ally_positions = &ally_cache.positions;
     let mut rng = rand::thread_rng();
 
@@ -1002,7 +1005,7 @@ pub fn enemy_ai(
         // Per-enemy nearest-target pick — chooses among
         // {friendly, allies}. Re-evaluated every frame so a closer
         // ally that drifts into range pulls aggro naturally.
-        let target_pos = nearest_target(pos, fpos, ally_positions);
+        let target_pos = nearest_target(pos, &friendly_positions, ally_positions);
 
         // Bombers + Rammers skip the state machine — head straight
         // at their target, no waypoints, no firing. Contact damage
@@ -1119,14 +1122,24 @@ pub fn enemy_ai(
     }
 }
 
-/// Pick the closest of `friendly_pos` and any `ally_positions` to
-/// `enemy_pos`. Friendly is the default — guarantees a target even
-/// when no allies are alive — and an ally only displaces it if it's
-/// strictly closer. Used by `enemy_ai` and `enemy_fire` so steering
-/// and aiming agree on a single target each frame.
-fn nearest_target(enemy_pos: Vec2, friendly_pos: Vec2, ally_positions: &[Vec2]) -> Vec2 {
-    let mut best = friendly_pos;
-    let mut best_d2 = enemy_pos.distance_squared(friendly_pos);
+/// Pick the closest of `friendly_positions` and any `ally_positions`
+/// to `enemy_pos`. In single-player there's one friendly; in MP the
+/// host has the local player + remote-peer's mirror — both pull
+/// aggro and an enemy targets whichever is closer. Allies only
+/// displace if strictly closer.
+///
+/// Caller must ensure `friendly_positions` is non-empty (an empty
+/// friendly list = no target = AI bails before calling).
+fn nearest_target(enemy_pos: Vec2, friendly_positions: &[Vec2], ally_positions: &[Vec2]) -> Vec2 {
+    let mut best = friendly_positions[0];
+    let mut best_d2 = enemy_pos.distance_squared(best);
+    for &fp in friendly_positions.iter().skip(1) {
+        let d2 = enemy_pos.distance_squared(fp);
+        if d2 < best_d2 {
+            best = fp;
+            best_d2 = d2;
+        }
+    }
     for &ap in ally_positions {
         let d2 = enemy_pos.distance_squared(ap);
         if d2 < best_d2 {
@@ -1160,8 +1173,12 @@ pub fn enemy_fire(
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
     let dt = time.delta_secs();
-    let Ok(ftf) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
+    // Collect all Friendly positions (same MP fix as enemy_ai).
+    let friendly_positions: Vec<Vec2> = friendly
+        .iter()
+        .map(|t| t.translation.truncate())
+        .collect();
+    if friendly_positions.is_empty() { return; }
     let ally_positions = &ally_cache.positions;
 
     for (enemy_entity, tf, heading, mut enemy) in &mut enemies {
@@ -1173,7 +1190,7 @@ pub fn enemy_fire(
         // Off-screen enemies hold fire so they don't plink from outside
         // the visible arena.
         if !crate::balance::in_play_area(pos) { continue; }
-        let target_pos = nearest_target(pos, fpos, ally_positions);
+        let target_pos = nearest_target(pos, &friendly_positions, ally_positions);
         let to = target_pos - pos;
         if to.length() > ENEMY_RANGE { continue; }
         let forward = Vec2::new(-heading.0.sin(), heading.0.cos());
@@ -1310,6 +1327,48 @@ pub fn bomber_detonate(
             };
             spawn_hit_particles(&mut commands, &em, &pm.enemy,        bp, n1, sp1, &mut rng);
             spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, bp, n2, sp2, &mut rng);
+        }
+    }
+}
+
+/// Safety-net cull: despawn enemies whose Transform has wandered
+/// well outside the arena or contains NaN. Without this, an AI bug
+/// that throws an enemy off to infinity leaves it counted by
+/// `try_advance_fighting`'s `enemies.count() == 0` check forever —
+/// the wave silently never advances. The runaway is also invisible
+/// because the camera doesn't follow it, so the player just sees
+/// "no enemies on screen, wave stuck."
+///
+/// Threshold is generous (10× the arena half-extent) so anything we
+/// kill is unambiguously a bug — a legitimately-fleeing Sniper
+/// wouldn't get close.
+pub fn cull_runaway_enemies(
+    mut commands: Commands,
+    q: Query<(Entity, &Transform, &crate::components::Health), With<Enemy>>,
+) {
+    // Generous cap — well outside any legitimate enemy position. Use
+    // the larger arena dimension so the threshold is symmetric.
+    let limit = crate::balance::ARENA_W.max(crate::balance::ARENA_H) * 5.0;
+    for (e, tf, hp) in &q {
+        // Skip enemies already at 0 HP — `enemy_death_check` is
+        // about to despawn them. Without this skip, both systems
+        // queue despawn commands on the same entity in the same
+        // frame and Bevy 0.16 logs a "entity does not exist" warn
+        // when the second one runs.
+        if hp.0 <= 0 { continue; }
+        let p = tf.translation.truncate();
+        let runaway =
+            !p.x.is_finite() || !p.y.is_finite() ||
+            p.x.abs() > limit || p.y.abs() > limit;
+        if runaway {
+            bevy::log::warn!(
+                "cull_runaway_enemies: despawning enemy at out-of-bounds pos ({:.1}, {:.1})",
+                p.x, p.y,
+            );
+            // `try_despawn` is the soft variant — if the entity has
+            // already been despawned by another system this frame,
+            // we silently no-op instead of logging the Bevy warning.
+            commands.entity(e).try_despawn();
         }
     }
 }

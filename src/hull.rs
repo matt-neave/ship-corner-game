@@ -333,12 +333,13 @@ pub fn enter_hull_select(
     difficulty: Res<crate::Difficulty>,
     hull_preview: Res<crate::dockyard_view::HullPreviewImage>,
     pixel_font: Res<crate::fonts::PixelFont>,
+    mode: Res<crate::multiplayer::NetMode>,
 ) {
     // Detail panel reflects the hover preview when present, else the
     // committed selection. The hull-tile grid below reads
     // `SelectedHull` directly for its highlight state.
     let panel_hull = preview.0.unwrap_or(selected.0);
-    spawn_overlay(commands, &pixel_font, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0);
+    spawn_overlay(commands, &pixel_font, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0, &mode);
 }
 
 fn spawn_overlay(
@@ -349,6 +350,7 @@ fn spawn_overlay(
     map_size: crate::map::MapSize,
     difficulty: crate::Difficulty,
     hull_preview_image: &Handle<Image>,
+    mode: &crate::multiplayer::NetMode,
 ) {
     commands
         .spawn((
@@ -470,7 +472,17 @@ fn spawn_overlay(
                         flex_grow: 1.0,
                         ..default()
                     });
-                    spawn_play_button(run, font);
+                    // In MP the PLAY button doubles as the per-peer
+                    // READY trigger — host advances HullSelect →
+                    // Playing once both peers click. Label matches
+                    // the shop's READY CTA so the affordance reads
+                    // consistently across the per-peer states.
+                    let cta_label = if matches!(*mode, crate::multiplayer::NetMode::Solo) {
+                        "PLAY"
+                    } else {
+                        "READY"
+                    };
+                    spawn_play_button(run, font, cta_label);
                     spawn_back_button(run, font);
                 });
             });
@@ -594,7 +606,7 @@ fn preview_hull_color(hull: Hull) -> Color {
 
 /// Large PLAY action button — primary CTA. Sea-green chunky button;
 /// hover lifts toward fresh lime so the eye lands on it.
-fn spawn_play_button(parent: &mut ChildSpawnerCommands, font: &crate::fonts::PixelFont) {
+fn spawn_play_button(parent: &mut ChildSpawnerCommands, font: &crate::fonts::PixelFont, label: &str) {
     let style = ChunkyButtonStyle::cta();
     parent
         .spawn((
@@ -613,7 +625,7 @@ fn spawn_play_button(parent: &mut ChildSpawnerCommands, font: &crate::fonts::Pix
             HullPlayButton,
         ))
         .with_children(|b| {
-            b.spawn(ui_kit::pixel_label(font, "PLAY", theme::FONT_LG, theme::ON_CTA));
+            b.spawn(ui_kit::pixel_label(font, label, theme::FONT_LG, theme::ON_CTA));
         });
 }
 
@@ -887,13 +899,24 @@ pub fn handle_card_click(
 /// PLAY button → transition to Playing. Stat application happens in
 /// `exit_hull_select` so PLAY / BACK / ESC paths all funnel through
 /// one finaliser.
+///
+/// Multiplayer: PLAY flips `LocalReadyState.ready` instead of
+/// advancing directly. Host's `host_advance_when_all_ready` watches
+/// the team tracker and transitions `HullSelect → Playing` for
+/// everyone once each peer has clicked.
 pub fn handle_play_click(
     interactions: Query<&Interaction, (Changed<Interaction>, With<HullPlayButton>)>,
+    mode: Res<crate::multiplayer::NetMode>,
+    mut local_ready: ResMut<crate::multiplayer::ready::LocalReadyState>,
     mut next: ResMut<NextState<crate::AppState>>,
 ) {
     for interaction in &interactions {
         if matches!(*interaction, Interaction::Pressed) {
-            next.set(crate::AppState::Playing);
+            if matches!(*mode, crate::multiplayer::NetMode::Solo) {
+                next.set(crate::AppState::Playing);
+            } else {
+                local_ready.ready = true;
+            }
             return;
         }
     }
@@ -935,6 +958,7 @@ pub fn sync_hull_select_on_change(
     state: Res<State<crate::AppState>>,
     hull_preview: Res<crate::dockyard_view::HullPreviewImage>,
     pixel_font: Res<crate::fonts::PixelFont>,
+    mode: Res<crate::multiplayer::NetMode>,
 ) {
     if !selected.is_changed()
         && !preview.is_changed()
@@ -949,7 +973,7 @@ pub fn sync_hull_select_on_change(
         commands.entity(e).despawn();
     }
     let panel_hull = preview.0.unwrap_or(selected.0);
-    spawn_overlay(commands, &pixel_font, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0);
+    spawn_overlay(commands, &pixel_font, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0, &mode);
 }
 
 /// Click handler — commit the player's pick to the `MapSize` resource.

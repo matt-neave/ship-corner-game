@@ -1,13 +1,14 @@
 //! Remote player visualization. For each connected peer the host or
 //! client receives `Transform` packets for, we spawn a "ghost" entity
 //! on `PLAY_LAYER` that mirrors the peer's reported position. The
-//! ghost is purely cosmetic — no `Friendly` tag, so the existing
-//! single-player systems (movement, turret aim, HP bar, AI) don't
-//! touch it. It's just a colored hull at the synced position.
+//! ghost carries `Friendly` on the host side (so enemy AI targets
+//! both ships) but no gameplay-driving components — no Velocity, no
+//! TurretSlot, no Health — so the local single-player systems
+//! (movement, turret AI, HP-bar updates) skip it naturally.
 //!
-//! This is the Phase 1 contract: clients see *each other's boats
-//! moving*. They do not share enemy state, XP, or customize state —
-//! each player runs the full single-player simulation locally.
+//! Bullets fired by remote peers arrive as `BulletFiredEvent`
+//! signals (see `multiplayer::bullets`); turret VISUALS on the ghost
+//! come from `PeerLoadouts` (see `multiplayer::loadout`).
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -16,7 +17,6 @@ use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
 
 use crate::balance::{HULL_LEN, HULL_WIDTH, PLAY_LAYER};
-use crate::palette::Palette;
 
 use super::net::{drain_packets, send_to, NetMsg};
 use super::{NetMode, NetSession};
@@ -65,6 +65,38 @@ pub struct PeerSnapshots(pub HashMap<u8, PeerSnapshot>);
 #[derive(Resource, Default)]
 pub struct TransformSendTimer(pub f32);
 
+/// Cadence for [`send_heartbeat`]. Low rate (1Hz) — its only job is
+/// to keep `NetSession.last_seen` fresh during otherwise-quiet
+/// states (Paused, Lobby, menus) so `detect_stale_peers` doesn't
+/// time the link out. `PEER_TIMEOUT_SECS = 5.0` gives 5 heartbeats
+/// of cushion.
+const HEARTBEAT_INTERVAL_SECS: f32 = 1.0;
+
+#[derive(Resource, Default)]
+pub struct HeartbeatTimer(pub f32);
+
+/// Send a low-rate `Heartbeat` packet to every known peer whenever
+/// we're Connected, regardless of `AppState`. Without this the link
+/// goes silent during pause / menus (no enemy snapshots, no
+/// transform packets), and `detect_stale_peers` kicks the other
+/// peer out after `PEER_TIMEOUT_SECS`.
+pub fn send_heartbeat(
+    time: Res<Time>,
+    mut timer: ResMut<HeartbeatTimer>,
+    mode: Res<NetMode>,
+    session: Option<Res<NetSession>>,
+) {
+    let Some(session) = session else { return };
+    if !matches!(*mode, NetMode::Connected) { return };
+    if !session.welcomed { return; }
+    timer.0 += time.delta_secs();
+    if timer.0 < HEARTBEAT_INTERVAL_SECS { return; }
+    timer.0 = 0.0;
+    for &addr in session.peers.values() {
+        let _ = send_to(&session.sock, addr, &NetMsg::Heartbeat);
+    }
+}
+
 /// Send the local player's `Friendly` transform to every known peer
 /// at `TRANSFORM_SEND_HZ`. Reads the local Friendly's Transform +
 /// Heading and emits one `NetMsg::Transform` packet per peer addr.
@@ -108,6 +140,13 @@ pub fn recv_packets(
     mut pending_state: ResMut<super::state_sync::PendingStateChange>,
     mut roster: ResMut<super::LobbyRoster>,
     mut pending_kick: ResMut<super::PendingKick>,
+    mut loadout_inboxes: super::loadout::LoadoutInboxes,
+    mut pending_wave: ResMut<super::wave::PendingWaveState>,
+    mut bullet_inbox: ResMut<super::bullets::BulletFiredInbox>,
+    mut team_tracker: ResMut<super::death::TeamDeathTracker>,
+    mut pending_revive: ResMut<super::death::PendingRevive>,
+    mut xp_inboxes: super::xp_sync::XpInboxes,
+    mut pending_ready: ResMut<super::ready::PendingPeerReady>,
 ) {
     if matches!(*mode, NetMode::Solo) { return; }
     let Some(session) = session.as_mut() else { return; };
@@ -115,6 +154,13 @@ pub fn recv_packets(
     let packets = drain_packets(&session.sock);
     let now = Instant::now();
     for (addr, msg) in packets {
+        // Liveness: any packet from a known address marks that peer
+        // as alive. Drives `detect_stale_peers`'s timeout sweep so a
+        // hard process kill / network drop eventually frees the
+        // remaining peers instead of leaving them stuck.
+        if let Some((&peer_id, _)) = session.peers.iter().find(|(_, a)| **a == addr) {
+            session.last_seen.insert(peer_id, now);
+        }
         match msg {
             NetMsg::Hello { name } => {
                 // Hosts only: assign the next id, remember the addr, reply with Welcome,
@@ -198,6 +244,15 @@ pub fn recv_packets(
             NetMsg::Bye { id } => {
                 session.peers.remove(&id);
                 snapshots.0.remove(&id);
+                // Client receiving Bye from host (id 0) → host left
+                // the session. Trigger teardown via the existing
+                // kick path so handle_received_kick returns us to
+                // MainMenu with a clear reason. Without this the
+                // client would be stuck in Lobby / Playing /
+                // WaitingForHost with no host.
+                if !session.is_host && id == 0 {
+                    pending_kick.0 = Some("host disconnected".to_string());
+                }
                 bevy::log::info!("multiplayer: peer {id} disconnected");
             }
             NetMsg::EnemySnapshot { entries } => {
@@ -208,9 +263,9 @@ pub fn recv_packets(
                 latest_enemy.0 = Some(entries);
             }
             NetMsg::DamageEnemy { enemy_id, amount, hit_pos, weapon, runes } => {
-                // Host only — clients can't damage other clients in
-                // Phase 2.5 (no mirror-vs-client damage path exists
-                // yet). Silently drop on the client side.
+                // Host only — DamageEnemy is the client→host relay
+                // direction; the host is the authority on enemy HP.
+                // Silently drop on the client side.
                 if !session.is_host { continue; }
                 let weapon = crate::weapon::WeaponType::from_u8(weapon)
                     .unwrap_or(crate::weapon::WeaponType::Standard);
@@ -239,78 +294,296 @@ pub fn recv_packets(
                 });
             }
             NetMsg::StateChange { state } => {
-                // Client only — clients don't tell the host what
-                // state to be in. Silently drop on host side.
-                if session.is_host { continue; }
+                // Either direction: host receives client's pause /
+                // unpause requests, client receives every host
+                // transition. `apply_state_change` is the gatekeeper
+                // — it rejects host-flow states (Customize, Map, …)
+                // pushed by a client. Letting all StateChange packets
+                // reach the apply system keeps that policy in one
+                // place instead of duplicating the filter here.
                 if let Some(target) = crate::AppState::from_u8(state) {
                     pending_state.0 = Some(target);
+                }
+            }
+            NetMsg::PlayerStatsSync { from_peer, stats } => {
+                // Either direction — each peer broadcasts their own
+                // stats and receivers store them under PeerLoadouts.
+                // Ignore loopback: if `from_peer == my_id`, the packet
+                // is our own (broadcast-to-self). The apply system's
+                // overwrite would be a no-op anyway but skipping
+                // saves a hash insert.
+                if from_peer == session.my_id { continue; }
+                loadout_inboxes.stats.0 = Some((from_peer, stats));
+            }
+            NetMsg::TurretConfigSync { from_peer, slots } => {
+                if from_peer == session.my_id { continue; }
+                loadout_inboxes.turret.0 = Some((from_peer, slots));
+            }
+            NetMsg::WaveStateSync { wave_idx, wave_count, phase, remaining } => {
+                if session.is_host { continue; }
+                pending_wave.0 = Some((wave_idx, wave_count, phase, remaining));
+            }
+            NetMsg::XpSync { current, level } => {
+                if session.is_host { continue; }
+                xp_inboxes.xp.0 = Some((current, level));
+            }
+            NetMsg::LevelUpGranted { count } => {
+                // Drained by `apply_received_level_up_grants` which
+                // adds to local pending. Host skips the add (its
+                // grant_kill_xp already counted).
+                xp_inboxes.grants.0.push(count);
+            }
+            NetMsg::Heartbeat => {
+                // No-op: the addr → `last_seen` update above the
+                // match already refreshed liveness. The Heartbeat
+                // arm exists so the unhandled-variant warning
+                // doesn't fire.
+            }
+            NetMsg::BulletFired { pos, dir, weapon, range } => {
+                bullet_inbox.events.push(super::bullets::ReceivedBulletFired {
+                    pos: Vec2::new(pos[0], pos[1]),
+                    dir: Vec2::new(dir[0], dir[1]),
+                    weapon,
+                    range,
+                    sender_addr: addr,
+                });
+            }
+            NetMsg::PeerDied { id } => {
+                // Host tracks team alive state. Clients ignore —
+                // they only need to know about peer deaths if we
+                // ever spectate someone (not in this phase).
+                if !session.is_host { continue; }
+                team_tracker.dead_peers.insert(id);
+                bevy::log::info!("multiplayer: peer {id} died (team tracker now: {:?})",
+                                 team_tracker.dead_peers);
+            }
+            NetMsg::PeerReady { id } => {
+                // Every peer tracks the team's ready set so the local
+                // shop UI can render "X / N READY". `drain_ready_inbox`
+                // moves these into TeamReadyTracker; the host's
+                // `host_advance_when_all_ready` reads the same tracker
+                // to make the canonical state transition.
+                pending_ready.0.push(id);
+            }
+            NetMsg::PeerRevived { id } => {
+                // Clients only (host broadcasts; doesn't receive its
+                // own revive). `REVIVE_ALL` sentinel covers the
+                // common stage-transition-revives-everyone case.
+                if session.is_host { continue; }
+                if id == super::death::REVIVE_ALL || id == session.my_id {
+                    pending_revive.0 = true;
                 }
             }
         }
     }
 }
 
-/// Spawn a ghost entity for each peer that has a snapshot but no
-/// existing `RemoteGhost`. Cheap — only triggers on first sight of
-/// each id.
+/// Spawn a peer-replica ship for each connected peer that has a
+/// snapshot but no existing entity. Identical visuals to the local
+/// player's ship — same hull mesh, same hull material from the
+/// shared `PaletteMaterials.hull`, same turret children (pulled
+/// from `PeerLoadouts`). Differentiation between local and remote
+/// happens via the `LocalPlayer` marker (only on the local ship)
+/// and the eventual name tags above the hull.
+///
+/// Why no Velocity / Heading / TurretSlot / Health components: this
+/// ship is driven by network snapshots, not the local sim. Stripping
+/// those components keeps the per-frame friendly_movement /
+/// turret_fire / hp-update systems from second-guessing the host's
+/// authoritative pose.
 pub fn spawn_missing_ghosts(
     mut commands: Commands,
-    palette: Res<Palette>,
+    pm: Option<Res<crate::palette::PaletteMaterials>>,
+    loadouts: Res<super::loadout::PeerLoadouts>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
     snapshots: Res<PeerSnapshots>,
     session: Option<Res<super::NetSession>>,
     existing: Query<&RemoteGhost>,
 ) {
     let known: std::collections::HashSet<u8> = existing.iter().map(|g| g.id).collect();
     let is_host = session.as_deref().map(|s| s.is_host).unwrap_or(false);
+    let Some(pm) = pm else { return };
+
     for (&id, snap) in &snapshots.0 {
         if known.contains(&id) { continue; }
+
+        // Same hull mesh + material as `spawn_player_world` — peers
+        // render identically. Use the shared `pm.hull` handle so any
+        // future palette change applies to both ships.
         let hull_mesh = meshes.add(Capsule2d::new(HULL_WIDTH * 0.5, HULL_LEN - HULL_WIDTH));
-        // Tint the ghost so it reads as "another player" — desaturate
-        // and shift toward cyan from the friendly hull colour so the
-        // two boats are distinguishable at a glance.
-        let mat = materials.add(ghost_tint(palette.hull));
+
         let mut ec = commands.spawn((
             Mesh2d(hull_mesh),
-            MeshMaterial2d(mat),
-            Transform::from_translation(snap.pos.extend(0.0))
+            MeshMaterial2d(pm.hull.clone()),
+            Transform::from_translation(snap.pos.extend(1.0))
                 .with_rotation(Quat::from_rotation_z(snap.rot)),
             RenderLayers::layer(PLAY_LAYER),
             RemoteGhost { id },
+            crate::components::Faction(crate::components::FactionKind::Friendly),
         ));
-        // On the host, every connected client's ghost gets the
+        // On the host, every connected client's ship gets the
         // `Friendly` marker so the host's enemy-AI targeting queries
         // (`With<Friendly>, Without<Ally>`) see two valid player
-        // ships instead of one. The ghost has no Velocity / Heading
-        // / turret children, so movement and turret-fire systems
-        // skip it naturally — only the targeting half of the
-        // friendly contract activates.
-        //
-        // Client doesn't need this tag — its local sim has no enemy
-        // AI running (mirrors are inert), so targeting is moot.
+        // ships instead of one. The remote ship has no Velocity /
+        // Heading components, so `friendly_movement` skips it
+        // naturally; it has no `TurretSlot` children, so the
+        // turret-fire AI skips too. Only enemy targeting activates.
         if is_host {
             ec.insert(crate::components::Friendly);
+        }
+        let ship = ec.id();
+
+        // Visual turret children — driven by THIS peer's loadout
+        // (from PeerLoadouts), not the local TurretConfig. If we
+        // haven't received their loadout yet, spawn no turrets;
+        // `refresh_ghost_turrets` will populate them once the
+        // TurretConfigSync packet lands.
+        if let Some(cfg) = loadouts.0.get(&id).and_then(|l| l.turret.as_ref()) {
+            spawn_remote_turret_visuals(&mut commands, &mut meshes, &pm, cfg, ship);
         }
     }
 }
 
-/// Apply the latest `PeerSnapshot` to each ghost entity's Transform.
-/// No interpolation in Phase 1 — straight snap to the most-recent
-/// position. Visible jitter on bad networks; can layer smoothing on
-/// later if it bothers anyone.
-pub fn apply_snapshots(
-    snapshots: Res<PeerSnapshots>,
-    mut ghosts: Query<(&RemoteGhost, &mut Transform)>,
+/// Marker on the turret base / barrel children spawned by
+/// `spawn_remote_turret_visuals`. Lets `refresh_ghost_turrets`
+/// find and despawn them when the peer's loadout changes, without
+/// touching the hull entity.
+#[derive(Component)]
+pub struct GhostTurretChild;
+
+/// When a peer's [`PeerLoadouts`] entry changes (they bought a new
+/// turret in their shop), despawn the old turret children on their
+/// ghost and respawn from the new config. Runs each frame; cheap
+/// short-circuit on `is_changed()` keeps it negligible.
+///
+/// `Children` is intentionally optional because a freshly-spawned
+/// ghost has no children yet (Bevy doesn't add the component until
+/// at least one child exists, and the loadout often arrives a frame
+/// or two AFTER the ghost spawns). Without `Option`, the ship would
+/// never match the query and turret visuals would never appear for
+/// peers whose loadout arrives post-ghost.
+///
+/// `commands.entity(...).try_despawn()` guards against the Bevy
+/// 0.16 warning ("entity does not exist") when a child was already
+/// recursively despawned via the parent ghost.
+pub fn refresh_ghost_turrets(
+    mut commands: Commands,
+    pm: Option<Res<crate::palette::PaletteMaterials>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    loadouts: Res<super::loadout::PeerLoadouts>,
+    all_ghosts: Query<(Entity, &RemoteGhost, Option<&Children>)>,
+    turret_children: Query<Entity, With<GhostTurretChild>>,
 ) {
-    for (ghost, mut tf) in &mut ghosts {
-        if let Some(snap) = snapshots.0.get(&ghost.id) {
-            tf.translation.x = snap.pos.x;
-            tf.translation.y = snap.pos.y;
-            tf.rotation = Quat::from_rotation_z(snap.rot);
+    if !loadouts.is_changed() { return; }
+    let Some(pm) = pm else { return };
+
+    // When PeerLoadouts changes we don't know WHICH peer changed
+    // without a separate diff resource. Cheapest correct approach:
+    // re-derive every ghost's turret children from the current map.
+    // With at most a handful of peers + ~8 turret slots this is a
+    // trivial despawn-then-respawn.
+    for (ship, ghost, children) in &all_ghosts {
+        if let Some(children) = children {
+            for child in children.iter() {
+                if turret_children.get(child).is_ok() {
+                    commands.entity(child).try_despawn();
+                }
+            }
+        }
+        if let Some(cfg) = loadouts.0.get(&ghost.id).and_then(|l| l.turret.as_ref()) {
+            spawn_remote_turret_visuals(&mut commands, &mut meshes, &pm, cfg, ship);
         }
     }
 }
+
+/// Spawn turret base + barrel meshes as children of the remote
+/// ship's hull. Mirrors the per-slot loop in `spawn_player_world`
+/// (ship.rs) but drops the `TurretSlot` component so no firing AI
+/// hooks onto these. Reads from the PEER's `TurretConfig` (passed
+/// in by the caller from `PeerLoadouts`), not the local one — each
+/// peer mutates their own config independently in their per-peer
+/// shop, and the broadcast in `loadout::broadcast_turret_config`
+/// keeps every peer's view of every OTHER peer up to date.
+///
+/// Static visuals only — bullets fired from the remote peer arrive
+/// as `BulletFiredEvent` signals and are spawned by
+/// `spawn_received_bullets` at the correct world position.
+fn spawn_remote_turret_visuals(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    pm: &crate::palette::PaletteMaterials,
+    cfg: &crate::turret::TurretConfig,
+    ship: Entity,
+) {
+    use crate::balance::{TURRET_POSITIONS, TURRET_MOUNTS};
+
+    // Same primitives as the local ship's turrets.
+    let base_mesh   = meshes.add(Circle::new(2.0));
+    let barrel_mesh = meshes.add(Rectangle::new(1.5, 4.0));
+
+    for (i, &(lx, ly)) in TURRET_POSITIONS.iter().enumerate() {
+        let slot = cfg.slots[i];
+        if !slot.equipped { continue; }
+        let mount = TURRET_MOUNTS[i];
+        let turret_mat = pm.turret_for(slot.weapon).clone();
+
+        let base = commands.spawn((
+            Mesh2d(base_mesh.clone()),
+            MeshMaterial2d(turret_mat.clone()),
+            Transform::from_xyz(lx, ly, 2.0)
+                .with_rotation(Quat::from_rotation_z(mount)),
+            Visibility::Inherited,
+            RenderLayers::layer(PLAY_LAYER),
+            GhostTurretChild,
+        )).id();
+        commands.entity(base).insert(ChildOf(ship));
+
+        let barrel = commands.spawn((
+            Mesh2d(barrel_mesh.clone()),
+            MeshMaterial2d(turret_mat),
+            Transform::from_xyz(0.0, 1.8, 0.15),
+            Visibility::Inherited,
+            RenderLayers::layer(PLAY_LAYER),
+            GhostTurretChild,
+        )).id();
+        commands.entity(barrel).insert(ChildOf(base));
+    }
+}
+
+/// Apply the latest `PeerSnapshot` to each ghost entity's Transform
+/// via exponential-decay lerp. At 30Hz Transform packets the raw
+/// position snaps would be visibly jerky (~33ms between updates);
+/// lerping each frame at `SMOOTH_PER_FRAME = 0.35` reaches ~99% of
+/// the target in ~10 frames (~165ms at 60fps), which the eye reads
+/// as smooth motion without losing responsiveness when the peer
+/// changes direction.
+///
+/// Rotation uses spherical lerp (`slerp`) so heading interpolation
+/// takes the short path around the unit circle.
+pub fn apply_snapshots(
+    time: Res<Time>,
+    snapshots: Res<PeerSnapshots>,
+    mut ghosts: Query<(&RemoteGhost, &mut Transform)>,
+) {
+    // Frame-rate independent exp-decay: same visual speed at 30fps
+    // and 144fps. `BASE_PER_FRAME` is "fraction per 60fps frame";
+    // we scale by `delta * 60` so a 144fps frame moves a smaller
+    // fraction (catches up the same total per second).
+    const BASE_PER_FRAME: f32 = 0.35;
+    let t = (time.delta_secs() * 60.0 * BASE_PER_FRAME).clamp(0.0, 1.0);
+
+    for (ghost, mut tf) in &mut ghosts {
+        if let Some(snap) = snapshots.0.get(&ghost.id) {
+            tf.translation.x = lerp_f32(tf.translation.x, snap.pos.x, t);
+            tf.translation.y = lerp_f32(tf.translation.y, snap.pos.y, t);
+            let target_rot = Quat::from_rotation_z(snap.rot);
+            tf.rotation = tf.rotation.slerp(target_rot, t);
+        }
+    }
+}
+
+#[inline]
+fn lerp_f32(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
 
 /// Remove ghost entities whose snapshots haven't refreshed for
 /// `GHOST_TIMEOUT_SECS`. Catches drop-out cases where a peer
@@ -337,6 +610,57 @@ pub fn cull_stale_ghosts(
     }
 }
 
+/// Per-frame: scan `NetSession.last_seen` and drop peers that have
+/// gone silent for longer than [`super::PEER_TIMEOUT_SECS`]. Same
+/// outcome as receiving a `Bye` from them, just driven by silence
+/// instead of an explicit packet. Catches the hard-kill /
+/// network-drop case where no Bye is ever sent.
+///
+/// On host: removes the stale peer from `session.peers` + `roster`
+/// and broadcasts `PeerLeft` to remaining peers so their UI updates.
+/// On client: if the host (id 0) is stale, sets `pending_kick` with
+/// a "host timed out" reason so `handle_received_kick` tears the
+/// session down via the existing path.
+pub fn detect_stale_peers(
+    mut session: Option<ResMut<NetSession>>,
+    mut roster: ResMut<super::LobbyRoster>,
+    mut pending_kick: ResMut<super::PendingKick>,
+    mode: Res<NetMode>,
+) {
+    if matches!(*mode, NetMode::Solo) { return; }
+    let Some(session) = session.as_mut() else { return; };
+    if !session.welcomed { return; }
+
+    let now = Instant::now();
+    let stale_ids: Vec<u8> = session.last_seen.iter()
+        .filter(|(_, &t)| now.duration_since(t).as_secs_f32() > super::PEER_TIMEOUT_SECS)
+        .map(|(&id, _)| id)
+        .collect();
+    if stale_ids.is_empty() { return; }
+
+    for &id in &stale_ids {
+        if session.is_host {
+            // Host: drop the peer from our world + tell everyone else.
+            session.peers.remove(&id);
+            session.last_seen.remove(&id);
+            roster.by_id.remove(&id);
+            let announce = NetMsg::PeerLeft { id };
+            for &peer_addr in session.peers.values() {
+                let _ = send_to(&session.sock, peer_addr, &announce);
+            }
+            bevy::log::info!("multiplayer: peer {id} timed out (no packets for >{}s)",
+                super::PEER_TIMEOUT_SECS);
+        } else if id == 0 {
+            // Client: host went silent. Tear down via the existing
+            // kicked-by-host UI path so the player sees a clear
+            // reason instead of a stuck waiting screen.
+            pending_kick.0 = Some("host timed out".to_string());
+            bevy::log::info!("multiplayer: host timed out (no packets for >{}s)",
+                super::PEER_TIMEOUT_SECS);
+        }
+    }
+}
+
 /// Despawn every ghost + clear snapshots. Run on `OnExit(Playing)`
 /// (and on any clean disconnect path) so a fresh session doesn't
 /// re-show last session's ghosts.
@@ -351,66 +675,9 @@ pub fn despawn_all_ghosts(
     snapshots.0.clear();
 }
 
-/// Shift the friendly hull colour toward cyan so a remote ghost reads
-/// as a distinct player at a glance. Lowers red, lifts blue, keeps
-/// luminance roughly equal so it doesn't look like an enemy ship.
-fn ghost_tint(hull: Color) -> Color {
-    let s: bevy::color::Srgba = hull.into();
-    Color::srgb(
-        (s.red * 0.55).clamp(0.0, 1.0),
-        (s.green * 0.80).clamp(0.0, 1.0),
-        (s.blue + (1.0 - s.blue) * 0.45).clamp(0.0, 1.0),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The tint should be deterministic — same input twice yields the
-    /// same output. Guards against accidental dependence on RNG / time
-    /// if anyone refactors this later.
-    #[test]
-    fn ghost_tint_is_deterministic() {
-        let hull = Color::srgb(0.75, 0.40, 0.20);
-        let a = ghost_tint(hull);
-        let b = ghost_tint(hull);
-        let sa: bevy::color::Srgba = a.into();
-        let sb: bevy::color::Srgba = b.into();
-        assert_eq!(sa.red,   sb.red);
-        assert_eq!(sa.green, sb.green);
-        assert_eq!(sa.blue,  sb.blue);
-    }
-
-    /// The tint must visibly differ from the source so the ghost reads
-    /// as a different player. Compares each channel against the input.
-    #[test]
-    fn ghost_tint_differs_from_hull() {
-        let hull = Color::srgb(0.75, 0.40, 0.20);
-        let tinted = ghost_tint(hull);
-        let h: bevy::color::Srgba = hull.into();
-        let t: bevy::color::Srgba = tinted.into();
-        assert!(t.red   < h.red,   "red should drop ({} → {})", h.red,   t.red);
-        assert!(t.green < h.green, "green should drop ({} → {})", h.green, t.green);
-        assert!(t.blue  > h.blue,  "blue should lift ({} → {})", h.blue,  t.blue);
-    }
-
-    /// All channels must stay within `[0.0, 1.0]` even for extreme
-    /// hulls (white, black). Out-of-range colors render as garbled
-    /// glitches in wgpu.
-    #[test]
-    fn ghost_tint_clamps_to_valid_range() {
-        for &hull in &[
-            Color::srgb(0.0, 0.0, 0.0),
-            Color::srgb(1.0, 1.0, 1.0),
-            Color::srgb(0.5, 0.5, 0.5),
-        ] {
-            let t: bevy::color::Srgba = ghost_tint(hull).into();
-            assert!(t.red.is_finite()   && (0.0..=1.0).contains(&t.red));
-            assert!(t.green.is_finite() && (0.0..=1.0).contains(&t.green));
-            assert!(t.blue.is_finite()  && (0.0..=1.0).contains(&t.blue));
-        }
-    }
 
     /// PeerSnapshots is just a wrapper; verify default + insert work.
     #[test]

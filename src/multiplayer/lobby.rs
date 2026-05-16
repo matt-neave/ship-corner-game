@@ -337,30 +337,6 @@ pub fn handle_start_click(
     }
 }
 
-/// LEAVE click → tear down session + back to MainMenu. ESC during
-/// Lobby triggers the same path.
-pub fn handle_leave_click(
-    interactions: Query<&Interaction, (Changed<Interaction>, With<LeaveButton>)>,
-    keys: Res<ButtonInput<KeyCode>>,
-    state: Res<State<AppState>>,
-    mut commands: Commands,
-    mut mode: ResMut<NetMode>,
-    mut roster: ResMut<LobbyRoster>,
-    session: Option<Res<NetSession>>,
-    mut next: ResMut<NextState<AppState>>,
-) {
-    if *state.get() != AppState::Lobby { return; }
-
-    let clicked = interactions.iter().any(|i| matches!(i, Interaction::Pressed));
-    let esc     = keys.just_pressed(KeyCode::Escape);
-    if !clicked && !esc { return; }
-
-    // Notify peers via Bye + tear down socket + reset mode.
-    super::tear_down_session(&mut commands, &mut mode, session.as_deref());
-    roster.by_id.clear();
-    next.set(AppState::MainMenu);
-}
-
 /// KICK click → host sends `Kicked { reason }` to the target peer,
 /// removes them from the peer table + roster, broadcasts `PeerLeft`
 /// to other clients so their rosters update too.
@@ -408,9 +384,13 @@ pub fn handle_received_kick(
     mut next: ResMut<NextState<AppState>>,
 ) {
     let Some(reason) = pending_kick.0.take() else { return };
-    // Only act if we're actually in MP gameplay/lobby — stale kicks
-    // from a previous session shouldn't fire.
-    if !matches!(*state.get(), AppState::Lobby | AppState::Playing) { return; }
+    // Only act if we're actually in an MP-active state — stale
+    // kicks from a previous session shouldn't fire.
+    if !matches!(*state.get(),
+                 AppState::Lobby | AppState::Playing | AppState::WaitingForHost)
+    {
+        return;
+    }
 
     super::tear_down_session(&mut commands, &mut mode, session.as_deref());
     roster.by_id.clear();
@@ -425,3 +405,123 @@ pub fn handle_received_kick(
 /// alone for N seconds, etc.). Currently a no-op.
 #[allow(dead_code)]
 pub fn detect_empty_lobby_host(_session: Option<Res<NetSession>>) {}
+
+// ---------- WaitingForHost overlay ----------
+
+/// Marker on the WaitingForHost overlay root entity.
+#[derive(Component)]
+pub struct WaitingOverlay;
+
+/// Spawn the "WAITING FOR HOST" overlay on entry to the state.
+/// Chunky vocab; centered text + a LEAVE button so the client can
+/// bail if the host is taking too long or stuck.
+pub fn setup_waiting_overlay(
+    mut commands: Commands,
+    font: Res<crate::fonts::PixelFont>,
+    thaleah: Res<crate::fonts::ThaleahFont>,
+    roster: Res<super::LobbyRoster>,
+) {
+    let host_name = roster.by_id.get(&0).cloned()
+        .unwrap_or_else(|| "HOST".to_string());
+
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(0.0),
+            left: Val::Px(0.0),
+            right: Val::Px(0.0),
+            bottom: Val::Px(0.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            row_gap: Val::Px(theme::GAP_LG),
+            ..default()
+        },
+        BackgroundColor(theme::SURFACE),
+        ZIndex(160),
+        Visibility::Inherited,
+        WaitingOverlay,
+    ))
+    .with_children(|root| {
+        // Big Thaleah header
+        root.spawn((
+            Text::new("WAITING FOR HOST"),
+            crate::fonts::thaleah_text_font(&thaleah, 48.0),
+            TextColor(theme::ACCENT),
+            TextShadow {
+                offset: Vec2::splat(2.0),
+                color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+            },
+        ));
+        // Subtle subtitle showing the host's name
+        root.spawn(ui_kit::pixel_label(
+            &font,
+            format!("{} IS MANAGING THE SHOP / MAP", host_name),
+            theme::FONT_LG,
+            theme::ON_SURFACE_DIM,
+        ));
+        // LEAVE button — same shape as the lobby's so it reads
+        // consistently. Reuses the existing LeaveButton marker so
+        // handle_leave_click already routes it (the handler is
+        // gated to Lobby; we extend that below).
+        let style = ChunkyButtonStyle::neutral();
+        root.spawn((
+            Button,
+            Node {
+                padding: UiRect::axes(Val::Px(theme::PAD_LG), Val::Px(theme::PAD_MD)),
+                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                margin: UiRect::top(Val::Px(theme::PAD_LG)),
+                ..default()
+            },
+            BackgroundColor(style.idle_fill),
+            BorderColor(style.idle_outline),
+            BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
+            style,
+            LeaveButton,
+        ))
+        .with_children(|b| {
+            b.spawn(ui_kit::pixel_label(&font, "LEAVE", theme::FONT_LG, theme::ON_SURFACE));
+        });
+    });
+}
+
+/// Tear down the overlay on exit.
+pub fn teardown_waiting_overlay(
+    mut commands: Commands,
+    overlays: Query<Entity, With<WaitingOverlay>>,
+) {
+    for e in &overlays {
+        commands.entity(e).despawn();
+    }
+}
+
+/// Generalised LEAVE handler — runs in Lobby + WaitingForHost. ESC
+/// also leaves. Tears down session, returns to MainMenu. Extends the
+/// original Lobby-only `handle_leave_click` so the WaitingForHost
+/// overlay's LEAVE button + ESC work without a duplicate system.
+pub fn handle_leave_click_any_mp(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<LeaveButton>)>,
+    keys: Res<ButtonInput<KeyCode>>,
+    state: Res<State<AppState>>,
+    mut commands: Commands,
+    mut mode: ResMut<NetMode>,
+    mut roster: ResMut<super::LobbyRoster>,
+    session: Option<Res<NetSession>>,
+    mut next: ResMut<NextState<AppState>>,
+) {
+    let in_mp_screen = matches!(
+        *state.get(),
+        AppState::Lobby | AppState::WaitingForHost,
+    );
+    if !in_mp_screen { return; }
+
+    let clicked = interactions.iter().any(|i| matches!(i, Interaction::Pressed));
+    let esc     = keys.just_pressed(KeyCode::Escape);
+    if !clicked && !esc { return; }
+
+    super::tear_down_session(&mut commands, &mut mode, session.as_deref());
+    roster.by_id.clear();
+    next.set(AppState::MainMenu);
+}

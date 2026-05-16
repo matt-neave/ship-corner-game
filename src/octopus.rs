@@ -21,7 +21,6 @@ use std::collections::VecDeque;
 
 use crate::balance::PLAY_LAYER;
 use crate::bullet::{DamageSource, PendingDamageQueue};
-use crate::components::Friendly;
 use crate::effects::{spawn_hit_particles, EffectMeshes};
 use crate::rune::Rune;
 use crate::enemy::Enemy;
@@ -310,7 +309,7 @@ pub fn sync_octopus_units(
     cfg: Res<TurretConfig>,
     pm: Option<Res<PaletteMaterials>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    ship_q: Query<&Transform, (With<Friendly>, Without<Octopus>)>,
+    ship_q: Query<&Transform, (With<crate::components::LocalPlayer>, Without<Octopus>)>,
     octopuses: Query<(Entity, &Octopus)>,
 ) {
     let Some(pm) = pm else { return; };
@@ -405,7 +404,7 @@ pub fn octopus_ai(
     cfg: Res<TurretConfig>,
     synergies: Res<crate::synergy::Synergies>,
     stats: Res<crate::stats::PlayerStats>,
-    ship_q: Query<&Transform, (With<Friendly>, Without<Octopus>, Without<Enemy>)>,
+    ship_q: Query<&Transform, (With<crate::components::LocalPlayer>, Without<Octopus>, Without<Enemy>)>,
     enemies: Query<(&Transform, &crate::components::Health), (With<Enemy>, Without<Octopus>)>,
     mut octopuses: Query<(&mut Transform, &Octopus)>,
 ) {
@@ -477,7 +476,7 @@ pub fn octopus_spawn_tentacles(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    ship_q: Query<&Transform, (With<Friendly>, Without<Octopus>, Without<Enemy>)>,
+    ship_q: Query<&Transform, (With<crate::components::LocalPlayer>, Without<Octopus>, Without<Enemy>)>,
     enemies: Query<(Entity, &Transform, &crate::components::Health), (With<Enemy>, Without<Octopus>)>,
     tentacles: Query<&OctopusTentacle>,
     mut octopuses: Query<(Entity, &Transform, &mut Octopus)>,

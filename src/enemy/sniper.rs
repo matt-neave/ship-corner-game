@@ -92,8 +92,14 @@ pub fn sniper_fire(
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
     let dt = time.delta_secs();
-    let Ok(ftf) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
+    // MP: host has multiple Friendly entities — collect all so the
+    // sniper picks whichever player is closer instead of bailing on
+    // `single()` Err.
+    let friendly_positions: Vec<Vec2> = friendly
+        .iter()
+        .map(|t| t.translation.truncate())
+        .collect();
+    if friendly_positions.is_empty() { return; }
     let ally_positions = &ally_cache.positions;
 
     for (entity, tf, mut enemy, aim) in &mut snipers {
@@ -140,7 +146,7 @@ pub fn sniper_fire(
         }
 
         if enemy.fire_cd > 0.0 { continue; }
-        let target_pos = nearest_target(pos, fpos, ally_positions);
+        let target_pos = nearest_target(pos, &friendly_positions, ally_positions);
         let to = target_pos - pos;
         if to.length() > SNIPER_FIRE_RANGE { continue; }
 
@@ -187,8 +193,11 @@ pub fn sniper_turret_aim(
         (With<SniperTurret>, Without<Enemy>, Without<Friendly>, Without<Ally>),
     >,
 ) {
-    let Ok(ftf) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
+    let friendly_positions: Vec<Vec2> = friendly
+        .iter()
+        .map(|t| t.translation.truncate())
+        .collect();
+    if friendly_positions.is_empty() { return; }
     let ally_positions = &ally_cache.positions;
 
     for (tf, heading, enemy, aim, children) in &snipers {
@@ -196,7 +205,7 @@ pub fn sniper_turret_aim(
         let pos = tf.translation.truncate();
         let target = aim
             .map(|a| a.target_world)
-            .unwrap_or_else(|| nearest_target(pos, fpos, ally_positions));
+            .unwrap_or_else(|| nearest_target(pos, &friendly_positions, ally_positions));
         let to = target - pos;
         if to.length_squared() < 1.0 { continue; }
         let world_aim = (-to.x).atan2(to.y);

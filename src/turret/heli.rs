@@ -67,7 +67,9 @@ pub fn sync_helipad_helicopters(
     cfg: Res<TurretConfig>,
     pm: Option<Res<PaletteMaterials>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    ship_q: Query<&Transform, (With<Friendly>, Without<Helicopter>)>,
+    // LocalPlayer disambiguates from MP's remote-peer ship which is
+    // also `Friendly`. `single()` would bail with two friendlies.
+    ship_q: Query<&Transform, (With<crate::components::LocalPlayer>, Without<Helicopter>)>,
     helis: Query<(Entity, &Helicopter)>,
 ) {
     let Some(pm) = pm else { return; };
@@ -218,7 +220,7 @@ pub fn helicopter_ai(
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
     synergies: Res<crate::synergy::Synergies>,
-    ship_q: Query<&Transform, (With<Friendly>, Without<Helicopter>, Without<Enemy>)>,
+    ship_q: Query<&Transform, (With<crate::components::LocalPlayer>, Without<Helicopter>, Without<HeliRotor>, Without<Enemy>)>,
     enemies: Query<(&Transform, &Faction, &Health), (With<Enemy>, Without<Helicopter>)>,
     mut helis: Query<(&mut Transform, &mut Helicopter), Without<HeliRotor>>,
     mut rotors: Query<&mut Transform, (With<HeliRotor>, Without<Helicopter>, Without<Enemy>, Without<Friendly>)>,

@@ -92,6 +92,10 @@ pub struct Ally {
 /// A type of ship — its hull, stats, and turret layout. Faction-agnostic;
 /// today only friendly `Ally`s use it, future boss enemies will reuse the
 /// same classes (see module docs).
+///
+/// Discriminants assigned via `to_u8` / `from_u8` for multiplayer
+/// wire-format. Treat them as append-only — clients running an older
+/// build use `from_u8` to skip unknown variants instead of crashing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ShipClass {
     /// Small retro pirate ship — 4 broadside cannons (2 per side).
@@ -143,6 +147,37 @@ pub enum ShipClass {
 }
 
 impl ShipClass {
+    /// Wire-format discriminant for multiplayer `BossSpawned` /
+    /// boss-flagged `EnemyEntry`. Append-only: new variants take
+    /// the next free number. Sentinel `0xFF` is reserved for
+    /// "no boss" in `EnemyEntry.boss_class`.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            ShipClass::PirateShip => 0,
+            ShipClass::Carrier    => 1,
+            ShipClass::Submarine  => 2,
+            ShipClass::Minelayer  => 3,
+            ShipClass::Tender     => 4,
+            ShipClass::Blackbeard => 5,
+            ShipClass::OilTanker  => 6,
+            ShipClass::Viking     => 7,
+        }
+    }
+
+    pub fn from_u8(n: u8) -> Option<Self> {
+        Some(match n {
+            0 => ShipClass::PirateShip,
+            1 => ShipClass::Carrier,
+            2 => ShipClass::Submarine,
+            3 => ShipClass::Minelayer,
+            4 => ShipClass::Tender,
+            5 => ShipClass::Blackbeard,
+            6 => ShipClass::OilTanker,
+            7 => ShipClass::Viking,
+            _ => return None,
+        })
+    }
+
     pub fn hp(self) -> i32 {
         // Boss-tier HP ladder. Ordered roughly by "how late this boss
         // feels in a run". Carrier sits at the top as the apex bullet
@@ -564,7 +599,7 @@ pub fn spawn_boss(
 /// Friendly side gets `target = Enemy / heal = Friendly`; boss side
 /// gets `target = Friendly / heal = Enemy`. Same chassis, mirrored
 /// targeting — that's the whole point of carving the function out.
-fn build_ship_for_faction(
+pub fn build_ship_for_faction(
     commands: &mut Commands,
     pm: &PaletteMaterials,
     em: &EffectMeshes,

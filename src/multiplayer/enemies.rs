@@ -1,4 +1,4 @@
-//! Phase 2: host streams enemy snapshots, client mirrors them.
+//! Host streams enemy snapshots, client mirrors them.
 //!
 //! Authority model: the **host** runs every enemy spawn / AI / death
 //! system unchanged. Every ~50ms it walks the live enemies, packages
@@ -92,6 +92,7 @@ pub fn send_enemy_snapshot(
         bevy::ecs::query::Has<crate::rune::OnFire>,
         bevy::ecs::query::Has<crate::rune::OnFrost>,
         bevy::ecs::query::Has<crate::rune::OnBleed>,
+        Option<&crate::ally::Ally>,
     )>,
 ) {
     if !is_host_connected(&mode, session.as_deref()) { return; }
@@ -102,11 +103,18 @@ pub fn send_enemy_snapshot(
     let Some(session) = session else { return; };
     let entries: Vec<EnemyEntry> = enemies
         .iter()
-        .map(|(id, en, tf, hp, on_fire, on_frost, on_bleed)| {
+        .map(|(id, en, tf, hp, on_fire, on_frost, on_bleed, ally)| {
             let mut flags = 0u8;
             if on_fire  { flags |= status_bits::ON_FIRE;  }
             if on_frost { flags |= status_bits::ON_FROST; }
             if on_bleed { flags |= status_bits::ON_BLEED; }
+            // Boss detection: a hostile entity that ALSO carries the
+            // `Ally` component is a boss (see `ally::spawn_boss`).
+            // Carries the ShipClass so client can build the right
+            // boss-tier visuals on first sight.
+            let boss_class = ally
+                .map(|a| a.class.to_u8())
+                .unwrap_or(super::net::NOT_A_BOSS);
             EnemyEntry {
                 id: id.0,
                 kind: en.variant.to_u8(),
@@ -114,6 +122,7 @@ pub fn send_enemy_snapshot(
                 rot: tf.rotation.to_euler(EulerRot::ZYX).0,
                 hp: hp.0,
                 status_flags: flags,
+                boss_class,
             }
         })
         .collect();
@@ -164,6 +173,16 @@ pub struct ReceivedProcFx {
 #[derive(Resource, Default)]
 pub struct ProcFxInbox {
     pub events: Vec<ReceivedProcFx>,
+}
+
+/// Latest known authoritative pose for a mirror entity. Written by
+/// `apply_enemy_snapshot` (every snapshot — 20Hz = every 50ms) and
+/// lerped-toward each frame by `smooth_mirror_transforms`. Without
+/// the per-frame lerp, mirrors would visibly teleport every 50ms.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct MirrorTarget {
+    pub pos: Vec2,
+    pub rot: f32,
 }
 
 /// Wire-format discriminants — re-exported from `crate::proc_fx::kind`
@@ -296,6 +315,7 @@ pub fn apply_enemy_snapshot(
     mode: Res<NetMode>,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
+    meshes: Option<ResMut<Assets<Mesh>>>,
     mut latest: ResMut<LatestEnemySnapshot>,
     mut mirrors: Query<(
         Entity,
@@ -306,13 +326,26 @@ pub fn apply_enemy_snapshot(
         bevy::ecs::query::Has<crate::rune::OnFrost>,
         bevy::ecs::query::Has<crate::rune::OnBleed>,
     ), With<Enemy>>,
+    mut targets: Query<&mut MirrorTarget>,
 ) {
     if !is_client_connected(&mode) { return; }
     let Some(entries) = latest.0.take() else { return };
-    let (Some(pm), Some(em)) = (pm, em) else { return };
+    // PM/EM are only needed to SPAWN new mirror entities — HP /
+    // transform / status updates on already-spawned mirrors don't
+    // need graphics resources. Headless tests use this split: they
+    // pre-spawn mirrors manually and assert on the HP-update path
+    // without dragging in the asset stack.
+    let graphics = pm.zip(em);
+    // `meshes` is also only needed for the boss-mirror spawn path
+    // (build_ship_for_faction loads a procedural hull mesh). Keep it
+    // optional alongside PM/EM so the headless fixture stays light.
+    let mut meshes = meshes;
 
     // Index existing mirrors by id for O(1) lookup. The tuple holds
-    // everything we'll need to mutate per-entry.
+    // everything we'll need to mutate per-entry. `tf` is updated
+    // *only* for new-mirror inserts (initial spawn position);
+    // per-snapshot pose updates are stored in `MirrorTarget` so
+    // `smooth_mirror_transforms` can lerp toward them each frame.
     struct MirrorState<'w> {
         entity: Entity,
         tf:     Mut<'w, Transform>,
@@ -340,10 +373,19 @@ pub fn apply_enemy_snapshot(
         let want_bleed = entry.status_flags & status_bits::ON_BLEED != 0;
         match by_id.remove(&entry.id) {
             Some(mut state) => {
-                state.tf.translation.x = entry.pos[0];
-                state.tf.translation.y = entry.pos[1];
-                state.tf.rotation = Quat::from_rotation_z(entry.rot);
+                // Don't snap the transform — write to MirrorTarget
+                // and let `smooth_mirror_transforms` lerp each frame.
+                // Eliminates the every-50ms pop the snapshot cadence
+                // would cause otherwise.
+                if let Ok(mut target) = targets.get_mut(state.entity) {
+                    target.pos = Vec2::new(entry.pos[0], entry.pos[1]);
+                    target.rot = entry.rot;
+                }
                 if state.hp.0 != entry.hp { state.hp.0 = entry.hp; }
+                // Suppress dead-code warning on the unused `tf`
+                // binding now that we don't snap directly. The Mut<>
+                // borrow still needs to be released for the world.
+                let _ = &mut state.tf;
                 // Reconcile proc components against the snapshot's
                 // bits. Add when missing-but-wanted; remove when
                 // present-but-not-wanted. Stacks default to 1 on the
@@ -357,18 +399,48 @@ pub fn apply_enemy_snapshot(
                 if !want_bleed &&  state.on_bleed { commands.entity(state.entity).remove::<crate::rune::OnBleed>(); }
             }
             None => {
-                let e = spawn_enemy_mirror(
-                    &mut commands,
-                    &pm,
-                    &em,
-                    Vec2::new(entry.pos[0], entry.pos[1]),
-                    entry.rot,
-                    variant,
-                    entry.hp,
-                    entry.id,
-                );
-                // Brand-new mirror: insert proc components matching
-                // the snapshot's initial bits.
+                // Headless tests run without graphics resources;
+                // they pre-spawn mirrors manually so the new-mirror
+                // spawn path here is a no-op. Production has PM/EM
+                // and uses this path on first sight of each new
+                // enemy id.
+                let Some((pm, em)) = graphics.as_ref() else { continue };
+                // Branch on boss vs regular: bosses use the full
+                // `build_ship_for_faction` visuals so the client sees
+                // the right ShipClass-specific chassis; regular enemies
+                // get the stripped-down variant mesh mirror.
+                let boss = (entry.boss_class != super::net::NOT_A_BOSS)
+                    .then(|| crate::ally::ShipClass::from_u8(entry.boss_class))
+                    .flatten();
+                let e = match (boss, meshes.as_mut()) {
+                    (Some(class), Some(meshes)) => spawn_boss_mirror(
+                        &mut commands,
+                        pm,
+                        em,
+                        meshes,
+                        Vec2::new(entry.pos[0], entry.pos[1]),
+                        entry.rot,
+                        class,
+                        entry.hp,
+                        entry.id,
+                    ),
+                    _ => spawn_enemy_mirror(
+                        &mut commands,
+                        pm,
+                        em,
+                        Vec2::new(entry.pos[0], entry.pos[1]),
+                        entry.rot,
+                        variant,
+                        entry.hp,
+                        entry.id,
+                    ),
+                };
+                // Attach MirrorTarget at the spawn pose so the
+                // smoother has a target to lerp toward from frame 1.
+                commands.entity(e).insert(MirrorTarget {
+                    pos: Vec2::new(entry.pos[0], entry.pos[1]),
+                    rot: entry.rot,
+                });
                 if want_fire  { commands.entity(e).insert(crate::rune::OnFire::new(1));  }
                 if want_frost { commands.entity(e).insert(crate::rune::OnFrost::new(1)); }
                 if want_bleed { commands.entity(e).insert(crate::rune::OnBleed::new(1)); }
@@ -381,6 +453,55 @@ pub fn apply_enemy_snapshot(
     for state in by_id.into_values() {
         commands.entity(state.entity).despawn();
     }
+}
+
+/// Spawn a boss mirror on the client using the same chassis builder
+/// the host uses. Borrows `build_ship_for_faction` so the client sees
+/// the full ShipClass-specific visuals (right hull shape + class
+/// decorations + colour) instead of the standard variant placeholder.
+///
+/// Note: boss AI / turret / faction behaviour doesn't run on the
+/// client (no `Without<Ally>` paths fire here), so this is purely a
+/// visual + collision-target mirror. HP / transform / status come
+/// through the same `apply_enemy_snapshot` path as a regular mirror.
+fn spawn_boss_mirror(
+    commands: &mut Commands,
+    pm: &PaletteMaterials,
+    em: &EffectMeshes,
+    meshes: &mut Assets<Mesh>,
+    pos: Vec2,
+    heading: f32,
+    class: crate::ally::ShipClass,
+    hp: i32,
+    id: u32,
+) -> Entity {
+    let ship = crate::ally::build_ship_for_faction(
+        commands, pm, em, meshes, pos, heading, class, FactionKind::Enemy,
+    );
+    // Layer the marker components the regular mirror has so collision
+    // queries (`With<Enemy>`) + the snapshot-reconcile path see this
+    // entity. `Ally { class, .. }` is kept so the snapshot's boss
+    // detection path also flags the mirror — useful for any future
+    // boss-specific rendering tweaks gated by Ally on client too.
+    commands.entity(ship).insert((
+        Enemy {
+            variant: EnemyVariant::Standard,
+            state: EnemyState::Approach,
+            state_timer: 0.0,
+            waypoint: Vec2::ZERO,
+            fire_cd: 0.0,
+            max_hp: hp.max(1),
+        },
+        crate::ally::Ally {
+            class,
+            waypoint: Vec2::ZERO,
+            waypoint_timer: 0.0,
+        },
+        Health(hp),
+        Faction(FactionKind::Enemy),
+        NetEntityId(id),
+    ));
+    ship
 }
 
 /// Spawn a stripped-down "mirror" enemy on the client. Only the body
@@ -409,9 +530,9 @@ fn spawn_enemy_mirror(
         EnemyVariant::Artillery => pm.enemy_artillery.clone(),
     };
     let scale = variant.scale();
-    commands.spawn((
+    let id_entity = commands.spawn((
         Mesh2d(em.enemy_body.clone()),
-        MeshMaterial2d(body_mat),
+        MeshMaterial2d(body_mat.clone()),
         Transform::from_xyz(pos.x, pos.y, 1.0)
             .with_rotation(Quat::from_rotation_z(heading))
             .with_scale(Vec3::splat(scale)),
@@ -428,20 +549,56 @@ fn spawn_enemy_mirror(
             max_hp: hp.max(1),
         },
         Health(hp),
+        // PreviousHp lets the local `track_enemy_damage_for_hp_bars`
+        // system spawn / refresh the HP-bar overlay when the mirror's
+        // Health drops (the next snapshot delivers the new HP). Without
+        // this, mirror enemies never show a health bar on the client.
+        crate::enemy::PreviousHp(hp),
         Faction(FactionKind::Enemy),
         NetEntityId(id),
-        // Tight bounding box matches the body footprint so bullet
-        // collision works (client-side bullets do see the mirror,
-        // they just don't apply damage to it yet — that's phase 2.5).
+        // HitFx drives the white-flash visual on damage. Same setup
+        // as a real enemy so the client sees the same "I'm being hit"
+        // feedback when the mirror's HP drops via snapshot.
+        crate::effects::HitFx::new(body_mat.clone()).with_rest_scale(scale),
+        // Tight bounding box matches the body footprint so client-side
+        // bullet collisions can detect the mirror (damage is relayed
+        // to host; this collision drives local visual feedback).
         crate::rune::FireExtent(Vec2::new(
             ENEMY_WIDTH * 0.5 * scale,
             ENEMY_LEN * 0.5 * scale,
         )),
         RenderLayers::layer(PLAY_LAYER),
-    )).id()
+    )).id();
+
+    // Variant-specific turret children — same hierarchy as
+    // `spawn_enemy` in `enemy/mod.rs`. Gives the mirror the right
+    // silhouette (gun barrel) instead of just the bare body.
+    // Sniper's `SniperTurret` marker is NOT added here — the
+    // independent-rotation aim logic only runs on the host (where
+    // the real Sniper lives) and would conflict with the snapshot-
+    // driven transform if it ran on the mirror.
+    if variant == EnemyVariant::Sniper || variant.has_gun() {
+        let base = commands.spawn((
+            Mesh2d(em.enemy_turret_base.clone()),
+            MeshMaterial2d(pm.enemy_accent.clone()),
+            Transform::from_xyz(0.0, 0.0, 0.1),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(base).insert(ChildOf(id_entity));
+
+        let barrel = commands.spawn((
+            Mesh2d(em.enemy_turret_barrel.clone()),
+            MeshMaterial2d(pm.enemy_accent.clone()),
+            Transform::from_xyz(0.0, 1.8, 0.15),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(barrel).insert(ChildOf(base));
+    }
+
+    id_entity
 }
 
-// ---------- Damage relay (Phase 2.5) ----------
+// ---------- Damage relay ----------
 
 /// Host-side inbox for client → host damage events. `recv_packets`
 /// pushes one entry per incoming [`NetMsg::DamageEnemy`]; the
@@ -470,13 +627,19 @@ pub struct RelayedDamage {
 }
 
 /// Client → Host: for each event in the local `PendingDamageQueue`
-/// that targets a mirror enemy (has `NetEntityId`), serialise a
-/// [`NetMsg::DamageEnemy`] packet to the host and remove the event
-/// from the local queue so `process_damage_events` doesn't apply
-/// (would-be-shadow) damage to the mirror that the next snapshot is
-/// about to overwrite anyway. The local damage event for non-mirror
-/// targets (e.g. the local Friendly taking enemy hits) is left
-/// untouched.
+/// that targets a mirror enemy (has `NetEntityId`), send a
+/// `DamageEnemy` packet to the host AND **clear the event's runes**
+/// in place. The event stays in the queue so `process_damage_events`
+/// runs it locally for visual feedback (hit FX, hit flash, HP-bar
+/// flash, particles) — but with empty runes, no procs roll on the
+/// client side. The host is the authoritative side for procs: it
+/// receives the relayed event with the full rune list, rolls procs,
+/// applies chain damage, and broadcasts `ProcFx` visuals back via
+/// the existing channel.
+///
+/// Without the rune-clear, client + host both roll procs for the
+/// same hit → chain targets take damage twice, visuals double up.
+/// The fix is single-sourced authority: host owns proc rolling.
 pub fn relay_damage_to_host(
     mode: Res<NetMode>,
     session: Option<Res<NetSession>>,
@@ -490,32 +653,41 @@ pub fn relay_damage_to_host(
         None => return,
     };
 
-    // Walk the queue. For each event whose target carries a
-    // NetEntityId, send DamageEnemy (with full weapon + rune
-    // metadata so the host re-rolls procs authoritatively) and mark
-    // for removal. Build the keeper list in place to avoid extra
-    // allocations.
-    let mut keep = Vec::with_capacity(queue.0.len());
-    for ev in queue.0.drain(..) {
-        match mirrors.get(ev.target) {
-            Ok(net_id) => {
-                let runes_u8: Vec<u8> = ev.runes.iter().map(|r| r.to_u8()).collect();
-                let msg = NetMsg::DamageEnemy {
-                    enemy_id: net_id.0,
-                    amount:   ev.amount,
-                    hit_pos:  [ev.hit_pos.x, ev.hit_pos.y],
-                    weapon:   ev.weapon.to_u8(),
-                    runes:    runes_u8,
-                };
-                if let Err(e) = send_to(&session.sock, host_addr, &msg) {
-                    bevy::log::warn!("multiplayer: failed to relay damage: {e}");
-                }
-                // Drop the event — host is authoritative.
-            }
-            Err(_) => keep.push(ev),
+    for ev in queue.0.iter_mut() {
+        let Ok(net_id) = mirrors.get(ev.target) else { continue };
+
+        // Only relay INITIAL hits — `procced.is_empty()`. Events
+        // with non-empty `procced` are themselves the result of a
+        // local proc roll (chain damage etc.). Since procs shouldn't
+        // run on the client anymore (we clear runes below), this
+        // should be empty in practice; the check is a safety net
+        // for any future proc path that pre-populates `procced`.
+        if !ev.procced.is_empty() {
+            // Local-only proc damage that snuck in — drop it on the
+            // client side so it doesn't apply phantom damage to the
+            // mirror that the snapshot is about to overwrite.
+            ev.amount = 0;
+            ev.runes.clear();
+            continue;
         }
+
+        let runes_u8: Vec<u8> = ev.runes.iter().map(|r| r.to_u8()).collect();
+        let msg = NetMsg::DamageEnemy {
+            enemy_id: net_id.0,
+            amount:   ev.amount,
+            hit_pos:  [ev.hit_pos.x, ev.hit_pos.y],
+            weapon:   ev.weapon.to_u8(),
+            runes:    runes_u8,
+        };
+        if let Err(e) = send_to(&session.sock, host_addr, &msg) {
+            bevy::log::warn!("multiplayer: failed to relay damage: {e}");
+        }
+        // Clear runes locally so `process_damage_event` runs visuals
+        // (HitFx, sparks, HP-bar flash) but doesn't double-roll
+        // procs. The host re-rolls them authoritatively from the
+        // relayed runes; visuals propagate back via `ProcFx`.
+        ev.runes.clear();
     }
-    queue.0 = keep;
 }
 
 /// Host: drain `PendingDamageRelay` and push each entry into the
@@ -542,8 +714,8 @@ pub fn apply_relayed_damage(
 
     for relayed in buffer.entries.drain(..) {
         if let Some(&target) = by_id.get(&relayed.enemy_id) {
-            // Phase 2.6: host re-runs the full damage pipeline with
-            // the client's weapon + runes. Procs (OnFire / OnFrost /
+            // Host re-runs the full damage pipeline with the
+            // client's weapon + runes. Procs (OnFire / OnFrost /
             // OnBleed / OnConduit / OnResonate / Shock chain /
             // Cascade) all roll authoritatively here, so the next
             // EnemySnapshot carries the resulting status bits and
@@ -557,6 +729,30 @@ pub fn apply_relayed_damage(
                 &relayed.runes,
             );
         }
+    }
+}
+
+/// Per-frame: lerp each mirror's `Transform` toward its
+/// `MirrorTarget`. Frame-rate independent exp decay so the visual
+/// speed is the same at 30fps and 144fps. Eliminates the every-50ms
+/// pop the raw snapshot cadence would otherwise cause.
+///
+/// Tuned to reach ~95% of the target in ~80ms — fast enough that
+/// the visual stays close to the host's authoritative pose, slow
+/// enough that direction changes don't snap.
+pub fn smooth_mirror_transforms(
+    time: Res<Time>,
+    mut q: Query<(&mut Transform, &MirrorTarget)>,
+) {
+    // `BASE_PER_FRAME` is the fraction per 60fps frame; we scale by
+    // `delta * 60` so the visual speed is fps-independent.
+    const BASE_PER_FRAME: f32 = 0.45;
+    let t = (time.delta_secs() * 60.0 * BASE_PER_FRAME).clamp(0.0, 1.0);
+    for (mut tf, target) in &mut q {
+        tf.translation.x += (target.pos.x - tf.translation.x) * t;
+        tf.translation.y += (target.pos.y - tf.translation.y) * t;
+        let target_rot = Quat::from_rotation_z(target.rot);
+        tf.rotation = tf.rotation.slerp(target_rot, t);
     }
 }
 
@@ -677,6 +873,7 @@ mod tests {
             next_peer_id: 1,
             welcomed: false,
             is_host: true,
+            last_seen: std::collections::HashMap::new(),
         };
         assert!(!is_host_connected(&NetMode::Hosting, Some(&host_unwelcomed_session)));
 
@@ -688,6 +885,7 @@ mod tests {
             next_peer_id: 0,
             welcomed: true,
             is_host: false,
+            last_seen: std::collections::HashMap::new(),
         };
         assert!(!is_host_connected(&NetMode::Connected, Some(&client_session)));
 
@@ -699,6 +897,7 @@ mod tests {
             next_peer_id: 1,
             welcomed: true,
             is_host: true,
+            last_seen: std::collections::HashMap::new(),
         };
         assert!(is_host_connected(&NetMode::Connected, Some(&host_session)));
     }
@@ -723,6 +922,7 @@ mod tests {
         let mut latest = LatestEnemySnapshot::default();
         latest.0 = Some(vec![EnemyEntry {
             id: 1, kind: 0, pos: [0.0; 2], rot: 0.0, hp: 1, status_flags: 0,
+            boss_class: super::super::net::NOT_A_BOSS,
         }]);
         assert!(latest.0.take().is_some(), "first take returns the buffer");
         assert!(latest.0.take().is_none(), "second take is None");

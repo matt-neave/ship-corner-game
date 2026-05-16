@@ -269,7 +269,48 @@ Client bullets now damage host enemies via the relay path:
 
 Fixing this means extending `DamageEnemy` with a serialised rune list + `WeaponType`, plus making the host's `apply_relayed_damage` use those instead of the `&[]` / `Standard` stubs. Add a `weapon: u8` discriminant for `WeaponType` and bincode the rune list — straightforward but it's its own task.
 
-### Phase 3 (next chunks): shared loadout + map
+### Phase 4 (shipped): client-passive + visual fidelity
+
+1. **Client damage visuals now fire** — `relay_damage_to_host` no longer strips the local event. The damage pipeline runs locally on the client AND the event is relayed to the host. Hit FX, particles, hit-flash all appear immediately on the client side; the host's next snapshot overwrites the client's local HP with the authoritative value.
+2. **`AppState::WaitingForHost`** — new state for clients sitting on a passive overlay while the host drives single-player flow (Customize / HullSelect / Map / etc). `state_sync::client_state_for` maps host's AppState to the client's passive equivalent.
+3. **WaitingForHost overlay** — chunky bevy_ui with Thaleah header, host-name subtitle, and a LEAVE button. Same vocabulary as the lobby chrome.
+4. **Loadout sync (PlayerStats + TurretConfig)** — host's local `PlayerStats` and `TurretConfig` resources broadcast on `is_changed()` via `PlayerStatsSync` / `TurretConfigSync` messages. Client overwrites local copies. Both peers now have identical loadouts.
+5. **Wave state sync** — `WaveStateSync { idx, count, phase, remaining }` broadcast on change. Client's `CombatContext`'s indicator-relevant fields update, so the wave UI shows host's truth instead of 0/0.
+6. **Host-disconnect cleanup** — when client receives `Bye` from peer id 0 (host left), client triggers `PendingKick` ("host disconnected") so `handle_received_kick` returns to MainMenu cleanly.
+7. **Integration test** — `e2e_full_mock_round_integration` walks two apps through: handshake → start → wave begins → enemy spawns → client damages → enemy dies → wave advances. Headless and fast.
+
+### Phase 5.5 (shipped): signal-driven bullet replication
+
+When a peer's turret fires a bullet, every other peer should see the same shot land. We use a **signal-driven** design rather than running fake turret AI on each peer's view of the remote ship — the firing peer is the source of truth for "I fired right now in this direction", and other peers replay the moment.
+
+The pipeline:
+1. **Detection**: `emit_bullet_fired_signals` watches for `Added<Bullet>` (Bevy auto-detects newly-spawned bullets) and emits `BulletFiredEvent { pos, dir, weapon, range }`. The `Without<RemoteVisualBullet>` filter ensures received-bullet spawns don't re-emit (no infinite loop).
+2. **Broadcast**: `send_bullet_fired` reads events, packetises as `NetMsg::BulletFired`, sends. Clients send to host (id 0); host broadcasts directly.
+3. **Relay**: `relay_bullet_fired` (host-only) re-broadcasts incoming packets to every peer except the sender, so a 3-player session works.
+4. **Spawn**: `spawn_received_bullets` drains `BulletFiredInbox` and spawns a damage=0 visual bullet via the production `spawn_combat_bullet` shape. `damage=0` means `push_initial` bails on hit so no double damage. The bullet is tagged `RemoteVisualBullet` so step 1's filter skips it.
+
+This decouples the visual from the local AI. A peer might lose connection for half a second; bullets queued during that window arrive late but at the right world coordinates rather than at "wherever the AI would have computed". No drift.
+
+### Phase 5 (shipped): real main boats with synced visuals
+
+The "ghost ship" is now a full visual replica of the local boat.
+- `spawn_missing_ghosts` builds: cyan-tinted hull mesh + per-equipped-slot turret base + barrel meshes as children. Reads from local `TurretConfig` (which the Phase 4 sync keeps in lock-step with the host).
+- Remote ship still has `Friendly` tag (so enemy AI targets it) + new `Faction(Friendly)` for parity with the local ship's component set.
+- **Disambiguation**: new `LocalPlayer` marker in `components.rs` is added only to the local `spawn_player_world` ship. Multiplayer's remote-peer ship gets `Friendly` but NOT `LocalPlayer`, so `single()`-using queries (trail, helicopter, sharknet, octopus, etc.) switched from `With<Friendly>` to `With<LocalPlayer>` to skip the remote ship safely.
+- **Phase 5 limitation**: remote turret visuals are static (no rotation, no firing). Their turret meshes exist as children but lack `TurretSlot` components, so the firing AI doesn't pick them up. Adding remote turret firing would double-damage every enemy (host already simulates damage authoritatively from the actual other peer's relays) without careful gating — that's Phase 5.5.
+
+### Phase 6 (shipped): co-op death model
+
+Per the actual gameplay needs (not the "shared customize" we originally roadmapped):
+
+- **`detect_local_death`** watches `LocalPlayer`'s Health each frame in multiplayer mode. On 0 HP: sets `LocalDeathState.dead = true`, despawns the local Friendly, sends `NetMsg::PeerDied { id }` to host. Single-player path (`level_complete_check` → GameOver) runs unchanged.
+- **Host tracks team alive** via `TeamDeathTracker { dead_peers: HashSet<u8> }`. Populated from `PeerDied` packets + the host's own death via `host_track_own_death`. Stays in sync with the `LobbyRoster`.
+- **`host_check_team_wipe`** transitions the host to `AppState::GameOver` only when EVERY peer in the roster is in the dead set. State-sync broadcasts the transition to clients. One peer dying = the dying peer spectates; both dying = game over.
+- **Spectator overlay** — `sync_spectator_overlay` shows a translucent "YOU DIED — WAITING FOR YOUR PARTNER — RESPAWNS NEXT STAGE" overlay when local death is set + AppState is Playing. Thaleah header, chunky subtitle text. Hides automatically on respawn.
+- **Revive on stage transition** — `host_broadcast_revive_on_stage_complete` fires on host's entry to `AppState::StageComplete`. Broadcasts `NetMsg::PeerRevived { id: REVIVE_ALL }` and clears the team tracker. Dead peers' `apply_received_revive` consumes the signal, sets `LocalDeathState.dead = false`. Their Friendly respawns the next time `spawn_player_world` runs (which is `OnEnter(Playing)` — the standard path after StageComplete).
+- **Critical bug fix that came out of this**: `level_complete_check` (death detector) and `apply_camera_follow` were both using `friendly.single()`. With two Friendlies on the host (local + remote-peer ship), both silently bailed. **Death detection was completely broken in MP before Phase 6.** Switched both to `With<LocalPlayer>`.
+
+### Phase 7 (later): shared loadout management + map sync
 
 The **foundation** (AppState sync) is in. Remaining chunks, in rough dependency order:
 
@@ -283,8 +324,8 @@ The **foundation** (AppState sync) is in. Remaining chunks, in rough dependency 
 
 Either ship a relay service (free TURN, custom UDP relay, or Steam Sockets if we ever Steam-ify) or integrate a NAT-punch library (`matchbox` over WebRTC works in browsers too). Each has its own ops cost. Not blocking the local-multiplayer demo.
 
-### Known cosmetic issues (Phase 2.6)
+### Known cosmetic issues (post-Phase 4)
 
-- Client sees their local wave indicator stuck at "wave 0/0" because the wave system runs only on host. Phase 3 wave sync will fix it.
-- Client may see enemies appear at world positions outside their local map's section polygons because each peer's map is generated independently. Phase 3 map seed sync will fix it.
+- Client may see enemies appear at world positions outside their local map's section polygons because each peer's map is generated independently. Phase 6 map seed sync will fix it.
 - Transient proc visuals (Shock arc, Cascade explosion, Blast ring) propagate end-to-end. Host's procs fire `ProcFxFired` events → `send_proc_fx` packetises them → peers receive into `ProcFxInbox` → `spawn_proc_fx_visuals` drains and spawns the local visual. Blast specifically still uses the lightning-arc visual as a placeholder on receive because `spawn_blast_ring` is private to `bullet.rs`; making it public is a one-line follow-up.
+- Client's remote-player rendering is still the lightweight `RemoteGhost` (cyan tinted hull, no turrets). Phase 5 swaps it for a full Friendly ship with turret children driven by the synced loadout.

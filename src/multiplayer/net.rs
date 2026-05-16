@@ -116,14 +116,133 @@ pub enum NetMsg {
         from: [f32; 2],
         to: [f32; 2],
     },
-    /// Host → Client: "I just transitioned to this `AppState`.
-    /// Mirror the transition locally so both peers stay on the same
-    /// screen." Phase 3 foundation message — drives the lockstep
-    /// menu / map / customize flow that future shared-loadout work
-    /// will build on.
+    /// Either direction: "I just transitioned to this `AppState`."
+    /// Host pushes every transition; client pushes only Paused /
+    /// Playing (so either peer can pause the team). Receivers map
+    /// the host state through `client_state_for` to decide their
+    /// local target.
     ///
     /// `state` is an `AppState::to_u8` discriminant.
     StateChange { state: u8 },
+    /// Host → Client: full snapshot of the player's stats. Sent on
+    /// change (host's `PlayerStats.is_changed()` fires). Client
+    /// overwrites its local `PlayerStats` with the host's
+    /// authoritative values so both peers have parity in HP, range,
+    /// crit, shield, etc.
+    /// Per-peer broadcast: "my final PlayerStats look like this."
+    /// `from_peer` lets receivers store the stats keyed by sender id
+    /// without mistaking it for their own. Currently unused for
+    /// rendering (stats are gameplay-only, no visual effect), but
+    /// kept around so future per-peer UIs (party stat panel, etc.)
+    /// have a hook.
+    PlayerStatsSync { from_peer: u8, stats: SerializedPlayerStats },
+    /// Per-peer broadcast: "my final TurretConfig looks like this."
+    /// `from_peer` lets receivers store it keyed by sender id so the
+    /// ghost-ship renderer can show the right turrets on each remote
+    /// boat. Sent on local TurretConfig change (debounced by Bevy's
+    /// `Changed`), so a peer dragging in a new turret during their
+    /// own shop pass propagates to other peers' ghost visuals.
+    TurretConfigSync { from_peer: u8, slots: [SerializedSlotCfg; 8] },
+    /// Host → Client: current wave state. Lets the client's wave
+    /// indicator UI show what the host's `CombatContext` actually
+    /// is, instead of the client's local zero state.
+    WaveStateSync {
+        wave_idx:   u32,
+        wave_count: u32,
+        /// `CombatContext::WavePhase::to_u8` discriminant. See
+        /// `multiplayer::wave::WavePhaseWire`.
+        phase:      u8,
+        remaining:  u32,
+    },
+    /// Host → Client: authoritative XP + level snapshot for the XP
+    /// bar / level readout. Pending level-up picks ride
+    /// `LevelUpGranted` separately so each peer drains them
+    /// independently.
+    XpSync {
+        current: u32,
+        level: u32,
+    },
+    /// Either → Host (then host re-broadcasts to other peers): "I
+    /// just fired a bullet from this position in this direction".
+    /// Receivers spawn a damage=0 visual replica so the firing
+    /// peer's bullets appear on every screen. Signal-driven (not
+    /// AI-driven on the remote side) so timing matches the actual
+    /// firing peer instead of drifting.
+    BulletFired {
+        pos:    [f32; 2],
+        dir:    [f32; 2],
+        weapon: u8,
+        range:  f32,
+    },
+    /// Either → Host: "my local player just died." Host tracks per-
+    /// peer alive state in `TeamDeathTracker` and only triggers a
+    /// shared GameOver when EVERY peer is dead. Until then dead
+    /// peers spectate.
+    PeerDied { id: u8 },
+    /// Host → all peers: "you (or you all) revive — fresh ship,
+    /// full HP." Broadcast on stage transition so dead spectators
+    /// rejoin the action on the next level. Single-target id is
+    /// `u8::MAX` for "everyone revives" (the common case).
+    PeerRevived { id: u8 },
+    /// Client → Host: "I've finished shopping (clicked CLOSE in
+    /// `Customize`)." Host tracks these in `TeamReadyTracker` and
+    /// only advances to the next state once every peer is ready.
+    /// Host self-reports its own ready locally (no echo back to
+    /// itself).
+    PeerReady { id: u8 },
+    /// Host → all peers: "I just crossed `count` XP threshold(s) —
+    /// every peer should add that many picks to their local
+    /// `LevelUpsPending`."
+    ///
+    /// Why separate from `XpSync`: each peer drains their pending
+    /// independently as they click level-up cards. If `XpSync` kept
+    /// broadcasting `pending`, the host's value would clobber each
+    /// peer's local "I've already picked one of these" decrement.
+    /// Per-peer LevelUp needs an additive, edge-triggered signal.
+    LevelUpGranted { count: u8 },
+    /// Either → others: low-rate keepalive. The other side updates
+    /// `last_seen` on receipt so `detect_stale_peers` doesn't time
+    /// the link out during otherwise-quiet states (Paused, Lobby,
+    /// menus). Body-less by design — a "you're still here" signal.
+    Heartbeat,
+}
+
+/// Plain-data mirror of `crate::stats::PlayerStats`. Each `Stat` has
+/// three f32 fields (`base`, `flat`, `percent`). Flat array layout
+/// (16 fields × 3 = 48 f32s) so a renamed-but-untyped field on
+/// either side immediately fails to compile rather than silently
+/// drifting on the wire.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub struct SerializedPlayerStats {
+    pub hp:                        [f32; 3],
+    pub move_speed:                [f32; 3],
+    pub turn_speed:                [f32; 3],
+    pub turret_turn_speed:         [f32; 3],
+    pub turret_arc_bonus_deg:      [f32; 3],
+    pub luck_pct:                  [f32; 3],
+    pub proc_strength_pct:         [f32; 3],
+    pub crit_pct:                  [f32; 3],
+    pub range_pct:                 [f32; 3],
+    pub harvest_pct:               [f32; 3],
+    pub xp_harvest_pct:            [f32; 3],
+    pub shield_max:                [f32; 3],
+    pub shield_recharge_rate_pct:  [f32; 3],
+    pub shield_recharge_delay:     [f32; 3],
+    pub rune_damage:               [f32; 3],
+    pub turret_damage_pct:         [f32; 3],
+}
+
+/// Plain-data mirror of `crate::turret::SlotCfg`. `Option<Rune>` is
+/// represented by `255` for None, otherwise `Rune::to_u8`. Stable
+/// wire format.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub struct SerializedSlotCfg {
+    pub equipped:  bool,
+    pub weapon:    u8,        // WeaponType::to_u8
+    pub damage:    i32,
+    pub fire_rate: f32,
+    pub barrels:   u8,
+    pub runes:     [u8; 3],   // 255 = None, else Rune::to_u8
 }
 
 /// One enemy's authoritative state, packaged for an `EnemySnapshot`
@@ -147,7 +266,18 @@ pub struct EnemyEntry {
     /// `tick_on_frost` / `tick_on_bleed` systems light up the right
     /// DOT visuals + tick damage.
     pub status_flags: u8,
+    /// `ShipClass::to_u8` if this entry is a boss; `0xFF` for regular
+    /// enemies. Read on the client only at first-sight to decide
+    /// whether to spawn a boss-styled mirror (full ship visuals via
+    /// `build_ship_for_faction`) instead of the standard variant mesh.
+    /// Subsequent updates ignore this field — boss HP / transform are
+    /// reconciled through the same path as regular mirrors.
+    pub boss_class: u8,
 }
+
+/// Sentinel for `EnemyEntry.boss_class` meaning "not a boss." Read by
+/// the mirror-spawn path on the client.
+pub const NOT_A_BOSS: u8 = 0xFF;
 
 /// Bind a non-blocking UDP socket. Host passes `Some(HOST_PORT)`
 /// (listens on a known port for incoming Hellos); client passes
@@ -326,8 +456,8 @@ mod tests {
         }
     }
 
-    /// `DamageEnemy` round-trip — Phase 2.6 carries weapon + runes
-    /// in addition to the base amount.
+    /// `DamageEnemy` round-trip — carries weapon + runes alongside
+    /// the base damage amount so the host re-rolls procs authoritatively.
     #[test]
     fn netmsg_damage_enemy_round_trip() {
         let msg = NetMsg::DamageEnemy {
@@ -390,9 +520,9 @@ mod tests {
     #[test]
     fn netmsg_enemy_snapshot_round_trip() {
         let entries = vec![
-            EnemyEntry { id: 1, kind: 0, pos: [10.5, -20.0], rot: 0.0,  hp: 8,  status_flags: 0 },
-            EnemyEntry { id: 2, kind: 6, pos: [-50.0, 50.0], rot: 3.14, hp: 52, status_flags: 1 },
-            EnemyEntry { id: 42, kind: 3, pos: [0.0, 0.0],   rot: -1.5, hp: 2,  status_flags: 7 },
+            EnemyEntry { id: 1, kind: 0, pos: [10.5, -20.0], rot: 0.0,  hp: 8,  status_flags: 0, boss_class: NOT_A_BOSS },
+            EnemyEntry { id: 2, kind: 6, pos: [-50.0, 50.0], rot: 3.14, hp: 52, status_flags: 1, boss_class: NOT_A_BOSS },
+            EnemyEntry { id: 42, kind: 3, pos: [0.0, 0.0],   rot: -1.5, hp: 2,  status_flags: 7, boss_class: 4 /* Tender boss */ },
         ];
         let msg = NetMsg::EnemySnapshot { entries: entries.clone() };
         let bytes = bincode::serialize(&msg).unwrap();
@@ -494,6 +624,7 @@ mod tests {
             rot: -2.5,
             hp: 9999,
             status_flags: 0b101,
+            boss_class: NOT_A_BOSS,
         };
         let bytes = bincode::serialize(&e).unwrap();
         let back: EnemyEntry = bincode::deserialize(&bytes).unwrap();
@@ -643,16 +774,17 @@ mod tests {
     }
 
     /// 30-enemy snapshot stays well under a typical 1400-byte UDP MTU
-    /// so we don't fragment. Per entry: 4 + 1 + 8 + 4 + 4 + 1 = 22
-    /// bytes after adding status_flags; 30 entries = 660 bytes; plus
-    /// 12 bytes of NetMsg+Vec framing = 672 bytes total. Generous
-    /// headroom against a 1400-byte typical MTU.
+    /// so we don't fragment. Per entry: 4 + 1 + 8 + 4 + 4 + 1 + 1 = 23
+    /// bytes after adding status_flags + boss_class; 30 entries = 690
+    /// bytes; plus 12 bytes of NetMsg+Vec framing = 702 bytes total.
+    /// Generous headroom against a 1400-byte typical MTU.
     #[test]
     fn full_enemy_snapshot_fits_in_one_packet() {
         let entries: Vec<EnemyEntry> = (0..30)
             .map(|i| EnemyEntry {
                 id: i, kind: (i as u8) % 7, pos: [i as f32, -(i as f32)],
                 rot: 0.0, hp: 100 - i as i32, status_flags: 0,
+                boss_class: NOT_A_BOSS,
             })
             .collect();
         let bytes = bincode::serialize(&NetMsg::EnemySnapshot { entries }).unwrap();

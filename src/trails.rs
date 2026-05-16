@@ -14,7 +14,6 @@ use crate::balance::{
     ENEMY_LEN, ENEMY_TRAIL_HEAD_WIDTH, ENEMY_TRAIL_MAX_POINTS, ENEMY_TRAIL_SAMPLE_HZ,
     HULL_HALF_LEN, TRAIL_HEAD_WIDTH, TRAIL_MAX_POINTS, TRAIL_SAMPLE_HZ,
 };
-use crate::components::Friendly;
 use crate::enemy::Enemy;
 
 /// Marker for the single friendly trail entity. Mesh positions live in world
@@ -120,7 +119,9 @@ pub fn rebuild_ribbon_mesh(mesh: &mut Mesh, points: &VecDeque<Vec2>, head_width:
 pub fn update_trail(
     time: Res<Time>,
     mut path: ResMut<ShipPath>,
-    ship_q: Query<&Transform, (With<Friendly>, Without<Trail>)>,
+    // Use LocalPlayer (not just Friendly) so MP's remote-peer ship
+    // doesn't show up here — single() would bail with two friendlies.
+    ship_q: Query<&Transform, (With<crate::components::LocalPlayer>, Without<Trail>)>,
     trail_q: Query<&Mesh2d, With<Trail>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {

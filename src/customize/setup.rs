@@ -298,7 +298,9 @@ pub fn setup_customize_ui(
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
 
-    // ---------- Top-right CLOSE button ----------
+    // ---------- Top-right READY button ----------
+    // "READY" reads correctly in both solo (advance to map) and
+    // multiplayer (mark our peer ready, wait for partner).
     let close_pos = Vec2::new(
          (CUSTOMIZE_INTERNAL_W as f32) * 0.5 - 22.0,
          (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 12.0,
@@ -310,11 +312,11 @@ pub fn setup_customize_ui(
         close_pos,
         Vec2::new(34.0, 12.0),
         SHOP_TILE_RADIUS.min(5.0),
-        Color::srgb(0.50, 0.20, 0.22),
+        Color::srgb(0.20, 0.50, 0.28),
         Z_TILE_BG,
         super::CustomizeCloseBtn,
     );
-    spawn_text(&mut commands, &pixel_font, close_pos, "CLOSE", Color::WHITE, 14.0, CloseLabelTag);
+    spawn_text(&mut commands, &pixel_font, close_pos, "READY", Color::WHITE, 14.0, CloseLabelTag);
     commands.spawn((
         Transform::from_translation(close_pos.extend(Z_TILE_BG)),
         HitArea { size: Vec2::new(34.0, 12.0) },

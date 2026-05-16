@@ -98,7 +98,7 @@ pub struct HeliPadDecal;
 
 /// Player-set per-slot configuration. UI mutates `slots`; `sync_turret_config`
 /// pushes those changes (plus any pier adjacency buffs) into each `TurretSlot`.
-#[derive(Resource)]
+#[derive(Resource, Clone, Debug)]
 pub struct TurretConfig {
     pub slots: [SlotCfg; 8],
 }
@@ -123,7 +123,7 @@ impl Default for TurretConfig {
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Debug)]
 pub struct SlotCfg {
     pub equipped: bool,
     pub weapon: WeaponType,

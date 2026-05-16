@@ -388,6 +388,8 @@ pub fn handle_level_up_click(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     xp: Res<Xp>,
+    mode: Res<crate::multiplayer::NetMode>,
+    mut local_ready: ResMut<crate::multiplayer::ready::LocalReadyState>,
     mut next: ResMut<NextState<crate::AppState>>,
     overlay: Query<Entity, With<LevelUpRoot>>,
 ) {
@@ -409,22 +411,29 @@ pub fn handle_level_up_click(
             // instead of routing through the shop. Falls back to
             // Customize for the post-stage path. Cleared so a stale
             // override can't leak into the next level-up.
-            let dest = return_state.0.take().unwrap_or(crate::AppState::Customize);
-            // Despawn the level-up overlay synchronously so it's gone
-            // before the wipe starts expanding. Otherwise the overlay
-            // sits visibly behind the wipe for ~0.3s while the circle
-            // grows over it. With this, the cards vanish on click,
-            // there's a brief beat of the play area showing through,
-            // then the wipe sweeps in.
+            //
+            // Multiplayer: don't consume the override or transition
+            // ourselves. Each peer flips `LocalReadyState.ready`;
+            // host's `host_advance_when_all_ready` consumes the
+            // override (or falls back to Customize) and transitions
+            // everyone together via the state-sync pipeline.
+            //
+            // The overlay is despawned in both paths so the cards
+            // vanish immediately on the local pick.
             for e in &overlay {
                 commands.entity(e).despawn();
             }
-            if matches!(dest, crate::AppState::Customize) {
-                crate::stage_complete::spawn_transition(
-                    &mut commands, &mut meshes, &mut materials, dest,
-                );
+            if matches!(*mode, crate::multiplayer::NetMode::Solo) {
+                let dest = return_state.0.take().unwrap_or(crate::AppState::Customize);
+                if matches!(dest, crate::AppState::Customize) {
+                    crate::stage_complete::spawn_transition(
+                        &mut commands, &mut meshes, &mut materials, dest,
+                    );
+                } else {
+                    next.set(dest);
+                }
             } else {
-                next.set(dest);
+                local_ready.ready = true;
             }
         }
         return;

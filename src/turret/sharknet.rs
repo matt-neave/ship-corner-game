@@ -23,7 +23,7 @@ use rand::Rng;
 
 use crate::balance::PLAY_LAYER;
 use crate::bullet::{DamageSource, PendingDamageQueue};
-use crate::components::{Friendly, Health};
+use crate::components::Health;
 use crate::effects::HitFx;
 use crate::enemy::Enemy;
 use crate::palette::PaletteMaterials;
@@ -144,7 +144,7 @@ pub fn sync_sharknet_sharks(
     pm: Option<Res<PaletteMaterials>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    ship_q: Query<&Transform, (With<Friendly>, Without<Shark>)>,
+    ship_q: Query<&Transform, (With<crate::components::LocalPlayer>, Without<Shark>)>,
     sharks: Query<(Entity, &Shark)>,
 ) {
     let Some(pm) = pm else { return };

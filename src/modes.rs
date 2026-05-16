@@ -643,10 +643,13 @@ pub fn apply_camera_follow(
     time: Res<Time>,
     follow: Res<CameraFollow>,
     mut shake: ResMut<ScreenShake>,
+    // LocalPlayer (not Friendly) so MP doesn't bail — host has two
+    // Friendlies, single() would fall back to Vec2::ZERO. Camera
+    // should track the local player's ship, never the remote's.
     friendly: Query<
         &Transform,
         (
-            With<crate::components::Friendly>,
+            With<crate::components::LocalPlayer>,
             Without<crate::palette::PlayCamera>,
             Without<crate::palette::HudCamera>,
         ),
@@ -658,7 +661,7 @@ pub fn apply_camera_follow(
         &mut Transform,
         (
             Or<(With<crate::palette::PlayCamera>, With<crate::palette::HudCamera>)>,
-            Without<crate::components::Friendly>,
+            Without<crate::components::LocalPlayer>,
         ),
     >,
 ) {

@@ -639,11 +639,24 @@ pub fn queue_next_stage_combat(
 pub fn level_fail_check(
     view: Res<ViewMode>,
     mode: Res<crate::modes::GameMode>,
-    friendly: Query<&crate::components::Health, With<crate::components::Friendly>>,
+    // LocalPlayer (not just Friendly) so MP doesn't break — host
+    // has two Friendlies (local + remote peer's ship) and `single()`
+    // would bail.
+    friendly: Query<&crate::components::Health, With<crate::components::LocalPlayer>>,
+    net_mode: Res<crate::multiplayer::NetMode>,
     mut next: ResMut<NextState<crate::AppState>>,
 ) {
     if !matches!(*view, ViewMode::Combat) { return; }
     if !matches!(*mode, crate::modes::GameMode::Sandbox) { return; }
+
+    // Multiplayer death goes through `detect_local_death` →
+    // `PeerDied` → host's `TeamDeathTracker` → `host_check_team_wipe`
+    // (only fires GameOver when EVERY peer is dead). The dead peer
+    // sits in spectate until the next stage's `PeerRevived`. So
+    // this single-player-only fail check must NOT fire in MP — else
+    // it'd snap the whole team to GameOver the moment the first
+    // player dies.
+    if !matches!(*net_mode, crate::multiplayer::NetMode::Solo) { return; }
 
     let Ok(h) = friendly.single() else { return; };
     if h.0 > 0 { return; }

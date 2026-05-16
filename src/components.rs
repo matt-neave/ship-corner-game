@@ -4,9 +4,25 @@
 
 use bevy::prelude::*;
 
-/// Marker for the friendly ship entity. Exactly one exists.
+/// Marker for the friendly ship entity. In single-player one exists;
+/// in multiplayer the host has TWO (the local player's ship + the
+/// remote peer's "ghost" replica), both tagged Friendly so enemy AI
+/// targets both. Systems that need to pick the LOCAL ship
+/// specifically use [`LocalPlayer`] (which only the local ship has).
 #[derive(Component)]
 pub struct Friendly;
+
+/// Marker for the LOCAL player's ship. Always added alongside
+/// [`Friendly`] in `spawn_player_world`. Multiplayer's remote-peer
+/// ship gets `Friendly` but NOT `LocalPlayer` so single-player
+/// queries (`single()`-using) can disambiguate via
+/// `With<LocalPlayer>` instead of `With<Friendly>`.
+///
+/// Defined in `components.rs` (always compiled) rather than the
+/// multiplayer module (cfg-gated to non-wasm) so non-multiplayer
+/// systems can reference it without cfg pain.
+#[derive(Component)]
+pub struct LocalPlayer;
 
 /// Hit points. Decremented in collision/detonation systems; the entity is
 /// despawned (or hidden, in the case of the friendly in Wave mode) when it
