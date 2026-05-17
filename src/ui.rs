@@ -12,6 +12,7 @@
 use bevy::prelude::*;
 
 mod hud;
+mod map_hint;
 mod wave_indicator;
 
 pub use hud::{
@@ -22,6 +23,7 @@ pub use hud::{
     VsyncButton, WaveHpUi,
 };
 pub use wave_indicator::{setup_wave_indicator, update_wave_indicator};
+pub use map_hint::{setup_map_hint, update_map_hint};
 
 use crate::map::ViewMode;
 use crate::modes::VsyncMode;

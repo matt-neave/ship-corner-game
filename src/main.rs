@@ -126,11 +126,11 @@ use turret::{
 };
 use ui::{
     setup_ui,
-    setup_wave_indicator, sync_ally_hp_bars, sync_hud_dev_buttons_visibility,
+    setup_wave_indicator, setup_map_hint, sync_ally_hp_bars, sync_hud_dev_buttons_visibility,
     ui_button_system, update_ally_hp_values,
     update_fps_text, update_hp_bar_pixel_scale,
     update_map_button, update_shield_bar,
-    update_score_text, update_vsync_label, update_wave_indicator,
+    update_score_text, update_vsync_label, update_wave_indicator, update_map_hint,
     update_wave_ui, DamageStats,
 };
 
@@ -718,7 +718,7 @@ fn main() {
             #[cfg(not(feature = "demo"))]
             setup_debug_ui,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
-            setup_wave_indicator, setup_spawn_indicator_assets,
+            setup_wave_indicator, setup_map_hint, setup_spawn_indicator_assets,
         ).chain())
         // Bridge runs first so the rest of Update sees synced flags.
         .add_systems(Update, sync_state_to_open_resources)
@@ -890,6 +890,7 @@ fn main() {
                 // default is `false` everywhere now).
                 sync_hud_dev_buttons_visibility,
                 update_wave_indicator,
+                update_map_hint,
                 tick_spawn_indicators,
                 xp::update_xp_bar,
             ),

@@ -325,14 +325,12 @@ impl PlayerStats {
         let bonus = self.turret_arc_bonus_deg.effective().to_radians();
         (slot_base_half_rad + bonus).min(std::f32::consts::PI)
     }
-    /// Effective turret rotation speed in rad/s. Returns a huge
-    /// value so `approach_angle(... rate * dt)` always exceeds the
-    /// angular delta to target and turrets snap-aim instantly —
-    /// useful for testing other systems without traversal latency.
-    /// Revert to the `TAU` cap when restoring smooth turret turn.
+    /// Effective turret rotation speed in rad/s, capped at 360°/s
+    /// (= one full rotation per second). The cap lives here so the
+    /// readout panel and the aim/fire system agree.
     pub fn effective_turret_turn_speed(&self) -> f32 {
-        let _ = self.turret_turn_speed.effective();
-        f32::INFINITY
+        let max = std::f32::consts::TAU; // 360°/s
+        self.turret_turn_speed.effective().min(max)
     }
 
     /// Effective dodge chance as a 0..1 probability, clamped to

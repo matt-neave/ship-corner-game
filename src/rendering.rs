@@ -440,10 +440,24 @@ pub fn setup_render(
     // ViewMode is Map, so we start with PlayCamera disabled. MSAA off —
     // multi-sampling against a low-res render target softens every
     // primitive edge, killing the chunky-pixel look.
-    let proj = || Projection::Orthographic(OrthographicProjection {
+    // Play camera fills the play target's aspect (matches arena
+    // size when wide_play is on).
+    let play_proj = || Projection::Orthographic(OrthographicProjection {
         scaling_mode: bevy::render::camera::ScalingMode::Fixed {
             width: PLAY_WORLD_W,
             height: PLAY_WORLD_H,
+        },
+        ..OrthographicProjection::default_2d()
+    });
+
+    // Map camera locks to vertical world height with horizontal auto.
+    // With wide_play (render target 360×200) this keeps the square
+    // 200×200 map content centred — extra width on either side
+    // shows clear-color ocean rather than horizontally stretching
+    // the planet grid into rectangles.
+    let map_proj = || Projection::Orthographic(OrthographicProjection {
+        scaling_mode: bevy::render::camera::ScalingMode::FixedVertical {
+            viewport_height: PLAY_WORLD_H,
         },
         ..OrthographicProjection::default_2d()
     });
@@ -457,7 +471,7 @@ pub fn setup_render(
             is_active: false, // map view is the default
             ..default()
         },
-        proj(),
+        play_proj(),
         RenderLayers::layer(PLAY_LAYER),
         PlayCamera,
         Msaa::Off,
@@ -472,7 +486,7 @@ pub fn setup_render(
             is_active: true,
             ..default()
         },
-        proj(),
+        map_proj(),
         RenderLayers::layer(MAP_LAYER),
         MapCamera,
         Msaa::Off,
@@ -513,7 +527,7 @@ pub fn setup_render(
             clear_color: ClearColorConfig::None,
             ..default()
         },
-        proj(),
+        play_proj(),
         RenderLayers::layer(HUD_LAYER),
         Msaa::Off,
         HudCamera,
