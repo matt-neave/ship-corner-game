@@ -891,6 +891,16 @@ fn spawn_shop_turret_tile(
         DragSourceMarker(DragSourceKind::ShopTurret(idx)),
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
+    // Right-click lock badge — bright gold frame + corner padlock,
+    // hidden by default. `shop_lock::sync_lock_badges` toggles on
+    // the matching `turrets_locked[idx]` flag.
+    super::shop_lock::spawn_lock_badge(
+        commands,
+        super::shop_lock::ShopSlotKind::Turret,
+        idx,
+        pos,
+        Vec2::splat(SHOP_TILE),
+    );
 }
 
 fn spawn_shop_tile_container(
@@ -1049,6 +1059,15 @@ fn spawn_shop_rune_tile(
         DragSourceMarker(DragSourceKind::ShopRune(idx)),
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
+    // Right-click lock badge — same gold frame + padlock as the
+    // turret tile, sized to the rune socket's bounding box.
+    super::shop_lock::spawn_lock_badge(
+        commands,
+        super::shop_lock::ShopSlotKind::Rune,
+        idx,
+        pos,
+        Vec2::splat(SOCKET + 4.0),
+    );
 }
 
 // ---------- Per-frame text positioning ----------

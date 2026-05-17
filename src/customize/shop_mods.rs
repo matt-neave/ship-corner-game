@@ -135,6 +135,16 @@ fn spawn_card(commands: &mut Commands, font: &crate::fonts::PixelFont, idx: usiz
         ShopModSlot { idx },
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
+    // Right-click lock badge — gold frame around the card edge +
+    // corner padlock, hidden by default. `sync_lock_badges`
+    // toggles on the matching `mods_locked[idx]` flag.
+    super::shop_lock::spawn_lock_badge(
+        commands,
+        super::shop_lock::ShopSlotKind::Mod,
+        idx,
+        spec_pos,
+        Vec2::new(MOD_CARD_W, MOD_CARD_H),
+    );
 }
 
 /// Per-frame layout + visibility + content sync.
@@ -176,12 +186,20 @@ pub fn update_shop_mod_cards(
     let outline_size = fill_size + Vec2::splat(2.0 * BORDER_PX);
 
     for (slot, mut vis, mut tf, mut sprite) in &mut outlines {
-        let occupied = shop.mods.get(slot.idx).map_or(false, |m| m.is_some());
+        let m = shop.mods.get(slot.idx).and_then(|m| *m);
+        let occupied = m.is_some();
         set_vis(&mut vis, if occupied { Visibility::Inherited } else { Visibility::Hidden });
         if !occupied { continue; }
         if sprite.custom_size != Some(outline_size) { sprite.custom_size = Some(outline_size); }
         tf.translation.x = slot.spec_pos.x * s;
         tf.translation.y = slot.spec_pos.y * s;
+        // Tint the outline by the mod's rarity so the card shouts
+        // its tier at a glance: white = common, blue = uncommon,
+        // purple = rare, red = legendary.
+        if let Some(m) = m {
+            let want = m.spec().rarity.border_color();
+            if sprite.color != want { sprite.color = want; }
+        }
     }
     for (slot, mut vis, mut tf, mut sprite) in &mut fills {
         let occupied = shop.mods.get(slot.idx).map_or(false, |m| m.is_some());

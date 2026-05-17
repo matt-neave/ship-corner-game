@@ -38,6 +38,7 @@ use crate::AppState;
 mod render;
 mod setup;
 mod drag;
+mod shop_lock;
 mod shop_mods;
 mod stats_panel;
 mod tooltip;
@@ -105,6 +106,7 @@ impl Plugin for CustomizePlugin {
                     handle_close_click,
                     handle_reroll_button,
                     update::handle_right_click_lock,
+                    shop_lock::sync_lock_badges,
                 ).after(track_customize_cursor),
             )
             // Drag chain in its own add_systems — chained tuples

@@ -175,11 +175,63 @@ pub struct ShopTurretOffer {
     pub barrels: u8,
 }
 
+/// Tier-style rarity for a mod. Drives the card's outline tint
+/// so the player can see at a glance which slot is the high-tier
+/// pull. Rarity is authored per-mod in [`MOD_LIBRARY`]; doesn't
+/// (yet) affect roll weights — every entry rolls with equal
+/// probability for now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
+pub enum ModRarity {
+    /// White border — straight everyday upgrade.
+    Common,
+    /// Blue border — a touch better or rarer effect family.
+    Uncommon,
+    /// Purple border — strong but conditional / build-defining.
+    Rare,
+    /// Red border — top-tier impact or a wild trade-off.
+    Legendary,
+}
+
+impl ModRarity {
+    /// Outline colour used by the mod card. Pick palette values
+    /// that pop on the dark `theme::SURFACE_RAISED` card fill and
+    /// stay distinct from one another at small sizes.
+    pub fn border_color(self) -> Color {
+        match self {
+            ModRarity::Common    => Color::srgb(0.92, 0.93, 0.96),
+            ModRarity::Uncommon  => Color::srgb(0.40, 0.62, 0.95),
+            ModRarity::Rare      => Color::srgb(0.78, 0.40, 0.95),
+            ModRarity::Legendary => Color::srgb(0.95, 0.32, 0.32),
+        }
+    }
+
+    /// Per-pick roll weight. Weighted-random sampling without
+    /// replacement: the shop draws 3 mods, each pick picks one
+    /// from the remaining library proportional to these weights,
+    /// then removes the picked entry so it can't duplicate.
+    ///
+    /// 60 / 25 / 12 / 3 — Diablo-style "uncommon is uncommon,
+    /// legendary feels like a moment." Per-pick probabilities,
+    /// not per-shop — the rarer-tier draw chance compounds when
+    /// the player saves rerolls.
+    pub fn weight(self) -> f32 {
+        match self {
+            ModRarity::Common    => 60.0,
+            ModRarity::Uncommon  => 25.0,
+            ModRarity::Rare      => 12.0,
+            ModRarity::Legendary => 3.0,
+        }
+    }
+}
+
 /// One canonical mod entry — a name + an arbitrary list of stat
-/// changes. The shop rolls indexes into [`MOD_LIBRARY`] so adding
-/// a new mod is one struct literal at the bottom of that array.
+/// changes + a rarity tier. The shop rolls indexes into
+/// [`MOD_LIBRARY`] so adding a new mod is one struct literal at
+/// the bottom of that array.
 pub struct ModSpec {
     pub name: &'static str,
+    pub rarity: ModRarity,
     /// Each entry is `(stat, delta)`. Positive deltas are buffs,
     /// negative are nerfs; the card-text pass colours them green
     /// vs red automatically by sign.
@@ -192,56 +244,124 @@ pub struct ModSpec {
 /// the card label all read straight from here.
 ///
 /// Number scale: pure mods are ≈ `StatKind::upgrade_step` (one
-/// level-up's worth). Trade-off mods buff at ≈ 2× upgrade_step
-/// and pair a ≈ 1× nerf, so the net is roughly +1 step (Brotato
-/// "the trade-off mod is the favoured pick when the side stat is
-/// dump-worthy" pattern). Crit is intentionally small (5%) — a
-/// build-defining stat shouldn't swing from one card.
+/// level-up's worth). Trade-off mods buff at 2× upgrade_step AND
+/// nerf at 2× upgrade_step — net zero on paper, so the trade-off
+/// is the favoured pick only when the side stat is genuinely
+/// dump-worthy for your build (Brotato pattern). Crit is
+/// intentionally small (5%) — a build-defining stat shouldn't
+/// swing from one card.
 pub static MOD_LIBRARY: &[ModSpec] = &[
-    // ---- Pure-buff mods ----
-    ModSpec { name: "RELOADED",   changes: &[(StatKind::TurretDamage, 5.0)] },
-    ModSpec { name: "FOCUS",      changes: &[(StatKind::Crit, 5.0)] },
-    ModSpec { name: "OUTRIDER",   changes: &[(StatKind::MoveSpeed, 1.5)] },
-    ModSpec { name: "HOMING",     changes: &[(StatKind::Range, 5.0)] },
-    ModSpec { name: "SCOUT",      changes: &[(StatKind::TurnSpeed, 0.25)] },
-    ModSpec { name: "PLATING",    changes: &[(StatKind::Hp, 5.0)] },
-    ModSpec { name: "PADDING",    changes: &[(StatKind::Armour, 2.0)] },
-    ModSpec { name: "DODGER",     changes: &[(StatKind::Dodge, 2.0)] },
-    ModSpec { name: "BARRIER",    changes: &[(StatKind::ShieldMax, 3.0)] },
-    ModSpec { name: "FIELD KIT",  changes: &[(StatKind::Harvest, 1.0)] },
-    ModSpec { name: "TUTOR",      changes: &[(StatKind::XpHarvest, 5.0)] },
-    ModSpec { name: "ENERGISED",  changes: &[(StatKind::RuneDamage, 0.05)] },
-    ModSpec { name: "PYRO",       changes: &[(StatKind::ProcStrength, 5.0)] },
-    ModSpec { name: "GAMBLER",    changes: &[(StatKind::Luck, 5.0)] },
+    // ---- Pure-buff mods (mostly Common, a few Uncommon for the
+    //      stats that snowball — luck / runes / harvest) ----
+    ModSpec { name: "RELOADED",   rarity: ModRarity::Common,   changes: &[(StatKind::TurretDamage, 5.0)] },
+    ModSpec { name: "FOCUS",      rarity: ModRarity::Common,   changes: &[(StatKind::Crit, 5.0)] },
+    ModSpec { name: "OUTRIDER",   rarity: ModRarity::Common,   changes: &[(StatKind::MoveSpeed, 1.5)] },
+    ModSpec { name: "HOMING",     rarity: ModRarity::Common,   changes: &[(StatKind::Range, 5.0)] },
+    ModSpec { name: "SCOUT",      rarity: ModRarity::Common,   changes: &[(StatKind::TurnSpeed, 0.25)] },
+    ModSpec { name: "PLATING",    rarity: ModRarity::Common,   changes: &[(StatKind::Hp, 5.0)] },
+    ModSpec { name: "PADDING",    rarity: ModRarity::Common,   changes: &[(StatKind::Armour, 3.0)] },
+    ModSpec { name: "DODGER",     rarity: ModRarity::Common,   changes: &[(StatKind::Dodge, 3.0)] },
+    ModSpec { name: "BARRIER",    rarity: ModRarity::Common,   changes: &[(StatKind::ShieldMax, 5.0)] },
+    ModSpec { name: "FIELD KIT",  rarity: ModRarity::Uncommon, changes: &[(StatKind::Harvest, 1.0)] },
+    ModSpec { name: "TUTOR",      rarity: ModRarity::Common,   changes: &[(StatKind::XpHarvest, 3.0)] },
+    ModSpec { name: "ENERGISED",  rarity: ModRarity::Uncommon, changes: &[(StatKind::RuneDamage, 0.05)] },
+    ModSpec { name: "PYRO",       rarity: ModRarity::Common,   changes: &[(StatKind::ProcStrength, 5.0)] },
+    ModSpec { name: "GAMBLER",    rarity: ModRarity::Uncommon, changes: &[(StatKind::Luck, 5.0)] },
 
-    // ---- Trade-off mods (named after their character) ----
+    // ---- Trade-off mods — 2× buff / 2× nerf (zero-sum on paper) ----
+    //      All Rare since they're build-defining picks.
     ModSpec {
         name: "GLASS CANNON",
-        changes: &[(StatKind::TurretDamage, 12.0), (StatKind::Hp, -8.0)],
+        rarity: ModRarity::Rare,
+        changes: &[(StatKind::TurretDamage, 10.0), (StatKind::Hp, -10.0)],
     },
     ModSpec {
         name: "STEADY AIM",
-        changes: &[(StatKind::Crit, 10.0), (StatKind::MoveSpeed, -1.5)],
+        rarity: ModRarity::Rare,
+        changes: &[(StatKind::Crit, 10.0), (StatKind::MoveSpeed, -3.0)],
     },
     ModSpec {
         name: "BERSERKER",
-        changes: &[(StatKind::TurretDamage, 10.0), (StatKind::Armour, -4.0)],
+        rarity: ModRarity::Rare,
+        changes: &[(StatKind::TurretDamage, 10.0), (StatKind::Armour, -6.0)],
     },
     ModSpec {
         name: "EVASIVE",
-        changes: &[(StatKind::Dodge, 4.0), (StatKind::TurretDamage, -5.0)],
+        rarity: ModRarity::Rare,
+        changes: &[(StatKind::Dodge, 6.0), (StatKind::TurretDamage, -10.0)],
     },
     ModSpec {
         name: "JUGGERNAUT",
-        changes: &[(StatKind::Hp, 12.0), (StatKind::MoveSpeed, -1.5)],
+        rarity: ModRarity::Rare,
+        changes: &[(StatKind::Hp, 10.0), (StatKind::MoveSpeed, -3.0)],
     },
     ModSpec {
         name: "MERCHANT",
-        changes: &[(StatKind::Harvest, 2.0), (StatKind::TurretDamage, -5.0)],
+        rarity: ModRarity::Rare,
+        changes: &[(StatKind::Harvest, 2.0), (StatKind::TurretDamage, -10.0)],
     },
     ModSpec {
         name: "FAR SHOT",
-        changes: &[(StatKind::Range, 10.0), (StatKind::ProcStrength, -5.0)],
+        rarity: ModRarity::Rare,
+        changes: &[(StatKind::Range, 10.0), (StatKind::ProcStrength, -10.0)],
+    },
+
+    // ---- Legendary mods — multi-stat picks that define a build,
+    //      and pure trade-offs at heroic numbers. Roll weight is
+    //      3 per entry vs commons' 60, so any legendary is roughly
+    //      a "one shop in twenty" moment.
+    ModSpec {
+        name: "OVERCLOCK",
+        rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::TurretDamage, 15.0),
+            (StatKind::Crit, 10.0),
+            (StatKind::Range, 10.0),
+        ],
+    },
+    ModSpec {
+        name: "BULWARK",
+        rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::Hp, 15.0),
+            (StatKind::Armour, 5.0),
+            (StatKind::ShieldMax, 10.0),
+        ],
+    },
+    ModSpec {
+        name: "WARPRIEST",
+        rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::RuneDamage, 0.15),
+            (StatKind::ProcStrength, 10.0),
+            (StatKind::Luck, 10.0),
+        ],
+    },
+    ModSpec {
+        name: "APEX HUNTER",
+        rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::MoveSpeed, 3.0),
+            (StatKind::TurretDamage, 10.0),
+            (StatKind::Crit, 10.0),
+        ],
+    },
+    ModSpec {
+        name: "DEATH WISH",
+        rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::TurretDamage, 30.0),
+            (StatKind::Hp, -30.0),
+        ],
+    },
+    ModSpec {
+        name: "REGEN",
+        rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::Hp, 15.0),
+            (StatKind::ShieldMax, 10.0),
+            (StatKind::TurretDamage, -10.0),
+        ],
     },
 ];
 
@@ -332,6 +452,33 @@ pub const SHOP_ITEM_COST: u32 = SHOP_TURRET_COST;
 /// Roll a fresh set of offerings. Used by both the startup init and the
 /// runtime reroll button. Always returns a fully-stocked shop (every
 /// slot Some(...)), so a reroll restocks anything the player bought.
+/// Weighted-random sampling without replacement against
+/// [`MOD_LIBRARY`]. Picks one entry from `pool` proportional to
+/// each entry's `rarity.weight()`, removes it from the pool, and
+/// returns the picked library index. Used by the shop reroll +
+/// initial roll so the three slots draw distinct mods with rarity
+/// frequencies that match the per-tier weight table.
+fn weighted_pick_without_replacement(
+    rng: &mut impl rand::Rng,
+    pool: &mut Vec<usize>,
+) -> Option<usize> {
+    if pool.is_empty() { return None; }
+    let total: f32 = pool.iter().map(|&i| MOD_LIBRARY[i].rarity.weight()).sum();
+    if total <= 0.0 { return pool.pop(); }
+    let mut roll = rng.gen_range(0.0..total);
+    for (pos, &idx) in pool.iter().enumerate() {
+        let w = MOD_LIBRARY[idx].rarity.weight();
+        if roll < w {
+            pool.remove(pos);
+            return Some(idx);
+        }
+        roll -= w;
+    }
+    // Numerical edge — `roll` exhausted the loop. Just take the
+    // last entry so the shop slot still gets a card.
+    pool.pop()
+}
+
 pub fn roll_fresh_stock() -> CustomizeShop {
     let mut rng = rand::thread_rng();
     let weapons = [
@@ -393,15 +540,17 @@ pub fn roll_fresh_stock() -> CustomizeShop {
     let mut runes_owned: Vec<_> = runes_pool.to_vec();
     runes_owned.shuffle(&mut rng);
     let runes = runes_owned.into_iter().take(2).map(Some).collect();
-    // Three distinct mods per shop offering — sample without
-    // replacement so the same card never appears twice in one row.
-    let mut mod_indices: Vec<usize> = (0..MOD_LIBRARY.len()).collect();
-    mod_indices.shuffle(&mut rng);
-    let mods: Vec<Option<ShopMod>> = mod_indices
-        .into_iter()
-        .take(3)
-        .map(|i| Some(ShopMod { spec_idx: i }))
-        .collect();
+    // Three distinct mods per shop offering — weighted sampling
+    // without replacement so the same card never appears twice in
+    // one row, AND rarer tiers stay rare. See
+    // `weighted_pick_without_replacement` for the per-pick logic.
+    let mut pool: Vec<usize> = (0..MOD_LIBRARY.len()).collect();
+    let mut mods: Vec<Option<ShopMod>> = Vec::with_capacity(3);
+    for _ in 0..3 {
+        if let Some(idx) = weighted_pick_without_replacement(&mut rng, &mut pool) {
+            mods.push(Some(ShopMod { spec_idx: idx }));
+        }
+    }
     let _ = StatKind::ROLLABLE; // retained for legacy use elsewhere.
     CustomizeShop {
         turrets, runes, mods,

@@ -685,12 +685,12 @@ impl StatKind {
             StatKind::Crit => 5.0,                // was 25 — crit was a build-finisher in one card
             StatKind::Range => 5.0,
             StatKind::Harvest => 1.0,             // already conservative
-            StatKind::XpHarvest => 5.0,
-            StatKind::ShieldMax => 3.0,
+            StatKind::XpHarvest => 3.0,
+            StatKind::ShieldMax => 5.0,
             StatKind::RuneDamage => 0.05,         // half of debug
             StatKind::TurretDamage => 5.0,
-            StatKind::Dodge => 2.0,               // 30 picks to hit the 60% cap
-            StatKind::Armour => 2.0,
+            StatKind::Dodge => 3.0,               // 20 picks to hit the 60% cap
+            StatKind::Armour => 3.0,
         }
     }
 
