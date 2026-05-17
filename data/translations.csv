@@ -147,14 +147,3 @@ stat_rune_damage_desc,Scales rune effects. Boosts Fire damage, adds chain bolts 
 stat_turret_damage_desc,Total damage multiplier on every weapon. 100% is baseline; mods and Naval synergy stack on top.
 stat_dodge_desc,Chance to negate an incoming hit entirely. Capped at 60% so the ship is never invulnerable.
 stat_armour_desc,Flat reduction on un-dodged damage before the shield absorbs. Capped at 60% so the ship is never invulnerable.
-map_popup_build,BUILD
-map_building_weaponry,WEAPONRY
-map_building_weaponry_desc,Customize turret loadout in this section.
-map_building_dockyard,DOCKYARD
-map_building_dockyard_desc,Logs adjacent buildings each map phase.
-map_building_foundry,FOUNDRY
-map_building_foundry_desc,Smelts 1 scrap into 1 steel every 60 s.
-map_building_crane,CRANE
-map_building_crane_desc,+30% production for adjacent buildings. Consumes 1 steel every 120 s.
-map_building_refinery,REFINERY
-map_building_refinery_desc,Refines 10 steel into 1 refined steel every 300 s.

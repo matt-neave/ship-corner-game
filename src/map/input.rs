@@ -1,11 +1,9 @@
 //! Map-view click input + boat steering.
 //!
-//! Click handling has five modes (priority order):
+//! Click handling has three modes (priority order):
 //! 1. UI button absorbed it — bail.
 //! 2. Debug claim mode — point-in-polygon flips the section's `owned`.
-//! 3. Popup is open + click outside — dismiss popup.
-//! 4. Click on an owned slot tile — open the build picker.
-//! 5. Otherwise — set a sail target.
+//! 3. Otherwise — set a sail target.
 //!
 //! `map_boat_movement` steers toward the target; crossing into an
 //! unowned section flips the view to combat (with budget snapshot).
@@ -21,10 +19,8 @@ use crate::modes::play_area_screen_rect;
 use crate::palette::PaletteMaterials;
 use crate::ship::approach_angle;
 
-use super::buildings::spawn_building_popup;
 use super::{
-    point_in_polygon, BuildingPopup, CombatContext, DebugClaimMode, MapBoat, MapBuilding,
-    MapState, ViewMode, MAP_LAYER, SLOT_HALF,
+    point_in_polygon, CombatContext, DebugClaimMode, MapBoat, MapState, ViewMode, MAP_LAYER,
 };
 
 pub fn map_click_input(
@@ -35,7 +31,6 @@ pub fn map_click_input(
     mut state: ResMut<MapState>,
     mut commands: Commands,
     interactions: Query<&Interaction, With<Button>>,
-    popups: Query<Entity, With<BuildingPopup>>,
     em: Option<Res<EffectMeshes>>,
     pm: Option<Res<PaletteMaterials>>,
 ) {
@@ -68,31 +63,6 @@ pub fn map_click_input(
             }
         }
         return;
-    }
-
-    if let Ok(popup) = popups.single() {
-        commands.entity(popup).despawn();
-        return;
-    }
-
-    for i in 0..state.sections.len() {
-        if !state.owned[i] { continue; }
-        let section = &state.sections[i];
-        for slot_index in 0..section.slots.len() {
-            let slot_pos = section.center;
-            if (world.x - slot_pos.x).abs() <= SLOT_HALF
-                && (world.y - slot_pos.y).abs() <= SLOT_HALF
-            {
-                if section.slots[slot_index].is_some() { return; }
-                let options = MapBuilding::options_for_stars(section.stars);
-                if options.is_empty() { return; }
-                spawn_building_popup(
-                    &mut commands, c, win.width(),
-                    section.id, slot_index, &options,
-                );
-                return;
-            }
-        }
     }
 
     state.boat_target = Some(world);

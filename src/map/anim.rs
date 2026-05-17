@@ -10,13 +10,10 @@
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
 
-use crate::ui_kit;
-
 use super::{
-    AnimBeam, AnimPulse, MapAnimTimeline, MapBuilding, MapState, TimelineAction,
-    TimelineStep, TriggerMapPhase, ViewMode, ANIM_BEAM_DUR, ANIM_BEAM_PEAK_ALPHA,
-    ANIM_BEAM_THICKNESS, ANIM_PULSE_DUR, ANIM_PULSE_PEAK_ALPHA, ANIM_PULSE_PEAK_SCALE,
-    ANIM_PULSE_SIZE, ANIM_STEP_OVERLAP, MAP_LAYER, Z_ANIM,
+    AnimBeam, AnimPulse, MapAnimTimeline, TimelineAction, TriggerMapPhase, ViewMode,
+    ANIM_BEAM_PEAK_ALPHA, ANIM_BEAM_THICKNESS, ANIM_PULSE_PEAK_ALPHA,
+    ANIM_PULSE_PEAK_SCALE, ANIM_PULSE_SIZE, MAP_LAYER, Z_ANIM,
 };
 
 fn spawn_pulse(
@@ -140,14 +137,16 @@ pub fn update_anim_beams(
     }
 }
 
-/// "Begin phase" — fires when the player enters map view OR when the
-/// PHASE debug button writes a `TriggerMapPhase` event. Today only
-/// `Dockyard` is wired: pulses the source, beams to each neighbor,
-/// pulses each neighbor. Multiple Dockyards play in order along a
-/// shared `t` cursor so each building reads distinctly.
+/// "Begin phase" — historically fired when the player entered map
+/// view (or via the PHASE debug button) to animate the Dockyard's
+/// neighbor pulses. With the building system removed there's nothing
+/// per-section to animate, so the timeline starts empty. Keeping the
+/// system + event around because `clear_anims_on_view_change` and
+/// the live pulse/beam tickers (`update_anim_pulses`,
+/// `update_anim_beams`) still want to be schedulable — future per-
+/// section animations can plug straight into this same hook.
 pub fn map_begin_phase(
     view: Res<ViewMode>,
-    state: Res<MapState>,
     mut timeline: ResMut<MapAnimTimeline>,
     mut phase_evt: EventReader<TriggerMapPhase>,
     mut commands: Commands,
@@ -162,69 +161,4 @@ pub fn map_begin_phase(
     timeline.steps.clear();
     timeline.elapsed = 0.0;
     for e in &anims { commands.entity(e).despawn(); }
-
-    let color = ui_kit::theme::ACCENT;
-    let mut t = 0.0_f32;
-
-    for section in &state.sections {
-        for slot in &section.slots {
-            let Some(building) = *slot else { continue; };
-            match building {
-                MapBuilding::Weaponry
-                | MapBuilding::Foundry
-                | MapBuilding::Crane
-                | MapBuilding::Refinery => {}
-                MapBuilding::Dockyard => {
-                    let pos = section.center;
-                    let neighbors: Vec<(u32, MapBuilding)> =
-                        state.neighbor_buildings(section.id).collect();
-
-                    timeline.steps.push_back(TimelineStep {
-                        at: t,
-                        action: TimelineAction::Pulse {
-                            pos, color, duration: ANIM_PULSE_DUR,
-                        },
-                    });
-
-                    let beam_start = t + ANIM_PULSE_DUR * ANIM_STEP_OVERLAP;
-                    let nbr_pulse_start = beam_start + ANIM_BEAM_DUR * 0.6;
-                    for (nbr_id, _) in &neighbors {
-                        let nbr_pos = state.sections[*nbr_id as usize].center;
-                        timeline.steps.push_back(TimelineStep {
-                            at: beam_start,
-                            action: TimelineAction::Beam {
-                                from: pos, to: nbr_pos,
-                                color, duration: ANIM_BEAM_DUR,
-                            },
-                        });
-                        timeline.steps.push_back(TimelineStep {
-                            at: nbr_pulse_start,
-                            action: TimelineAction::Pulse {
-                                pos: nbr_pos, color, duration: ANIM_PULSE_DUR,
-                            },
-                        });
-                    }
-
-                    let burst_end = if neighbors.is_empty() {
-                        t + ANIM_PULSE_DUR
-                    } else {
-                        nbr_pulse_start + ANIM_PULSE_DUR
-                    };
-                    t = burst_end + 0.2;
-
-                    let names: Vec<&str> = neighbors.iter()
-                        .map(|(_, b)| b.label())
-                        .collect();
-                    if names.is_empty() {
-                        info!("Dockyard@S{}: no adjacent buildings", section.id);
-                    } else {
-                        info!(
-                            "Dockyard@S{}: adjacent buildings = {:?}",
-                            section.id, names,
-                        );
-                    }
-                }
-            }
-        }
-    }
 }

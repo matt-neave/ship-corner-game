@@ -286,6 +286,7 @@ pub fn turret_aim_fire(
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
     mut thirst: ResMut<crate::rune::ThirstPending>,
+    mut sfx: crate::sfx::SfxPlayer,
     // LocalPlayer (not just Friendly) — the host has two Friendly
     // entities in MP (local + remote-peer ghost). `single()` would
     // Err and the system would bail every frame → the host's
@@ -483,6 +484,12 @@ pub fn turret_aim_fire(
                     RenderLayers::layer(PLAY_LAYER),
                 )).id();
                 commands.entity(flash).insert(ChildOf(turret_entity));
+                // Fire SFX — one-spot table in `SfxPlayer::weapon_fire_sfx`
+                // decides which sample plays for this weapon. Silently
+                // no-ops for autonomous / passive weapons that have no
+                // muzzle sound. Pitch jitter + repeat-burst pitch bump
+                // ride on top automatically.
+                sfx.play_fire(slot.weapon);
 
                 match slot.weapon {
                     WeaponType::HeliPad => {

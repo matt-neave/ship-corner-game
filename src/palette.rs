@@ -521,12 +521,8 @@ pub struct PaletteMaterials {
     /// its turrets, fluttering via `wave_ally_flags`). Shared so every
     /// ally pulls from the same handle and benefits from batching.
     pub ally_flag: Handle<ColorMaterial>,
-    /// Neutral grey square for an upgrade slot at a section's center.
-    /// Reads as a placeholder/build-here affordance regardless of the
-    /// underlying section tint.
-    pub map_slot: Handle<ColorMaterial>,
     /// Small filled mark used for the per-section star rating, drawn in a
-    /// row above each slot. Yellow so it pops on both day and night ocean.
+    /// row above each section. Yellow so it pops on both day and night ocean.
     pub map_slot_star: Handle<ColorMaterial>,
     /// Light blue/white spray color for the splash burst spawned when
     /// the player clicks empty water on the map view to set a sail target.
@@ -693,15 +689,8 @@ impl PaletteMaterials {
                 alpha_mode: bevy::sprite::AlphaMode2d::Opaque,
                 ..default()
             }),
-            // Slot box: neutral mid-grey so it reads as a "placeholder"
-            // affordance over either the green-owned or red-enemy tint.
-            map_slot:              materials.add(ColorMaterial {
-                color: Color::srgb(0.30, 0.32, 0.36),
-                alpha_mode: bevy::sprite::AlphaMode2d::Opaque,
-                ..default()
-            }),
-            // Star marks above the slot: gold/yellow to match `UI_VALUE`
-            // and pop on both ocean tones.
+            // Star marks above each section: gold/yellow to match
+            // `UI_VALUE` and pop on both ocean tones.
             map_slot_star:         materials.add(ColorMaterial {
                 color: Color::srgb(1.00, 0.85, 0.30),
                 alpha_mode: bevy::sprite::AlphaMode2d::Opaque,

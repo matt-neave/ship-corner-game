@@ -1,13 +1,10 @@
 //! Map-view + combat-view HUD overlays:
-//! - **Currency HUD** (top-left of map view): live scrap / steel /
-//!   refined steel readouts, anchored inside the play square's corner.
 //! - **Level status banner** (top-center of combat view, Sandbox only):
 //!   shows `LEVEL N - X ENEMIES LEFT` with a depleting fill bar.
 //! - **Debug panel** (bottom-right of map view): CLAIM toggle, PHASE
 //!   re-trigger, OPEN CUSTOMIZE, plus rows of SPAWN ALLY / SPAWN BOSS
 //!   buttons driven by `ShipClass::ALL`.
 
-use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -16,160 +13,11 @@ use crate::enemy::Enemy;
 use crate::modes::play_area_screen_rect;
 use crate::palette::PaletteMaterials;
 use crate::ui_kit::{self, theme};
-use crate::{RefinedSteel, Scrap, Steel};
 
 use super::{
-    CombatContext, CurrencyUi, DebugButton, DebugClaimLabel, DebugClaimMode, DebugPanel,
-    LevelEnemyBar, LevelStatusText, LevelStatusUi, RefinedSteelText, ScrapText, SteelText,
-    TriggerMapPhase, ViewMode,
+    CombatContext, DebugButton, DebugClaimLabel, DebugClaimMode, DebugPanel,
+    LevelEnemyBar, LevelStatusText, LevelStatusUi, TriggerMapPhase, ViewMode,
 };
-
-// ---------- Currency HUD ----------
-
-pub fn setup_currency_ui(mut commands: Commands) {
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                top: Val::Px(8.0),
-                left: Val::Px(8.0),
-                padding: UiRect::all(Val::Px(theme::PAD_MD)),
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::FlexStart,
-                row_gap: Val::Px(theme::GAP_SM),
-                ..default()
-            },
-            BackgroundColor(theme::SURFACE_RAISED),
-            ZIndex(50),
-            CurrencyUi,
-        ))
-        .with_children(|p| {
-            spawn_currency_row(
-                p,
-                Color::srgb(0.62, 0.66, 0.72),
-                Some(Color::srgb(0.42, 0.46, 0.54)),
-                ScrapText,
-            );
-            spawn_currency_row(
-                p,
-                Color::srgb(0.55, 0.62, 0.78),
-                None,
-                SteelText,
-            );
-            spawn_currency_row(
-                p,
-                Color::srgb(0.92, 0.78, 0.40),
-                None,
-                RefinedSteelText,
-            );
-        });
-}
-
-fn spawn_currency_row<M: Component>(
-    parent: &mut ChildSpawnerCommands,
-    icon_color: Color,
-    inner: Option<Color>,
-    marker: M,
-) {
-    parent
-        .spawn(Node {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            column_gap: Val::Px(theme::GAP_SM),
-            ..default()
-        })
-        .with_children(|row| {
-            row.spawn((
-                Node {
-                    width: Val::Px(12.0),
-                    height: Val::Px(12.0),
-                    ..default()
-                },
-                BackgroundColor(icon_color),
-            ))
-            .with_children(|icon| {
-                if let Some(inner_color) = inner {
-                    icon.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            top: Val::Px(4.0),
-                            left: Val::Px(4.0),
-                            width: Val::Px(6.0),
-                            height: Val::Px(6.0),
-                            ..default()
-                        },
-                        BackgroundColor(inner_color),
-                    ));
-                }
-            });
-            row.spawn((
-                ui_kit::label("0", theme::FONT_MD, theme::ON_SURFACE),
-                marker,
-            ));
-        });
-}
-
-pub fn update_scrap_text(
-    scrap: Res<Scrap>,
-    mut q: Query<&mut Text, With<ScrapText>>,
-) {
-    if !scrap.is_changed() { return; }
-    let s = scrap.0.to_string();
-    for mut text in &mut q {
-        if text.0 != s { text.0 = s.clone(); }
-    }
-}
-
-pub fn update_steel_text(
-    steel: Res<Steel>,
-    mut q: Query<&mut Text, With<SteelText>>,
-) {
-    if !steel.is_changed() { return; }
-    let s = steel.0.to_string();
-    for mut text in &mut q {
-        if text.0 != s { text.0 = s.clone(); }
-    }
-}
-
-pub fn update_refined_steel_text(
-    refined: Res<RefinedSteel>,
-    mut q: Query<&mut Text, With<RefinedSteelText>>,
-) {
-    if !refined.is_changed() { return; }
-    let s = refined.0.to_string();
-    for mut text in &mut q {
-        if text.0 != s { text.0 = s.clone(); }
-    }
-}
-
-/// Per-frame upkeep on the currency HUD: anchor its top-left corner to
-/// the *play area's* top-left and toggle visibility based on `ViewMode`.
-pub fn update_currency_ui(
-    view: Res<ViewMode>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    ui_scale: Res<bevy::ui::UiScale>,
-    mut q: Query<(&mut Visibility, &mut Node), With<CurrencyUi>>,
-) {
-    let Ok(win) = windows.single() else { return; };
-    let (play_left, play_top, _play_w, _play_h) = play_area_screen_rect(win.width(), win.height());
-    // Position is a screen-pixel coord; divide by `UiScale` so the
-    // bevy_ui layout pass multiplies it back to the right place.
-    // Margin authored in design pixels so it scales with UiScale.
-    let s = ui_scale.0.max(0.0001);
-    let margin_design = 4.0;
-    let want_left = Val::Px(play_left / s + margin_design);
-    let want_top  = Val::Px(play_top  / s + margin_design);
-    let want_vis = if matches!(*view, ViewMode::Map) {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
-    for (mut vis, mut node) in &mut q {
-        if node.left != want_left { node.left = want_left; }
-        if node.top  != want_top  { node.top  = want_top;  }
-        if *vis != want_vis { *vis = want_vis; }
-    }
-}
 
 // ---------- Level status banner ----------
 

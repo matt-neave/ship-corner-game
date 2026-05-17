@@ -79,7 +79,6 @@ pub fn build_random_map(rng: &mut impl Rng, target_sections: usize) -> Vec<MapSe
                 center: seeds[i],
                 adjacencies: adjacency[i].clone(),
                 stars: 1,
-                slots: Vec::new(),
                 boss_class: None,
             }
         })

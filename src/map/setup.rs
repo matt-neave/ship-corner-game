@@ -1,29 +1,23 @@
-//! Map-view world setup + slot visuals.
+//! Map-view world setup.
 //!
-//! Spawns the map's render entities at startup (fill sprite, ribbon
-//! dividers, slot tiles, stars, the boat token), then keeps slot
-//! visuals + labels in sync as ownership flips during play.
+//! Spawns the static map entities at startup: the fill sprite, the
+//! mitered ribbon dividers between sections, the per-section star
+//! marks, and the boat token.
 
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
-use bevy::window::PrimaryWindow;
 
-use crate::balance::{
-    HULL_LEN, HULL_WIDTH, PLAY_WORLD, TURRET_MOUNTS, TURRET_POSITIONS,
-};
+use crate::balance::{HULL_LEN, HULL_WIDTH, PLAY_WORLD, TURRET_MOUNTS, TURRET_POSITIONS};
 use crate::components::Heading;
-use crate::modes::play_area_screen_rect;
 use crate::palette::{Palette, PaletteMaterials};
-use crate::ui_kit::theme;
 
 use super::build::{
     build_map_fill_image, build_ribbon_mesh, is_outer_edge, wobble_for_edge,
 };
 use super::{
-    MapBoat, MapFillSprite, MapSection, MapSectionBoundary, MapSlotBox,
-    MapSlotLabel, MapSlotStar, MapState, ViewMode,
-    MAP_BOAT_SCALE, MAP_LAYER, SLOT_HALF, SLOT_SIZE, STAR_GAP, STAR_SIZE,
-    STAR_Y_OFFSET, Z_BOAT, Z_FILL, Z_OUTLINE, Z_SLOT_BOX, Z_SLOT_STAR,
+    MapBoat, MapFillSprite, MapSection, MapSectionBoundary, MapSlotStar,
+    MapState, MAP_BOAT_SCALE, MAP_LAYER, STAR_GAP, STAR_SIZE,
+    STAR_Y_OFFSET, Z_BOAT, Z_FILL, Z_OUTLINE, Z_SLOT_STAR,
 };
 
 pub fn setup_map(
@@ -34,7 +28,7 @@ pub fn setup_map(
     palette: Res<Palette>,
     state: Res<MapState>,
 ) {
-    let Some(pm) = pm else { return; };
+    let Some(pm) = pm else { return };
 
     // Section fills — one pre-rasterized sprite for the entire map.
     let fill_handle = images.add(build_map_fill_image(&state, &palette));
@@ -86,17 +80,11 @@ pub fn setup_map(
         }
     }
 
-    // Two passes:
-    //   - Stars: on every section so red-zone ratings are visible.
-    //   - Slot box + label: only on owned sections.
-    let slot_box_mesh = meshes.add(Rectangle::new(SLOT_SIZE, SLOT_SIZE));
-    let star_mesh     = meshes.add(Rectangle::new(STAR_SIZE, STAR_SIZE));
+    // Stars on every section so red-zone (high-tier) ratings are
+    // visible everywhere — not gated on ownership.
+    let star_mesh = meshes.add(Rectangle::new(STAR_SIZE, STAR_SIZE));
     for section in &state.sections {
         spawn_section_stars(&mut commands, section, &star_mesh, &pm);
-    }
-    for (i, section) in state.sections.iter().enumerate() {
-        if !state.owned[i] { continue; }
-        spawn_slot_box_and_label(&mut commands, section, &slot_box_mesh, &pm);
     }
 
     // Map boat — same hull + 8-turret rig as the in-combat ship, scaled
@@ -164,132 +152,3 @@ fn spawn_section_stars(
     }
 }
 
-/// Spawn the slot tile + UI label for each slot of an *owned* section.
-/// Stars are handled separately by `spawn_section_stars` so they remain
-/// visible on enemy zones too.
-pub fn spawn_slot_box_and_label(
-    commands: &mut Commands,
-    section: &MapSection,
-    slot_box_mesh: &Handle<Mesh>,
-    pm: &PaletteMaterials,
-) {
-    let n_slots = section.slots.len();
-    if n_slots == 0 { return; }
-
-    for slot_index in 0..n_slots {
-        let pos = section.center;
-
-        commands.spawn((
-            Mesh2d(slot_box_mesh.clone()),
-            MeshMaterial2d(pm.map_slot.clone()),
-            Transform::from_xyz(pos.x, pos.y, Z_SLOT_BOX),
-            RenderLayers::layer(MAP_LAYER),
-            MapSlotBox { section_id: section.id, slot_index },
-        ));
-
-        // Label: Bevy UI text node, *not* `Text2d`. The whole map world
-        // is rendered to a 200×200 internal buffer that's then nearest-
-        // neighbor upscaled — fine for blocky art, blurry for AA glyphs.
-        // UI nodes bypass the upscale and render at native resolution.
-        commands.spawn((
-            Text::new(""),
-            TextFont { font_size: theme::FONT_SM, ..default() },
-            TextColor(theme::ON_SURFACE),
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(0.0),
-                top: Val::Px(0.0),
-                ..default()
-            },
-            Visibility::Hidden,
-            MapSlotLabel { section_id: section.id, slot_index },
-        ));
-    }
-}
-
-/// React to ownership flips by spawning slot visuals for newly-owned
-/// sections. The initial owned section's slot is spawned by `setup_map`;
-/// this picks up everything after.
-pub fn sync_owned_slot_visuals(
-    mut commands: Commands,
-    state: Res<MapState>,
-    pm: Option<Res<PaletteMaterials>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut owned_snapshot: Local<Vec<bool>>,
-) {
-    if owned_snapshot.len() != state.owned.len() {
-        *owned_snapshot = state.owned.clone();
-        return;
-    }
-    if owned_snapshot.as_slice() == state.owned.as_slice() { return; }
-
-    let mut newly_owned: Vec<usize> = Vec::new();
-    for (i, &now) in state.owned.iter().enumerate() {
-        if now && !owned_snapshot[i] { newly_owned.push(i); }
-    }
-    *owned_snapshot = state.owned.clone();
-
-    if newly_owned.is_empty() { return; }
-    let Some(pm) = pm else { return; };
-    let slot_box_mesh = meshes.add(Rectangle::new(SLOT_SIZE, SLOT_SIZE));
-    for i in newly_owned {
-        spawn_slot_box_and_label(
-            &mut commands,
-            &state.sections[i],
-            &slot_box_mesh,
-            &pm,
-        );
-    }
-}
-
-/// Drive the slot labels each frame: write the building name, snap the
-/// UI node to the slot's screen position, and gate visibility on map view.
-pub fn update_map_slot_labels(
-    state: Res<MapState>,
-    view: Res<ViewMode>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    mut q: Query<(&MapSlotLabel, &mut Node, &mut Text, &mut Visibility)>,
-) {
-    let Ok(win) = windows.single() else { return; };
-    let (play_left, play_top, play_w, play_h) = play_area_screen_rect(win.width(), win.height());
-    // Map sits as a square in the play-area screen rect; pad sides
-    // when the play area is wider than tall (wide_play mode).
-    let size = play_w.min(play_h);
-    let left = play_left + (play_w - size) * 0.5;
-    let top  = play_top  + (play_h - size) * 0.5;
-    let upscale = size / PLAY_WORLD;
-    let in_map = *view == ViewMode::Map;
-
-    for (tag, mut node, mut text, mut vis) in &mut q {
-        let section = &state.sections[tag.section_id as usize];
-
-        let label = section.slots
-            .get(tag.slot_index)
-            .copied()
-            .flatten()
-            .map(|b| b.label())
-            .unwrap_or("");
-        if text.0 != label { text.0 = label.to_string(); }
-
-        let want_vis = if in_map && !label.is_empty() {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if *vis != want_vis { *vis = want_vis; }
-
-        if !in_map || label.is_empty() { continue; }
-
-        let nx = (section.center.x + PLAY_WORLD / 2.0) / PLAY_WORLD;
-        let ny = (PLAY_WORLD / 2.0 - section.center.y) / PLAY_WORLD;
-        let slot_x = left + nx * size;
-        let slot_y = top  + ny * size;
-
-        // Off by a few pixels for odd-width strings — close enough.
-        let approx_w = label.chars().count() as f32 * theme::FONT_SM * 0.55;
-        let label_x = slot_x - approx_w * 0.5;
-        let label_y = slot_y + (SLOT_HALF + 2.0) * upscale;
-        node.left = Val::Px(label_x);
-        node.top  = Val::Px(label_y);
-    }
-}

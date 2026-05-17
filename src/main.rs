@@ -78,19 +78,14 @@ use enemy::{
 };
 use map::{
     advance_map_anim_timeline, apply_view_mode, boss_patrol_movement,
-    close_popup_on_view_change, handle_building_choice_clicks,
+    clear_anims_on_view_change,
     in_combat_view, level_complete_check, level_fail_check, map_begin_phase,
-    map_boat_movement, map_click_input, refresh_map_fill, setup_currency_ui,
+    map_boat_movement, map_click_input, refresh_map_fill,
     setup_level_status_ui, setup_map,
-    setup_progress_assets, spawn_boss_patrols,
-    sync_owned_slot_visuals,
-    tick_buildings,
+    spawn_boss_patrols,
     update_anim_beams, update_anim_pulses,
-    update_building_button_tints, update_building_description, update_building_hover_tooltip,
-    update_building_progress_bars, update_currency_ui,
-    update_level_status_ui, update_map_slot_labels,
-    update_refined_steel_text, update_scrap_text, update_steel_text,
-    BuildingTimers, CombatContext, DebugClaimMode, DebugUiVisible, MapAnimTimeline,
+    update_level_status_ui,
+    CombatContext, DebugClaimMode, DebugUiVisible, MapAnimTimeline,
     MapState, TriggerMapPhase, ViewMode,
 };
 // Debug-panel systems live behind the inverse-demo feature flag.
@@ -469,18 +464,10 @@ pub struct CampaignProgress {
 }
 
 /// Currency dropped by killed enemies (+1 per kill). Spent on map-view
-/// building placement and consumed by Foundries.
+/// The only currency. Earned from kills + wave clears + per-stage
+/// interest; spent in the customize shop on weapons, runes, mods.
 #[derive(Resource, Default)]
 pub struct Scrap(pub u32);
-
-/// Refined currency produced by Foundries. Consumed by Cranes for their
-/// adjacency speed boost.
-#[derive(Resource, Default)]
-pub struct Steel(pub u32);
-
-/// Top-tier refined output, produced by Refineries from steel.
-#[derive(Resource, Default)]
-pub struct RefinedSteel(pub u32);
 
 #[derive(Resource)]
 pub struct SpawnTimer { pub t: f32, pub elapsed: f32 }
@@ -683,8 +670,6 @@ fn main() {
         // Player earns scrap from the first wave clear onward; no
         // starting purse.
         .insert_resource(Scrap(0))
-        .insert_resource(Steel::default())
-        .insert_resource(RefinedSteel::default())
         .insert_resource(SpawnTimer { t: 0.0, elapsed: 0.0 })
         .insert_resource(cfg)
         .insert_resource(DamageStats::default())
@@ -714,7 +699,6 @@ fn main() {
         .insert_resource(map::MapSize::default())
         .insert_resource(Difficulty::default())
         .insert_resource(MapState::new(map::MapSize::default().sections()))
-        .insert_resource(BuildingTimers::default())
         .insert_resource(MapAnimTimeline::default())
         .insert_resource(CombatContext::default())
         .insert_resource(DebugClaimMode::default())
@@ -733,7 +717,6 @@ fn main() {
             // missing panel entity is harmless.
             #[cfg(not(feature = "demo"))]
             setup_debug_ui,
-            setup_currency_ui, setup_progress_assets,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
             setup_damage_panel,
             setup_wave_indicator, setup_spawn_indicator_assets,
@@ -876,7 +859,7 @@ fn main() {
             // cleanup → begin_phase → advance: a Map-bound view change
             // wipes the timeline + stale anims, then refills with the
             // new sequence — all in the same frame.
-            (close_popup_on_view_change, map_begin_phase, advance_map_anim_timeline).chain(),
+            (clear_anims_on_view_change, map_begin_phase, advance_map_anim_timeline).chain(),
             update_anim_pulses,
             update_anim_beams,
             map_click_input,
@@ -885,13 +868,7 @@ fn main() {
             // self-gate to Map so it doesn't tick during combat.
             boss_patrol_movement.run_if(in_state(AppState::Map)),
             refresh_map_fill,
-            sync_owned_slot_visuals,
             update_map_button,
-            update_map_slot_labels,
-            update_building_button_tints,
-            update_building_description,
-            handle_building_choice_clicks,
-            update_building_hover_tooltip,
             (
                 // Debug panel + hash-toggle stripped in demo builds.
                 #[cfg(not(feature = "demo"))]
@@ -904,15 +881,7 @@ fn main() {
                 tick_spawn_indicators,
                 xp::update_xp_bar,
             ),
-            (
-                update_currency_ui,
-                update_scrap_text, update_steel_text, update_refined_steel_text,
-            ),
             update_level_status_ui,
-            // Production economy ticks in both views so cycle timers
-            // don't desync when the player drops into combat.
-            tick_buildings,
-            update_building_progress_bars,
         ))
         .add_systems(Update, (
             apply_loaded_settings,

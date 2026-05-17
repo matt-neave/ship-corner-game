@@ -404,20 +404,3 @@ pub fn is_boss_wave(_wave_idx: u8, _wave_count: u8) -> bool {
     false
 }
 
-// ---------- Map-view economy ----------
-//
-// Production-tick intervals + boost factor for the Foundry / Crane
-// economy. These are wall-clock seconds, ticked by `tick_buildings`
-// in `map.rs`; an active adjacent Crane shrinks a Foundry's effective
-// interval by `CRANE_SPEED_MULT` (1.30 → ~46 s/cycle instead of 60).
-
-/// Foundry: every cycle, consumes 1 scrap and produces 1 steel.
-pub const FOUNDRY_INTERVAL:   f32 = 60.0;
-/// Crane: every cycle, consumes 1 steel; while fueled it boosts each
-/// adjacent production building's speed by `CRANE_SPEED_MULT`.
-pub const CRANE_INTERVAL:     f32 = 120.0;
-pub const CRANE_SPEED_MULT:   f32 = 1.30;
-/// Refinery (tier 3): every cycle, consumes 10 steel and produces 1
-/// refined steel.
-pub const REFINERY_INTERVAL:  f32 = 300.0;
-pub const REFINERY_INPUT:     u32 = 10;

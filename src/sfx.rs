@@ -164,6 +164,59 @@ pub struct SfxPlayer<'w, 's> {
 }
 
 impl SfxPlayer<'_, '_> {
+    /// Single mapping from a player-weapon variant to the SFX
+    /// fired on each shot. `None` means the weapon doesn't make a
+    /// muzzle sound (autonomous units fire from their own bodies;
+    /// support / passive weapons don't fire at all; Flamethrower
+    /// runs at per-frame puff cadence and would spam the repeat-
+    /// pitch buffer).
+    ///
+    /// Living here keeps "what does each weapon sound like" a
+    /// one-spot edit. Adding a new `Sfx::SniperShot` later is one
+    /// match-arm change — every firing site already calls through
+    /// this lookup.
+    pub fn weapon_fire_sfx(weapon: crate::weapon::WeaponType) -> Option<Sfx> {
+        use crate::weapon::WeaponType;
+        match weapon {
+            // Crisp small-arms beat.
+            WeaponType::Standard
+            | WeaponType::Sniper
+            | WeaponType::MachineGun
+            | WeaponType::Shotgun
+            | WeaponType::Harpoon => Some(Sfx::Shoot),
+            // Heavy boom — anything with real mass behind the shot.
+            WeaponType::Cannon
+            | WeaponType::Railgun
+            | WeaponType::Mortar
+            | WeaponType::SpreadRockets
+            | WeaponType::PlasmaTorpedo => Some(Sfx::Cannon),
+            // Autonomous + passive weapons make no muzzle sound at
+            // the deck level. (Their own units may play sounds
+            // later — that's a separate hook.)
+            WeaponType::HeliPad
+            | WeaponType::Booster
+            | WeaponType::Blade
+            | WeaponType::Cage
+            | WeaponType::Flamethrower
+            | WeaponType::SpikedPlate
+            | WeaponType::Amplifier
+            | WeaponType::SharkNet
+            | WeaponType::AnchorFlail
+            | WeaponType::CrowsNest => None,
+        }
+    }
+
+    /// Convenience: play the per-weapon fire SFX, silently no-op
+    /// if the weapon has no mapped sound. Call sites just write
+    /// `sfx.play_fire(weapon)` next to the muzzle-flash spawn so
+    /// adding sound to a new weapon is one match-arm edit (in
+    /// `weapon_fire_sfx`) instead of touching every firing site.
+    pub fn play_fire(&mut self, weapon: crate::weapon::WeaponType) {
+        if let Some(s) = Self::weapon_fire_sfx(weapon) {
+            self.play(s);
+        }
+    }
+
     /// Spawn a one-shot audio entity for `sfx`. Silent when volume is
     /// 0.0 (no entity spawned at all). Pitch picks up the per-shot
     /// jitter and a cumulative bump if the same `Sfx` fired again
