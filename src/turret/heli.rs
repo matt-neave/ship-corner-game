@@ -356,15 +356,23 @@ pub fn helicopter_ai(
         heli.fire_cd -= dt;
         let Some((_, ep)) = best else { continue; };
         if heli.fire_cd > 0.0 { continue; }
-        // Aim-gate: bullets exit along the body's forward, so mid-turn
-        // shots would otherwise spray off-target.
+        // Aim-gate. The bullet's flight direction is recomputed
+        // muzzle → enemy below, so the heli technically *could*
+        // fire 360°, but a generous gate keeps shots looking like
+        // they emerge from the front of the body rather than
+        // launching backwards from a heli still turning. PI/3 (60°)
+        // is wide enough that a mid-orbit heli almost never has to
+        // skip a shot, which was the original "heli misses
+        // everything" symptom — the gate was at PI/8 (22.5°) and
+        // the heli's orbit kept its body offset from the target by
+        // more than that for long stretches.
         let to_enemy = ep - new_pos;
         if to_enemy.length_squared() > 0.01 {
             let desired = (-to_enemy.x).atan2(to_enemy.y);
             let delta = (heli.heading - desired + std::f32::consts::PI)
                 .rem_euclid(std::f32::consts::TAU)
                 - std::f32::consts::PI;
-            if delta.abs() > std::f32::consts::FRAC_PI_8 {
+            if delta.abs() > std::f32::consts::FRAC_PI_3 {
                 continue;
             }
         }

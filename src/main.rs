@@ -108,7 +108,7 @@ use rendering::{
 };
 use settings::{apply_loaded_settings, persist_settings_on_change};
 use rune::{
-    tick_buff_stacks, tick_echoes, tick_hp_pickups, tick_magnetic_pickups, tick_on_bleed,
+    tick_buff_stacks, tick_echoes, tick_hp_pickups, tick_magnetic_pickups, tick_on_bleed, tick_scrap_pickups,
     tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_medic, tick_on_resonate,
     BuffStacks, MedicTimer, ThirstPending,
 };
@@ -356,6 +356,7 @@ impl Plugin for CombatSimPlugin {
                     (
                         tick_magnetic_pickups,
                         tick_hp_pickups,
+                        tick_scrap_pickups,
                         tick_buff_stacks,
                         tick_on_medic,
                     )

@@ -206,6 +206,18 @@ impl ModRarity {
         }
     }
 
+    /// Short label printed below the mod name on the card. Same
+    /// tier hierarchy as the border colour so the player can
+    /// cross-reference visually + textually.
+    pub fn label(self) -> &'static str {
+        match self {
+            ModRarity::Common    => "COMMON",
+            ModRarity::Uncommon  => "UNCOMMON",
+            ModRarity::Rare      => "RARE",
+            ModRarity::Legendary => "LEGENDARY",
+        }
+    }
+
     /// Per-pick roll weight. Weighted-random sampling without
     /// replacement: the shop draws 3 mods, each pick picks one
     /// from the remaining library proportional to these weights,
@@ -238,9 +250,9 @@ impl ModRarity {
 }
 
 /// One canonical mod entry — a name + an arbitrary list of stat
-/// changes + a rarity tier. The shop rolls indexes into
-/// [`MOD_LIBRARY`] so adding a new mod is one struct literal at
-/// the bottom of that array.
+/// changes + a rarity tier + an optional special effect. The shop
+/// rolls indexes into [`MOD_LIBRARY`] so adding a new mod is one
+/// struct literal at the bottom of that array.
 pub struct ModSpec {
     pub name: &'static str,
     pub rarity: ModRarity,
@@ -248,6 +260,144 @@ pub struct ModSpec {
     /// negative are nerfs; the card-text pass colours them green
     /// vs red automatically by sign.
     pub changes: &'static [(StatKind, f32)],
+    /// Build-warping ability that goes beyond a plain stat delta.
+    /// `Some` for legendaries that flip the ship's identity (the
+    /// MONOMANIAC / PURIST / GHOST class) — `None` for plain stat
+    /// stacks. Effects with ongoing conditional logic register a
+    /// flag in [`ActiveLegendaries`] when the player buys the mod;
+    /// one-shot effects (Turtle) mutate stats directly at the click.
+    pub effect: Option<ModEffect>,
+}
+
+/// Build-warping ability that a legendary mod can carry on top of
+/// (or instead of) its stat changes. Stored as a flag on
+/// [`ActiveLegendaries`] for ongoing effects, or applied once at
+/// purchase time for one-shot ones (Turtle).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModEffect {
+    /// +400% weapon damage; -50% per equipped weapon beyond the
+    /// first. Rewards mono-weapon focus.
+    Monomaniac,
+    /// +250% fire rate while ≤ 2 weapons are equipped. Hard cliff.
+    Duelist,
+    /// +15% weapon damage per unique weapon type equipped. Caps at 8.
+    Harmony,
+    /// +100% weapon damage, +100% fire rate, +20% range — but
+    /// rune procs are disabled entirely. Pure-bullet pivot.
+    Purist,
+    /// +75% rune effect + +50% proc strength if every equipped
+    /// weapon shares a tag. Synergy-pure builds only.
+    Specialist,
+    /// One-shot at purchase: convert the player's current
+    /// `shield_max` into flat HP and zero shield_max out.
+    Turtle,
+}
+
+/// Persistent flags for which legendary build-warpers the player
+/// has bought this run. Read by [`sync_turret_config`] (damage /
+/// fire rate / range folds) and the rune proc pipeline (Specialist
+/// scaling, Purist disable). Reset on new run / MainMenu.
+#[derive(Resource, Default, Clone, Copy)]
+pub struct ActiveLegendaries {
+    pub monomaniac: bool,
+    pub duelist: bool,
+    pub harmony: bool,
+    pub purist: bool,
+    pub specialist: bool,
+}
+
+/// Bundled `SystemParam` for the two resources every legendary-aware
+/// hook needs (`ActiveLegendaries` + `TurretConfig`). Used by
+/// `bullet::process_damage_events` to stay under Bevy 0.16's
+/// 16-SystemParam ceiling — adding the resources individually
+/// would push it over.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct LegendaryContext<'w> {
+    pub active: Res<'w, ActiveLegendaries>,
+    pub cfg: Res<'w, TurretConfig>,
+}
+
+impl ActiveLegendaries {
+    /// Multiplier folded into every weapon's base damage in
+    /// `sync_turret_config`. Combines Monomaniac (focused build),
+    /// Harmony (variety bonus), and any flat damage from Purist —
+    /// stacks multiplicatively so two effects compound. Returns
+    /// 1.0 when no relevant legendary is active.
+    pub fn weapon_damage_mult(&self, cfg: &TurretConfig) -> f32 {
+        let mut mult = 1.0_f32;
+        if self.monomaniac {
+            // 1 wpn = ×5.0 (base 1.0 + bonus 4.0), 2 wpns = ×4.5,
+            // 8 wpns = ×1.5. Math: 1.0 + 4.0 - 0.5 * (count - 1).
+            let count = cfg.slots.iter().filter(|s| s.equipped).count() as f32;
+            let bonus = (4.0 - 0.5 * (count - 1.0).max(0.0)).max(0.0);
+            mult *= 1.0 + bonus;
+        }
+        if self.harmony {
+            // +15% per unique weapon type equipped. Caps naturally
+            // at 8 (the slot count).
+            let mut seen = [false; 32];
+            let mut uniq = 0u32;
+            for s in cfg.slots.iter().filter(|s| s.equipped) {
+                let i = s.weapon as usize;
+                if i < seen.len() && !seen[i] {
+                    seen[i] = true;
+                    uniq += 1;
+                }
+            }
+            mult *= 1.0 + 0.15 * uniq as f32;
+        }
+        mult
+    }
+
+    /// Fire-rate multiplier folded into `slot.fire_rate` in
+    /// `sync_turret_config`. Duelist contributes a hard cliff at
+    /// ≤2 equipped weapons; Purist adds a flat doubling on top.
+    pub fn fire_rate_mult(&self, cfg: &TurretConfig) -> f32 {
+        let mut mult = 1.0_f32;
+        if self.duelist {
+            let count = cfg.slots.iter().filter(|s| s.equipped).count();
+            if count <= 2 {
+                mult *= 3.5; // +250% fire rate
+            }
+        }
+        if self.purist {
+            mult *= 2.0; // +100% fire rate (= -50% cooldown)
+        }
+        mult
+    }
+
+    /// True when every equipped weapon shares at least one tag with
+    /// every other — the Specialist precondition. Empty / single-
+    /// weapon loadouts trivially qualify.
+    pub fn specialist_armed(&self, cfg: &TurretConfig) -> bool {
+        if !self.specialist { return false; }
+        let mut equipped = cfg.slots.iter().filter(|s| s.equipped);
+        let Some(first) = equipped.next() else { return true; };
+        // Use the first weapon's tag intersection as the seed; if
+        // it ever shrinks to empty, the build isn't pure.
+        let mut common: Vec<crate::weapon::WeaponTag> = first.weapon.tags().to_vec();
+        for s in equipped {
+            common.retain(|t| s.weapon.tags().contains(t));
+            if common.is_empty() { return false; }
+        }
+        true
+    }
+}
+
+impl ModEffect {
+    /// One-line summary for the card body. Appended after the
+    /// `name` + stat-change lines so the player sees both the
+    /// numeric changes (if any) and the build-warping rule.
+    pub fn description(self) -> &'static str {
+        match self {
+            ModEffect::Monomaniac => "+400% DMG\n-50% PER WPN",
+            ModEffect::Duelist    => "+250% RATE\nIF <= 2 WPN",
+            ModEffect::Harmony    => "+15% DMG\nPER UNIQ WPN",
+            ModEffect::Purist     => "RUNES OFF",
+            ModEffect::Specialist => "+75% RUNES\nSAME TAG ONLY",
+            ModEffect::Turtle     => "SHIELD -> HP",
+        }
+    }
 }
 
 /// All shop mods. Pure-buff entries have a single `+` change;
@@ -265,116 +415,109 @@ pub struct ModSpec {
 pub static MOD_LIBRARY: &[ModSpec] = &[
     // ---- Pure-buff mods (mostly Common, a few Uncommon for the
     //      stats that snowball — luck / runes / harvest) ----
-    ModSpec { name: "RELOADED",   rarity: ModRarity::Common,   changes: &[(StatKind::TurretDamage, 5.0)] },
-    ModSpec { name: "FOCUS",      rarity: ModRarity::Common,   changes: &[(StatKind::Crit, 5.0)] },
-    ModSpec { name: "OUTRIDER",   rarity: ModRarity::Common,   changes: &[(StatKind::MoveSpeed, 1.5)] },
-    ModSpec { name: "HOMING",     rarity: ModRarity::Common,   changes: &[(StatKind::Range, 5.0)] },
-    ModSpec { name: "SCOUT",      rarity: ModRarity::Common,   changes: &[(StatKind::TurnSpeed, 0.25)] },
-    ModSpec { name: "PLATING",    rarity: ModRarity::Common,   changes: &[(StatKind::Hp, 5.0)] },
-    ModSpec { name: "PADDING",    rarity: ModRarity::Common,   changes: &[(StatKind::Armour, 3.0)] },
-    ModSpec { name: "DODGER",     rarity: ModRarity::Common,   changes: &[(StatKind::Dodge, 3.0)] },
-    ModSpec { name: "BARRIER",    rarity: ModRarity::Common,   changes: &[(StatKind::ShieldMax, 5.0)] },
-    ModSpec { name: "FIELD KIT",  rarity: ModRarity::Uncommon, changes: &[(StatKind::Harvest, 1.0)] },
-    ModSpec { name: "TUTOR",      rarity: ModRarity::Common,   changes: &[(StatKind::XpHarvest, 3.0)] },
-    ModSpec { name: "ENERGISED",  rarity: ModRarity::Uncommon, changes: &[(StatKind::RuneDamage, 0.05)] },
-    ModSpec { name: "PYRO",       rarity: ModRarity::Common,   changes: &[(StatKind::ProcStrength, 5.0)] },
-    ModSpec { name: "GAMBLER",    rarity: ModRarity::Uncommon, changes: &[(StatKind::Luck, 5.0)] },
+    ModSpec { name: "RELOADED",   rarity: ModRarity::Common,   changes: &[(StatKind::TurretDamage, 5.0)], effect: None },
+    ModSpec { name: "FOCUS",      rarity: ModRarity::Common,   changes: &[(StatKind::Crit, 5.0)], effect: None },
+    ModSpec { name: "OUTRIDER",   rarity: ModRarity::Common,   changes: &[(StatKind::MoveSpeed, 1.5)], effect: None },
+    ModSpec { name: "HOMING",     rarity: ModRarity::Common,   changes: &[(StatKind::Range, 5.0)], effect: None },
+    ModSpec { name: "SCOUT",      rarity: ModRarity::Common,   changes: &[(StatKind::TurnSpeed, 0.25)], effect: None },
+    ModSpec { name: "PLATING",    rarity: ModRarity::Common,   changes: &[(StatKind::Hp, 5.0)], effect: None },
+    ModSpec { name: "PADDING",    rarity: ModRarity::Common,   changes: &[(StatKind::Armour, 3.0)], effect: None },
+    ModSpec { name: "DODGER",     rarity: ModRarity::Common,   changes: &[(StatKind::Dodge, 3.0)], effect: None },
+    ModSpec { name: "BARRIER",    rarity: ModRarity::Common,   changes: &[(StatKind::ShieldMax, 5.0)], effect: None },
+    ModSpec { name: "FIELD KIT",  rarity: ModRarity::Uncommon, changes: &[(StatKind::Harvest, 1.0)], effect: None },
+    ModSpec { name: "TUTOR",      rarity: ModRarity::Common,   changes: &[(StatKind::XpHarvest, 3.0)], effect: None },
+    ModSpec { name: "ENERGISED",  rarity: ModRarity::Uncommon, changes: &[(StatKind::RuneDamage, 0.05)], effect: None },
+    ModSpec { name: "PYRO",       rarity: ModRarity::Common,   changes: &[(StatKind::ProcStrength, 5.0)], effect: None },
+    ModSpec { name: "GAMBLER",    rarity: ModRarity::Uncommon, changes: &[(StatKind::Luck, 5.0)], effect: None },
 
     // ---- Trade-off mods — 2× buff / 2× nerf (zero-sum on paper) ----
     //      All Rare since they're build-defining picks.
-    ModSpec {
-        name: "GLASS CANNON",
-        rarity: ModRarity::Rare,
-        changes: &[(StatKind::TurretDamage, 10.0), (StatKind::Hp, -10.0)],
-    },
-    ModSpec {
-        name: "STEADY AIM",
-        rarity: ModRarity::Rare,
-        changes: &[(StatKind::Crit, 10.0), (StatKind::MoveSpeed, -3.0)],
-    },
-    ModSpec {
-        name: "BERSERKER",
-        rarity: ModRarity::Rare,
-        changes: &[(StatKind::TurretDamage, 10.0), (StatKind::Armour, -6.0)],
-    },
-    ModSpec {
-        name: "EVASIVE",
-        rarity: ModRarity::Rare,
-        changes: &[(StatKind::Dodge, 6.0), (StatKind::TurretDamage, -10.0)],
-    },
-    ModSpec {
-        name: "JUGGERNAUT",
-        rarity: ModRarity::Rare,
-        changes: &[(StatKind::Hp, 10.0), (StatKind::MoveSpeed, -3.0)],
-    },
-    ModSpec {
-        name: "MERCHANT",
-        rarity: ModRarity::Rare,
-        changes: &[(StatKind::Harvest, 2.0), (StatKind::TurretDamage, -10.0)],
-    },
-    ModSpec {
-        name: "FAR SHOT",
-        rarity: ModRarity::Rare,
-        changes: &[(StatKind::Range, 10.0), (StatKind::ProcStrength, -10.0)],
-    },
+    ModSpec { name: "GLASS CANNON", rarity: ModRarity::Rare,
+        changes: &[(StatKind::TurretDamage, 10.0), (StatKind::Hp, -10.0)], effect: None },
+    ModSpec { name: "STEADY AIM", rarity: ModRarity::Rare,
+        changes: &[(StatKind::Crit, 10.0), (StatKind::MoveSpeed, -3.0)], effect: None },
+    ModSpec { name: "BERSERKER", rarity: ModRarity::Rare,
+        changes: &[(StatKind::TurretDamage, 10.0), (StatKind::Armour, -6.0)], effect: None },
+    ModSpec { name: "EVASIVE", rarity: ModRarity::Rare,
+        changes: &[(StatKind::Dodge, 6.0), (StatKind::TurretDamage, -10.0)], effect: None },
+    ModSpec { name: "JUGGERNAUT", rarity: ModRarity::Rare,
+        changes: &[(StatKind::Hp, 10.0), (StatKind::MoveSpeed, -3.0)], effect: None },
+    ModSpec { name: "MERCHANT", rarity: ModRarity::Rare,
+        changes: &[(StatKind::Harvest, 2.0), (StatKind::TurretDamage, -10.0)], effect: None },
+    ModSpec { name: "FAR SHOT", rarity: ModRarity::Rare,
+        changes: &[(StatKind::Range, 10.0), (StatKind::ProcStrength, -10.0)], effect: None },
 
     // ---- Legendary mods — multi-stat picks that define a build,
     //      and pure trade-offs at heroic numbers. Roll weight is
     //      3 per entry vs commons' 60, so any legendary is roughly
     //      a "one shop in twenty" moment.
-    ModSpec {
-        name: "OVERCLOCK",
-        rarity: ModRarity::Legendary,
+    ModSpec { name: "OVERCLOCK", rarity: ModRarity::Legendary,
         changes: &[
             (StatKind::TurretDamage, 15.0),
             (StatKind::Crit, 10.0),
             (StatKind::Range, 10.0),
-        ],
-    },
-    ModSpec {
-        name: "BULWARK",
-        rarity: ModRarity::Legendary,
+        ], effect: None },
+    ModSpec { name: "BULWARK", rarity: ModRarity::Legendary,
         changes: &[
             (StatKind::Hp, 15.0),
             (StatKind::Armour, 5.0),
             (StatKind::ShieldMax, 10.0),
-        ],
-    },
-    ModSpec {
-        name: "WARPRIEST",
-        rarity: ModRarity::Legendary,
+        ], effect: None },
+    ModSpec { name: "WARPRIEST", rarity: ModRarity::Legendary,
         changes: &[
             (StatKind::RuneDamage, 0.15),
             (StatKind::ProcStrength, 10.0),
             (StatKind::Luck, 10.0),
-        ],
-    },
-    ModSpec {
-        name: "APEX HUNTER",
-        rarity: ModRarity::Legendary,
+        ], effect: None },
+    ModSpec { name: "APEX HUNTER", rarity: ModRarity::Legendary,
         changes: &[
             (StatKind::MoveSpeed, 3.0),
             (StatKind::TurretDamage, 10.0),
             (StatKind::Crit, 10.0),
-        ],
-    },
-    ModSpec {
-        name: "DEATH WISH",
-        rarity: ModRarity::Legendary,
+        ], effect: None },
+    ModSpec { name: "DEATH WISH", rarity: ModRarity::Legendary,
         changes: &[
             (StatKind::TurretDamage, 30.0),
             (StatKind::Hp, -30.0),
-        ],
-    },
-    ModSpec {
-        name: "REGEN",
-        rarity: ModRarity::Legendary,
+        ], effect: None },
+    ModSpec { name: "REGEN", rarity: ModRarity::Legendary,
         changes: &[
             (StatKind::Hp, 15.0),
             (StatKind::ShieldMax, 10.0),
             (StatKind::TurretDamage, -10.0),
-        ],
-    },
+        ], effect: None },
+
+    // ---- Build-warping legendaries — these change *how the boat
+    //      plays*, not just stat numbers. Each one rewards (or
+    //      punishes) a specific loadout commitment.
+    ModSpec { name: "MONOMANIAC", rarity: ModRarity::Legendary,
+        changes: &[], effect: Some(ModEffect::Monomaniac) },
+    ModSpec { name: "DUELIST", rarity: ModRarity::Legendary,
+        changes: &[], effect: Some(ModEffect::Duelist) },
+    ModSpec { name: "HARMONY", rarity: ModRarity::Legendary,
+        changes: &[], effect: Some(ModEffect::Harmony) },
+    ModSpec { name: "PURIST", rarity: ModRarity::Legendary,
+        // Flat statline AND a build rule (no rune procs). Numbers
+        // applied via `changes`; the disable enforced by the effect
+        // flag in `ActiveLegendaries`.
+        changes: &[
+            (StatKind::TurretDamage, 100.0),
+            (StatKind::Range, 20.0),
+        ], effect: Some(ModEffect::Purist) },
+    ModSpec { name: "SPECIALIST", rarity: ModRarity::Legendary,
+        changes: &[], effect: Some(ModEffect::Specialist) },
+    ModSpec { name: "GHOST", rarity: ModRarity::Legendary,
+        // -999 HP clamps to 1 via `max_hp().max(1)`. Damage +300%,
+        // dodge +30 — encourages pure-evade play.
+        changes: &[
+            (StatKind::Hp, -999.0),
+            (StatKind::TurretDamage, 300.0),
+            (StatKind::Dodge, 30.0),
+        ], effect: None },
+    ModSpec { name: "TURTLE", rarity: ModRarity::Legendary,
+        // One-shot stat conversion at purchase (see the click
+        // handler) — no changes, no ongoing flag.
+        changes: &[], effect: Some(ModEffect::Turtle) },
 ];
 
 /// Live shop mod entry — just an index into [`MOD_LIBRARY`]. Kept
@@ -400,9 +543,16 @@ impl ShopMod {
     pub fn label(self) -> String {
         let spec = self.spec();
         let mut lines = String::from(spec.name);
+        // Rarity tag — sits directly under the name in the same
+        // tier-tinted colour as the card border (handled by the
+        // card renderer's per-line colourisation). Reads as a
+        // sub-header so the player can clock the rarity without
+        // pattern-matching the border colour.
+        lines.push('\n');
+        lines.push_str(spec.rarity.label());
         // Spacer line — the renderer splits on `\n` and emits a
         // blank TextSpan for the empty entry, which displays as a
-        // small visible gap below the name.
+        // small visible gap below the rarity tag.
         lines.push('\n');
         for &(kind, delta) in spec.changes {
             lines.push('\n');
@@ -411,6 +561,17 @@ impl ShopMod {
                 kind.format_delta(delta),
                 short_stat_label(kind),
             ));
+        }
+        // Build-warping effect text. Append after the stat lines so
+        // the card reads "name / stats / rule". Lines come from
+        // `ModEffect::description` and may themselves contain `\n`
+        // for multi-line summaries.
+        if let Some(eff) = spec.effect {
+            lines.push('\n');
+            for line in eff.description().split('\n') {
+                lines.push('\n');
+                lines.push_str(line);
+            }
         }
         lines
     }
@@ -442,6 +603,7 @@ fn short_stat_label(kind: StatKind) -> &'static str {
         StatKind::TurretDamage      => "DAMAGE",
         StatKind::Dodge             => "DODGE",
         StatKind::Armour            => "ARMOUR",
+        StatKind::Cooldown          => "CDR",
     }
 }
 

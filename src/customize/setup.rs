@@ -342,7 +342,12 @@ pub fn setup_customize_ui(
     // sits clearly below the SCRAP counter (both top-left). The previous
     // y=76 placed SHOP at y=90 vs SCRAP at y=88 — they overlapped.
     let shop_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 40.0;
-    spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y + 14.0), "SHOP", Color::srgb(1.0, 0.85, 0.30), 18.0, ShopHeaderTag);
+    spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y + 20.0), "SHOP", Color::srgb(1.0, 0.85, 0.30), 18.0, ShopHeaderTag);
+    // Small grey hint just under the SHOP header. Discovery aid
+    // for the right-click lock affordance — the gold padlock
+    // frame appears on locked slots but the gesture itself isn't
+    // obvious without a textual prompt.
+    spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y + 10.0), "RIGHT-CLICK TO LOCK AN ITEM", Color::srgb(0.55, 0.60, 0.70), 8.0, ShopHeaderTag);
     spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y), "TURRETS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
     // Wider stride between the three turret picks so each card reads
     // as its own option rather than a contiguous strip. Middle tile

@@ -1333,15 +1333,21 @@ pub fn enemy_death_check(
         // keeps the audio from turning into a flat repeat.
         sfx.play(crate::sfx::Sfx::EnemyDestroyed);
         // Harvest = chance an enemy drops 1 scrap on death. Pirate
-        // synergy multiplies the chance. Most kills give nothing on
-        // their own — wave clears, interest, and the boss bounty are
-        // the bulk of the economy.
+        // synergy multiplies the chance. Spawns as a visible gold
+        // pickup at the enemy's position rather than silently
+        // adding to the counter — the player has to grab it before
+        // the lifetime expires. Per-stage tally + scrap resource
+        // both update at PICKUP time (see `tick_scrap_pickups`),
+        // not at kill time, so uncollected scrap doesn't count.
         let scrap_drop = player_stats.roll_harvest_drop(&mut rng, synergies.pirate_harvest_mult());
-        scrap.0 = scrap.0.saturating_add(scrap_drop);
-        // Mirror the increment into the per-stage tally so the
-        // StageComplete transition can render "+N SCRAP" earned
-        // this round.
-        scrap_earned.0 = scrap_earned.0.saturating_add(scrap_drop);
+        let _ = (&mut scrap, &mut scrap_earned); // grant deferred to pickup tick
+        if scrap_drop > 0 {
+            crate::rune::spawn_scrap_pickup(
+                &mut commands, &mut meshes, &mut materials,
+                tf.translation.truncate(),
+                scrap_drop,
+            );
+        }
         // XP grant. Boss-tier detection by max_hp threshold (smallest
         // boss = 60 HP, largest variant = 15 HP).
         let is_boss = enemy.max_hp >= 50;

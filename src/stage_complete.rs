@@ -263,10 +263,10 @@ pub fn enter_stage_complete(
                     // glyph node doesn't collapse / get trimmed.
                     let s = if ch == ' ' { "\u{00A0}".to_string() } else { ch.to_string() };
                     let title_font = if let Some(t) = thaleah.as_deref() {
-                        crate::fonts::thaleah_text_font(t, 64.0)
+                        crate::fonts::thaleah_text_font(t, 36.0)
                     } else {
                         TextFont {
-                            font_size: 64.0,
+                            font_size: 36.0,
                             font_smoothing: FontSmoothing::None,
                             ..default()
                         }
@@ -295,12 +295,12 @@ pub fn enter_stage_complete(
                     align_items: AlignItems::Stretch,
                     justify_content: JustifyContent::Center,
                     padding: UiRect::axes(
-                        Val::Px(theme::PAD_LG * 2.0),
                         Val::Px(theme::PAD_LG),
+                        Val::Px(theme::PAD_MD),
                     ),
                     border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
-                    row_gap: Val::Px(8.0),
-                    min_width: Val::Px(380.0),
+                    row_gap: Val::Px(4.0),
+                    min_width: Val::Px(220.0),
                     ..default()
                 },
                 BackgroundColor(theme::SURFACE_RAISED),
@@ -321,9 +321,9 @@ pub fn enter_stage_complete(
                 })
                 .with_children(|h| {
                     let header_font = if let Some(p) = pixel.as_deref() {
-                        crate::fonts::pixel_text_font(p, 16.0)
+                        crate::fonts::pixel_text_font(p, 11.0)
                     } else {
-                        TextFont { font_size: 16.0, font_smoothing: FontSmoothing::None, ..default() }
+                        TextFont { font_size: 11.0, font_smoothing: FontSmoothing::None, ..default() }
                     };
                     let header_color = theme::ON_SURFACE_DIM;
                     h.spawn((
@@ -342,8 +342,8 @@ pub fn enter_stage_complete(
                     // Label + value share a font size per row so the
                     // table reads as columns; total row is one step
                     // larger to anchor the eye on the final number.
-                    let label_font_size = if is_total { 32.0 } else { 24.0 };
-                    let value_font_size = if is_total { 56.0 } else { 40.0 };
+                    let label_font_size = if is_total { 16.0 } else { 13.0 };
+                    let value_font_size = if is_total { 22.0 } else { 18.0 };
                     let label_text_font = if let Some(p) = pixel.as_deref() {
                         crate::fonts::pixel_text_font(p, label_font_size)
                     } else {

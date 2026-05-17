@@ -184,7 +184,7 @@ pub fn grant_kill_xp(
     is_boss: bool,
 ) {
     let base = if is_boss { 5 } else { 1 } as f32;
-    let mult = 1.0 + stats.xp_harvest_pct.effective() / 100.0;
+    let mult = stats.xp_harvest_mult();
     let amount = (base * mult).round().max(1.0) as u32;
     xp.grant(amount, pending);
 }
@@ -596,17 +596,24 @@ fn spawn_level_up_overlay(
                     });
 
                     // Tooltip strip — width matched to the card row
-                    // (4 × 120 + 3 × GAP_LG = 516 px). `update_level_up_tooltip`
-                    // writes the hovered card's stat description using
-                    // the same `StatKind::dynamic_description` text the
-                    // shop tooltips use. Reserved min-height so the
-                    // layout doesn't jump when the line appears.
+                    // (4 × 120 + 3 × GAP_LG). Absolute-positioned BELOW
+                    // the card row so multi-line stat descriptions
+                    // can grow downward without re-flowing the
+                    // centered column (which would push the cards
+                    // up every time a longer description shows up).
+                    // `top: 100%` anchors to the bottom edge of the
+                    // parent left-column, which auto-sizes to just
+                    // the card row's height since this strip no
+                    // longer participates in the column layout.
                     let row_w = 120.0 * choices.buffs.len() as f32
                         + theme::GAP_LG * (choices.buffs.len().saturating_sub(1) as f32);
                     left.spawn((
                         Node {
+                            position_type: PositionType::Absolute,
+                            top: Val::Percent(100.0),
+                            left: Val::Px(0.0),
+                            margin: UiRect::top(Val::Px(theme::GAP_LG)),
                             width: Val::Px(row_w),
-                            min_height: Val::Px(36.0),
                             padding: UiRect::all(Val::Px(theme::PAD_MD)),
                             border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                             align_items: AlignItems::Center,
@@ -652,6 +659,7 @@ pub fn update_level_up_tooltip(
     stats: Res<PlayerStats>,
     cards: Query<(&Interaction, &LevelUpButton)>,
     mut text_q: Query<&mut Text, With<LevelUpTooltipText>>,
+    mut root_q: Query<&mut Visibility, With<LevelUpTooltipRoot>>,
 ) {
     let hovered = cards.iter().find_map(|(i, btn)| {
         matches!(*i, Interaction::Hovered | Interaction::Pressed).then_some(btn.idx)
@@ -662,5 +670,15 @@ pub fn update_level_up_tooltip(
         .unwrap_or_default();
     for mut t in &mut text_q {
         if t.0 != want { **t = want.clone(); }
+    }
+    // Hide the whole bordered strip when nothing's hovered so the
+    // empty box doesn't sit there demanding attention.
+    let want_vis = if hovered.is_some() {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut root_q {
+        if *v != want_vis { *v = want_vis; }
     }
 }

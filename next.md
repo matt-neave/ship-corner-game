@@ -13,3 +13,6 @@ Next steps (agentically where possible)
 - can the level up stat tooltip below the 4 options only be visible if a stat is hovered
 - Can you verify spiked plates work?
 - The colour of shield in the hp bar is ugly
+- Can we have a visual for when harvest triggers - drop a pickup of gold!
+- Can sniper enemy inidcator have teh same darker outline as the artillery one has (it will need to be thicker to support this)!
+- CAn pickups last 2x as long

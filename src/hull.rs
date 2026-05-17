@@ -316,6 +316,13 @@ pub struct MapSizeButton(pub crate::map::MapSize);
 #[derive(Component, Clone, Copy)]
 pub struct DifficultyButton(pub u8);
 
+/// Marker on a difficulty / voyage-length pill that should not
+/// accept clicks — drawn in the disabled palette and skipped by
+/// the click handlers. Used to gate harder difficulties + non-
+/// medium voyage lengths until the debug overlay (`#`) is open.
+#[derive(Component)]
+pub struct LockedSelector;
+
 #[derive(Component, Clone, Copy)]
 pub struct HullCard(pub Hull);
 
@@ -334,12 +341,13 @@ pub fn enter_hull_select(
     hull_preview: Res<crate::dockyard_view::HullPreviewImage>,
     pixel_font: Res<crate::fonts::PixelFont>,
     mode: Res<crate::multiplayer::NetMode>,
+    debug_visible: Res<crate::map::DebugUiVisible>,
 ) {
     // Detail panel reflects the hover preview when present, else the
     // committed selection. The hull-tile grid below reads
     // `SelectedHull` directly for its highlight state.
     let panel_hull = preview.0.unwrap_or(selected.0);
-    spawn_overlay(commands, &pixel_font, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0, &mode);
+    spawn_overlay(commands, &pixel_font, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0, &mode, debug_visible.0);
 }
 
 fn spawn_overlay(
@@ -351,6 +359,7 @@ fn spawn_overlay(
     difficulty: crate::Difficulty,
     hull_preview_image: &Handle<Image>,
     mode: &crate::multiplayer::NetMode,
+    debug_unlock: bool,
 ) {
     commands
         .spawn((
@@ -450,7 +459,12 @@ fn spawn_overlay(
                         theme::ACCENT,
                     ));
                     for &size in crate::map::MapSize::ALL {
-                        spawn_map_size_pill(run, font, size, size == map_size);
+                        // Only Medium voyage is unlocked outside
+                        // debug mode. Press `#` (DebugUiVisible) to
+                        // open the others up for testing.
+                        let locked = !debug_unlock
+                            && !matches!(size, crate::map::MapSize::Medium);
+                        spawn_map_size_pill(run, font, size, size == map_size, locked);
                     }
                     run.spawn((
                         Node {
@@ -480,7 +494,11 @@ fn spawn_overlay(
                     })
                     .with_children(|row| {
                         for &v in crate::Difficulty::VALUES {
-                            spawn_difficulty_pill(row, font, v, v == difficulty.0);
+                            // Only difficulty 0 is unlocked outside
+                            // debug mode. Press `#` (DebugUiVisible)
+                            // to open the harder tiers for testing.
+                            let locked = !debug_unlock && v != 0;
+                            spawn_difficulty_pill(row, font, v, v == difficulty.0, locked);
                         }
                     });
                     // Spacer pushes PLAY + BACK to the card bottom.
@@ -713,36 +731,50 @@ fn spawn_difficulty_pill(
     font: &crate::fonts::PixelFont,
     value: u8,
     active: bool,
+    locked: bool,
 ) {
     let (style, label_color) = if active {
         (ChunkyButtonStyle::locked(theme::CTA_FILL, theme::CHUNKY_OUTLINE), theme::ON_CTA)
+    } else if locked {
+        // Disabled palette: dim fill + muted outline + grey label.
+        // Same `locked` chunky style as the active CTA but tinted
+        // to read as "not available" — no hover-lift either.
+        (
+            ChunkyButtonStyle::locked(
+                Color::srgb(0.18, 0.20, 0.24),
+                Color::srgb(0.30, 0.32, 0.38),
+            ),
+            Color::srgb(0.45, 0.48, 0.55),
+        )
     } else {
         (ChunkyButtonStyle::neutral(), theme::ON_SURFACE)
     };
     let label = crate::Difficulty(value).label();
-    parent
-        .spawn((
-            Button,
-            Node {
-                // 2× the previous chip-style padding so the pill
-                // reads as a proper button rather than a numpad key.
-                padding: UiRect::axes(Val::Px(theme::PAD_LG * 1.5), Val::Px(theme::PAD_MD)),
-                min_width: Val::Px(48.0),
-                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(style.idle_fill),
-            BorderColor(style.idle_outline),
-            BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
-            style,
-            DifficultyButton(value),
-        ))
-        .with_children(|pill| {
-            pill.spawn(ui_kit::pixel_label(font, label, theme::FONT_LG * 1.6, label_color));
-        });
+    let mut entity = parent.spawn((
+        Button,
+        Node {
+            // 2× the previous chip-style padding so the pill
+            // reads as a proper button rather than a numpad key.
+            padding: UiRect::axes(Val::Px(theme::PAD_LG * 1.5), Val::Px(theme::PAD_MD)),
+            min_width: Val::Px(48.0),
+            border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        BackgroundColor(style.idle_fill),
+        BorderColor(style.idle_outline),
+        BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
+        style,
+        DifficultyButton(value),
+    ));
+    if locked {
+        entity.insert(LockedSelector);
+    }
+    entity.with_children(|pill| {
+        pill.spawn(ui_kit::pixel_label(font, label, theme::FONT_LG * 1.6, label_color));
+    });
 }
 
 /// One map-size pill. Active pill uses the locked accent style; the
@@ -752,32 +784,43 @@ fn spawn_map_size_pill(
     font: &crate::fonts::PixelFont,
     size: crate::map::MapSize,
     active: bool,
+    locked: bool,
 ) {
     let (style, label_color) = if active {
         (ChunkyButtonStyle::locked(theme::CTA_FILL, theme::CHUNKY_OUTLINE), theme::ON_CTA)
+    } else if locked {
+        (
+            ChunkyButtonStyle::locked(
+                Color::srgb(0.18, 0.20, 0.24),
+                Color::srgb(0.30, 0.32, 0.38),
+            ),
+            Color::srgb(0.45, 0.48, 0.55),
+        )
     } else {
         (ChunkyButtonStyle::neutral(), theme::ON_SURFACE)
     };
-    parent
-        .spawn((
-            Button,
-            Node {
-                padding: UiRect::axes(Val::Px(theme::PAD_MD), Val::Px(theme::PAD_SM)),
-                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(style.idle_fill),
-            BorderColor(style.idle_outline),
-            BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
-            style,
-            MapSizeButton(size),
-        ))
-        .with_children(|pill| {
-            pill.spawn(ui_kit::pixel_label(font, size.label(), theme::FONT_MD, label_color));
-        });
+    let mut entity = parent.spawn((
+        Button,
+        Node {
+            padding: UiRect::axes(Val::Px(theme::PAD_MD), Val::Px(theme::PAD_SM)),
+            border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        BackgroundColor(style.idle_fill),
+        BorderColor(style.idle_outline),
+        BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
+        style,
+        MapSizeButton(size),
+    ));
+    if locked {
+        entity.insert(LockedSelector);
+    }
+    entity.with_children(|pill| {
+        pill.spawn(ui_kit::pixel_label(font, size.label(), theme::FONT_MD, label_color));
+    });
 }
 
 /// Right-panel content (title + tagline + buffs + nerfs + PLAY).
@@ -994,6 +1037,7 @@ pub fn sync_hull_select_on_change(
     preview: Res<PreviewHull>,
     map_size: Res<crate::map::MapSize>,
     difficulty: Res<crate::Difficulty>,
+    debug_visible: Res<crate::map::DebugUiVisible>,
     commands: Commands,
     q: Query<Entity, With<HullSelectRoot>>,
     state: Res<State<crate::AppState>>,
@@ -1005,6 +1049,7 @@ pub fn sync_hull_select_on_change(
         && !preview.is_changed()
         && !map_size.is_changed()
         && !difficulty.is_changed()
+        && !debug_visible.is_changed()
     {
         return;
     }
@@ -1014,16 +1059,20 @@ pub fn sync_hull_select_on_change(
         commands.entity(e).despawn();
     }
     let panel_hull = preview.0.unwrap_or(selected.0);
-    spawn_overlay(commands, &pixel_font, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0, &mode);
+    spawn_overlay(commands, &pixel_font, panel_hull, selected.0, *map_size, *difficulty, &hull_preview.0, &mode, debug_visible.0);
 }
 
 /// Click handler — commit the player's pick to the `MapSize` resource.
 /// The rebuild system above picks up the change and re-tints the pills.
 pub fn handle_map_size_click(
-    interactions: Query<(&Interaction, &MapSizeButton), Changed<Interaction>>,
+    interactions: Query<
+        (&Interaction, &MapSizeButton, bevy::ecs::query::Has<LockedSelector>),
+        Changed<Interaction>,
+    >,
     mut map_size: ResMut<crate::map::MapSize>,
 ) {
-    for (interaction, btn) in &interactions {
+    for (interaction, btn, locked) in &interactions {
+        if locked { continue; }
         if matches!(*interaction, Interaction::Pressed) {
             if *map_size != btn.0 {
                 *map_size = btn.0;
@@ -1036,10 +1085,14 @@ pub fn handle_map_size_click(
 /// Click handler — commit the player's difficulty pick. The rebuild
 /// system picks up the change and re-tints the active pill.
 pub fn handle_difficulty_click(
-    interactions: Query<(&Interaction, &DifficultyButton), Changed<Interaction>>,
+    interactions: Query<
+        (&Interaction, &DifficultyButton, bevy::ecs::query::Has<LockedSelector>),
+        Changed<Interaction>,
+    >,
     mut difficulty: ResMut<crate::Difficulty>,
 ) {
-    for (interaction, btn) in &interactions {
+    for (interaction, btn, locked) in &interactions {
+        if locked { continue; }
         if matches!(*interaction, Interaction::Pressed) {
             if difficulty.0 != btn.0 {
                 difficulty.0 = btn.0;

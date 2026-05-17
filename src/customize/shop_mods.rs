@@ -13,7 +13,7 @@ use bevy::render::view::RenderLayers;
 use crate::balance::{CUSTOMIZE_LAYER, UPSCALE_LAYER};
 use crate::stats::PlayerStats;
 
-use super::drag::{CustomizeShop, DragState};
+use super::drag::{ActiveLegendaries, CustomizeShop, DragState, ModEffect};
 use super::render::CustomizeViewport;
 use super::setup::HitArea;
 use super::CustomizeOpen;
@@ -246,13 +246,17 @@ pub fn update_shop_mod_cards(
                     .find(|(_, t)| t.idx == slot.idx)
                     .map(|(e, _)| e);
                 if let Some(parent) = parent {
+                    let rarity_label = m.spec().rarity.label();
+                    let rarity_color = m.spec().rarity.border_color();
                     commands.entity(parent).with_children(|p| {
                         let lines: Vec<&str> = label.split('\n').collect();
                         for (li, line) in lines.iter().enumerate() {
                             // Per-line tint: green for `+`, red
-                            // for `-`, neutral for everything
-                            // else (the stat-name lines).
-                            let line_color = if line.starts_with('+') {
+                            // for `-`, rarity-tinted for the rarity
+                            // tag, neutral for the rest.
+                            let line_color = if *line == rarity_label {
+                                rarity_color
+                            } else if line.starts_with('+') {
                                 crate::ui_kit::theme::BUFF_FG
                             } else if line.starts_with('-') {
                                 crate::ui_kit::theme::NERF_FG
@@ -320,6 +324,7 @@ pub fn handle_shop_mod_click(
     shop: Option<ResMut<CustomizeShop>>,
     mut stats: ResMut<PlayerStats>,
     mut scrap: ResMut<crate::Scrap>,
+    mut active: ResMut<ActiveLegendaries>,
     btn_q: Query<(&Transform, &HitArea, &ShopModSlot)>,
 ) {
     if !open.open { return; }
@@ -345,6 +350,28 @@ pub fn handle_shop_mod_click(
         for &(kind, delta) in m.spec().changes {
             let stat = kind.stat_mut(&mut stats);
             stat.flat += delta;
+        }
+        // Apply the build-warping effect, if any. Ongoing effects
+        // flip a flag in `ActiveLegendaries`; one-shot effects run
+        // their stat mutation right here.
+        if let Some(eff) = m.spec().effect {
+            match eff {
+                ModEffect::Monomaniac => { active.monomaniac = true; }
+                ModEffect::Duelist    => { active.duelist    = true; }
+                ModEffect::Harmony    => { active.harmony    = true; }
+                ModEffect::Purist     => { active.purist     = true; }
+                ModEffect::Specialist => { active.specialist = true; }
+                ModEffect::Turtle => {
+                    // Snapshot the current shield_max and transfer
+                    // it 1:1 into HP. `flat` deltas (not `percent`)
+                    // so the conversion is invariant under later
+                    // shield-max bumps — the bonus HP stays, and
+                    // any new shield pickups start fresh.
+                    let s = stats.shield_max.effective().max(0.0);
+                    stats.hp.flat += s;
+                    stats.shield_max.flat -= s;
+                }
+            }
         }
         *slot_entry = None;
         // Buying clears the lock — locks only protect held inventory,

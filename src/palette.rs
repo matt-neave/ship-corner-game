@@ -342,6 +342,11 @@ pub struct PaletteMaterials {
     /// Sniper aim-line tint. Used by the trajectory telegraph that
     /// renders during the sniper's 1.5s aim phase.
     pub sniper_aim: Handle<ColorMaterial>,
+    /// Darker outline behind the sniper aim-line, mirroring
+    /// `artillery_reticle_outline`. Spawned as a thicker sibling
+    /// strip slightly below the main beam so both telegraphs
+    /// share the same "danger" reading vocabulary.
+    pub sniper_aim_outline: Handle<ColorMaterial>,
     /// Bright dot painted on the time-fused enemy landmine the Rammer
     /// drops on death. Distinguishes it from the friendly proximity
     /// mine's dot (`mine_inner`).
@@ -557,6 +562,7 @@ impl PaletteMaterials {
             artillery_reticle:     materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.40)),
             artillery_reticle_outline: materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.95)),
             sniper_aim:            materials.add(translucent(hex(SNIPER_AIM_HEX), 0.65)),
+            sniper_aim_outline:    materials.add(translucent(darken(hex(SNIPER_AIM_HEX), 0.45), 0.95)),
             enemy_mine_dot:        materials.add(hex(ENEMY_MINE_DOT_HEX)),
             bullet_friendly:       materials.add(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN)),
             bullet_enemy:          materials.add(lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN)),

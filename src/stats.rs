@@ -50,7 +50,7 @@ pub fn shield_recharge_system(
     mut q: Query<&mut Shield>,
 ) {
     let dt = time.delta_secs();
-    let max = stats.shield_max.effective().max(0.0);
+    let max = stats.effective_shield_max();
     let delay = stats.shield_recharge_delay.effective().max(0.0);
     // Flat shield-per-second — independent of `shield_max`. A
     // 50-max-shield build regenerates at the same rate as a
@@ -134,6 +134,12 @@ pub struct PlayerStats {
     /// `sync_turret_config`. 0.0 = +0% (no change); +25.0 = ×1.25.
     /// All consumers go through `turret_damage_mult()` below.
     pub turret_damage_pct: Stat,
+    /// Percentage cooldown REDUCTION on every turret. Folded into
+    /// `slot.fire_rate` via `cooldown_mult()` — +25% cooldown
+    /// reduction means each weapon's reload window shrinks 20% (the
+    /// reciprocal). 0.0 = unchanged. Capped well below 100% by
+    /// the effective method so weapons can't fire infinitely fast.
+    pub cooldown_pct: Stat,
     /// Chance to ignore an incoming damage instance entirely, in
     /// percent. Capped at [`DEFENSIVE_CAP_PCT`] so the player can't
     /// become invulnerable through stacking. Rolled per damage
@@ -152,6 +158,24 @@ pub struct PlayerStats {
 /// negotiated max — high enough to be a meaningful build target,
 /// low enough that bursts still kill an unprepared player.
 pub const DEFENSIVE_CAP_PCT: f32 = 60.0;
+
+/// Maximum penalty Armour can impose when negative. -100% would
+/// double incoming damage; we cap at 100 so a stack of nerf mods
+/// (BERSERKER, future trade-off legendaries) can't make a single
+/// hit one-shot a max-HP build. The asymmetry vs. `DEFENSIVE_CAP_PCT`
+/// keeps the player from being instantly punished by random rolls
+/// while still letting "Armour -6 = +6% damage taken" read clearly.
+pub const NEGATIVE_ARMOUR_CAP_PCT: f32 = 100.0;
+
+/// Min effective `move_speed`. A few % of `MOVE_SPEED_BASE` rather
+/// than 0 so stacked nerfs don't freeze the ship in place — the
+/// player should always be able to crawl, even mid-build-collapse.
+pub const MIN_MOVE_SPEED: f32 = 6.0;
+
+/// Min effective `range_pct` (in percent of baseline). 10% leaves
+/// every weapon with a sliver of range so a worst-case build still
+/// has reachable enemies, instead of the slot becoming a paperweight.
+pub const MIN_RANGE_PCT: f32 = 10.0;
 
 /// Baseline `move_speed` value. Pulled out as a named constant so
 /// `StatKind::format_delta` can express speed mod deltas as a
@@ -183,6 +207,7 @@ impl Default for PlayerStats {
             shield_recharge_delay: Stat::new(3.0),
             rune_damage: Stat::new(1.0),
             turret_damage_pct: Stat::new(0.0),
+            cooldown_pct: Stat::new(0.0),
             dodge_pct: Stat::new(0.0),
             armour_pct: Stat::new(0.0),
         }
@@ -199,8 +224,33 @@ impl PlayerStats {
     }
     /// Range multiplier (1.0 at 100% baseline). Multiplied with each
     /// weapon's intrinsic `range_mult` and any pier/slot buff.
+    /// Floored at [`MIN_RANGE_PCT`] so stacked range nerfs (e.g.
+    /// Rammer hull -70% + MERCHANT future scaling) still leave the
+    /// weapon with a usable horizon — the slot shouldn't ever
+    /// become a paperweight.
     pub fn range_mult(&self) -> f32 {
-        self.range_pct.effective() / 100.0
+        self.range_pct.effective().max(MIN_RANGE_PCT) / 100.0
+    }
+
+    /// Effective movement speed in world units / s. Floored at
+    /// [`MIN_MOVE_SPEED`] so a stack of speed-nerf mods can't
+    /// freeze the ship in place — the player can always crawl.
+    pub fn effective_move_speed(&self) -> f32 {
+        self.move_speed.effective().max(MIN_MOVE_SPEED)
+    }
+
+    /// Effective shield_max, floored at 0. Negative `flat` from a
+    /// future trade-off mod can't push shield_max below zero where
+    /// the recharge math would treat it as a sentinel.
+    pub fn effective_shield_max(&self) -> f32 {
+        self.shield_max.effective().max(0.0)
+    }
+
+    /// Effective XP-harvest fraction (0.0 = base XP, +0.5 = 150% XP).
+    /// Floored at -90% so a hypothetical XP-nerf mod still grants
+    /// at least 10% of the baseline rather than zeroing kills out.
+    pub fn xp_harvest_mult(&self) -> f32 {
+        1.0 + (self.xp_harvest_pct.effective() / 100.0).max(-0.9)
     }
     /// Rune-damage scalar (default 1.0). Each rune coefficient
     /// multiplies this directly — fire's "100%" → `1.0 × rune_damage`.
@@ -216,6 +266,19 @@ impl PlayerStats {
     /// `slot.damage` without per-system plumbing.
     pub fn turret_damage_mult(&self) -> f32 {
         (1.0 + self.turret_damage_pct.effective() / 100.0).max(0.0)
+    }
+    /// Fire-rate multiplier from `cooldown_pct`. +25% cooldown
+    /// reduction means the slot fires `1 / (1 - 0.25) ≈ 1.33×` as
+    /// fast. Capped at 0.9 (max 90% reduction) so weapons can't
+    /// reach instant reload through stacked nerfs / mods.
+    pub fn cooldown_mult(&self) -> f32 {
+        let reduction = (self.cooldown_pct.effective() / 100.0).clamp(-2.0, 0.9);
+        // Negative reduction (player taking penalties) slows fire
+        // rate, positive speeds it up. `1 - reduction` is the
+        // remaining cooldown fraction; the multiplier on fire
+        // rate is the reciprocal.
+        let cooldown_frac = (1.0 - reduction).max(0.1);
+        1.0 / cooldown_frac
     }
     /// Additive bonus to rune proc strength, expressed as 0..1.
     pub fn proc_strength_bonus(&self) -> f32 {
@@ -279,22 +342,34 @@ impl PlayerStats {
         (self.dodge_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT)) / 100.0
     }
 
-    /// Effective armour reduction as a 0..1 fraction of incoming
-    /// damage to remove, clamped to [`DEFENSIVE_CAP_PCT`].
+    /// Effective armour as a signed fraction of incoming damage to
+    /// remove. Positive values reduce damage (capped at
+    /// [`DEFENSIVE_CAP_PCT`]); negative values AMPLIFY damage (e.g.
+    /// BERSERKER's `Armour -6` makes the player take +6% more damage),
+    /// floored at `-NEGATIVE_ARMOUR_CAP_PCT` so a stack of nerfs
+    /// can't infinitely multiply the next hit.
     pub fn armour_reduction(&self) -> f32 {
-        (self.armour_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT)) / 100.0
+        self.armour_pct
+            .effective()
+            .clamp(-NEGATIVE_ARMOUR_CAP_PCT, DEFENSIVE_CAP_PCT) / 100.0
     }
 
     /// Apply the full defensive stack (dodge → armour) to one
     /// incoming damage instance. Returns the post-mitigation damage
     /// the rest of the pipeline (shield + HP) should consume.
-    /// Dodge is binary (full damage or zero); armour is a flat
-    /// percentage reduction applied on the un-dodged residual. Both
-    /// stats are independently capped at [`DEFENSIVE_CAP_PCT`].
+    /// Dodge is binary (full damage or zero); armour is a signed
+    /// percentage change on the un-dodged residual — positive
+    /// reduces, negative amplifies. Dodge capped at
+    /// [`DEFENSIVE_CAP_PCT`]; armour clamped to
+    /// `[-NEGATIVE_ARMOUR_CAP_PCT, DEFENSIVE_CAP_PCT]`.
     pub fn mitigate_incoming(&self, rng: &mut impl Rng, damage: i32) -> i32 {
         if damage <= 0 { return damage; }
         if rng.r#gen::<f32>() < self.dodge_chance() { return 0; }
-        let reduced = (damage as f32 * (1.0 - self.armour_reduction())).round() as i32;
+        // `1.0 - armour` is the damage-pass-through fraction. Positive
+        // armour shrinks it (e.g. 0.6 = take 40% damage); negative
+        // armour grows it past 1.0 (e.g. -0.6 = take 160% damage).
+        let pass_through = 1.0 - self.armour_reduction();
+        let reduced = (damage as f32 * pass_through).round() as i32;
         reduced.max(0)
     }
 }
@@ -337,6 +412,10 @@ pub enum StatKind {
     /// Flat percentage reduction on un-dodged damage, applied
     /// before shield. Capped at [`DEFENSIVE_CAP_PCT`].
     Armour,
+    /// Percentage cooldown reduction on every weapon. +25 = -25%
+    /// cooldown ≈ +33% effective fire rate. Capped server-side at
+    /// 90% via `cooldown_mult()`.
+    Cooldown,
 }
 
 impl StatKind {
@@ -350,6 +429,7 @@ impl StatKind {
         StatKind::MoveSpeed,
         StatKind::TurnSpeed,
         StatKind::TurretDamage,
+        StatKind::Cooldown,
         StatKind::Range,
         StatKind::Crit,
         StatKind::Luck,
@@ -373,6 +453,7 @@ impl StatKind {
         StatKind::TurnSpeed,
         StatKind::TurretDamage,
         StatKind::Range,
+        StatKind::Cooldown,
         StatKind::Crit,
         StatKind::Luck,
         StatKind::ProcStrength,
@@ -399,6 +480,7 @@ impl StatKind {
             StatKind::TurretDamage => "WEAPON DAMAGE",
             StatKind::Dodge => "DODGE",
             StatKind::Armour => "ARMOUR",
+            StatKind::Cooldown => "COOLDOWN",
         }
     }
     /// Formatted current value (with units / sign where helpful).
@@ -505,6 +587,10 @@ impl StatKind {
                 let v = stats.armour_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT);
                 format!("{:.0}%", v)
             }
+            StatKind::Cooldown => {
+                let v = stats.cooldown_pct.effective();
+                format!("{:+.0}%", v)
+            }
         }
     }
 }
@@ -536,6 +622,7 @@ impl StatKind {
             StatKind::TurretDamage => crate::i18n::tr("stat_turret_damage_desc"),
             StatKind::Dodge => crate::i18n::tr("stat_dodge_desc"),
             StatKind::Armour => crate::i18n::tr("stat_armour_desc"),
+            StatKind::Cooldown => crate::i18n::tr("stat_cooldown_desc"),
         }
     }
 
@@ -614,10 +701,12 @@ impl StatKind {
                 )
             }
             StatKind::XpHarvest => {
-                // Same formula as `xp::grant_kill_xp`: base XP × (1 +
-                // xp_harvest_pct/100), rounded up to at least 1 so the
-                // tooltip never lies about a "0 XP" kill.
-                let mult = 1.0 + stats.xp_harvest_pct.effective() / 100.0;
+                // Same formula as `xp::grant_kill_xp`: base XP ×
+                // `xp_harvest_mult()` (which floors the negative tail
+                // at -90% so a hypothetical nerf never zeroes
+                // XP), rounded up to at least 1 so the tooltip
+                // never lies about a "0 XP" kill.
+                let mult = stats.xp_harvest_mult();
                 let per_kill = (1.0_f32 * mult).round().max(1.0) as u32;
                 let per_boss = (5.0_f32 * mult).round().max(1.0) as u32;
                 format!(
@@ -644,6 +733,14 @@ impl StatKind {
                 format!(
                     "Absorbs damage before HP. Recharges {:.1}/s after {:.1}s without taking a hit.",
                     rate, delay,
+                )
+            }
+            StatKind::Cooldown => {
+                let mult = stats.cooldown_mult();
+                let pct = ((mult - 1.0) * 100.0).round() as i32;
+                format!(
+                    "Weapon cooldown reduction. Effective fire rate currently {:+}% of baseline.",
+                    pct,
                 )
             }
             // Stats whose static blurb already reads cleanly (the
@@ -679,6 +776,7 @@ impl StatKind {
             StatKind::TurretDamage => 10.0, // +10 percentage points / step
             StatKind::Dodge => 5.0,
             StatKind::Armour => 5.0,
+            StatKind::Cooldown => 10.0,
         }
     }
 
@@ -705,6 +803,7 @@ impl StatKind {
             StatKind::TurretDamage => 5.0,
             StatKind::Dodge => 3.0,               // 20 picks to hit the 60% cap
             StatKind::Armour => 3.0,
+            StatKind::Cooldown => 5.0,
         }
     }
 
@@ -726,7 +825,8 @@ impl StatKind {
             | StatKind::Harvest
             | StatKind::XpHarvest
             | StatKind::Dodge
-            | StatKind::Armour => format!("{:+.0}%", delta),
+            | StatKind::Armour
+            | StatKind::Cooldown => format!("{:+.0}%", delta),
             // Movement / turning are stored as raw world units but a
             // raw "+3" doesn't tell the player anything. Express as
             // a percentage of the baseline so "+3 SPEED" reads as
@@ -772,6 +872,7 @@ impl StatKind {
             StatKind::TurretDamage => &stats.turret_damage_pct,
             StatKind::Dodge => &stats.dodge_pct,
             StatKind::Armour => &stats.armour_pct,
+            StatKind::Cooldown => &stats.cooldown_pct,
         }
     }
 
@@ -795,6 +896,7 @@ impl StatKind {
             StatKind::TurretDamage => &mut stats.turret_damage_pct,
             StatKind::Dodge => &mut stats.dodge_pct,
             StatKind::Armour => &mut stats.armour_pct,
+            StatKind::Cooldown => &mut stats.cooldown_pct,
         }
     }
 }

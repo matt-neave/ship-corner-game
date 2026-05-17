@@ -284,7 +284,12 @@ pub fn setup_hud(
                         height: Val::Percent(100.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.18, 0.38, 0.78)),
+                    // Steel-cyan — bright enough to read against
+                    // the dark track background, muted enough that
+                    // it doesn't compete with the green HP fill
+                    // below. Picked over saturated blue (clashes
+                    // with the gold accents elsewhere in chrome).
+                    BackgroundColor(Color::srgb(0.55, 0.78, 0.85)),
                     ShieldBarFill,
                 ));
             });
@@ -517,20 +522,28 @@ pub fn sync_hud_dev_buttons_visibility(
 pub fn update_wave_ui(
     view: Res<ViewMode>,
     stats: Res<crate::stats::PlayerStats>,
+    customize_open: Res<crate::customize::CustomizeOpen>,
+    paused: Res<crate::pause::Paused>,
     friendly: Query<(&Health, Option<&crate::stats::Shield>), With<Friendly>>,
     mut hp_root_q: Query<&mut Visibility, With<WaveHpUi>>,
     mut hp_fill_q: Query<&mut Node, With<WaveHpFill>>,
     mut hp_text_q: Query<&mut Text, With<WaveHpTextPart>>,
 ) {
-    if view.is_changed() {
-        let want = if matches!(*view, ViewMode::Combat) {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        for mut v in &mut hp_root_q {
-            if *v != want { *v = want; }
-        }
+    // Run the visibility flip every frame so any other writer that
+    // flips WaveHpUi visible can't sneak in a stale state. Show
+    // ONLY when in Combat view AND the shop / pause overlays
+    // aren't on top — otherwise the bars poke through the shop /
+    // pause backdrop or sit on the map view.
+    let want = if matches!(*view, ViewMode::Combat)
+        && !customize_open.open
+        && !paused.0
+    {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut hp_root_q {
+        if *v != want { *v = want; }
     }
 
     let Ok((h, shield)) = friendly.single() else { return; };

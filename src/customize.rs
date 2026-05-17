@@ -37,7 +37,7 @@ use crate::AppState;
 
 mod render;
 mod setup;
-mod drag;
+pub mod drag;
 mod shop_lock;
 mod shop_mods;
 mod stats_panel;
@@ -57,6 +57,7 @@ impl Plugin for CustomizePlugin {
             .insert_resource(CustomizeOpen::default())
             .insert_resource(DragState::default())
             .insert_resource(TooltipLayout::default())
+            .insert_resource(drag::ActiveLegendaries::default())
             .add_systems(
                 Startup,
                 (init_customize_shop, setup_customize_render, setup_customize_ui).chain(),
@@ -64,6 +65,14 @@ impl Plugin for CustomizePlugin {
             .add_systems(
                 OnEnter(AppState::Customize),
                 (init_customize_shop, crate::enemy::clear_spawn_indicators),
+            )
+            // Wipe legendary build-warpers when returning to the
+            // main menu so a fresh run starts clean.
+            .add_systems(
+                OnEnter(AppState::MainMenu),
+                |mut active: ResMut<drag::ActiveLegendaries>| {
+                    *active = drag::ActiveLegendaries::default();
+                },
             )
             .add_systems(OnExit(AppState::Customize), crate::ui::reset_damage_stats)
             // Cursor tracker is registered FIRST and on its own so

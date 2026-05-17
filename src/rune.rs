@@ -732,8 +732,10 @@ pub struct HpPickup {
 /// larger than the player's hit radius so passing-close grabs the
 /// drop.
 pub const HP_PICKUP_RADIUS: f32 = 4.0;
-/// Default lifetime before unclaimed pickups vanish.
-pub const HP_PICKUP_LIFETIME: f32 = 8.0;
+/// Default lifetime before unclaimed pickups vanish. Bumped to
+/// 16s so the player has plenty of time to circle back during a
+/// hectic clear before the drop expires.
+pub const HP_PICKUP_LIFETIME: f32 = 16.0;
 /// Visual radius — small enough to read as a sub-object, big enough
 /// to spot at a glance.
 pub const HP_PICKUP_VISUAL_R: f32 = 1.4;
@@ -790,8 +792,91 @@ pub fn tick_hp_pickups(
             continue;
         }
         let pp = tf.translation.truncate();
-        if pp.distance_squared(fp) < pickup_r2 && fh.0 < max {
-            fh.0 = (fh.0 + pickup.heal).min(max);
+        if pp.distance_squared(fp) < pickup_r2 {
+            // Always consume the pickup on contact — even at full
+            // HP. Heal is clamped to `max` so the overflow stays
+            // zero, but the visual+entity disappear instead of
+            // hanging around forever like a forgotten breadcrumb.
+            if fh.0 < max {
+                fh.0 = (fh.0 + pickup.heal).min(max);
+            }
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+// ---------- Scrap pickup (Harvest spawn product) ----------
+
+/// Pile of scrap dropped by a Harvest proc. Despawns on player
+/// contact (granting `value` scrap) or after `lifetime` seconds.
+/// Magnet-pulled toward the player like HP pickups so an
+/// over-the-shoulder grab is feasible.
+#[derive(Component)]
+pub struct ScrapPickup {
+    pub value: u32,
+    pub lifetime: f32,
+}
+
+/// Visual radius — slightly smaller than HP pickups so the gold
+/// reads as "small coin" rather than "big crate."
+pub const SCRAP_PICKUP_RADIUS:  f32 = 4.0;
+pub const SCRAP_PICKUP_VISUAL_R: f32 = 1.2;
+/// Match HP pickup lifetime so the player doesn't have to track
+/// two separate decay clocks.
+pub const SCRAP_PICKUP_LIFETIME: f32 = HP_PICKUP_LIFETIME;
+
+/// Gold for the harvest pickup. Same accent tone as the scrap
+/// counter UI so the player visually parses "that's money."
+const SCRAP_PICKUP_COLOR: Color = Color::srgb(1.0, 0.85, 0.30);
+
+/// Spawn a scrap pickup at `pos` worth `value` scrap.
+pub fn spawn_scrap_pickup(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    pos: Vec2,
+    value: u32,
+) {
+    if value == 0 { return; }
+    let mesh = meshes.add(Circle::new(SCRAP_PICKUP_VISUAL_R));
+    let mat = materials.add(SCRAP_PICKUP_COLOR);
+    commands.spawn((
+        Mesh2d(mesh),
+        MeshMaterial2d(mat),
+        Transform::from_xyz(pos.x, pos.y, 4.5),
+        ScrapPickup {
+            value: value.max(1),
+            lifetime: SCRAP_PICKUP_LIFETIME,
+        },
+        Magnetic::default_pull(),
+        RenderLayers::layer(PLAY_LAYER),
+    ));
+}
+
+/// Per-frame: decay lifetime, despawn expired, grant scrap on
+/// player contact. Mirrors `tick_hp_pickups`.
+pub fn tick_scrap_pickups(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut scrap: ResMut<crate::Scrap>,
+    mut scrap_earned: ResMut<crate::stage_complete::ScrapEarnedThisStage>,
+    mut pickups: Query<(Entity, &Transform, &mut ScrapPickup)>,
+    friendly: Query<&Transform, (With<crate::components::Friendly>, Without<ScrapPickup>)>,
+) {
+    let dt = time.delta_secs();
+    let Ok(ftf) = friendly.single() else { return };
+    let fp = ftf.translation.truncate();
+    let r2 = SCRAP_PICKUP_RADIUS * SCRAP_PICKUP_RADIUS;
+    for (e, tf, mut pickup) in &mut pickups {
+        pickup.lifetime -= dt;
+        if pickup.lifetime <= 0.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        let pp = tf.translation.truncate();
+        if pp.distance_squared(fp) < r2 {
+            scrap.0 = scrap.0.saturating_add(pickup.value);
+            scrap_earned.0 = scrap_earned.0.saturating_add(pickup.value);
             commands.entity(e).despawn();
         }
     }

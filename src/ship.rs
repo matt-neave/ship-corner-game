@@ -138,7 +138,7 @@ pub fn spawn_player_world(
         LocalPlayer,
         Faction(FactionKind::Friendly),
         Health(stats.max_hp()),
-        Velocity(Vec2::new(0.0, stats.move_speed.effective())),
+        Velocity(Vec2::new(0.0, stats.effective_move_speed())),
         crate::stats::Shield::default(),
         Heading(0.0),
         HitFx::new(pm.hull.clone()),
@@ -483,7 +483,7 @@ pub fn friendly_movement(
             crate::rune::RALLY_PER_STACK,
             stats.rune_damage_mult(),
         );
-        vel.0 = dir * stats.move_speed.effective() * rally_mult;
+        vel.0 = dir * stats.effective_move_speed() * rally_mult;
         tf.rotation = Quat::from_rotation_z(heading.0);
     }
 }

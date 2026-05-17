@@ -243,12 +243,39 @@ pub fn make_pierce(stacks: u8, rune_effect: f32) -> Pierce {
 pub fn bullet_update(
     time: Res<Time>,
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Bullet, &Velocity)>,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<EffectMeshes>>,
+    mut q: Query<(
+        Entity,
+        &Transform,
+        &mut Bullet,
+        &Velocity,
+        Option<&crate::ally::missile::HomingMissile>,
+    )>,
 ) {
     let dt = time.delta_secs();
-    for (e, mut b, v) in &mut q {
+    let mut rng = rand::thread_rng();
+    for (e, tf, mut b, v, homing) in &mut q {
         b.remaining -= v.0.length() * dt;
         if b.remaining <= 0.0 {
+            // Homing rockets get a small puff of friendly-bullet
+            // particles when they reach their lifetime — sells the
+            // "engine ran out" beat instead of the rocket vanishing
+            // silently into open water. Regular bullets stay quiet
+            // (they're cheap enough that the player won't notice).
+            if homing.is_some() {
+                if let (Some(pm), Some(em)) = (pm.as_deref(), em.as_deref()) {
+                    spawn_hit_particles(
+                        &mut commands,
+                        em,
+                        &pm.bullet_friendly,
+                        tf.translation.truncate(),
+                        6,
+                        30.0,
+                        &mut rng,
+                    );
+                }
+            }
             commands.entity(e).despawn();
         }
     }
@@ -308,6 +335,15 @@ pub struct VampireAccumulator(pub f32);
 /// Greeds share the same counter.
 #[derive(Resource, Default)]
 pub struct GreedAccumulator(pub u32);
+
+/// Bundled `SystemParam` holding both accumulator resources. Lets
+/// damage-event consumers carry the pair as one slot under Bevy
+/// 0.16's 16-SystemParam cap — see `process_damage_events`.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct LootAccumulators<'w> {
+    pub vampire: ResMut<'w, VampireAccumulator>,
+    pub greed:   ResMut<'w, GreedAccumulator>,
+}
 
 impl PendingDamageQueue {
     /// Convenience helper — push a fresh DamageEvent (proc_strength
@@ -548,10 +584,10 @@ pub fn process_damage_events(
     mut stats: ResMut<DamageStats>,
     player_stats: Res<crate::stats::PlayerStats>,
     synergies: Res<crate::synergy::Synergies>,
+    legendary: crate::customize::drag::LegendaryContext,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
-    mut vampire_acc: ResMut<VampireAccumulator>,
-    mut greed_acc: ResMut<GreedAccumulator>,
+    mut loot: LootAccumulators,
     mut scrap_w: crate::stage_complete::ScrapWriter,
     mut on_kill: crate::rune::OnKillBookkeeping,
     mut friendly: Query<
@@ -574,6 +610,11 @@ pub fn process_damage_events(
     // target for this many seconds per hit. 0 when no Future tiers
     // are active so the per-event check below is a free branch.
     let future_stun = synergies.future_stun_duration();
+    // Legendary rune gates. Purist disables rune procs entirely;
+    // Specialist multiplies their proc strength when every weapon
+    // shares a tag (precomputed once per drain).
+    let runes_disabled = legendary.active.purist;
+    let specialist_bonus = if legendary.active.specialist_armed(&legendary.cfg) { 1.5 } else { 1.0 };
 
     // Snapshot for chain-target picking (Shock / Cascade). Built from
     // the mutable enemies query's read-only iteration before any
@@ -598,9 +639,9 @@ pub fn process_damage_events(
         process_damage_event(
             ev, &mut queue.0,
             &mut commands, &mut stats, &player_stats, &pm, &em,
-            future_stun,
-            &enemy_snap, &mut enemies, &mut friendly, &mut vampire_acc,
-            &mut greed_acc, &mut *scrap_w.total, &mut *scrap_w.earned,
+            future_stun, runes_disabled, specialist_bonus,
+            &enemy_snap, &mut enemies, &mut friendly, &mut *loot.vampire,
+            &mut *loot.greed, &mut *scrap_w.total, &mut *scrap_w.earned,
             &on_conduit, &on_resonate, &mut rng, &mut proc_fx,
         );
 
@@ -677,6 +718,13 @@ fn process_damage_event(
     pm: &PaletteMaterials,
     em: &EffectMeshes,
     future_stun: f32,
+    // `runes_disabled`: Purist legendary — skip the per-event rune
+    // loop entirely so no runes can proc on this hit.
+    // `specialist_bonus`: Specialist legendary multiplier folded
+    // into the per-rune proc-strength roll. `1.0` when inactive,
+    // `1.5` (= +50%) when every equipped weapon shares a tag.
+    runes_disabled: bool,
+    specialist_bonus: f32,
     enemy_snap: &[(Entity, Vec2, f32)],
     enemies: &mut Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
     friendly: &mut Query<(&mut Health, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>)>,
@@ -843,6 +891,10 @@ fn process_damage_event(
     // instead of each rune adding a marker component on the dying
     // entity. See `crate::rune::KillEvent`.
     if h.0 <= 0 {
+        // Purist legendary: all rune effects off. Skip the entire
+        // on-kill rune branch (Greed payout, Ward overflow, Cascade
+        // fanout) so no rune contributes anything.
+        if runes_disabled { return; }
         // Greed scrap-on-Nth-kill (fires regardless of proc roll).
         // Stacks reduce the threshold (more frequent payouts), Rune
         // Effect divides the remainder. Increment runs once per kill
@@ -871,7 +923,15 @@ fn process_damage_event(
         // above max, so the overflow only decays by absorbing hits.
         let ward_stacks = ev.runes.iter().filter(|&&r| r == Rune::Ward).count();
         if ward_stacks > 0 {
-            let gain = ward_stacks as f32 * player_stats.rune_damage_mult();
+            // Base 3 shield per Ward stack per kill, scaled by
+            // rune-damage strength. With default `rune_damage_mult`
+            // (1.0), a single Ward gives 3 shield/kill; a +50%
+            // RuneDamage build pushes that to 4.5. Stacks add
+            // linearly so three Wards yield 9–13.5 per kill.
+            const WARD_BASE_PER_STACK: f32 = 3.0;
+            let gain = ward_stacks as f32
+                * WARD_BASE_PER_STACK
+                * player_stats.rune_damage_mult();
             for (_, sh_opt) in friendly.iter_mut() {
                 if let Some(mut sh) = sh_opt {
                     sh.current += gain;
@@ -922,8 +982,10 @@ fn process_damage_event(
     }
 
     if ev.proc_strength <= 0.0 { return; }
-
-    // Conduit proc-strength buff — if the target carries OnConduit,
+    // Purist legendary — runes do nothing. Skip the entire proc
+    // loop so neither base procs nor chain hops fire. Done after
+    // primary damage + Cascade so the bullet itself still hits.
+    if runes_disabled { return; }
     // every rune attached to this hit gets a more reliable proc roll.
     // Capped at 1.0 in the eventual `>=` comparison so the visible
     // effect is "chain hops at full strength" rather than "absurd
@@ -942,7 +1004,10 @@ fn process_damage_event(
         .get(ev.target)
         .map(|c| c.proc_mult(player_stats.rune_damage_mult()))
         .unwrap_or(1.0);
-    let strength = (ev.proc_strength * conduit_mult + bonus).min(1.0);
+    // Specialist legendary multiplies proc strength (capped to 1.0
+    // by the `.min(1.0)` below). Same multiplier applied to every
+    // rune on this hit since the legendary is loadout-wide.
+    let strength = (ev.proc_strength * conduit_mult * specialist_bonus + bonus).min(1.0);
 
     // Group the bullet's runes by kind first so duplicates (3 Fire,
     // 2 Shock, etc.) get rolled + applied ONCE per kind with the

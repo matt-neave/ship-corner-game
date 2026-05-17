@@ -1778,7 +1778,7 @@ fn rune_dynamic_description(
         }
         Rune::Ward => format!(
             "Killing blows grant {:.0} shield. Can overflow above Shield Max as a one-time buffer (no recharge above).",
-            rune_dmg,
+            3.0 * rune_dmg,
         ),
         Rune::Bleed => {
             let pct = crate::balance::BLEED_PCT_PER_TICK * 100.0 * rune_dmg;

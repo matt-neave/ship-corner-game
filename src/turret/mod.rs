@@ -144,6 +144,7 @@ pub fn sync_turret_config(
     cfg: Res<TurretConfig>,
     synergies: Res<crate::synergy::Synergies>,
     stats: Res<crate::stats::PlayerStats>,
+    active: Res<crate::customize::drag::ActiveLegendaries>,
     pm: Option<Res<PaletteMaterials>>,
     mut q: Query<(&mut TurretSlot, &mut Visibility, &mut Transform, &mut MeshMaterial2d<ColorMaterial>, &Children)>,
     mut barrels: Query<
@@ -155,9 +156,17 @@ pub fn sync_turret_config(
         (With<HeliPadDecal>, Without<TurretBarrel>, Without<TurretSlot>),
     >,
 ) {
-    if !cfg.is_changed() && !stats.is_changed() { return; }
+    // Re-run when ActiveLegendaries flips too — buying Monomaniac
+    // mid-shop should retint slot.damage on the next frame so the
+    // tooltip + bullets reflect the new build identity.
+    if !cfg.is_changed() && !stats.is_changed() && !active.is_changed() { return; }
     let Some(pm) = pm else { return; };
-    let turret_damage_mult = stats.turret_damage_mult();
+    // Fold legendary build-warpers into the global damage / fire-
+    // rate multipliers before per-slot baking. Same shape as the
+    // existing `turret_damage_mult` math — every weapon inherits.
+    let legendary_dmg_mult = active.weapon_damage_mult(&cfg);
+    let legendary_rate_mult = active.fire_rate_mult(&cfg);
+    let turret_damage_mult = stats.turret_damage_mult() * legendary_dmg_mult;
     for (mut slot, mut vis, mut tf, mut mat, children) in &mut q {
         let s = cfg.slots[slot.index];
         let tags = s.weapon.tags();
@@ -177,7 +186,9 @@ pub fn sync_turret_config(
         slot.damage = (s.damage as f32 * turret_damage_mult * damage_mult).round() as i32;
         slot.fire_rate = s.fire_rate
             * crate::booster::boost_multiplier_for_slot(&cfg, slot.index)
-            * synergy_rate_mult;
+            * synergy_rate_mult
+            * legendary_rate_mult
+            * stats.cooldown_mult();
         slot.weapon = s.weapon;
         // Non-firing weapons (HeliPad / Booster / Blade) skip
         // `turret_aim_fire`, so without an explicit reset here a slot

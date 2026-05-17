@@ -151,23 +151,46 @@ pub fn sniper_fire(
         if to.length() > SNIPER_FIRE_RANGE { continue; }
 
         // Translucent FF-style aim line — sits steady for the full
-        // window without flicker or pulse.
+        // window without flicker or pulse. Spawned as a wrapper with
+        // a thicker dark outline child + inner colour main child so
+        // it carries the same "danger telegraph" outline vocabulary
+        // as the artillery reticle.
         let mid = (pos + target_pos) * 0.5;
         let length = to.length().max(1.0);
         let angle = (-(to.x)).atan2(to.y);
+        let length_scale = length / crate::balance::BEAM_LENGTH;
+        // Outline is ~1.5× the inner-beam width. Same length so the
+        // tip ends register cleanly without a halo past the line.
+        const INNER_WIDTH:   f32 = 2.2;
+        const OUTLINE_WIDTH: f32 = 3.6;
         let line = commands.spawn((
-            Mesh2d(em.beam.clone()),
-            MeshMaterial2d(pm.sniper_aim.clone()),
             Transform::from_xyz(mid.x, mid.y, 3.5)
-                .with_rotation(Quat::from_rotation_z(angle))
-                .with_scale(Vec3::new(2.2, length / crate::balance::BEAM_LENGTH, 1.0)),
+                .with_rotation(Quat::from_rotation_z(angle)),
+            Visibility::default(),
             SniperAimLine {
                 sniper: entity,
                 target_world: target_pos,
                 remaining: SNIPER_AIM_TIME,
             },
             RenderLayers::layer(PLAY_LAYER),
-        )).id();
+        )).with_children(|p| {
+            // Outline strip (back, slightly under the main beam).
+            p.spawn((
+                Mesh2d(em.beam.clone()),
+                MeshMaterial2d(pm.sniper_aim_outline.clone()),
+                Transform::from_xyz(0.0, 0.0, -0.01)
+                    .with_scale(Vec3::new(OUTLINE_WIDTH, length_scale, 1.0)),
+                RenderLayers::layer(PLAY_LAYER),
+            ));
+            // Inner beam (front).
+            p.spawn((
+                Mesh2d(em.beam.clone()),
+                MeshMaterial2d(pm.sniper_aim.clone()),
+                Transform::from_xyz(0.0, 0.0, 0.01)
+                    .with_scale(Vec3::new(INNER_WIDTH, length_scale, 1.0)),
+                RenderLayers::layer(PLAY_LAYER),
+            ));
+        }).id();
         commands.entity(entity).insert(SniperAim {
             remaining: SNIPER_AIM_TIME,
             target_world: target_pos,
