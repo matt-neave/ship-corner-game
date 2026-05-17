@@ -48,12 +48,12 @@ pub const HARPOON_PULL_SPEED: f32 = 50.0;
 
 /// Maximum tether time before the harpoon dissolves on its own. Stops
 /// a tether from outliving the engagement if the ship sails away.
-const HARPOON_TETHER_LIFETIME: f32 = 4.0;
+pub const HARPOON_TETHER_LIFETIME: f32 = 4.0;
 
 /// Bosses break free much faster — 1 second of grace before they shrug
 /// the chain off. Long enough to interrupt one of their attacks; short
 /// enough that the harpoon can't permanently lock down a boss fight.
-const HARPOON_TETHER_LIFETIME_BOSS: f32 = 1.0;
+pub const HARPOON_TETHER_LIFETIME_BOSS: f32 = 1.0;
 
 /// Distance at which the harpoon considers the target "landed" and
 /// removes the tether so `friendly_ram_damage` and any normal AI take
@@ -89,6 +89,31 @@ pub struct HarpoonChain {
     pub target: Entity,
 }
 
+/// Owner-side signal: a HarpoonTip bullet just attached its tether
+/// to `target`. The multiplayer bridge reads this event and
+/// broadcasts a `NetMsg::HarpoonAttached` so peers can spawn the
+/// chain visual between their ghost-of-owner and their mirror-of-
+/// target. `is_boss` mirrors the host-side lifetime distinction
+/// (bosses break free in 1s, others 4s) so peer-side chains
+/// despawn on the same beat.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct HarpoonAttachedEvent {
+    pub target: Entity,
+    pub is_boss: bool,
+}
+
+/// Visual-only chain spawned on peers when a `NetMsg::HarpoonAttached`
+/// packet lands. Carries an explicit lifetime because peer-side
+/// mirror enemies don't have the `Harpooned` component the owner-
+/// side `update_harpoon_chains` despawn check reads; we time out
+/// here independently.
+#[derive(Component)]
+pub struct RemoteHarpoonChain {
+    pub source: Entity,
+    pub target: Entity,
+    pub lifetime: f32,
+}
+
 pub struct HarpoonPlugin;
 
 impl Plugin for HarpoonPlugin {
@@ -103,16 +128,18 @@ impl Plugin for HarpoonPlugin {
         // integrates Velocity into Transform) so the pull always
         // wins. The chain visual sync runs alongside other per-frame
         // visual updates and self-gates on the presence of a chain.
-        app.add_systems(
-            Update,
-            (
-                tick_harpoons
-                    .after(crate::enemy::enemy_ai)
-                    .after(crate::ally::ally_ai)
-                    .before(crate::ship::apply_velocity),
-                update_harpoon_chains,
-            ),
-        );
+        app.add_event::<HarpoonAttachedEvent>()
+            .add_systems(
+                Update,
+                (
+                    tick_harpoons
+                        .after(crate::enemy::enemy_ai)
+                        .after(crate::ally::ally_ai)
+                        .before(crate::ship::apply_velocity),
+                    update_harpoon_chains,
+                    update_remote_harpoon_chains,
+                ),
+            );
     }
 }
 
@@ -239,6 +266,46 @@ pub fn tick_harpoons(
 /// frame, scaled to span the gap. Despawns when either endpoint is
 /// gone OR the target no longer carries `Harpooned` (so the chain
 /// vanishes the instant the tether releases).
+/// Anchor every replicated peer-side chain visual between source +
+/// target each frame and tick its lifetime. Mirrors
+/// `update_harpoon_chains` but without the `Harpooned` despawn
+/// check — the lifetime field is the sole release condition on
+/// peers, since their mirror enemy doesn't carry the tether.
+pub fn update_remote_harpoon_chains(
+    time: Res<Time>,
+    mut commands: Commands,
+    transforms: Query<&Transform, Without<RemoteHarpoonChain>>,
+    mut chains: Query<(Entity, &mut Transform, &mut RemoteHarpoonChain)>,
+) {
+    let dt = time.delta_secs();
+    for (chain_e, mut tf, mut chain) in &mut chains {
+        chain.lifetime -= dt;
+        if chain.lifetime <= 0.0 {
+            commands.entity(chain_e).despawn();
+            continue;
+        }
+        let Ok(src_tf) = transforms.get(chain.source) else {
+            commands.entity(chain_e).despawn();
+            continue;
+        };
+        let Ok(tgt_tf) = transforms.get(chain.target) else {
+            commands.entity(chain_e).despawn();
+            continue;
+        };
+        let a = src_tf.translation.truncate();
+        let b = tgt_tf.translation.truncate();
+        let delta = b - a;
+        let len = delta.length();
+        if len < 0.5 { continue; }
+        let mid = (a + b) * 0.5;
+        let angle = (-delta.x).atan2(delta.y);
+        tf.translation.x = mid.x;
+        tf.translation.y = mid.y;
+        tf.rotation = Quat::from_rotation_z(angle);
+        tf.scale = Vec3::new(1.2, len / BEAM_LENGTH, 1.0);
+    }
+}
+
 pub fn update_harpoon_chains(
     mut commands: Commands,
     transforms: Query<&Transform, Without<HarpoonChain>>,

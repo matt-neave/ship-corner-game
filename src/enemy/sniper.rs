@@ -92,8 +92,14 @@ pub fn sniper_fire(
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
     let dt = time.delta_secs();
-    let Ok(ftf) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
+    // MP: host has multiple Friendly entities — collect all so the
+    // sniper picks whichever player is closer instead of bailing on
+    // `single()` Err.
+    let friendly_positions: Vec<Vec2> = friendly
+        .iter()
+        .map(|t| t.translation.truncate())
+        .collect();
+    if friendly_positions.is_empty() { return; }
     let ally_positions = &ally_cache.positions;
 
     for (entity, tf, mut enemy, aim) in &mut snipers {
@@ -140,28 +146,71 @@ pub fn sniper_fire(
         }
 
         if enemy.fire_cd > 0.0 { continue; }
-        let target_pos = nearest_target(pos, fpos, ally_positions);
+        let target_pos = nearest_target(pos, &friendly_positions, ally_positions);
         let to = target_pos - pos;
         if to.length() > SNIPER_FIRE_RANGE { continue; }
 
         // Translucent FF-style aim line — sits steady for the full
-        // window without flicker or pulse.
-        let mid = (pos + target_pos) * 0.5;
-        let length = to.length().max(1.0);
-        let angle = (-(to.x)).atan2(to.y);
+        // window without flicker or pulse. Spawned as a wrapper with
+        // a thicker dark outline child + inner colour main child so
+        // it carries the same "danger telegraph" outline vocabulary
+        // as the artillery reticle.
+        //
+        // Scale split: the WRAPPER carries length (Y-scale), the
+        // CHILDREN carry width (X-scale, Y=1). `sniper_aim_line_tick`
+        // then only writes the wrapper's translation, rotation and
+        // Y-scale — child widths stay constant. Earlier the tick
+        // overwrote the wrapper's full Vec3 scale, which compounded
+        // with the children's baseline length scale and stretched
+        // the line further each frame; that's the "indicator doesn't
+        // start from the sniper" symptom for snipers that lived long
+        // enough to fire multiple times.
+        // Render the aim line long enough that it always reaches
+        // past every screen edge from any sniper position, in any
+        // fire direction. `ARENA_W + ARENA_H` is comfortably larger
+        // than the playable diagonal regardless of `wide_play`, so
+        // the visible portion always reads as "this line crosses
+        // your whole screen — get out of it." Mid sits at
+        // `sniper + dir * length/2` so the sniper is the line's
+        // near end and the line extends forward only.
+        let dir = to.normalize_or(Vec2::Y);
+        let length = (crate::balance::ARENA_W + crate::balance::ARENA_H).max(1.0);
+        let mid = pos + dir * (length * 0.5);
+        let angle = (-dir.x).atan2(dir.y);
+        let length_scale = length / crate::balance::BEAM_LENGTH;
+        // Outline is ~1.5× the inner-beam width. Same length so the
+        // tip ends register cleanly without a halo past the line.
+        const INNER_WIDTH:   f32 = 1.4;
+        const OUTLINE_WIDTH: f32 = 2.4;
         let line = commands.spawn((
-            Mesh2d(em.beam.clone()),
-            MeshMaterial2d(pm.sniper_aim.clone()),
             Transform::from_xyz(mid.x, mid.y, 3.5)
                 .with_rotation(Quat::from_rotation_z(angle))
-                .with_scale(Vec3::new(2.2, length / crate::balance::BEAM_LENGTH, 1.0)),
+                .with_scale(Vec3::new(1.0, length_scale, 1.0)),
+            Visibility::default(),
             SniperAimLine {
                 sniper: entity,
                 target_world: target_pos,
                 remaining: SNIPER_AIM_TIME,
             },
             RenderLayers::layer(PLAY_LAYER),
-        )).id();
+        )).with_children(|p| {
+            // Outline strip (back, slightly under the main beam).
+            p.spawn((
+                Mesh2d(em.beam.clone()),
+                MeshMaterial2d(pm.sniper_aim_outline.clone()),
+                Transform::from_xyz(0.0, 0.0, -0.01)
+                    .with_scale(Vec3::new(OUTLINE_WIDTH, 1.0, 1.0)),
+                RenderLayers::layer(PLAY_LAYER),
+            ));
+            // Inner beam (front).
+            p.spawn((
+                Mesh2d(em.beam.clone()),
+                MeshMaterial2d(pm.sniper_aim.clone()),
+                Transform::from_xyz(0.0, 0.0, 0.01)
+                    .with_scale(Vec3::new(INNER_WIDTH, 1.0, 1.0)),
+                RenderLayers::layer(PLAY_LAYER),
+            ));
+        }).id();
         commands.entity(entity).insert(SniperAim {
             remaining: SNIPER_AIM_TIME,
             target_world: target_pos,
@@ -187,8 +236,11 @@ pub fn sniper_turret_aim(
         (With<SniperTurret>, Without<Enemy>, Without<Friendly>, Without<Ally>),
     >,
 ) {
-    let Ok(ftf) = friendly.single() else { return; };
-    let fpos = ftf.translation.truncate();
+    let friendly_positions: Vec<Vec2> = friendly
+        .iter()
+        .map(|t| t.translation.truncate())
+        .collect();
+    if friendly_positions.is_empty() { return; }
     let ally_positions = &ally_cache.positions;
 
     for (tf, heading, enemy, aim, children) in &snipers {
@@ -196,7 +248,7 @@ pub fn sniper_turret_aim(
         let pos = tf.translation.truncate();
         let target = aim
             .map(|a| a.target_world)
-            .unwrap_or_else(|| nearest_target(pos, fpos, ally_positions));
+            .unwrap_or_else(|| nearest_target(pos, &friendly_positions, ally_positions));
         let to = target - pos;
         if to.length_squared() < 1.0 { continue; }
         let world_aim = (-to.x).atan2(to.y);
@@ -233,20 +285,21 @@ pub fn sniper_aim_line_tick(
 
         let pos = sniper_tf.translation.truncate();
         let to = line.target_world - pos;
-        // Render the aim-line at 3× the sniper-to-target distance,
-        // extending past the target. The intent is to telegraph the
-        // shot direction, not just the impact point, so a player
-        // who's about to walk into the line sees it sooner.
-        const AIM_LINE_LENGTH_MULT: f32 = 3.0;
-        let length = to.length().max(1.0) * AIM_LINE_LENGTH_MULT;
-        // Mid-point of the elongated line — sniper is the start,
-        // the far end sits `AIM_LINE_LENGTH_MULT × distance` along
-        // the direction-to-target.
-        let mid = pos + to * (AIM_LINE_LENGTH_MULT * 0.5);
-        let angle = (-(to.x)).atan2(to.y);
+        // Aim line always crosses the whole arena past every edge,
+        // regardless of sniper position or target distance — see
+        // the spawn site for rationale. Length anchored to
+        // `ARENA_W + ARENA_H` (comfortably larger than the
+        // playable diagonal), centred so the sniper sits at the
+        // near end and the line extends forward only.
+        let dir = to.normalize_or(Vec2::Y);
+        let length = (crate::balance::ARENA_W + crate::balance::ARENA_H).max(1.0);
+        let mid = pos + dir * (length * 0.5);
+        let angle = (-dir.x).atan2(dir.y);
         tf.translation.x = mid.x;
         tf.translation.y = mid.y;
         tf.rotation = Quat::from_rotation_z(angle);
-        tf.scale = Vec3::new(1.4, length / crate::balance::BEAM_LENGTH, 1.0);
+        // Only update the wrapper's length (Y). Widths live on the
+        // child meshes' baseline scales and stay constant.
+        tf.scale = Vec3::new(1.0, length / crate::balance::BEAM_LENGTH, 1.0);
     }
 }

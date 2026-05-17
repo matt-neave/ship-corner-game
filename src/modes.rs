@@ -44,6 +44,16 @@ pub struct CrtMode {
     pub last_applied: Option<bool>,
 }
 
+/// Toggled by the BLOOM button. When on, the play camera renders in HDR
+/// and a `Bloom` post-process haloes the boosted bullet / muzzle / hit
+/// materials. When off, HDR is disabled and the boosted colours just
+/// clip to white — punchier, no soft glow. Default off.
+#[derive(Resource, Default)]
+pub struct BloomMode {
+    pub active: bool,
+    pub last_applied: Option<bool>,
+}
+
 /// Toggled by the VSYNC button (top-right corner). When active, the primary
 /// window uses `AutoVsync`; when off, `AutoNoVsync` so the FPS counter can
 /// show the engine's true headroom rather than the monitor's refresh cap.
@@ -541,6 +551,41 @@ pub fn play_area_screen_rect(logical_w: f32, logical_h: f32) -> (f32, f32, f32, 
 
 // ---------- Systems ----------
 
+/// Flip `Camera.hdr` + add/remove the `Bloom` post-process component on
+/// PlayCamera when `BloomMode` changes. On the first frame `last_applied`
+/// is `None`, so this also seeds the camera's initial bloom state from
+/// whatever was loaded from `settings.txt` — `setup_render` spawns
+/// PlayCamera with bloom-neutral defaults and lets this system own the
+/// toggle.
+pub fn apply_bloom_mode(
+    mut bloom: ResMut<BloomMode>,
+    mut commands: Commands,
+    mut cams: Query<(Entity, &mut Camera), With<crate::palette::PlayCamera>>,
+) {
+    if bloom.last_applied == Some(bloom.active) { return; }
+    bloom.last_applied = Some(bloom.active);
+    for (e, mut cam) in &mut cams {
+        cam.hdr = bloom.active;
+        if bloom.active {
+            // With `Tonemapping::None` the HDR intermediate isn't
+            // compressed before being added to the bloom buffer, so
+            // many boosted bullets/muzzles pumping into the wide
+            // blur kernels would wash the entire scene. Keep the
+            // glow tight: small `intensity` paints a halo around
+            // the actual bright source, and `low_frequency_boost: 0`
+            // disables the wide-kernel bleed that was the main
+            // cause of "everything looks bright" with bloom on.
+            commands.entity(e).insert(bevy::core_pipeline::bloom::Bloom {
+                intensity: 0.12,
+                low_frequency_boost: 0.0,
+                ..bevy::core_pipeline::bloom::Bloom::NATURAL
+            });
+        } else {
+            commands.entity(e).remove::<bevy::core_pipeline::bloom::Bloom>();
+        }
+    }
+}
+
 /// Show / hide the scanline overlay when `CrtMode` flips. Uses `last_applied`
 /// so we don't write the Visibility component every frame.
 pub fn apply_crt_mode(
@@ -643,10 +688,13 @@ pub fn apply_camera_follow(
     time: Res<Time>,
     follow: Res<CameraFollow>,
     mut shake: ResMut<ScreenShake>,
+    // LocalPlayer (not Friendly) so MP doesn't bail — host has two
+    // Friendlies, single() would fall back to Vec2::ZERO. Camera
+    // should track the local player's ship, never the remote's.
     friendly: Query<
         &Transform,
         (
-            With<crate::components::Friendly>,
+            With<crate::components::LocalPlayer>,
             Without<crate::palette::PlayCamera>,
             Without<crate::palette::HudCamera>,
         ),
@@ -658,7 +706,7 @@ pub fn apply_camera_follow(
         &mut Transform,
         (
             Or<(With<crate::palette::PlayCamera>, With<crate::palette::HudCamera>)>,
-            Without<crate::components::Friendly>,
+            Without<crate::components::LocalPlayer>,
         ),
     >,
 ) {
@@ -741,3 +789,73 @@ const SHAKE_DECAY: f32 = 1.6;
 /// solid hit at ~0.7 trauma reads as a real punch (0.7² × 9 ≈ 4.4
 /// world units).
 const SHAKE_MAX_OFFSET: f32 = 9.0;
+
+// ---------- Camera zoom punch ----------
+
+/// One-shot camera-zoom punch (level-up, boss kill, etc.). Lerps
+/// the play camera's projection scale toward `1.0 - peak_zoom_in`
+/// at the midpoint of `duration`, easing back to 1.0 at the end.
+/// Sine curve so the punch starts soft, peaks hard, and recovers
+/// without a visible snap.
+#[derive(Resource, Default)]
+pub struct CameraPunch {
+    pub remaining: f32,
+    pub duration: f32,
+    /// Fraction to subtract from baseline scale at peak. 0.08 =
+    /// zoom in 8%. Larger reads as a bigger event.
+    pub peak_zoom_in: f32,
+}
+
+impl CameraPunch {
+    /// Start a punch. Later pushes during an active punch take the
+    /// stronger of (current, new) so a small kick can't shrink a
+    /// big one already in flight. Currently no callers — kept
+    /// because the infra (resource, apply system, registration)
+    /// is wired in and future juice triggers can call this without
+    /// re-plumbing.
+    #[allow(dead_code)]
+    pub fn punch(&mut self, duration: f32, peak_zoom_in: f32) {
+        if duration > self.remaining {
+            self.remaining = duration;
+            self.duration = duration;
+        }
+        if peak_zoom_in > self.peak_zoom_in {
+            self.peak_zoom_in = peak_zoom_in;
+        }
+    }
+}
+
+/// Apply [`CameraPunch`] to PlayCamera + HudCamera each frame. Decays
+/// in real time so the punch resolves even when virtual time is
+/// frozen by [`crate::hitstop::HitStopController`].
+pub fn apply_camera_punch(
+    real: Res<bevy::time::Time<bevy::time::Real>>,
+    mut punch: ResMut<CameraPunch>,
+    mut cams: Query<
+        &mut Projection,
+        Or<(
+            With<crate::palette::PlayCamera>,
+            With<crate::palette::HudCamera>,
+        )>,
+    >,
+) {
+    if punch.remaining > 0.0 {
+        punch.remaining = (punch.remaining - real.delta_secs()).max(0.0);
+    }
+    let t = if punch.duration > 0.0 && punch.remaining > 0.0 {
+        1.0 - (punch.remaining / punch.duration).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    // Sine curve: 0 at t=0, 1 at t=0.5, 0 at t=1.
+    let curve = (t * std::f32::consts::PI).sin();
+    let scale = (1.0 - punch.peak_zoom_in * curve).max(0.1);
+    for mut p in &mut cams {
+        if let Projection::Orthographic(o) = p.as_mut() {
+            o.scale = scale;
+        }
+    }
+    if punch.remaining <= 0.0 {
+        punch.peak_zoom_in = 0.0;
+    }
+}

@@ -37,8 +37,9 @@ use crate::AppState;
 
 mod render;
 mod setup;
-mod drag;
-mod shop_mods;
+pub mod drag;
+mod shop_lock;
+pub mod shop_mods;
 mod stats_panel;
 mod tooltip;
 mod update;
@@ -56,6 +57,7 @@ impl Plugin for CustomizePlugin {
             .insert_resource(CustomizeOpen::default())
             .insert_resource(DragState::default())
             .insert_resource(TooltipLayout::default())
+            .insert_resource(drag::ActiveLegendaries::default())
             .add_systems(
                 Startup,
                 (init_customize_shop, setup_customize_render, setup_customize_ui).chain(),
@@ -63,6 +65,14 @@ impl Plugin for CustomizePlugin {
             .add_systems(
                 OnEnter(AppState::Customize),
                 (init_customize_shop, crate::enemy::clear_spawn_indicators),
+            )
+            // Wipe legendary build-warpers when returning to the
+            // main menu so a fresh run starts clean.
+            .add_systems(
+                OnEnter(AppState::MainMenu),
+                |mut active: ResMut<drag::ActiveLegendaries>| {
+                    *active = drag::ActiveLegendaries::default();
+                },
             )
             .add_systems(OnExit(AppState::Customize), crate::ui::reset_damage_stats)
             // Cursor tracker is registered FIRST and on its own so
@@ -95,15 +105,34 @@ impl Plugin for CustomizePlugin {
             .add_systems(
                 Update,
                 (
-                    sync_stats_panel,
+                    // Stats-panel value text + label tint both read
+                    // `HighlightedStats`; ordering them AFTER the
+                    // hover producer (`update_mod_hover_highlight`)
+                    // is what stops the highlight flickering every
+                    // other frame. Without the `.after`, Bevy was
+                    // free to interleave the consumer before the
+                    // producer in a given frame — that frame would
+                    // read the just-cleared (by `First`) set and
+                    // paint neutral, the next frame would read the
+                    // populated set and paint highlighted.
+                    sync_stats_panel.after(shop_mods::update_mod_hover_highlight),
+                    // Multiplies the baseline glyph scale by the pop
+                    // curve — must run AFTER sync_customize_text
+                    // writes the baseline.
+                    stats_panel::apply_stat_pop.after(sync_customize_text),
+                    stats_panel::apply_stats_label_highlight
+                        .after(shop_mods::update_mod_hover_highlight),
                     // After sync_customize_text so the debug-only Hidden
                     // write isn't overwritten by the generic Inherited.
                     sync_stat_debug_visibility.after(sync_customize_text),
                     handle_stat_debug_buttons,
                     update_shop_mod_cards,
+                    shop_mods::update_mod_hover_highlight,
                     handle_shop_mod_click,
                     handle_close_click,
                     handle_reroll_button,
+                    update::handle_right_click_lock,
+                    shop_lock::sync_lock_badges,
                 ).after(track_customize_cursor),
             )
             // Drag chain in its own add_systems — chained tuples
@@ -135,9 +164,7 @@ impl Plugin for CustomizePlugin {
 pub use render::{
     resize_customize_display, setup_customize_render, toggle_customize_render,
 };
-pub use setup::{
-    setup_customize_ui, sync_customize_text, turret_barrel_color_for, turret_color_for,
-};
+pub use setup::{setup_customize_ui, sync_customize_text};
 pub use drag::{
     complete_drag, init_customize_shop, promote_pending_drag, start_drag,
     tick_purchase_particles, track_customize_cursor, update_drag_ghost, DragState,

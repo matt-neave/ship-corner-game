@@ -13,7 +13,6 @@
 //! machine drains the queue between StageComplete → Customize.
 
 use bevy::prelude::*;
-use bevy::text::FontSmoothing;
 use rand::seq::SliceRandom;
 
 use crate::stats::{PlayerStats, StatKind};
@@ -39,7 +38,12 @@ impl Plugin for LevelUpPlugin {
             .add_systems(OnExit(AppState::LevelUp), exit_level_up)
             .add_systems(
                 Update,
-                (handle_level_up_click, reveal_level_up_after_layout)
+                (
+                    handle_level_up_click,
+                    reveal_level_up_after_layout,
+                    update_level_up_button_focus,
+                    update_level_up_tooltip,
+                )
                     .run_if(in_state(AppState::LevelUp)),
             );
     }
@@ -145,15 +149,17 @@ impl Buff {
     }
 }
 
-/// Master list of buffs the level-up screen can roll. Deltas mirror
-/// `StatKind::debug_step` so a level-up pick is exactly equivalent
-/// to a shop mod purchase — no surprise that "+10 RANGE" from a
-/// level-up means the same as "+10 RANGE" from a mod card.
+/// Master list of buffs the level-up screen can roll. Deltas use
+/// `StatKind::upgrade_step` — the conservative player-facing step,
+/// not the larger `debug_step` (which is for the dev `+/-`
+/// buttons). Pulls from `StatKind::ROLLABLE` (not `ALL`) so
+/// `TurretArcBonus` / `TurretTurnSpeed` never come up as picks
+/// while still being configurable from the stats panel.
 fn buff_pool() -> Vec<Buff> {
-    StatKind::ALL
+    StatKind::ROLLABLE
         .iter()
         .copied()
-        .map(|kind| Buff { kind, delta: kind.debug_step(), flat: true })
+        .map(|kind| Buff { kind, delta: kind.upgrade_step(), flat: true })
         .collect()
 }
 
@@ -178,7 +184,7 @@ pub fn grant_kill_xp(
     is_boss: bool,
 ) {
     let base = if is_boss { 5 } else { 1 } as f32;
-    let mult = 1.0 + stats.xp_harvest_pct.effective() / 100.0;
+    let mult = stats.xp_harvest_mult();
     let amount = (base * mult).round().max(1.0) as u32;
     xp.grant(amount, pending);
 }
@@ -197,11 +203,8 @@ pub struct XpBarLabel;
 /// XP bar dimensions — chosen to match the HP bar (`WaveHpTrack`)
 /// exactly so both rails read as the same UI family. Positioned in
 /// the play-area's top-LEFT corner, stacked above the HP bar.
-pub const XP_BAR_WIDTH: f32 = 180.0;
-pub const XP_BAR_HEIGHT: f32 = 22.0;
-/// Pixels from the play-area top edge to the XP bar's top. Leaves a
-/// tiny clearance off the 1-game-pixel frame border.
-pub const XP_BAR_TOP_INSET: f32 = 6.0;
+pub const XP_BAR_WIDTH: f32 = 150.0;
+pub const XP_BAR_HEIGHT: f32 = 16.0;
 const XP_BAR_FILL_COLOR: Color = Color::srgb(1.0, 0.78, 0.20);
 
 /// Spawn the XP track as a child of `WaveHpUi`. Mirrors the HP
@@ -210,13 +213,13 @@ const XP_BAR_FILL_COLOR: Color = Color::srgb(1.0, 0.78, 0.20);
 /// one UI family. `update_hp_bar_pixel_scale` re-derives the border
 /// width every frame from the play-area upscale, keeping it
 /// pixel-aligned with the play-area's grey frame.
-pub fn spawn_xp_track(parent: &mut ChildSpawnerCommands) {
+pub fn spawn_xp_track(parent: &mut ChildSpawnerCommands, thaleah: &crate::fonts::ThaleahFont) {
     parent
         .spawn((
             Node {
                 width: Val::Px(XP_BAR_WIDTH),
                 height: Val::Px(XP_BAR_HEIGHT),
-                border: UiRect::all(Val::Px(2.0)),
+                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                 position_type: PositionType::Relative,
                 overflow: Overflow::clip(),
                 ..default()
@@ -258,13 +261,16 @@ pub fn spawn_xp_track(parent: &mut ChildSpawnerCommands) {
             ))
             .with_children(|over| {
                 over.spawn((
+                    // Thaleah Fat + drop shadow — same voice as the
+                    // WAVE / LEVEL N! / GAME OVER chrome, sized to
+                    // fit inside the bar without dominating it.
                     Text::new("LV 1"),
-                    TextFont {
-                        font_size: 10.0,
-                        font_smoothing: FontSmoothing::None,
-                        ..default()
-                    },
+                    crate::fonts::thaleah_text_font(thaleah, 14.0),
                     TextColor(theme::ON_SURFACE),
+                    TextShadow {
+                        offset: Vec2::splat(1.0),
+                        color: Color::srgba(0.0, 0.0, 0.0, 0.95),
+                    },
                     XpBarLabel,
                 ));
             });
@@ -318,11 +324,36 @@ pub fn enter_level_up(
     mut choices: ResMut<LevelUpChoices>,
     xp: Res<Xp>,
     stats: Res<PlayerStats>,
+    thaleah: Res<crate::fonts::ThaleahFont>,
     mut sfx: crate::sfx::SfxPlayer,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    pm: Option<Res<crate::palette::PaletteMaterials>>,
+    em: Option<Res<crate::effects::EffectMeshes>>,
+    player: Query<&Transform, With<crate::components::LocalPlayer>>,
 ) {
     choices.buffs = pick_buffs(4);
-    spawn_level_up_overlay(&mut commands, &choices, &xp, &stats);
+    spawn_level_up_overlay(&mut commands, &choices, &xp, &stats, &thaleah);
     sfx.play(crate::sfx::Sfx::LevelUp);
+    // Golden particle burst around the player ship. Spawned in
+    // world space at the local-player transform so the splash
+    // reads as "the ship just levelled up". Uses a fresh
+    // gold material (the existing palette has no exact gold
+    // hit-particle slot to borrow from).
+    if let (Some(em), Some(_pm)) = (em.as_deref(), pm.as_deref()) {
+        if let Ok(player_tf) = player.single() {
+            let gold = materials.add(Color::srgb(1.0, 0.85, 0.30));
+            let mut rng = rand::thread_rng();
+            crate::effects::spawn_hit_particles(
+                &mut commands,
+                em,
+                &gold,
+                player_tf.translation.truncate(),
+                24,
+                40.0,
+                &mut rng,
+            );
+        }
+    }
 }
 
 /// Reveal the overlay only once Bevy UI has actually finished computing
@@ -388,6 +419,9 @@ pub fn handle_level_up_click(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     xp: Res<Xp>,
+    thaleah: Res<crate::fonts::ThaleahFont>,
+    mode: Res<crate::multiplayer::NetMode>,
+    mut local_ready: ResMut<crate::multiplayer::ready::LocalReadyState>,
     mut next: ResMut<NextState<crate::AppState>>,
     overlay: Query<Entity, With<LevelUpRoot>>,
 ) {
@@ -402,32 +436,65 @@ pub fn handle_level_up_click(
                 commands.entity(e).despawn();
             }
             choices.buffs = pick_buffs(4);
-            spawn_level_up_overlay(&mut commands, &choices, &xp, &stats);
+            spawn_level_up_overlay(&mut commands, &choices, &xp, &stats, &thaleah);
         } else {
             // Honour the override set by `spawn_enemies` for mid-stage
             // (between-wave) drains — return the player to combat
             // instead of routing through the shop. Falls back to
             // Customize for the post-stage path. Cleared so a stale
             // override can't leak into the next level-up.
-            let dest = return_state.0.take().unwrap_or(crate::AppState::Customize);
-            // Despawn the level-up overlay synchronously so it's gone
-            // before the wipe starts expanding. Otherwise the overlay
-            // sits visibly behind the wipe for ~0.3s while the circle
-            // grows over it. With this, the cards vanish on click,
-            // there's a brief beat of the play area showing through,
-            // then the wipe sweeps in.
+            //
+            // Multiplayer: don't consume the override or transition
+            // ourselves. Each peer flips `LocalReadyState.ready`;
+            // host's `host_advance_when_all_ready` consumes the
+            // override (or falls back to Customize) and transitions
+            // everyone together via the state-sync pipeline.
+            //
+            // The overlay is despawned in both paths so the cards
+            // vanish immediately on the local pick.
             for e in &overlay {
                 commands.entity(e).despawn();
             }
-            if matches!(dest, crate::AppState::Customize) {
-                crate::stage_complete::spawn_transition(
-                    &mut commands, &mut meshes, &mut materials, dest,
-                );
+            if matches!(*mode, crate::multiplayer::NetMode::Solo) {
+                let dest = return_state.0.take().unwrap_or(crate::AppState::Customize);
+                if matches!(dest, crate::AppState::Customize) {
+                    crate::stage_complete::spawn_transition(
+                        &mut commands, &mut meshes, &mut materials, dest,
+                    );
+                } else {
+                    next.set(dest);
+                }
             } else {
-                next.set(dest);
+                local_ready.ready = true;
             }
         }
         return;
+    }
+}
+
+/// Hover / press focus tinting for the level-up cards. Mirrors the
+/// main-menu button feel: idle fill = `SURFACE_RAISED` + gold
+/// `ACCENT` outline; hover lifts the fill to `CHUNKY_FILL_HOVER` and
+/// brightens the outline to a pale gold; press deepens the fill to
+/// `CHUNKY_FILL_PRESS`. Watches `Changed<Interaction>` so it only
+/// runs when a card's state actually flips.
+pub fn update_level_up_button_focus(
+    mut cards: Query<
+        (&Interaction, &mut BackgroundColor, &mut BorderColor),
+        (Changed<Interaction>, With<LevelUpButton>),
+    >,
+) {
+    // Brighter gold for the hover ring — pale enough to read as a
+    // wake-up over the resting accent gold.
+    const ACCENT_HOVER: Color = Color::srgb(1.0, 0.92, 0.65);
+    for (interaction, mut bg, mut border) in &mut cards {
+        let (want_bg, want_border) = match *interaction {
+            Interaction::Hovered => (theme::CHUNKY_FILL_HOVER, ACCENT_HOVER),
+            Interaction::Pressed => (theme::CHUNKY_FILL_PRESS, ACCENT_HOVER),
+            Interaction::None    => (theme::SURFACE_RAISED, theme::ACCENT),
+        };
+        if bg.0 != want_bg { bg.0 = want_bg; }
+        if border.0 != want_border { border.0 = want_border; }
     }
 }
 
@@ -438,6 +505,7 @@ fn spawn_level_up_overlay(
     choices: &LevelUpChoices,
     xp: &Xp,
     stats: &PlayerStats,
+    thaleah: &crate::fonts::ThaleahFont,
 ) {
     commands
         .spawn((
@@ -469,10 +537,18 @@ fn spawn_level_up_overlay(
             LevelUpRoot,
         ))
         .with_children(|root| {
-            root.spawn(ui_kit::label(
-                format!("LEVEL {}!", xp.level),
-                theme::FONT_LG * 1.8,
-                theme::ACCENT,
+            // Title in the same voice as the GAME OVER overlay —
+            // Thaleah Fat + drop shadow — so the level-up beat sits
+            // in the same typographic family as the rest of the
+            // big-moment overlays. Gold tint matches the XP bar.
+            root.spawn((
+                Text::new(format!("LEVEL {}!", xp.level)),
+                crate::fonts::thaleah_text_font(thaleah, 56.0),
+                TextColor(theme::ACCENT),
+                TextShadow {
+                    offset: Vec2::splat(2.0),
+                    color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+                },
             ));
 
             // Main row: buff cards on the left, current-stats panel
@@ -491,42 +567,95 @@ fn spawn_level_up_overlay(
                 BackgroundColor(Color::NONE),
             ))
             .with_children(|cols| {
-                // ---- LEFT: buff cards ----
+                // ---- LEFT: buff cards + tooltip strip stacked
+                // vertically. The tooltip sits IMMEDIATELY below
+                // the card row, width-matched to the row so it
+                // never extends across into the stats panel.
                 cols.spawn((
                     Node {
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Stretch,
-                        column_gap: Val::Px(theme::GAP_LG),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(theme::GAP_LG),
                         ..default()
                     },
                     BackgroundColor(Color::NONE),
                 ))
-                .with_children(|row| {
-                    for (i, buff) in choices.buffs.iter().enumerate() {
-                        row.spawn((
-                            Button,
-                            Node {
-                                width: Val::Px(120.0),
-                                height: Val::Px(80.0),
-                                border: UiRect::all(Val::Px(theme::BORDER_W)),
-                                padding: UiRect::all(Val::Px(theme::PAD_MD)),
-                                flex_direction: FlexDirection::Column,
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(theme::SURFACE_RAISED),
-                            BorderColor(theme::ACCENT),
-                            LevelUpButton { idx: i },
-                        ))
-                        .with_children(|card| {
-                            card.spawn(ui_kit::label(
-                                buff.label(),
-                                theme::FONT_LG,
-                                theme::ON_SURFACE,
-                            ));
-                        });
-                    }
+                .with_children(|left| {
+                    // Buff-card row.
+                    left.spawn((
+                        Node {
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Stretch,
+                            column_gap: Val::Px(theme::GAP_LG),
+                            ..default()
+                        },
+                        BackgroundColor(Color::NONE),
+                    ))
+                    .with_children(|row| {
+                        for (i, buff) in choices.buffs.iter().enumerate() {
+                            row.spawn((
+                                Button,
+                                Node {
+                                    width: Val::Px(120.0),
+                                    height: Val::Px(80.0),
+                                    border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
+                                    padding: UiRect::all(Val::Px(theme::PAD_MD)),
+                                    flex_direction: FlexDirection::Column,
+                                    align_items: AlignItems::Center,
+                                    justify_content: JustifyContent::Center,
+                                    ..default()
+                                },
+                                BackgroundColor(theme::SURFACE_RAISED),
+                                BorderColor(theme::ACCENT),
+                                LevelUpButton { idx: i },
+                            ))
+                            .with_children(|card| {
+                                card.spawn(ui_kit::label(
+                                    buff.label(),
+                                    theme::FONT_LG,
+                                    theme::ON_SURFACE,
+                                ));
+                            });
+                        }
+                    });
+
+                    // Tooltip strip — width matched to the card row
+                    // (4 × 120 + 3 × GAP_LG). Absolute-positioned BELOW
+                    // the card row so multi-line stat descriptions
+                    // can grow downward without re-flowing the
+                    // centered column (which would push the cards
+                    // up every time a longer description shows up).
+                    // `top: 100%` anchors to the bottom edge of the
+                    // parent left-column, which auto-sizes to just
+                    // the card row's height since this strip no
+                    // longer participates in the column layout.
+                    let row_w = 120.0 * choices.buffs.len() as f32
+                        + theme::GAP_LG * (choices.buffs.len().saturating_sub(1) as f32);
+                    left.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            top: Val::Percent(100.0),
+                            left: Val::Px(0.0),
+                            margin: UiRect::top(Val::Px(theme::GAP_LG)),
+                            width: Val::Px(row_w),
+                            padding: UiRect::all(Val::Px(theme::PAD_MD)),
+                            border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },
+                        BackgroundColor(theme::SURFACE_RAISED),
+                        BorderColor(theme::CHUNKY_OUTLINE),
+                        LevelUpTooltipRoot,
+                    ))
+                    .with_children(|tip| {
+                        tip.spawn((
+                            Text::new(""),
+                            TextFont { font_size: theme::FONT_MD, ..default() },
+                            TextColor(theme::ON_SURFACE),
+                            LevelUpTooltipText,
+                        ));
+                    });
                 });
 
                 // ---- RIGHT: current-stats panel ----
@@ -535,4 +664,63 @@ fn spawn_level_up_overlay(
                 crate::stats_panel_overlay::spawn_stats_panel(cols, stats);
             });
         });
+}
+
+/// Marker on the bordered tooltip strip below the buff cards.
+#[derive(Component)]
+pub struct LevelUpTooltipRoot;
+
+/// Marker on the Text inside `LevelUpTooltipRoot`.
+#[derive(Component)]
+pub struct LevelUpTooltipText;
+
+/// Per-frame: scan the buff cards for `Interaction::Hovered`, look
+/// up the buff's `StatKind`, and write its dynamic description to
+/// the tooltip strip. Falls back to a blank string when no card is
+/// hovered, so the line vanishes the instant the cursor leaves.
+pub fn update_level_up_tooltip(
+    choices: Res<LevelUpChoices>,
+    stats: Res<PlayerStats>,
+    mut highlight: ResMut<crate::stats_panel_overlay::HighlightedStats>,
+    cards: Query<(&Interaction, &LevelUpButton)>,
+    mut text_q: Query<&mut Text, With<LevelUpTooltipText>>,
+    mut root_q: Query<&mut Visibility, With<LevelUpTooltipRoot>>,
+) {
+    let hovered = cards.iter().find_map(|(i, btn)| {
+        matches!(*i, Interaction::Hovered | Interaction::Pressed).then_some(btn.idx)
+    });
+    let hovered_buff = hovered.and_then(|idx| choices.buffs.get(idx));
+    // Tell the stats panel to highlight the impacted row. Each
+    // buff carries a single `StatKind`. The First-schedule clear
+    // wipes the set every frame, so a stale highlight can't
+    // linger after the cursor moves off.
+    if let Some(b) = hovered_buff {
+        let sign = if b.delta >= 0.0 {
+            crate::stats_panel_overlay::HighlightSign::Buff
+        } else {
+            crate::stats_panel_overlay::HighlightSign::Nerf
+        };
+        highlight.kinds.insert(
+            b.kind,
+            crate::stats_panel_overlay::HighlightEntry {
+                sign, delta: b.delta, to_flat: b.flat,
+            },
+        );
+    }
+    let want = hovered_buff
+        .map(|b| b.kind.dynamic_description(&stats))
+        .unwrap_or_default();
+    for mut t in &mut text_q {
+        if t.0 != want { **t = want.clone(); }
+    }
+    // Hide the whole bordered strip when nothing's hovered so the
+    // empty box doesn't sit there demanding attention.
+    let want_vis = if hovered.is_some() {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut root_q {
+        if *v != want_vis { *v = want_vis; }
+    }
 }

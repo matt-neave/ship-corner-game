@@ -48,6 +48,16 @@ pub fn darken(c: Color, factor: f32) -> Color {
     Color::srgb(s.red * factor, s.green * factor, s.blue * factor)
 }
 
+/// Push every rgb channel above 1.0 (HDR) so the colour drives the
+/// PlayCamera's bloom post-process. `factor` > 1.0 boosts; the
+/// in-game sRGB tonemapper still renders these pixels as visually
+/// bright-but-clamped, but the bloom pass sees the true HDR
+/// energy and halos accordingly.
+pub fn boost_hdr(c: Color, factor: f32) -> Color {
+    let s: bevy::color::Srgba = c.into();
+    Color::srgb(s.red * factor, s.green * factor, s.blue * factor)
+}
+
 // ---------- Weapon-identity colors ----------
 //
 // Hex pairs per weapon:
@@ -144,7 +154,12 @@ pub const ENEMY_SNIPER_HEX:   &str = "#5d275d";
 // Dark amber for the sniper aim line and artillery splash reticle.
 // Less aggressive than bright red; reads as a warning without
 // shouting "blood imminent".
-pub const SNIPER_AIM_HEX:     &str = "#c89018";
+// Unified "incoming enemy fire" telegraph hex. Sniper aim
+// line + artillery splash reticle both pull from this constant
+// so the two telegraphs read as one visual language: "gold
+// means trouble". Keeping a single source of truth so a
+// future palette tune touches both at once.
+pub const ENEMY_INDICATOR_HEX: &str = "#c89018";
 /// Time-fused enemy landmine — same dark shell + red dot as the
 /// friendly mine so the player parses the silhouette as "stay clear".
 /// Kept in this section so future fuse-FX (pulsing dot, expanding
@@ -154,10 +169,14 @@ pub const ENEMY_MINE_DOT_HEX: &str = "#ff8a3c";
 /// red enemy family without blending into the warning-orange Rammer
 /// or the deep-purple Sniper.
 pub const ENEMY_ARTILLERY_HEX: &str = "#5a6a2c";
-/// Artillery landing reticle — bright crimson. The ring telegraphs
-/// where the lobbed shell will hit; warm hot colour reads as "danger
-/// zone" against the cool blue ocean.
-pub const ARTILLERY_RETICLE_HEX: &str = "#c89018";
+/// Swarmer hull — bright chartreuse so the 4-7 swarm reads as one
+/// distinct cloud against the red/orange kamikaze family. Picked
+/// to stand apart from Rammer orange + Bomber dark-red + ocean blue.
+pub const ENEMY_SWARMER_HEX: &str = "#9bc94d";
+/// Artillery landing reticle. Pulls from the unified
+/// `ENEMY_INDICATOR_HEX` so the artillery splash circle reads as
+/// the same telegraph language as the sniper aim line.
+pub use self::ENEMY_INDICATOR_HEX as ARTILLERY_RETICLE_HEX;
 
 // ---------- Ship-class hull tints ----------
 //
@@ -254,6 +273,7 @@ pub const FROST_HEX: &str = "#80d8ff"; // cool sky blue (cyan-ish, distinct from
 pub const SHOCK_HEX: &str = "#ffe680"; // electric yellow (lightning arc)
 pub const BLEED_HEX: &str = "#b21030"; // deep crimson (DoT blood drips)
 pub const BLAST_HEX: &str = "#94b0c2"; // soft blue-grey shockwave (distinct from Fire's orange)
+pub const CASCADE_HEX: &str = "#5ad874"; // vibrant lime — Cascade's on-kill snowball arc
 
 // ---------- UI theme (HUD chrome) ----------
 pub const UI_TEXT:      Color = Color::srgb(0.92, 0.93, 0.96);
@@ -330,6 +350,10 @@ pub struct PaletteMaterials {
     /// Artillery hull — dark olive siege piece. Spawn in
     /// `enemy::spawn_enemy` for the Artillery variant.
     pub enemy_artillery: Handle<ColorMaterial>,
+    /// Swarmer hull — bright chartreuse paper-thin kamikaze. Spawn
+    /// in `enemy::spawn_enemy` for the Swarmer variant; cluster of
+    /// 4-7 arrives from one direction.
+    pub enemy_swarmer: Handle<ColorMaterial>,
     /// Tint for the artillery landing-reticle ring. Bright crimson
     /// "danger zone" colour painted over the impact point during the
     /// 1.5s telegraph.
@@ -341,6 +365,11 @@ pub struct PaletteMaterials {
     /// Sniper aim-line tint. Used by the trajectory telegraph that
     /// renders during the sniper's 1.5s aim phase.
     pub sniper_aim: Handle<ColorMaterial>,
+    /// Darker outline behind the sniper aim-line, mirroring
+    /// `artillery_reticle_outline`. Spawned as a thicker sibling
+    /// strip slightly below the main beam so both telegraphs
+    /// share the same "danger" reading vocabulary.
+    pub sniper_aim_outline: Handle<ColorMaterial>,
     /// Bright dot painted on the time-fused enemy landmine the Rammer
     /// drops on death. Distinguishes it from the friendly proximity
     /// mine's dot (`mine_inner`).
@@ -350,7 +379,24 @@ pub struct PaletteMaterials {
     pub bullet_friendly_outer: Handle<ColorMaterial>,
     pub bullet_enemy_outer: Handle<ColorMaterial>,
     pub trail: Handle<ColorMaterial>,
+    /// Plain SDR white swapped onto a hit enemy's whole hull for a
+    /// few frames after damage (`HitFx::pulse`). Kept clamped at
+    /// 1.0 so the much larger surface area doesn't drown the
+    /// scene in bloom — the visual cue is the colour swap, not a
+    /// glow halo around every wounded enemy.
     pub flash: Handle<ColorMaterial>,
+    /// Shared dark-translucent material used by every drop shadow.
+    /// One handle owned by the palette means spawn sites don't
+    /// need a `ResMut<Assets<ColorMaterial>>` just to allocate a
+    /// shadow — they pull the handle off `PaletteMaterials` and
+    /// pass it into `shadow::spawn_for`.
+    pub shadow: Handle<ColorMaterial>,
+    /// Single shared HDR-boosted warm white used for every turret's
+    /// muzzle flash. Held separate from `bullet_inner_*` so the
+    /// brief flash blooms while the bullet in flight does not — the
+    /// bloom should fire on the gun pop, not paint a halo around
+    /// every projectile travelling across the play area.
+    pub muzzle_glow: Handle<ColorMaterial>,
     pub turret_sniper: Handle<ColorMaterial>,
     pub bullet_sniper: Handle<ColorMaterial>,
     pub bullet_sniper_outer: Handle<ColorMaterial>,
@@ -500,6 +546,11 @@ pub struct PaletteMaterials {
     /// the Blast AOE reads as a distinct "explosive" cue regardless
     /// of the host weapon's own bullet colour.
     pub blast: Handle<ColorMaterial>,
+    /// Cascade-rune on-kill chain arc color (vivid lime green). A
+    /// fixed hue so Cascade hops read distinctly from Shock's
+    /// electric yellow even when both runes are stacked on the
+    /// same weapon.
+    pub cascade: Handle<ColorMaterial>,
     /// Translucent green tint for owned territory. Currently unused —
     /// section fills are rendered via a pre-rasterized sprite in `map.rs`
     /// (single-quad rendering avoids alpha-blend triangle seams). Left in
@@ -515,12 +566,8 @@ pub struct PaletteMaterials {
     /// its turrets, fluttering via `wave_ally_flags`). Shared so every
     /// ally pulls from the same handle and benefits from batching.
     pub ally_flag: Handle<ColorMaterial>,
-    /// Neutral grey square for an upgrade slot at a section's center.
-    /// Reads as a placeholder/build-here affordance regardless of the
-    /// underlying section tint.
-    pub map_slot: Handle<ColorMaterial>,
     /// Small filled mark used for the per-section star rating, drawn in a
-    /// row above each slot. Yellow so it pops on both day and night ocean.
+    /// row above each section. Yellow so it pops on both day and night ocean.
     pub map_slot_star: Handle<ColorMaterial>,
     /// Light blue/white spray color for the splash burst spawned when
     /// the player clicks empty water on the map view to set a sail target.
@@ -547,6 +594,7 @@ impl PaletteMaterials {
             enemy_rammer:          materials.add(hex(ENEMY_RAMMER_HEX)),
             enemy_sniper:          materials.add(hex(ENEMY_SNIPER_HEX)),
             enemy_artillery:       materials.add(hex(ENEMY_ARTILLERY_HEX)),
+            enemy_swarmer:         materials.add(hex(ENEMY_SWARMER_HEX)),
             // Telegraphs are intentionally faded: a Final-Fantasy-style
             // warning, not a solid colour wall. The sniper line + the
             // artillery reticle both sit on top of gameplay so a low
@@ -554,25 +602,40 @@ impl PaletteMaterials {
             // what's underneath.
             artillery_reticle:     materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.40)),
             artillery_reticle_outline: materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.95)),
-            sniper_aim:            materials.add(translucent(hex(SNIPER_AIM_HEX), 0.65)),
+            sniper_aim:            materials.add(translucent(hex(ENEMY_INDICATOR_HEX), 0.40)),
+            sniper_aim_outline:    materials.add(translucent(darken(hex(ENEMY_INDICATOR_HEX), 0.45), 0.55)),
             enemy_mine_dot:        materials.add(hex(ENEMY_MINE_DOT_HEX)),
-            bullet_friendly:       materials.add(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN)),
-            bullet_enemy:          materials.add(lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN)),
+            // Bullet inner cores boosted into HDR so PlayCamera's
+            // bloom pass haloes them. Outer rings stay clamped so
+            // the bloom focuses on the bright nucleus, not the dim
+            // halo. `Tonemapping::None` on PlayCamera keeps LDR
+            // pixels pixel-perfect, so the boost only adds glow
+            // on the bright cores without affecting the rest.
+            bullet_friendly:       materials.add(boost_hdr(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN), 2.5)),
+            bullet_enemy:          materials.add(boost_hdr(lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN), 2.5)),
             bullet_friendly_outer: materials.add(palette.bullet_friendly),
             bullet_enemy_outer:    materials.add(palette.bullet_enemy),
             trail:                 materials.add(palette.trail),
+            // SDR white for the on-hit material swap — see the
+            // `flash` field doc.
             flash:                 materials.add(Color::WHITE),
+            shadow:                materials.add(crate::shadow::material_color()),
+            // Single shared HDR-boosted warm white for every turret's
+            // muzzle flash. Brighter than the per-weapon inner cores
+            // (3× vs 2.5×) so the gun-pop reads even bigger than
+            // the bullet halo.
+            muzzle_glow:           materials.add(boost_hdr(Color::srgb(1.0, 0.95, 0.85), 3.0)),
             turret_sniper:         materials.add(sniper),
-            bullet_sniper:         materials.add(hex(SNIPER_BRIGHT_HEX)),
+            bullet_sniper:         materials.add(boost_hdr(hex(SNIPER_BRIGHT_HEX), 2.5)),
             bullet_sniper_outer:   materials.add(sniper),
             turret_mg:             materials.add(mg),
-            bullet_mg:             materials.add(hex(MG_BRIGHT_HEX)),
+            bullet_mg:             materials.add(boost_hdr(hex(MG_BRIGHT_HEX), 2.5)),
             bullet_mg_outer:       materials.add(mg),
             turret_shotgun:        materials.add(shotgun),
-            bullet_shotgun:        materials.add(hex(SHOTGUN_BRIGHT_HEX)),
+            bullet_shotgun:        materials.add(boost_hdr(hex(SHOTGUN_BRIGHT_HEX), 2.5)),
             bullet_shotgun_outer:  materials.add(shotgun),
             turret_railgun:        materials.add(railgun),
-            bullet_railgun:        materials.add(hex(RAILGUN_BRIGHT_HEX)),
+            bullet_railgun:        materials.add(boost_hdr(hex(RAILGUN_BRIGHT_HEX), 2.5)),
             bullet_railgun_outer:  materials.add(railgun),
             turret_mortar:         materials.add(mortar),
             helipad_deck:          materials.add(hex(HELIPAD_DECK_HEX)),
@@ -601,7 +664,7 @@ impl PaletteMaterials {
             turret_amplifier:      materials.add(Color::srgb(0.45, 0.78, 0.82)),
             // Deep ocean blue base for the SharkNet launcher.
             turret_sharknet:       materials.add(Color::srgb(0.18, 0.32, 0.55)),
-            bullet_sharknet:       materials.add(Color::srgb(0.85, 0.92, 1.00)),
+            bullet_sharknet:       materials.add(boost_hdr(Color::srgb(0.85, 0.92, 1.00), 2.5)),
             bullet_sharknet_outer: materials.add(Color::srgb(0.35, 0.55, 0.82)),
             // Mid-grey for the live shark unit — neutral enough to
             // read as "wildlife in the water" against the navy
@@ -618,13 +681,13 @@ impl PaletteMaterials {
             // Plasma projectile colours — bright cyan-white core
             // inside a violet envelope. Reads as energy weaponry
             // distinct from every other bullet on the screen.
-            bullet_plasma:         materials.add(Color::srgb(0.85, 0.95, 1.00)),
+            bullet_plasma:         materials.add(boost_hdr(Color::srgb(0.85, 0.95, 1.00), 2.5)),
             bullet_plasma_outer:   materials.add(Color::srgb(0.55, 0.30, 0.85)),
             // Dark mast wood for the CrowsNest base.
             turret_crows_nest:     materials.add(Color::srgb(0.36, 0.24, 0.16)),
             // Sun-faded plank wood for the lookout platform on top.
             crows_nest_top:        materials.add(Color::srgb(0.72, 0.54, 0.32)),
-            bullet_mortar:         materials.add(hex(MORTAR_BRIGHT_HEX)),
+            bullet_mortar:         materials.add(boost_hdr(hex(MORTAR_BRIGHT_HEX), 2.5)),
             bullet_mortar_outer:   materials.add(mortar),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),
             carrier_hull:          materials.add(hex(CARRIER_HEX)),
@@ -642,7 +705,7 @@ impl PaletteMaterials {
             sail:                  materials.add(hex(SAIL_HEX)),
             plane_hull:            materials.add(hex(PLANE_HEX)),
             bullet_missile_outer:  materials.add(hex(MISSILE_HEX)),
-            bullet_missile_inner:  materials.add(hex(MISSILE_BRIGHT_HEX)),
+            bullet_missile_inner:  materials.add(boost_hdr(hex(MISSILE_BRIGHT_HEX), 2.5)),
             mine_outer:            materials.add(hex(MINE_OUTER_HEX)),
             mine_inner:            materials.add(hex(MINE_INNER_HEX)),
             heal:                  materials.add(hex(HEAL_HEX)),
@@ -654,6 +717,7 @@ impl PaletteMaterials {
             shock:                 materials.add(hex(SHOCK_HEX)),
             bleed:                 materials.add(hex(BLEED_HEX)),
             blast:                 materials.add(hex(BLAST_HEX)),
+            cascade:               materials.add(hex(CASCADE_HEX)),
             // Map tints: opaque pre-blended colors. Alpha-blended translucent
             // tints over a fan-triangulated mesh leave faint visible "rays"
             // along each fan-edge (the alpha math doesn't perfectly
@@ -686,15 +750,8 @@ impl PaletteMaterials {
                 alpha_mode: bevy::sprite::AlphaMode2d::Opaque,
                 ..default()
             }),
-            // Slot box: neutral mid-grey so it reads as a "placeholder"
-            // affordance over either the green-owned or red-enemy tint.
-            map_slot:              materials.add(ColorMaterial {
-                color: Color::srgb(0.30, 0.32, 0.36),
-                alpha_mode: bevy::sprite::AlphaMode2d::Opaque,
-                ..default()
-            }),
-            // Star marks above the slot: gold/yellow to match `UI_VALUE`
-            // and pop on both ocean tones.
+            // Star marks above each section: gold/yellow to match
+            // `UI_VALUE` and pop on both ocean tones.
             map_slot_star:         materials.add(ColorMaterial {
                 color: Color::srgb(1.00, 0.85, 0.30),
                 alpha_mode: bevy::sprite::AlphaMode2d::Opaque,

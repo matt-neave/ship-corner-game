@@ -13,8 +13,8 @@ use crate::weapon::WeaponType;
 use crate::Scrap;
 
 use super::drag::{
-    roll_fresh_stock, CustomizeShop, DragSourceKind, DragState, SHOP_ITEM_COST,
-    SHOP_REROLL_COST,
+    roll_fresh_stock, turret_cost_for_barrels, CustomizeShop, DragSourceKind, DragState,
+    SHOP_REROLL_COST, SHOP_RUNE_COST,
 };
 use super::setup::{
     empty_slot_color, empty_socket_color, rune_color_for, turret_barrel_color_for,
@@ -27,6 +27,10 @@ use super::setup::{
 };
 use crate::rune::Rune;
 use super::CustomizeOpen;
+
+/// Real-time seconds the reroll-cost text spins for after a click.
+/// One full rotation eased out — fast start, soft landing.
+const SPIN_DURATION: f32 = 0.30;
 
 pub fn update_customize_ui(
     open: Res<CustomizeOpen>,
@@ -119,6 +123,18 @@ pub fn update_customize_ship(
             i != rune_idx && r.map_or(false, |rune| rune.is_targeting())
         })
     };
+    // Amplifier sockets beyond the tier cap are permanently blocked —
+    // a T1 Amplifier broadcasts only its first rune, so sockets 1+2
+    // are unusable; T2 frees socket 1; T3 frees all three. The hash
+    // overlay is ALWAYS shown here (not gated on active drag) so the
+    // player can see at a glance which sockets are off-limits.
+    let amp_locked = |slot_idx: usize, rune_idx: usize| -> bool {
+        let s = cfg.slots[slot_idx];
+        if !s.equipped { return false; }
+        if !matches!(s.weapon, crate::weapon::WeaponType::Amplifier) { return false; }
+        let cap = s.barrels.clamp(1, 3) as usize;
+        rune_idx >= cap
+    };
     for (part, mat_handle) in &socket_parts {
         let s = cfg.slots[part.slot];
         let slot_dragged = dragged_slot == Some(part.slot);
@@ -138,7 +154,9 @@ pub fn update_customize_ship(
         }
     }
     for (hash, mut vis) in &mut hash_overlays {
-        let want = if lock_state(hash.slot, hash.rune_idx) {
+        let want = if lock_state(hash.slot, hash.rune_idx)
+            || amp_locked(hash.slot, hash.rune_idx)
+        {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -417,20 +435,22 @@ pub fn update_customize_shop(
     }
 
     // Cost labels — show the scrap price while a tile is stocked,
-    // blank when sold or being dragged. Cost is the same on every
-    // card today (`SHOP_ITEM_COST`); no per-tile math.
-    let cost_str = SHOP_ITEM_COST.to_string();
+    // blank when sold or being dragged. Turret cost scales with tier
+    // (T1=2, T2=5, T3=12); rune cost is flat.
+    let rune_cost_str = SHOP_RUNE_COST.to_string();
     for (cost_marker, mut text) in &mut shop_turret_cost_texts {
         let dragged = dragged_shop_turret == Some(cost_marker.idx);
-        let stocked = !dragged
-            && shop
-                .turrets
-                .get(cost_marker.idx)
-                .and_then(|o| o.as_ref())
-                .is_some();
-        let want: &str = if stocked { cost_str.as_str() } else { "" };
+        let offer = if dragged {
+            None
+        } else {
+            shop.turrets.get(cost_marker.idx).and_then(|o| o.as_ref()).copied()
+        };
+        let want = match offer {
+            Some(o) => turret_cost_for_barrels(o.barrels).to_string(),
+            None => String::new(),
+        };
         if text.0 != want {
-            text.0 = want.to_string();
+            text.0 = want;
         }
     }
     for (cost_marker, mut text) in &mut shop_rune_cost_texts {
@@ -441,7 +461,7 @@ pub fn update_customize_shop(
                 .get(cost_marker.idx)
                 .and_then(|o| o.as_ref())
                 .is_some();
-        let want: &str = if stocked { cost_str.as_str() } else { "" };
+        let want: &str = if stocked { rune_cost_str.as_str() } else { "" };
         if text.0 != want {
             text.0 = want.to_string();
         }
@@ -485,21 +505,14 @@ pub fn update_sell_label(
     >,
 ) {
     if !open.open { return; }
-    let hovering = drag.spec_cursor.and_then(|cursor| {
-        sell_panel.iter().find_map(|(tf, hit)| {
-            let centre = tf.translation.truncate();
-            let half = hit.size * 0.5;
-            let inside = cursor.x >= centre.x - half.x
-                && cursor.x <= centre.x + half.x
-                && cursor.y >= centre.y - half.y
-                && cursor.y <= centre.y + half.y;
-            if inside { Some(()) } else { None }
-        })
-    }).is_some();
+    // Show the refund the moment the player picks up a ship-sourced
+    // sellable, regardless of cursor location — gives them the
+    // value at decision time, not just when they're already hovering
+    // the sell strip. Shop-sourced drags (refund == 0) stay silent.
+    let _ = sell_panel;
     let preview = drag
         .picked
         .as_ref()
-        .filter(|_| hovering)
         .map(|p| super::drag::sell_refund_for(&p.source, &cfg))
         .filter(|&r| r > 0);
 
@@ -558,12 +571,15 @@ pub fn handle_reroll_button(
     open: Res<CustomizeOpen>,
     mouse: Res<ButtonInput<bevy::input::mouse::MouseButton>>,
     drag: Res<DragState>,
+    real: Res<bevy::time::Time<bevy::time::Real>>,
+    mut spin_remaining: Local<f32>,
+    shop: Option<Res<super::drag::CustomizeShop>>,
     mut scrap: ResMut<crate::Scrap>,
     mut commands: Commands,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    btn_q: Query<(&Transform, &super::setup::HitArea), With<ShopRerollBtn>>,
+    btn_q: Query<(&Transform, &super::setup::HitArea), (With<ShopRerollBtn>, Without<ShopRerollCostText>)>,
     bg_q: Query<&MeshMaterial2d<ColorMaterial>, With<ShopRerollBg>>,
-    mut cost_q: Query<&mut TextColor, With<ShopRerollCostText>>,
+    mut cost_q: Query<(&mut TextColor, &mut Transform), With<ShopRerollCostText>>,
 ) {
     if !open.open {
         return;
@@ -593,9 +609,25 @@ pub fn handle_reroll_button(
     } else {
         Color::srgb(0.85, 0.42, 0.42)
     };
-    for mut color in &mut cost_q {
+    // Decay the spin timer in real time so it resolves even when
+    // the world is hitstopped. Eased so the text decelerates as
+    // it returns to upright.
+    if *spin_remaining > 0.0 {
+        *spin_remaining = (*spin_remaining - real.delta_secs()).max(0.0);
+    }
+    let spin_t = if SPIN_DURATION > 0.0 && *spin_remaining > 0.0 {
+        (*spin_remaining / SPIN_DURATION).clamp(0.0, 1.0)
+    } else { 0.0 };
+    // Ease-out cubic — fast spin start, soft landing back at 0°.
+    let eased = 1.0 - (1.0 - spin_t).powi(3);
+    let angle = eased * std::f32::consts::TAU;
+    for (mut color, mut tf) in &mut cost_q {
         if color.0 != want_text {
             color.0 = want_text;
+        }
+        let want_rot = Quat::from_rotation_z(angle);
+        if tf.rotation != want_rot {
+            tf.rotation = want_rot;
         }
     }
 
@@ -619,9 +651,72 @@ pub fn handle_reroll_button(
             && cursor.y <= centre.y + half.y
         {
             scrap.0 -= SHOP_REROLL_COST;
-            commands.insert_resource(roll_fresh_stock());
+            // Preserve locked slots across the reroll. Falls back
+            // to a plain fresh roll if (somehow) the shop resource
+            // is missing — same first-run path as before.
+            let next_shop = shop
+                .as_deref()
+                .map(|s| s.reroll_preserving_locked())
+                .unwrap_or_else(roll_fresh_stock);
+            commands.insert_resource(next_shop);
+            // Kick the spin so the cost text whips around the
+            // moment the player commits.
+            *spin_remaining = SPIN_DURATION;
             return;
         }
+    }
+}
+
+/// Right-click on a shop turret / rune / mod tile toggles its
+/// lock flag. Locked slots persist across `reroll_preserving_locked`
+/// so the player can hold an interesting offer while rolling the
+/// rest. Right-click doesn't consume the slot — only left-click
+/// drag + place / left-click apply consumes (existing flows).
+pub fn handle_right_click_lock(
+    open: Res<CustomizeOpen>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    drag: Res<super::drag::DragState>,
+    mut shop: Option<ResMut<super::drag::CustomizeShop>>,
+    sources: Query<(&Transform, &super::setup::HitArea, &super::setup::DragSourceMarker)>,
+    mod_slots: Query<(&Transform, &super::setup::HitArea, &super::shop_mods::ShopModSlot)>,
+) {
+    if !open.open { return; }
+    if !mouse.just_pressed(MouseButton::Right) { return; }
+    let Some(cursor) = drag.spec_cursor else { return };
+    let Some(shop) = shop.as_deref_mut() else { return };
+
+    let hit = |centre: Vec2, half: Vec2| {
+        cursor.x >= centre.x - half.x
+            && cursor.x <= centre.x + half.x
+            && cursor.y >= centre.y - half.y
+            && cursor.y <= centre.y + half.y
+    };
+
+    // Turret + rune sources carry their idx via DragSourceMarker.
+    for (tf, hit_area, marker) in &sources {
+        let centre = tf.translation.truncate();
+        if !hit(centre, hit_area.size * 0.5) { continue; }
+        match marker.0 {
+            super::drag::DragSourceKind::ShopTurret(idx) => {
+                if let Some(slot) = shop.turrets_locked.get_mut(idx) { *slot = !*slot; }
+                return;
+            }
+            super::drag::DragSourceKind::ShopRune(idx) => {
+                if let Some(slot) = shop.runes_locked.get_mut(idx) { *slot = !*slot; }
+                return;
+            }
+            // Ship-side drag sources (slot / rune sockets) don't
+            // belong in the lock pool — they're inventory, not shop
+            // offers.
+            _ => {}
+        }
+    }
+    // Mod slots carry their idx via the dedicated ShopModSlot marker.
+    for (tf, hit_area, slot) in &mod_slots {
+        let centre = tf.translation.truncate();
+        if !hit(centre, hit_area.size * 0.5) { continue; }
+        if let Some(b) = shop.mods_locked.get_mut(slot.idx) { *b = !*b; }
+        return;
     }
 }
 
@@ -629,7 +724,9 @@ pub fn handle_close_click(
     mouse: Res<ButtonInput<MouseButton>>,
     drag: Res<super::drag::DragState>,
     open: Res<CustomizeOpen>,
+    mode: Res<crate::multiplayer::NetMode>,
     mut next: ResMut<NextState<crate::AppState>>,
+    mut local_ready: ResMut<crate::multiplayer::ready::LocalReadyState>,
     close_q: Query<(&Transform, &super::setup::HitArea), With<super::CustomizeCloseBtn>>,
 ) {
     if !open.open {
@@ -650,12 +747,16 @@ pub fn handle_close_click(
             && cursor.y >= centre.y - half.y
             && cursor.y <= centre.y + half.y
         {
-            // Closing the shop drops the player onto the map between
-            // stages — they pick the next section to attack rather
-            // than getting yanked straight into combat. The `OnExit(Map)`
-            // hook refills HP + clears the arena when they enter a
-            // section.
-            next.set(crate::AppState::Map);
+            // Solo: advance straight to Map.
+            // Multiplayer: flip our ready flag. `host_advance_when_all_ready`
+            // (on the host) transitions to Map only once every peer is
+            // ready; clients stay in Customize showing a "waiting on
+            // partner..." overlay.
+            if matches!(*mode, crate::multiplayer::NetMode::Solo) {
+                next.set(crate::AppState::Map);
+            } else {
+                local_ready.ready = true;
+            }
             return;
         }
     }

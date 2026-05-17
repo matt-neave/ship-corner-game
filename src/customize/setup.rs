@@ -298,7 +298,9 @@ pub fn setup_customize_ui(
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
 
-    // ---------- Top-right CLOSE button ----------
+    // ---------- Top-right READY button ----------
+    // "READY" reads correctly in both solo (advance to map) and
+    // multiplayer (mark our peer ready, wait for partner).
     let close_pos = Vec2::new(
          (CUSTOMIZE_INTERNAL_W as f32) * 0.5 - 22.0,
          (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 12.0,
@@ -310,11 +312,11 @@ pub fn setup_customize_ui(
         close_pos,
         Vec2::new(34.0, 12.0),
         SHOP_TILE_RADIUS.min(5.0),
-        Color::srgb(0.50, 0.20, 0.22),
+        Color::srgb(0.20, 0.50, 0.28),
         Z_TILE_BG,
         super::CustomizeCloseBtn,
     );
-    spawn_text(&mut commands, &pixel_font, close_pos, "CLOSE", Color::WHITE, 14.0, CloseLabelTag);
+    spawn_text(&mut commands, &pixel_font, close_pos, "READY", Color::WHITE, 14.0, CloseLabelTag);
     commands.spawn((
         Transform::from_translation(close_pos.extend(Z_TILE_BG)),
         HitArea { size: Vec2::new(34.0, 12.0) },
@@ -340,13 +342,25 @@ pub fn setup_customize_ui(
     // sits clearly below the SCRAP counter (both top-left). The previous
     // y=76 placed SHOP at y=90 vs SCRAP at y=88 — they overlapped.
     let shop_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 40.0;
-    spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y + 14.0), "SHOP", Color::srgb(1.0, 0.85, 0.30), 18.0, ShopHeaderTag);
+    spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y + 20.0), "SHOP", Color::srgb(1.0, 0.85, 0.30), 18.0, ShopHeaderTag);
+    // Small grey hint just under the SHOP header. Discovery aid
+    // for the right-click lock affordance — the gold padlock
+    // frame appears on locked slots but the gesture itself isn't
+    // obvious without a textual prompt.
+    spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y + 10.0), "RIGHT-CLICK TO LOCK AN ITEM", Color::srgb(0.55, 0.60, 0.70), 8.0, ShopHeaderTag);
     spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y), "TURRETS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
+    // Wider stride between the three turret picks so each card reads
+    // as its own option rather than a contiguous strip. Middle tile
+    // stays pinned at `shop_x`; the side picks fan out by
+    // `SHOP_TURRET_STRIDE` so the per-tile name label below has
+    // room without overlapping its neighbour.
+    const SHOP_TURRET_STRIDE: f32 = 36.0;
     for idx in 0..3usize {
-        let x = shop_x + (idx as f32 - 1.0) * (SHOP_TILE + tile_gap);
+        let x = shop_x + (idx as f32 - 1.0) * SHOP_TURRET_STRIDE;
         let y = shop_top_y - 16.0;
         spawn_shop_turret_tile(&mut commands, &mut meshes, &mut materials, &pixel_font, idx, Vec2::new(x, y));
     }
+    let _ = tile_gap;
     // Vertical layout — each row leaves room for its tile body PLUS
     // its name + cost label below before the next section header. The
     // turret-cost label hangs at -38 from `shop_top_y`, so RUNES starts
@@ -363,18 +377,20 @@ pub fn setup_customize_ui(
     }
 
     // Stat-modifier cards — 3 click-to-buy options below the runes.
-    // Header sits well above the card-row top so the taller mod
-    // cards (now 36 spec px tall to fit trade-off labels) don't
-    // creep up over the "MODS" text.
+    // Header pulled up tight against the new shorter card row so
+    // the whole shop column (TURRETS / RUNES / MODS / REROLL) fits
+    // inside the canvas without scrolling.
     spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y - 92.0), "MODS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
-    super::shop_mods::spawn_mod_cards(&mut commands, &pixel_font, shop_x, shop_top_y - 122.0);
+    // Mod card centre: header at -92, card top edge at -106, centre
+    // at -106 - MOD_CARD_H/2 = -106 - 11 = -117.
+    super::shop_mods::spawn_mod_cards(&mut commands, &pixel_font, shop_x, shop_top_y - 117.0);
 
     // Reroll button — sits at the bottom of the shop column. Costs
     // `SHOP_REROLL_COST` scrap (`drag::SHOP_REROLL_COST`); refills every
-    // sold slot with fresh offerings. Pushed further down so the
-    // taller mod cards (centre at -122, half-height 18 → bottom at
-    // -140) clear the reroll container.
-    let reroll_pos = Vec2::new(shop_x, shop_top_y - 156.0);
+    // sold slot with fresh offerings. Mod-card bottom at -117 - 11
+    // = -128; cost label at -128 - 6 = -134; reroll lifted to -144
+    // to clear it cleanly while staying inside the canvas.
+    let reroll_pos = Vec2::new(shop_x, shop_top_y - 144.0);
     spawn_container(
         &mut commands,
         &mut meshes,
@@ -408,7 +424,10 @@ pub fn setup_customize_ui(
     // ---------- Centre ship + slots + sockets ----------
     // Ship sits left of canvas centre so the RHS stats column has room
     // to flow down the right edge.
-    let ship_centre = Vec2::new(-10.0, 0.0);
+    // Ship + sell strip nudged +15 spec px to the right so the
+    // bigger shop column (wider mod cards + spread-out turrets)
+    // has room without crowding the hull's portside slots.
+    let ship_centre = Vec2::new(5.0, 0.0);
     spawn_hull(&mut commands, ship_centre, hull_capsule, hull_mat);
 
     for (slot, &(gx, gy)) in TURRET_POSITIONS.iter().enumerate() {
@@ -877,6 +896,16 @@ fn spawn_shop_turret_tile(
         DragSourceMarker(DragSourceKind::ShopTurret(idx)),
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
+    // Right-click lock badge — bright gold frame + corner padlock,
+    // hidden by default. `shop_lock::sync_lock_badges` toggles on
+    // the matching `turrets_locked[idx]` flag.
+    super::shop_lock::spawn_lock_badge(
+        commands,
+        super::shop_lock::ShopSlotKind::Turret,
+        idx,
+        pos,
+        Vec2::splat(SHOP_TILE),
+    );
 }
 
 fn spawn_shop_tile_container(
@@ -993,7 +1022,7 @@ fn spawn_shop_rune_tile(
         commands,
         font,
         pos + Vec2::new(0.0, -SOCKET * 0.5 - 18.0),
-        format!("{}", super::drag::SHOP_ITEM_COST),
+        format!("{}", super::drag::SHOP_RUNE_COST),
         Color::srgb(1.0, 0.85, 0.30),
         12.0,
         ShopRuneCostText { idx },
@@ -1035,6 +1064,15 @@ fn spawn_shop_rune_tile(
         DragSourceMarker(DragSourceKind::ShopRune(idx)),
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
+    // Right-click lock badge — same gold frame + padlock as the
+    // turret tile, sized to the rune socket's bounding box.
+    super::shop_lock::spawn_lock_badge(
+        commands,
+        super::shop_lock::ShopSlotKind::Rune,
+        idx,
+        pos,
+        Vec2::splat(SOCKET + 4.0),
+    );
 }
 
 // ---------- Per-frame text positioning ----------

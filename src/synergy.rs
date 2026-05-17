@@ -155,17 +155,19 @@ pub fn compute_synergies(cfg: Res<TurretConfig>, mut syn: ResMut<Synergies>) {
         // Multi-tag weapons (e.g. Harpoon = Pirate + Melee) count
         // toward EVERY one of their tags. Each tag pool tracks its
         // own tier independently.
+        let mut counted_autonomous = false;
         for &tag in slot.weapon.tags() {
             let i = match tag {
                 WeaponTag::Naval      => 0,
                 WeaponTag::Future     => 1,
-                WeaponTag::Autonomous => 2,
+                WeaponTag::Autonomous => { counted_autonomous = true; 2 }
                 WeaponTag::Pirate     => 3,
                 WeaponTag::Support    => 4,
                 WeaponTag::Melee      => 5,
             };
             counts[i] += 1;
         }
+        let _ = counted_autonomous;
     }
     *syn = Synergies {
         naval:      tier_for(counts[0]),

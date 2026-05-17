@@ -55,7 +55,7 @@ weapon_amplifier_desc,Every adjacent turret fires with its own runes plus the Am
 weapon_sharknet_desc,Unleashes sharks that charge down enemies.
 weapon_anchor_flail_desc,Hurls an anchor outward and retracts it. Damages enemies on both the throw and the return.
 weapon_plasma_torpedo_desc,Slow heavy plasma cannon.
-weapon_crows_nest_desc,Adjacent weapons gain +15% range per tier.
+weapon_crows_nest_desc,Adjacent weapons gain bonus range.
 weapon_tag_naval,NAVAL
 weapon_tag_future,FUTURE
 weapon_tag_autonomous,AUTONOMOUS
@@ -108,8 +108,8 @@ rune_vampire_desc,Heal a sliver of HP every few hits.
 rune_ward_desc,Killing blows refill some shield.
 rune_bleed_desc,Anti-tank DoT. Ticks a percent of the target's max HP for 4 seconds.
 rune_blast_desc,Attacks explode on impact, splashing damage to nearby enemies. This weapon is now considered [AOE].
-rune_hustle_desc,Autonomous units get +100% move speed.
-rune_pierce_desc,Bullets pierce through enemies with falling damage. Stacks add extra pierces; Rune Effect raises the floor.
+rune_hustle_desc,[AUTONOMOUS] units get +100% move speed.
+rune_pierce_desc,"Bullets pierce 1 enemy, dealing 60% subsequent damage."
 rune_greed_desc,Every Nth kill on this weapon drops +1 scrap. Stacks lower N; Rune Effect lowers it further.
 rune_executioner_desc,Bonus damage to enemies below 30% HP.
 rune_opener_desc,Bonus damage when the target is at full HP.
@@ -145,14 +145,7 @@ stat_shield_rate_desc,How fast the shield refills after a delay.
 stat_shield_delay_desc,Pause after a hit before the shield starts refilling.
 stat_rune_damage_desc,Scales rune effects. Boosts Fire damage, adds chain bolts to Shock, widens AOE radius.
 stat_turret_damage_desc,Total damage multiplier on every weapon. 100% is baseline; mods and Naval synergy stack on top.
-map_popup_build,BUILD
-map_building_weaponry,WEAPONRY
-map_building_weaponry_desc,Customize turret loadout in this section.
-map_building_dockyard,DOCKYARD
-map_building_dockyard_desc,Logs adjacent buildings each map phase.
-map_building_foundry,FOUNDRY
-map_building_foundry_desc,Smelts 1 scrap into 1 steel every 60 s.
-map_building_crane,CRANE
-map_building_crane_desc,+30% production for adjacent buildings. Consumes 1 steel every 120 s.
-map_building_refinery,REFINERY
-map_building_refinery_desc,Refines 10 steel into 1 refined steel every 300 s.
+stat_dodge_desc,Chance to negate an incoming hit entirely. Capped at 60% so the ship is never invulnerable.
+stat_armour_desc,Flat reduction on un-dodged damage before the shield absorbs. Capped at 60% so the ship is never invulnerable.
+stat_chest_chance_desc,Bonus to the per-kill chest drop chance. Stacks on top of the base 1%. No cap.
+stat_cooldown_desc,Percentage cooldown reduction on every weapon. Capped at 90% so weapons can't reach instant reload.

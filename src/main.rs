@@ -14,6 +14,7 @@ mod boss_intro;
 mod boss_reward;
 mod bullet;
 mod cannon;
+mod chest;
 mod components;
 mod crows_nest;
 mod customize;
@@ -23,7 +24,9 @@ mod enemy;
 mod flamethrower;
 mod game_over;
 mod harpoon;
+mod hitstop;
 mod hull;
+mod low_hp_vignette;
 mod i18n;
 mod map;
 mod modes;
@@ -32,11 +35,15 @@ mod pause;
 mod rendering;
 mod main_menu;
 mod menu_kit;
+mod proc_fx;
+#[cfg(not(target_arch = "wasm32"))]
+mod multiplayer;
 mod octopus;
 mod onboarding;
 mod fonts;
 mod settings;
 mod sfx;
+mod shadow;
 mod rune;
 mod ship;
 mod stage_complete;
@@ -67,27 +74,22 @@ use effects::{
     update_muzzle_flashes,
 };
 use enemy::{
-    artillery_fire, artillery_shell_tick, bomber_detonate, boss_chaos_spawn,
+    artillery_fire, artillery_shell_tick, boss_chaos_spawn,
     enemy_ai,
-    enemy_death_check, enemy_fire, enemy_landmine_tick, setup_enemy_hp_bar_assets,
+    cull_runaway_enemies, enemy_death_check, enemy_fire, enemy_landmine_tick, setup_enemy_hp_bar_assets,
     setup_spawn_indicator_assets, sniper_aim_line_tick, sniper_fire, sniper_turret_aim,
     spawn_enemies, tick_spawn_indicators, track_enemy_damage_for_hp_bars, update_enemy_hp_bars,
 };
 use map::{
     advance_map_anim_timeline, apply_view_mode, boss_patrol_movement,
-    close_popup_on_view_change, handle_building_choice_clicks,
+    clear_anims_on_view_change,
     in_combat_view, level_complete_check, level_fail_check, map_begin_phase,
-    map_boat_movement, map_click_input, refresh_map_fill, setup_currency_ui,
+    map_boat_movement, map_click_input, refresh_map_fill,
     setup_level_status_ui, setup_map,
-    setup_progress_assets, spawn_boss_patrols,
-    sync_owned_slot_visuals,
-    tick_buildings,
+    spawn_boss_patrols,
     update_anim_beams, update_anim_pulses,
-    update_building_button_tints, update_building_description, update_building_hover_tooltip,
-    update_building_progress_bars, update_currency_ui,
-    update_level_status_ui, update_map_slot_labels,
-    update_refined_steel_text, update_scrap_text, update_steel_text,
-    BuildingTimers, CombatContext, DebugClaimMode, DebugUiVisible, MapAnimTimeline,
+    update_level_status_ui,
+    CombatContext, DebugClaimMode, DebugUiVisible, MapAnimTimeline,
     MapState, TriggerMapPhase, ViewMode,
 };
 // Debug-panel systems live behind the inverse-demo feature flag.
@@ -99,9 +101,9 @@ use map::{
     toggle_debug_ui_on_hash, update_claim_label, update_debug_button_tints,
 };
 use modes::{
-    apply_camera_follow, apply_crt_mode, apply_night_mode, apply_vsync_mode,
-    apply_window_mode_setting,
-    CameraFollow, CrtMode, GameMode, NightMode, VsyncMode,
+    apply_bloom_mode, apply_camera_follow, apply_camera_punch, apply_crt_mode, apply_night_mode,
+    apply_vsync_mode, apply_window_mode_setting,
+    BloomMode, CameraFollow, CrtMode, GameMode, NightMode, VsyncMode,
 };
 use palette::{apply_palette, Palette};
 use rendering::{
@@ -110,13 +112,13 @@ use rendering::{
 };
 use settings::{apply_loaded_settings, persist_settings_on_change};
 use rune::{
-    tick_buff_stacks, tick_echoes, tick_hp_pickups, tick_magnetic_pickups, tick_on_bleed,
+    tick_buff_stacks, tick_echoes, tick_hp_pickups, tick_magnetic_pickups, tick_on_bleed, tick_scrap_pickups,
     tick_on_conduit, tick_on_fire, tick_on_frost, tick_on_medic, tick_on_resonate,
     BuffStacks, MedicTimer, ThirstPending,
 };
 use ship::{
     apply_velocity, despawn_player_world, friendly_movement, friendly_ram_damage,
-    setup_world, spawn_player_world, tick_stunned,
+    setup_world, spawn_player_world, sync_ship_shadow, tick_stunned,
 };
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{
@@ -127,12 +129,12 @@ use turret::{
     TurretConfig,
 };
 use ui::{
-    setup_damage_panel, setup_ui,
-    setup_wave_indicator, sync_ally_hp_bars, sync_damage_panel_visibility,
-    ui_button_system, update_ally_hp_values, update_damage_panel,
-    update_damage_row_icons, update_fps_text, update_hp_bar_pixel_scale,
-    update_hp_subdividers, update_map_button,
-    update_score_text, update_vsync_label, update_wave_indicator,
+    setup_ui,
+    setup_wave_indicator, setup_map_hint, sync_ally_hp_bars, sync_hud_dev_buttons_visibility,
+    ui_button_system, update_ally_hp_values,
+    update_fps_text, update_hp_bar_pixel_scale,
+    update_map_button,
+    update_score_text, update_vsync_label, update_wave_indicator, update_map_hint,
     update_wave_ui, DamageStats,
 };
 
@@ -168,6 +170,75 @@ pub enum AppState {
     /// Minimal end-of-run overlay; exiting back to MainMenu runs the
     /// same fresh-run reset as the GameOver path.
     Win,
+    /// Multiplayer lobby — host + connected clients sit here between
+    /// the handshake and the START button. Roster, kick, leave, and
+    /// (host-only) START controls live in `multiplayer/lobby.rs`. The
+    /// host enters on clicking HOST; clients enter on receiving
+    /// Welcome. Both transition to Playing simultaneously when the
+    /// host clicks START (via `StateChange` broadcast).
+    Lobby,
+    /// Multiplayer client-only — host is in a state the client
+    /// doesn't participate in (Customize / HullSelect / Map / etc).
+    /// Client sees a "WAITING FOR HOST" overlay until host returns
+    /// to Playing. Stops the client from accidentally interacting
+    /// with host-only menus and frees the client from running their
+    /// own divergent menu logic.
+    WaitingForHost,
+    /// Chest-opening modal — entered when `PendingChests` is non-empty
+    /// after a stage clears. Shows one chest's rolled mod at a time
+    /// with TAKE / SELL buttons. Loops back to itself until the
+    /// queue drains, then routes to BossReward / LevelUp / Customize
+    /// via the same chain `StageComplete` uses.
+    ChestOpen,
+}
+
+impl AppState {
+    /// Stable wire-format discriminant for multiplayer state-sync.
+    /// Append-only — renumbering breaks compatibility with peers
+    /// running an older build. Used by `NetMsg::StateChange` so a
+    /// host's state transitions can drive matching transitions on
+    /// every client.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            AppState::MainMenu       => 0,
+            AppState::Playing        => 1,
+            AppState::StageComplete  => 2,
+            AppState::LevelUp        => 3,
+            AppState::HullSelect     => 4,
+            AppState::Customize      => 5,
+            AppState::Map            => 6,
+            AppState::Paused         => 7,
+            AppState::GameOver       => 8,
+            AppState::BossReward     => 9,
+            AppState::BossIntro      => 10,
+            AppState::Win            => 11,
+            AppState::Lobby          => 12,
+            AppState::WaitingForHost => 13,
+            AppState::ChestOpen      => 14,
+        }
+    }
+    /// Inverse of `to_u8`. `None` for unknown discriminants so older
+    /// clients can silently skip unknown future states.
+    pub fn from_u8(n: u8) -> Option<Self> {
+        Some(match n {
+             0 => AppState::MainMenu,
+             1 => AppState::Playing,
+             2 => AppState::StageComplete,
+             3 => AppState::LevelUp,
+             4 => AppState::HullSelect,
+             5 => AppState::Customize,
+             6 => AppState::Map,
+             7 => AppState::Paused,
+             8 => AppState::GameOver,
+             9 => AppState::BossReward,
+            10 => AppState::BossIntro,
+            11 => AppState::Win,
+            12 => AppState::Lobby,
+            13 => AppState::WaitingForHost,
+            14 => AppState::ChestOpen,
+             _ => return None,
+        })
+    }
 }
 
 /// Owns the in-combat-view Update schedule. Pulled out of the main
@@ -197,25 +268,69 @@ impl Plugin for CombatSimPlugin {
                 // enemy AI / fire system reads it this frame.
                 update_ally_positions_cache,
                 friendly_movement,
-                enemy_ai,
                 tick_stunned,
                 apply_velocity,
-                friendly_ram_damage,
+                // Shadow follows the ship — after apply_velocity so
+                // the hull's transform for this frame is final.
+                sync_ship_shadow,
                 stats::shield_recharge_system,
-                bomber_detonate,
-                (spawn_enemies, boss_chaos_spawn),
+                // Host-authoritative enemy simulation. Client mirrors
+                // are visual-only — their Transform/HP are driven by
+                // EnemySnapshot. Running these on the client too
+                // would (a) spawn duplicate enemy bullets from the
+                // mirror's position (peer takes ~2x damage), (b)
+                // write Velocity that fights `smooth_mirror_transforms`,
+                // and (c) cause `enemy_death_check` to grant scrap
+                // from a race window between HP=0 snapshot and the
+                // omit-from-next-snapshot reconcile.
+                #[cfg(not(target_arch = "wasm32"))]
+                (
+                    enemy_ai,
+                    friendly_ram_damage,
+                    spawn_enemies,
+                    boss_chaos_spawn,
+                ).run_if(not(multiplayer::enemies::is_client)),
+                #[cfg(target_arch = "wasm32")]
+                (
+                    enemy_ai,
+                    friendly_ram_damage,
+                    spawn_enemies,
+                    boss_chaos_spawn,
+                ),
             )
                 .run_if(in_combat_view),
         );
 
         // ---- Projectile / turret group ----
+        //
+        // Enemy-side firing (enemy_fire, sniper_*, artillery_*,
+        // enemy_landmine_tick) is host-authoritative: the host fires
+        // the enemy's bullets, the bullets that hit the local player
+        // do the damage locally. The client never spawns enemy
+        // bullets from mirrors. If it did, both peers would
+        // experience independent firing salvos from the same enemy
+        // and the client would take ~double damage.
+        //
+        // Friendly-side firing (turret_aim_fire, helicopter_ai,
+        // shark_ai, mortar_shell_tick, bullet_update) runs on both
+        // peers — each peer drives their OWN ship's turrets and
+        // bullets locally; damage to mirrors is relayed to host.
         app.add_systems(
             Update,
             (
                 sync_turret_config,
-                // beam_apply_damage needs the BeamPending entities spawned
-                // by turret_aim_fire to be visible this frame.
                 (turret_aim_fire, beam_apply_damage).chain(),
+                bullet_update,
+                mortar_shell_tick,
+                (sync_helipad_helicopters, sync_helipad_nose_barrels, helicopter_ai).chain(),
+                (sync_sharknet_sharks, shark_ai, shark_contact_damage).chain(),
+            )
+                .run_if(in_combat_view),
+        );
+        // Host-only enemy firing — see comment above.
+        app.add_systems(
+            Update,
+            (
                 enemy_fire,
                 sniper_fire,
                 sniper_aim_line_tick,
@@ -223,21 +338,9 @@ impl Plugin for CombatSimPlugin {
                 artillery_fire,
                 artillery_shell_tick,
                 enemy_landmine_tick,
-                bullet_update,
-                mortar_shell_tick,
-                // HeliPad slots: sync the "one helicopter per equipped slot"
-                // invariant first so a freshly spawned heli ticks this frame
-                // in `helicopter_ai`. `.chain()` inserts the command-flush
-                // sync point that makes that hand-off safe.
-                (sync_helipad_helicopters, sync_helipad_nose_barrels, helicopter_ai).chain(),
-                // SharkNet autonomous unit: same shape as HeliPad — sync
-                // existence first, then AI tick, then contact-damage
-                // collision pass. Chained for the same command-flush
-                // reason: freshly-spawned sharks need their Transform
-                // visible before the AI moves them this frame.
-                (sync_sharknet_sharks, shark_ai, shark_contact_damage).chain(),
             )
-                .run_if(in_combat_view),
+                .run_if(in_combat_view)
+                .run_if(not(multiplayer::enemies::is_client)),
         );
 
         // ---- Damage pipeline ----
@@ -268,11 +371,28 @@ impl Plugin for CombatSimPlugin {
                     (
                         tick_magnetic_pickups,
                         tick_hp_pickups,
+                        tick_scrap_pickups,
                         tick_buff_stacks,
                         tick_on_medic,
                     )
                         .chain(),
+                    // Host-authoritative: client mirrors are despawned by
+                    // `apply_enemy_snapshot`'s reconcile pass when the
+                    // host's snapshot omits an id. Running death-check
+                    // on client would double-despawn AND grant scrap
+                    // from a race window between HP=0 and the omit.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    enemy_death_check.run_if(not(multiplayer::enemies::is_client)),
+                    #[cfg(target_arch = "wasm32")]
                     enemy_death_check,
+                    // Safety net: catches enemies that an AI bug
+                    // has thrown out of bounds before they stall
+                    // try_advance_fighting forever. Also host-only —
+                    // mirrors don't have AI to misbehave.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    cull_runaway_enemies.run_if(not(multiplayer::enemies::is_client)),
+                    #[cfg(target_arch = "wasm32")]
+                    cull_runaway_enemies,
                 )
                     .chain(),
                 // Track damage frame-to-frame to spawn / refresh enemy
@@ -318,7 +438,11 @@ fn enter_combat_view(mut view: ResMut<map::ViewMode>) {
 /// or GameOver→Playing — those paths don't pass through `Map`.
 fn refill_and_clean_for_next_stage(
     stats: Res<stats::PlayerStats>,
-    mut friendly: Query<&mut components::Health, With<components::Friendly>>,
+    // LocalPlayer (not just Friendly) — host has two Friendlies in
+    // MP (local + remote-peer ghost). `single_mut()` on plain
+    // Friendly would Err and silently skip the HP refill, leaving
+    // the host's player with whatever HP they had at stage end.
+    mut friendly: Query<&mut components::Health, With<components::LocalPlayer>>,
     arena: Query<
         Entity,
         Or<(
@@ -354,18 +478,10 @@ pub struct CampaignProgress {
 }
 
 /// Currency dropped by killed enemies (+1 per kill). Spent on map-view
-/// building placement and consumed by Foundries.
+/// The only currency. Earned from kills + wave clears + per-stage
+/// interest; spent in the customize shop on weapons, runes, mods.
 #[derive(Resource, Default)]
 pub struct Scrap(pub u32);
-
-/// Refined currency produced by Foundries. Consumed by Cranes for their
-/// adjacency speed boost.
-#[derive(Resource, Default)]
-pub struct Steel(pub u32);
-
-/// Top-tier refined output, produced by Refineries from steel.
-#[derive(Resource, Default)]
-pub struct RefinedSteel(pub u32);
 
 #[derive(Resource)]
 pub struct SpawnTimer { pub t: f32, pub elapsed: f32 }
@@ -380,44 +496,44 @@ pub struct SpawnTimer { pub t: f32, pub elapsed: f32 }
 pub struct Difficulty(pub u8);
 
 impl Default for Difficulty {
-    /// Default to the baseline tier (1) so a fresh install plays the
-    /// originally-tuned campaign.
-    fn default() -> Self { Self(1) }
+    /// Brotato / SNKRX convention: tier 0 IS the baseline. Higher
+    /// tiers are the "harder than default" progression rungs the
+    /// player works up through. No "easier than default" option —
+    /// if 0 already feels too hard, the answer is build / hull
+    /// choice, not a softer difficulty.
+    fn default() -> Self { Self(0) }
 }
 
 impl Difficulty {
-    pub const VALUES: &'static [u8] = &[0, 1, 2];
+    /// Five tiers laid out in one row in HullSelect. 0 = the
+    /// originally-tuned baseline (1.00× HP / 1.00× damage); each
+    /// step adds +30% to both enemy HP and outgoing enemy damage.
+    /// Tier 4 = 2.20× — meaningful endgame challenge without
+    /// pushing into HP-sponge territory.
+    pub const VALUES: &'static [u8] = &[0, 1, 2, 3, 4];
 
     pub fn label(self) -> &'static str {
         match self.0 {
-            0 => "0",
-            1 => "1",
-            2 => "2",
+            0 => "0", 1 => "1", 2 => "2",
+            3 => "3", 4 => "4",
             _ => "?",
         }
     }
 
     /// Multiplier applied to enemy max HP at spawn (both regular
-    /// variants and bosses). Easier difficulty thins enemies, harder
-    /// thickens them.
+    /// variants and bosses). Tier 0 = 1.00×, each tier above adds
+    /// 30% — so tier 4 = 2.20× HP.
     pub fn hp_mult(self) -> f32 {
-        match self.0 {
-            0 => 0.75,
-            1 => 1.0,
-            2 => 1.5,
-            _ => 1.0,
-        }
+        let t = self.0.clamp(0, 4) as f32;
+        (1.0 + t * 0.3).max(0.1)
     }
 
-    /// Multiplier applied to outgoing enemy damage at the source
-    /// (bullet `damage`, contact `contact_damage`, landmine yield).
+    /// Multiplier applied to outgoing enemy damage at the source.
+    /// Same shape + step as `hp_mult` so HP and damage scale in
+    /// lockstep through the 5 tiers.
     pub fn damage_mult(self) -> f32 {
-        match self.0 {
-            0 => 0.75,
-            1 => 1.0,
-            2 => 1.5,
-            _ => 1.0,
-        }
+        let t = self.0.clamp(0, 4) as f32;
+        (1.0 + t * 0.3).max(0.1)
     }
 
     /// Apply `hp_mult` to a baseline HP value, rounding to the nearest
@@ -516,12 +632,25 @@ fn main() {
             customize::CustomizePlugin,
             hull::HullSelectPlugin,
         ))
+        .add_plugins(chest::ChestPlugin)
+        // Multiplayer plugin is native-only — UDP sockets don't exist
+        // in browsers, and `bincode` / `local-ip-address` are cfg-
+        // gated out of the WASM build's deps in Cargo.toml.
+        .add_plugins({
+            #[cfg(not(target_arch = "wasm32"))]
+            { multiplayer::MultiplayerPlugin }
+            #[cfg(target_arch = "wasm32")]
+            { bevy::app::EmptyPlugin }
+        })
         .add_plugins((
             anchor_flail::AnchorFlailPlugin,
             flamethrower::FlamethrowerPlugin,
             stats_panel_overlay::StatsPanelOverlayPlugin,
             win_screen::WinScreenPlugin,
             sfx::SfxPlugin,
+            sfx::MusicPlugin,
+            hitstop::HitStopPlugin,
+            low_hp_vignette::LowHpVignettePlugin,
             CombatSimPlugin,
         ))
         // Workaround for a Bevy 0.16 + WebGL2/ANGLE bug: the default
@@ -559,8 +688,6 @@ fn main() {
         // Player earns scrap from the first wave clear onward; no
         // starting purse.
         .insert_resource(Scrap(0))
-        .insert_resource(Steel::default())
-        .insert_resource(RefinedSteel::default())
         .insert_resource(SpawnTimer { t: 0.0, elapsed: 0.0 })
         .insert_resource(cfg)
         .insert_resource(DamageStats::default())
@@ -574,6 +701,7 @@ fn main() {
         .insert_resource(BuffStacks::default())
         .insert_resource(MedicTimer::default())
         .insert_resource(modes::ScreenShake::default())
+        .insert_resource(modes::CameraPunch::default())
         .insert_resource(RunTimer::default())
         .init_state::<AppState>()
         .insert_resource(Palette::aap64_naval())
@@ -581,6 +709,7 @@ fn main() {
         .insert_resource(NightMode::default())
         .insert_resource(CrtMode::default())
         .insert_resource(VsyncMode::default())
+        .insert_resource(BloomMode::default())
         .insert_resource(modes::WindowModeSetting::default())
         .insert_resource(modes::ResolutionSetting::default())
         .insert_resource(modes::BackgroundSetting::default())
@@ -590,12 +719,13 @@ fn main() {
         .insert_resource(map::MapSize::default())
         .insert_resource(Difficulty::default())
         .insert_resource(MapState::new(map::MapSize::default().sections()))
-        .insert_resource(BuildingTimers::default())
         .insert_resource(MapAnimTimeline::default())
         .insert_resource(CombatContext::default())
         .insert_resource(DebugClaimMode::default())
         .add_event::<TriggerMapPhase>()
         .add_event::<rune::KillEvent>()
+        .add_event::<proc_fx::ProcFxFired>()
+        .add_event::<proc_fx::BulletFiredEvent>()
         .insert_resource(AllyPositionsCache::default())
         .add_systems(Startup, fonts::setup_pixel_font)
         .add_systems(Startup, (
@@ -607,10 +737,8 @@ fn main() {
             // missing panel entity is harmless.
             #[cfg(not(feature = "demo"))]
             setup_debug_ui,
-            setup_currency_ui, setup_progress_assets,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
-            setup_damage_panel,
-            setup_wave_indicator, setup_spawn_indicator_assets,
+            setup_wave_indicator, setup_map_hint, setup_spawn_indicator_assets,
         ).chain())
         // Bridge runs first so the rest of Update sees synced flags.
         .add_systems(Update, sync_state_to_open_resources)
@@ -642,7 +770,15 @@ fn main() {
         // wipe arena debris from last stage. (Permanent ally roster
         // respawn is owned by `BossRewardPlugin`, which also hooks
         // OnExit(Map).)
-        .add_systems(OnExit(AppState::Map), refill_and_clean_for_next_stage)
+        // Wipe leftover arena entities + refill HP only on the actual
+        // Map → Playing handoff, NOT every Map exit. Without the
+        // `OnTransition` gate, pausing from Map (Map → Paused) would
+        // fire this on the way down and reset the stage that's
+        // queued up to start. Same for the boss-reward path.
+        .add_systems(
+            OnTransition { exited: AppState::Map, entered: AppState::Playing },
+            refill_and_clean_for_next_stage,
+        )
         // Run-timer tick — counts wall-clock seconds since the run
         // started, paused on MainMenu/HullSelect.
         .add_systems(Update, tick_run_timer)
@@ -688,6 +824,12 @@ fn main() {
             // past Bevy's 20-system tuple limit.
             update_trail,
             update_enemy_trails,
+            // Generic shadow sync (enemies, allies, bosses, octopus,
+            // menu fleet). Ungated so the main-menu pirates'
+            // shadows follow them as they orbit; the combat-view
+            // gate would freeze them at spawn position outside
+            // gameplay.
+            shadow::sync_shadows,
             tick_hit_fx,
             apply_hit_fx_visuals,
             update_muzzle_flashes,
@@ -706,8 +848,10 @@ fn main() {
                 update_hud_camera_viewport,
                 apply_crt_mode,
                 apply_vsync_mode,
+                apply_bloom_mode,
                 apply_window_mode_setting,
                 apply_camera_follow,
+                apply_camera_punch,
             ),
         ))
         .add_systems(Update, (
@@ -718,7 +862,6 @@ fn main() {
             // MainMenu sets ViewMode::Combat to wake up the menu fleet
             // camera. Gating the whole block keeps the menu clean.
             update_wave_ui,
-            update_hp_subdividers,
             update_hp_bar_pixel_scale,
             sync_ally_hp_bars,
             update_ally_hp_values,
@@ -750,7 +893,7 @@ fn main() {
             // cleanup → begin_phase → advance: a Map-bound view change
             // wipes the timeline + stale anims, then refills with the
             // new sequence — all in the same frame.
-            (close_popup_on_view_change, map_begin_phase, advance_map_anim_timeline).chain(),
+            (clear_anims_on_view_change, map_begin_phase, advance_map_anim_timeline).chain(),
             update_anim_pulses,
             update_anim_beams,
             map_click_input,
@@ -759,13 +902,7 @@ fn main() {
             // self-gate to Map so it doesn't tick during combat.
             boss_patrol_movement.run_if(in_state(AppState::Map)),
             refresh_map_fill,
-            sync_owned_slot_visuals,
             update_map_button,
-            update_map_slot_labels,
-            update_building_button_tints,
-            update_building_description,
-            handle_building_choice_clicks,
-            update_building_hover_tooltip,
             (
                 // Debug panel + hash-toggle stripped in demo builds.
                 #[cfg(not(feature = "demo"))]
@@ -773,20 +910,18 @@ fn main() {
                     handle_debug_buttons, update_debug_button_tints, update_claim_label,
                     toggle_debug_ui_on_hash, sync_debug_panel_visibility,
                 ),
-                update_damage_panel, update_damage_row_icons, sync_damage_panel_visibility,
+                // HUD dev buttons (FPS / VSYNC / FOLLOW) gated on
+                // the same `DebugUiVisible` toggle as the debug
+                // panel. Outside the `not(demo)` cfg because demo
+                // builds should ALSO hide them (the resource
+                // default is `false` everywhere now).
+                sync_hud_dev_buttons_visibility,
                 update_wave_indicator,
+                update_map_hint,
                 tick_spawn_indicators,
                 xp::update_xp_bar,
             ),
-            (
-                update_currency_ui,
-                update_scrap_text, update_steel_text, update_refined_steel_text,
-            ),
             update_level_status_ui,
-            // Production economy ticks in both views so cycle timers
-            // don't desync when the player drops into combat.
-            tick_buildings,
-            update_building_progress_bars,
         ))
         .add_systems(Update, (
             apply_loaded_settings,

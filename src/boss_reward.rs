@@ -41,8 +41,16 @@ impl Plugin for BossRewardPlugin {
             .insert_resource(RecruitedAllies::default())
             .insert_resource(BossRewardOffer::default())
             // Per-section roster refresh — respawn the recruited fleet
-            // at full HP whenever the player commits to a new combat.
-            .add_systems(OnExit(AppState::Map), respawn_allies_for_stage)
+            // at full HP only when actually starting the next combat,
+            // not on Map → Paused (which would re-roll the roster the
+            // moment the player paused from the map view).
+            .add_systems(
+                OnTransition {
+                    exited: AppState::Map,
+                    entered: AppState::Playing,
+                },
+                respawn_allies_for_stage,
+            )
             // Wipe the roster + clear any in-flight reward offer when
             // the run resets, so a fresh MainMenu / restart starts
             // clean.
@@ -190,6 +198,7 @@ pub fn enter_boss_reward(
     mut offer: ResMut<BossRewardOffer>,
     map_state: Res<crate::map::MapState>,
     stats: Res<PlayerStats>,
+    thaleah: Option<Res<crate::fonts::ThaleahFont>>,
 ) {
     let boss = pending.0.take();
     let stars = map_state
@@ -201,7 +210,7 @@ pub fn enter_boss_reward(
     offer.bounty_scrap = bounty_for_stars(stars);
     offer.super_mod = Some(pick_super_mod());
 
-    spawn_overlay(&mut commands, &offer, &stats);
+    spawn_overlay(&mut commands, &offer, &stats, thaleah.as_deref());
 }
 
 pub fn exit_boss_reward(
@@ -261,7 +270,12 @@ pub fn handle_boss_reward_click(
     }
 }
 
-fn spawn_overlay(commands: &mut Commands, offer: &BossRewardOffer, stats: &PlayerStats) {
+fn spawn_overlay(
+    commands: &mut Commands,
+    offer: &BossRewardOffer,
+    stats: &PlayerStats,
+    thaleah: Option<&crate::fonts::ThaleahFont>,
+) {
     let boss_name = offer.boss.map(|c| c.label()).unwrap_or("");
     let bounty = offer.bounty_scrap;
     let super_mod = offer.super_mod.clone();
@@ -280,31 +294,59 @@ fn spawn_overlay(commands: &mut Commands, offer: &BossRewardOffer, stats: &Playe
                 row_gap: Val::Px(theme::GAP_LG),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.62)),
+            // Match the level-up overlay's 0.55 wash so the two big-
+            // moment screens read in the same voice.
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
             ZIndex(170),
             Visibility::Inherited,
             Button,
             BossRewardRoot,
         ))
         .with_children(|root| {
-            root.spawn(ui_kit::label(
-                "BOSS DEFEATED",
-                theme::FONT_LG * 1.6,
-                theme::ACCENT,
-            ));
-            root.spawn(ui_kit::label(
-                boss_name,
-                theme::FONT_LG,
-                theme::ON_SURFACE_DIM,
-            ));
-            root.spawn(ui_kit::label(
-                "CHOOSE!",
-                theme::FONT_LG * 1.2,
-                theme::ACCENT,
-            ));
+            // Title in the same typographic family as the level-up
+            // overlay: Thaleah Fat at 56px in accent gold, with a
+            // soft drop shadow. The boss class name sits under the
+            // title as a smaller subtitle. Falls back to a plain
+            // ui_kit label if the Thaleah font isn't loaded yet
+            // (first-frame race).
+            if let Some(t) = thaleah {
+                root.spawn((
+                    Text::new("BOSS DEFEATED"),
+                    crate::fonts::thaleah_text_font(t, 56.0),
+                    TextColor(theme::ACCENT),
+                    TextShadow {
+                        offset: Vec2::splat(2.0),
+                        color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+                    },
+                ));
+                if !boss_name.is_empty() {
+                    root.spawn((
+                        Text::new(boss_name.to_string()),
+                        crate::fonts::thaleah_text_font(t, 28.0),
+                        TextColor(theme::ON_SURFACE_DIM),
+                        TextShadow {
+                            offset: Vec2::splat(2.0),
+                            color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+                        },
+                    ));
+                }
+            } else {
+                root.spawn(ui_kit::label(
+                    "BOSS DEFEATED",
+                    theme::FONT_LG * 1.6,
+                    theme::ACCENT,
+                ));
+                if !boss_name.is_empty() {
+                    root.spawn(ui_kit::label(
+                        boss_name,
+                        theme::FONT_LG,
+                        theme::ON_SURFACE_DIM,
+                    ));
+                }
+            }
 
             // Main row: 3 reward cards left, current-stats panel right.
-            // Mirrors the level-up overlay's two-column shape so the
+            // Two-column layout mirrors the level-up overlay so the
             // player can read their build state while choosing.
             root.spawn((
                 Node {
@@ -345,8 +387,10 @@ fn spawn_overlay(commands: &mut Commands, offer: &BossRewardOffer, stats: &Playe
         });
 }
 
-/// Shared card chrome — fixed dimensions, gold border, dark surface.
-/// The two reward-card flavours (`value` and `super_mod`) build their
+/// Shared card chrome — gold chunky-border, dark surface. Matches
+/// the level-up overlay's buff cards (`CHUNKY_BORDER_W`) but sized
+/// taller to hold the SuperMod's stacked stat lines. The two
+/// reward-card flavours (`value` and `super_mod`) build their
 /// content with the closure.
 fn spawn_card_frame(
     parent: &mut ChildSpawnerCommands,
@@ -357,9 +401,9 @@ fn spawn_card_frame(
         .spawn((
             Button,
             Node {
-                width: Val::Px(240.0),
-                min_height: Val::Px(180.0),
-                border: UiRect::all(Val::Px(theme::BORDER_W)),
+                width: Val::Px(180.0),
+                min_height: Val::Px(160.0),
+                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                 padding: UiRect::all(Val::Px(theme::PAD_LG)),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,

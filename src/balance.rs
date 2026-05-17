@@ -230,7 +230,6 @@ pub const BULLET_SPEED:             f32 = 200.0;
 pub const ENEMY_RANGE:           f32 = 45.0;
 pub const ENEMY_LEN:             f32 = 10.0;
 pub const ENEMY_WIDTH:           f32 = 5.0;
-pub const BOMBER_DETONATE_DIST:  f32 = 8.0;
 
 // ---------- Trails ----------
 pub const ENEMY_TRAIL_SAMPLE_HZ:  f32   = 25.0;
@@ -339,14 +338,17 @@ pub const EXECUTIONER_BONUS_PER_STACK: f32 = 0.50;
 pub const OPENER_BONUS_PER_STACK: f32 = 1.00;
 
 // ---------- Spike Plate (passive armour turret) ----------
-/// Extra ram damage the ship deals on contact for each equipped
-/// Spike Plate slot. Stacks linearly — 3 plates = +15 ram damage.
+/// Extra ram damage the ship deals per equipped Spike Plate slot —
+/// global, no longer per-side, so the player doesn't have to think
+/// about which slot the rammed enemy hit. Stacks linearly — 3
+/// plates = +15 ram damage on every contact regardless of angle.
 pub const SPIKED_PLATE_DAMAGE_BONUS: i32 = 5;
-/// Damage subtracted from an incoming bullet hit when the bullet
-/// impacts the hull on the same side as a Spike Plate slot. Read by
-/// `bullet_collisions` after computing the nearest slot to the
-/// impact direction.
-pub const SPIKED_PLATE_REDUCTION: i32 = 1;
+/// Flat damage subtracted from every incoming bullet hit per
+/// equipped Spike Plate slot, regardless of impact side. Old
+/// per-side mapping was almost invisible (most players don't think
+/// in slot-side terms); going global + bumping the value to 2 makes
+/// each plate read as a meaningful armour pick.
+pub const SPIKED_PLATE_REDUCTION: i32 = 2;
 
 // ---------- Wave structure ----------
 //
@@ -404,20 +406,3 @@ pub fn is_boss_wave(_wave_idx: u8, _wave_count: u8) -> bool {
     false
 }
 
-// ---------- Map-view economy ----------
-//
-// Production-tick intervals + boost factor for the Foundry / Crane
-// economy. These are wall-clock seconds, ticked by `tick_buildings`
-// in `map.rs`; an active adjacent Crane shrinks a Foundry's effective
-// interval by `CRANE_SPEED_MULT` (1.30 → ~46 s/cycle instead of 60).
-
-/// Foundry: every cycle, consumes 1 scrap and produces 1 steel.
-pub const FOUNDRY_INTERVAL:   f32 = 60.0;
-/// Crane: every cycle, consumes 1 steel; while fueled it boosts each
-/// adjacent production building's speed by `CRANE_SPEED_MULT`.
-pub const CRANE_INTERVAL:     f32 = 120.0;
-pub const CRANE_SPEED_MULT:   f32 = 1.30;
-/// Refinery (tier 3): every cycle, consumes 10 steel and produces 1
-/// refined steel.
-pub const REFINERY_INTERVAL:  f32 = 300.0;
-pub const REFINERY_INPUT:     u32 = 10;

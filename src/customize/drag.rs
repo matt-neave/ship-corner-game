@@ -118,6 +118,55 @@ pub struct CustomizeShop {
     /// Stat-modifier cards. Click-to-apply: the delta is added to the
     /// stat's `flat` field and the slot is consumed.
     pub mods: Vec<Option<ShopMod>>,
+    /// Per-slot locks — right-click toggles the corresponding flag.
+    /// Locked slots survive `reroll_preserving_locked` so the player
+    /// can hold an interesting offer while rolling the rest. Fixed
+    /// to the shop's authored slot count (3 / 2 / 3); enlarged with
+    /// `false` if the lock array got out of sync with the Vec
+    /// during a save-load.
+    pub turrets_locked: [bool; 3],
+    pub runes_locked:   [bool; 2],
+    pub mods_locked:    [bool; 3],
+}
+
+impl CustomizeShop {
+    /// Roll a fresh shop but keep any locked slot's offer in place.
+    /// Lock flags themselves persist so the player's lock survives
+    /// across rerolls.
+    pub fn reroll_preserving_locked(&self) -> Self {
+        let mut fresh = roll_fresh_stock();
+        // Copy lock flags forward first so the visual badges don't
+        // flicker through "unlocked → locked" on the same frame.
+        fresh.turrets_locked = self.turrets_locked;
+        fresh.runes_locked   = self.runes_locked;
+        fresh.mods_locked    = self.mods_locked;
+        // Carry over the offer in each locked slot. Skip slots
+        // whose live offer was already consumed (`None`) — locking
+        // an empty slot is a no-op rather than a guarantee of
+        // future offers.
+        for (i, &locked) in self.turrets_locked.iter().enumerate() {
+            if locked {
+                if let Some(existing) = self.turrets.get(i).copied().flatten() {
+                    if let Some(slot) = fresh.turrets.get_mut(i) { *slot = Some(existing); }
+                }
+            }
+        }
+        for (i, &locked) in self.runes_locked.iter().enumerate() {
+            if locked {
+                if let Some(existing) = self.runes.get(i).copied().flatten() {
+                    if let Some(slot) = fresh.runes.get_mut(i) { *slot = Some(existing); }
+                }
+            }
+        }
+        for (i, &locked) in self.mods_locked.iter().enumerate() {
+            if locked {
+                if let Some(existing) = self.mods.get(i).copied().flatten() {
+                    if let Some(slot) = fresh.mods.get_mut(i) { *slot = Some(existing); }
+                }
+            }
+        }
+        fresh
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -126,68 +175,491 @@ pub struct ShopTurretOffer {
     pub barrels: u8,
 }
 
-#[derive(Clone, Copy)]
-pub struct ShopMod {
-    pub kind: StatKind,
-    pub delta: f32,
-    /// Optional trade-off side-effect: a SECOND stat that ALSO
-    /// changes when this mod is picked, typically a nerf paired
-    /// with the primary buff. None for plain mods. The roll table
-    /// in `roll_fresh_stock` mixes pure buffs with these trade-off
-    /// cards so the shop offers genuine choices, not just always-
-    /// good upgrades.
-    pub side: Option<(StatKind, f32)>,
+/// Tier-style rarity for a mod. Drives the card's outline tint
+/// so the player can see at a glance which slot is the high-tier
+/// pull. Rarity is authored per-mod in [`MOD_LIBRARY`]; doesn't
+/// (yet) affect roll weights — every entry rolls with equal
+/// probability for now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
+pub enum ModRarity {
+    /// White border — straight everyday upgrade.
+    Common,
+    /// Blue border — a touch better or rarer effect family.
+    Uncommon,
+    /// Purple border — strong but conditional / build-defining.
+    Rare,
+    /// Red border — top-tier impact or a wild trade-off.
+    Legendary,
 }
 
-impl ShopMod {
-    /// Card text. Pure mods render two lines (value + short name).
-    /// Trade-off mods render FOUR — primary buff on top, side
-    /// nerf below — so the player sees both halves of the deal at
-    /// a glance. The colour pass on the card paints buffs green /
-    /// nerfs red automatically (it sees the sign on each segment).
-    pub fn label(self) -> String {
-        let main = format!(
-            "{}\n{}",
-            self.kind.format_delta(self.delta),
-            short_stat_label(self.kind),
-        );
-        match self.side {
-            Some((k, d)) => format!(
-                "{}\n{}\n{}",
-                main,
-                k.format_delta(d),
-                short_stat_label(k),
-            ),
-            None => main,
+impl ModRarity {
+    /// Outline colour used by the mod card. Pick palette values
+    /// that pop on the dark `theme::SURFACE_RAISED` card fill and
+    /// stay distinct from one another at small sizes.
+    pub fn border_color(self) -> Color {
+        match self {
+            ModRarity::Common    => Color::srgb(0.92, 0.93, 0.96),
+            ModRarity::Uncommon  => Color::srgb(0.40, 0.62, 0.95),
+            ModRarity::Rare      => Color::srgb(0.78, 0.40, 0.95),
+            ModRarity::Legendary => Color::srgb(0.95, 0.32, 0.32),
+        }
+    }
+
+    /// Short label printed below the mod name on the card. Same
+    /// tier hierarchy as the border colour so the player can
+    /// cross-reference visually + textually.
+    pub fn label(self) -> &'static str {
+        match self {
+            ModRarity::Common    => "COMMON",
+            ModRarity::Uncommon  => "UNCOMMON",
+            ModRarity::Rare      => "RARE",
+            ModRarity::Legendary => "LEGENDARY",
+        }
+    }
+
+    /// Per-pick roll weight. Weighted-random sampling without
+    /// replacement: the shop draws 3 mods, each pick picks one
+    /// from the remaining library proportional to these weights,
+    /// then removes the picked entry so it can't duplicate.
+    ///
+    /// 60 / 25 / 12 / 3 — Diablo-style "uncommon is uncommon,
+    /// legendary feels like a moment." Per-pick probabilities,
+    /// not per-shop — the rarer-tier draw chance compounds when
+    /// the player saves rerolls.
+    pub fn weight(self) -> f32 {
+        match self {
+            ModRarity::Common    => 60.0,
+            ModRarity::Uncommon  => 25.0,
+            ModRarity::Rare      => 12.0,
+            ModRarity::Legendary => 3.0,
+        }
+    }
+
+    /// Scrap cost to purchase a mod of this rarity. Rarer cards
+    /// cost more so legendaries feel earned even if you save
+    /// scrap aggressively for the lucky roll.
+    pub fn cost(self) -> u32 {
+        match self {
+            ModRarity::Common    => 2,
+            ModRarity::Uncommon  => 3,
+            ModRarity::Rare      => 4,
+            ModRarity::Legendary => 6,
         }
     }
 }
 
+/// One canonical mod entry — a name + an arbitrary list of stat
+/// changes + a rarity tier + an optional special effect. The shop
+/// rolls indexes into [`MOD_LIBRARY`] so adding a new mod is one
+/// struct literal at the bottom of that array.
+pub struct ModSpec {
+    pub name: &'static str,
+    pub rarity: ModRarity,
+    /// Each entry is `(stat, delta)`. Positive deltas are buffs,
+    /// negative are nerfs; the card-text pass colours them green
+    /// vs red automatically by sign.
+    pub changes: &'static [(StatKind, f32)],
+    /// Build-warping ability that goes beyond a plain stat delta.
+    /// `Some` for legendaries that flip the ship's identity (the
+    /// MONOMANIAC / PURIST / GHOST class) — `None` for plain stat
+    /// stacks. Effects with ongoing conditional logic register a
+    /// flag in [`ActiveLegendaries`] when the player buys the mod;
+    /// one-shot effects (Turtle) mutate stats directly at the click.
+    pub effect: Option<ModEffect>,
+}
+
+/// Build-warping ability that a legendary mod can carry on top of
+/// (or instead of) its stat changes. Stored as a flag on
+/// [`ActiveLegendaries`] for ongoing effects, or applied once at
+/// purchase time for one-shot ones (Turtle).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModEffect {
+    /// +400% weapon damage; -50% per equipped weapon beyond the
+    /// first. Rewards mono-weapon focus.
+    Monomaniac,
+    /// +250% fire rate while ≤ 2 weapons are equipped. Hard cliff.
+    Duelist,
+    /// +15% weapon damage per unique weapon type equipped. Caps at 8.
+    Harmony,
+    /// +100% weapon damage, +100% fire rate, +20% range — but
+    /// rune procs are disabled entirely. Pure-bullet pivot.
+    Purist,
+    /// +75% rune effect + +50% proc strength if every equipped
+    /// weapon shares a tag. Synergy-pure builds only.
+    Specialist,
+    /// One-shot at purchase: convert the player's current
+    /// `shield_max` into flat HP and zero shield_max out.
+    Turtle,
+}
+
+/// Persistent flags for which legendary build-warpers the player
+/// has bought this run. Read by [`sync_turret_config`] (damage /
+/// fire rate / range folds) and the rune proc pipeline (Specialist
+/// scaling, Purist disable). Reset on new run / MainMenu.
+#[derive(Resource, Default, Clone, Copy)]
+pub struct ActiveLegendaries {
+    pub monomaniac: bool,
+    pub duelist: bool,
+    pub harmony: bool,
+    pub purist: bool,
+    pub specialist: bool,
+}
+
+/// Bundled `SystemParam` for the two resources every legendary-aware
+/// hook needs (`ActiveLegendaries` + `TurretConfig`). Used by
+/// `bullet::process_damage_events` to stay under Bevy 0.16's
+/// 16-SystemParam ceiling — adding the resources individually
+/// would push it over.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct LegendaryContext<'w> {
+    pub active: Res<'w, ActiveLegendaries>,
+    pub cfg: Res<'w, TurretConfig>,
+}
+
+impl ActiveLegendaries {
+    /// Multiplier folded into every weapon's base damage in
+    /// `sync_turret_config`. Combines Monomaniac (focused build),
+    /// Harmony (variety bonus), and any flat damage from Purist —
+    /// stacks multiplicatively so two effects compound. Returns
+    /// 1.0 when no relevant legendary is active.
+    pub fn weapon_damage_mult(&self, cfg: &TurretConfig) -> f32 {
+        let mut mult = 1.0_f32;
+        if self.monomaniac {
+            // 1 wpn = ×5.0 (base 1.0 + bonus 4.0), 2 wpns = ×4.5,
+            // 8 wpns = ×1.5. Math: 1.0 + 4.0 - 0.5 * (count - 1).
+            let count = cfg.slots.iter().filter(|s| s.equipped).count() as f32;
+            let bonus = (4.0 - 0.5 * (count - 1.0).max(0.0)).max(0.0);
+            mult *= 1.0 + bonus;
+        }
+        if self.harmony {
+            // +15% per unique weapon type equipped. Caps naturally
+            // at 8 (the slot count).
+            let mut seen = [false; 32];
+            let mut uniq = 0u32;
+            for s in cfg.slots.iter().filter(|s| s.equipped) {
+                let i = s.weapon as usize;
+                if i < seen.len() && !seen[i] {
+                    seen[i] = true;
+                    uniq += 1;
+                }
+            }
+            mult *= 1.0 + 0.15 * uniq as f32;
+        }
+        mult
+    }
+
+    /// Fire-rate multiplier folded into `slot.fire_rate` in
+    /// `sync_turret_config`. Duelist contributes a hard cliff at
+    /// ≤2 equipped weapons; Purist adds a flat doubling on top.
+    pub fn fire_rate_mult(&self, cfg: &TurretConfig) -> f32 {
+        let mut mult = 1.0_f32;
+        if self.duelist {
+            let count = cfg.slots.iter().filter(|s| s.equipped).count();
+            if count <= 2 {
+                mult *= 3.5; // +250% fire rate
+            }
+        }
+        if self.purist {
+            mult *= 2.0; // +100% fire rate (= -50% cooldown)
+        }
+        mult
+    }
+
+    /// True when every equipped weapon shares at least one tag with
+    /// every other — the Specialist precondition. Empty / single-
+    /// weapon loadouts trivially qualify.
+    pub fn specialist_armed(&self, cfg: &TurretConfig) -> bool {
+        if !self.specialist { return false; }
+        let mut equipped = cfg.slots.iter().filter(|s| s.equipped);
+        let Some(first) = equipped.next() else { return true; };
+        // Use the first weapon's tag intersection as the seed; if
+        // it ever shrinks to empty, the build isn't pure.
+        let mut common: Vec<crate::weapon::WeaponTag> = first.weapon.tags().to_vec();
+        for s in equipped {
+            common.retain(|t| s.weapon.tags().contains(t));
+            if common.is_empty() { return false; }
+        }
+        true
+    }
+}
+
+impl ModEffect {
+    /// One-line summary for the card body. Appended after the
+    /// `name` + stat-change lines so the player sees both the
+    /// numeric changes (if any) and the build-warping rule.
+    pub fn description(self) -> &'static str {
+        match self {
+            ModEffect::Monomaniac => "+400% DMG\n-50% PER WPN",
+            ModEffect::Duelist    => "+250% RATE\nIF <= 2 WPN",
+            ModEffect::Harmony    => "+15% DMG\nPER UNIQ WPN",
+            ModEffect::Purist     => "RUNES OFF",
+            ModEffect::Specialist => "+75% RUNES\nSAME TAG ONLY",
+            ModEffect::Turtle     => "SHIELD -> HP",
+        }
+    }
+
+    /// Verbose multi-sentence tooltip body. Read by the customize
+    /// tooltip when the cursor hovers a mod card — the small card
+    /// label is too narrow to spell out what the build-warping
+    /// rule actually does, so the tooltip carries the full
+    /// explanation in human-readable prose.
+    pub fn tooltip_body(self) -> &'static str {
+        match self {
+            ModEffect::Monomaniac =>
+                "All weapons gain +400% damage when you have one equipped. Each additional weapon shaves 50% off that bonus, so two weapons = +350%, three = +300%, eight = +50%. Rewards going all-in on a single weapon type.",
+            ModEffect::Duelist =>
+                "+250% fire rate while you have 2 or fewer weapons equipped. Hard cliff: equipping a third weapon removes the bonus entirely. Pairs well with high single-shot damage.",
+            ModEffect::Harmony =>
+                "+15% weapon damage for every UNIQUE weapon type equipped. Caps at 8 types. Two of the same weapon only count once. Reward for filling the boat with variety; punishes stacking duplicates.",
+            ModEffect::Purist =>
+                "Weapons deal +100% damage, fire +100% faster, and have +20% range. BUT all rune procs (Fire, Frost, Shock, Bleed, Blast, Cascade, etc.) are disabled entirely. Bullets become the only source of damage.",
+            ModEffect::Specialist =>
+                "+75% rune effect AND +50% proc strength, but only if EVERY equipped weapon shares the same tag (Pirate, Naval, Future, Support, etc.). Even one off-tag weapon disables the bonus. Synergy-pure builds only.",
+            ModEffect::Turtle =>
+                "On purchase: converts your entire current shield_max into permanent flat HP, then zeroes your shield_max out. One-time, irreversible. Future shield pickups still grant new shield from zero.",
+        }
+    }
+}
+
+/// All shop mods. Pure-buff entries have a single `+` change;
+/// trade-off entries pair a buff with a nerf. Add a new mod by
+/// appending to this list — the shop roll, the click handler, and
+/// the card label all read straight from here.
+///
+/// Number scale: pure mods are ≈ `StatKind::upgrade_step` (one
+/// level-up's worth). Trade-off mods buff at 2× upgrade_step AND
+/// nerf at 2× upgrade_step — net zero on paper, so the trade-off
+/// is the favoured pick only when the side stat is genuinely
+/// dump-worthy for your build (Brotato pattern). Crit is
+/// intentionally small (5%) — a build-defining stat shouldn't
+/// swing from one card.
+pub static MOD_LIBRARY: &[ModSpec] = &[
+    // ---- Pure-buff mods (mostly Common, a few Uncommon for the
+    //      stats that snowball — luck / runes / harvest) ----
+    ModSpec { name: "RELOADED",   rarity: ModRarity::Common,   changes: &[(StatKind::TurretDamage, 5.0)], effect: None },
+    ModSpec { name: "FOCUS",      rarity: ModRarity::Common,   changes: &[(StatKind::Crit, 5.0)], effect: None },
+    ModSpec { name: "OUTRIDER",   rarity: ModRarity::Common,   changes: &[(StatKind::MoveSpeed, 1.5)], effect: None },
+    ModSpec { name: "HOMING",     rarity: ModRarity::Common,   changes: &[(StatKind::Range, 5.0)], effect: None },
+    ModSpec { name: "SCOUT",      rarity: ModRarity::Common,   changes: &[(StatKind::TurnSpeed, 0.25)], effect: None },
+    ModSpec { name: "PLATING",    rarity: ModRarity::Common,   changes: &[(StatKind::Hp, 5.0)], effect: None },
+    ModSpec { name: "PADDING",    rarity: ModRarity::Common,   changes: &[(StatKind::Armour, 3.0)], effect: None },
+    ModSpec { name: "DODGER",     rarity: ModRarity::Common,   changes: &[(StatKind::Dodge, 3.0)], effect: None },
+    ModSpec { name: "BARRIER",    rarity: ModRarity::Common,   changes: &[(StatKind::ShieldMax, 5.0)], effect: None },
+    ModSpec { name: "FIELD KIT",  rarity: ModRarity::Uncommon, changes: &[(StatKind::Harvest, 1.0)], effect: None },
+    ModSpec { name: "TUTOR",      rarity: ModRarity::Common,   changes: &[(StatKind::XpHarvest, 3.0)], effect: None },
+    ModSpec { name: "ENERGISED",  rarity: ModRarity::Uncommon, changes: &[(StatKind::RuneDamage, 0.05)], effect: None },
+    ModSpec { name: "PYRO",       rarity: ModRarity::Common,   changes: &[(StatKind::ProcStrength, 5.0)], effect: None },
+    ModSpec { name: "GAMBLER",    rarity: ModRarity::Uncommon, changes: &[(StatKind::Luck, 5.0)], effect: None },
+
+    // ---- Trade-off mods — 2× buff / 2× nerf (zero-sum on paper) ----
+    //      All Rare since they're build-defining picks.
+    ModSpec { name: "GLASS CANNON", rarity: ModRarity::Rare,
+        changes: &[(StatKind::TurretDamage, 10.0), (StatKind::Hp, -10.0)], effect: None },
+    ModSpec { name: "STEADY AIM", rarity: ModRarity::Rare,
+        changes: &[(StatKind::Crit, 10.0), (StatKind::MoveSpeed, -3.0)], effect: None },
+    ModSpec { name: "BERSERKER", rarity: ModRarity::Rare,
+        changes: &[(StatKind::TurretDamage, 10.0), (StatKind::Armour, -6.0)], effect: None },
+    ModSpec { name: "EVASIVE", rarity: ModRarity::Rare,
+        changes: &[(StatKind::Dodge, 6.0), (StatKind::TurretDamage, -10.0)], effect: None },
+    ModSpec { name: "JUGGERNAUT", rarity: ModRarity::Rare,
+        changes: &[(StatKind::Hp, 10.0), (StatKind::MoveSpeed, -3.0)], effect: None },
+    ModSpec { name: "MERCHANT", rarity: ModRarity::Rare,
+        changes: &[(StatKind::Harvest, 2.0), (StatKind::TurretDamage, -10.0)], effect: None },
+    ModSpec { name: "FAR SHOT", rarity: ModRarity::Rare,
+        changes: &[(StatKind::Range, 10.0), (StatKind::ProcStrength, -10.0)], effect: None },
+
+    // ---- Legendary mods — multi-stat picks that define a build,
+    //      and pure trade-offs at heroic numbers. Roll weight is
+    //      3 per entry vs commons' 60, so any legendary is roughly
+    //      a "one shop in twenty" moment.
+    ModSpec { name: "OVERCLOCK", rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::TurretDamage, 15.0),
+            (StatKind::Crit, 10.0),
+            (StatKind::Range, 10.0),
+        ], effect: None },
+    ModSpec { name: "BULWARK", rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::Hp, 15.0),
+            (StatKind::Armour, 5.0),
+            (StatKind::ShieldMax, 10.0),
+        ], effect: None },
+    ModSpec { name: "WARPRIEST", rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::RuneDamage, 0.15),
+            (StatKind::ProcStrength, 10.0),
+            (StatKind::Luck, 10.0),
+        ], effect: None },
+    ModSpec { name: "APEX HUNTER", rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::MoveSpeed, 3.0),
+            (StatKind::TurretDamage, 10.0),
+            (StatKind::Crit, 10.0),
+        ], effect: None },
+    ModSpec { name: "DEATH WISH", rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::TurretDamage, 30.0),
+            (StatKind::Hp, -30.0),
+        ], effect: None },
+    ModSpec { name: "REGEN", rarity: ModRarity::Legendary,
+        changes: &[
+            (StatKind::Hp, 15.0),
+            (StatKind::ShieldMax, 10.0),
+            (StatKind::TurretDamage, -10.0),
+        ], effect: None },
+
+    // ---- Build-warping legendaries — these change *how the boat
+    //      plays*, not just stat numbers. Each one rewards (or
+    //      punishes) a specific loadout commitment.
+    ModSpec { name: "MONOMANIAC", rarity: ModRarity::Legendary,
+        changes: &[], effect: Some(ModEffect::Monomaniac) },
+    ModSpec { name: "DUELIST", rarity: ModRarity::Legendary,
+        changes: &[], effect: Some(ModEffect::Duelist) },
+    ModSpec { name: "HARMONY", rarity: ModRarity::Legendary,
+        changes: &[], effect: Some(ModEffect::Harmony) },
+    ModSpec { name: "PURIST", rarity: ModRarity::Legendary,
+        // Flat statline AND a build rule (no rune procs). Numbers
+        // applied via `changes`; the disable enforced by the effect
+        // flag in `ActiveLegendaries`.
+        changes: &[
+            (StatKind::TurretDamage, 100.0),
+            (StatKind::Range, 20.0),
+        ], effect: Some(ModEffect::Purist) },
+    ModSpec { name: "SPECIALIST", rarity: ModRarity::Legendary,
+        changes: &[], effect: Some(ModEffect::Specialist) },
+    ModSpec { name: "GHOST", rarity: ModRarity::Legendary,
+        // -999 HP clamps to 1 via `max_hp().max(1)`. Damage +300%,
+        // dodge +30 — encourages pure-evade play.
+        changes: &[
+            (StatKind::Hp, -999.0),
+            (StatKind::TurretDamage, 300.0),
+            (StatKind::Dodge, 30.0),
+        ], effect: None },
+    ModSpec { name: "TURTLE", rarity: ModRarity::Legendary,
+        // One-shot stat conversion at purchase (see the click
+        // handler) — no changes, no ongoing flag.
+        changes: &[], effect: Some(ModEffect::Turtle) },
+];
+
+/// Live shop mod entry — just an index into [`MOD_LIBRARY`]. Kept
+/// `Copy` so the existing `Vec<Option<ShopMod>>` slot model works
+/// unchanged. The card text, click apply, and tooltip all dispatch
+/// through `spec()`.
+#[derive(Clone, Copy)]
+pub struct ShopMod {
+    pub spec_idx: usize,
+}
+
+impl ShopMod {
+    pub fn spec(&self) -> &'static ModSpec {
+        &MOD_LIBRARY[self.spec_idx.min(MOD_LIBRARY.len().saturating_sub(1))]
+    }
+
+    /// Card text — name on the first line, a blank spacer line,
+    /// then one `±N STAT` line per change. The blank line breaks
+    /// the name visually from the change list so the card reads as
+    /// "header / body" rather than four tight rows. The colour
+    /// pass on the card paints buffs green / nerfs red automatically
+    /// from each line's leading character.
+    pub fn label(self) -> String {
+        let spec = self.spec();
+        let mut lines = String::from(spec.name);
+        // Rarity tag — sits directly under the name in the same
+        // tier-tinted colour as the card border (handled by the
+        // card renderer's per-line colourisation). Reads as a
+        // sub-header so the player can clock the rarity without
+        // pattern-matching the border colour.
+        lines.push('\n');
+        lines.push_str(spec.rarity.label());
+        // Spacer line — the renderer splits on `\n` and emits a
+        // blank TextSpan for the empty entry, which displays as a
+        // small visible gap below the rarity tag.
+        lines.push('\n');
+        for &(kind, delta) in spec.changes {
+            lines.push('\n');
+            lines.push_str(&format!(
+                "{} {}",
+                kind.format_delta(delta),
+                short_stat_label(kind),
+            ));
+        }
+        // Build-warping effect text. Append after the stat lines so
+        // the card reads "name / stats / rule". Lines come from
+        // `ModEffect::description` and may themselves contain `\n`
+        // for multi-line summaries.
+        if let Some(eff) = spec.effect {
+            lines.push('\n');
+            for line in eff.description().split('\n') {
+                lines.push('\n');
+                lines.push_str(line);
+            }
+        }
+        lines
+    }
+}
+
+/// Verbose multi-line tooltip body for a shop mod. Composed of:
+///   - One line per stat change, in human-readable form
+///     (`+10% Weapon Damage`, `-3 Move Speed`).
+///   - If the mod carries a build-warping effect, a blank spacer
+///     then the effect's full prose explanation.
+///   - If the mod has no changes AND no effect, a single
+///     "no-op" line so the tooltip body isn't empty.
+///
+/// Lives next to `ModSpec` so adding a new mod naturally extends
+/// this helper through `format_delta` + `StatKind::label`.
+pub fn mod_tooltip_body(spec: &ModSpec) -> String {
+    let mut out = String::new();
+    for &(kind, delta) in spec.changes {
+        if !out.is_empty() { out.push('\n'); }
+        out.push_str(&format!("{} {}", kind.format_delta(delta), kind.label()));
+    }
+    if let Some(eff) = spec.effect {
+        if !out.is_empty() { out.push('\n'); out.push('\n'); }
+        out.push_str(eff.tooltip_body());
+    }
+    if out.is_empty() {
+        out.push_str("No effect.");
+    }
+    out
+}
+
 /// Compact card-friendly label for a stat. The stats panel uses
 /// `StatKind::label` for the full form; this trims the longer
-/// names down so the mod card text stays one line.
+/// names down so each `±N% LABEL` line fits the mod card's
+/// narrow width without wrapping or overflowing.
+///
+/// Target length: <= 8 characters so a "+10% LABEL" line stays
+/// inside a single card-width line. Anything longer was clipping
+/// across into the neighbour card at the typical play resolution.
 fn short_stat_label(kind: StatKind) -> &'static str {
     match kind {
-        StatKind::Hp                => "HEALTH",
+        StatKind::Hp                => "HP",
         StatKind::ShieldMax         => "SHIELD",
         StatKind::MoveSpeed         => "SPEED",
         StatKind::TurnSpeed         => "TURN",
-        StatKind::TurretTurnSpeed   => "TURRET TURN",
-        StatKind::TurretArcBonus    => "TURRET ARC",
+        StatKind::TurretTurnSpeed   => "T.TURN",
+        StatKind::TurretArcBonus    => "T.ARC",
         StatKind::Range             => "RANGE",
         StatKind::Crit              => "CRIT",
         StatKind::Luck              => "LUCK",
-        StatKind::ProcStrength      => "PROC STRENGTH",
+        StatKind::ProcStrength      => "PROCS",
         StatKind::Harvest           => "HARVEST",
-        StatKind::XpHarvest         => "XP GAIN",
-        StatKind::RuneDamage        => "RUNE EFFECT",
-        StatKind::TurretDamage      => "TURRET DAMAGE",
+        StatKind::XpHarvest         => "XP",
+        StatKind::RuneDamage        => "RUNES",
+        StatKind::TurretDamage      => "DAMAGE",
+        StatKind::Dodge             => "DODGE",
+        StatKind::Armour            => "ARMOUR",
+        StatKind::Cooldown          => "CDR",
+        StatKind::ChestChance       => "CHESTS",
     }
 }
 
 /// Scrap cost to re-roll the shop. Refills every slot — sold or not.
 pub const SHOP_REROLL_COST: u32 = 1;
-/// Scrap cost for a turret purchase.
+/// Scrap cost for a T1 (single-barrel) turret. T2/T3 priced via
+/// [`turret_cost_for_barrels`].
 pub const SHOP_TURRET_COST: u32 = 2;
 /// Scrap cost for a rune purchase.
 pub const SHOP_RUNE_COST: u32 = 2;
@@ -195,15 +667,68 @@ pub const SHOP_RUNE_COST: u32 = 2;
 /// original purchase cost (rounded down). `0.5` → 50%: a 4-scrap
 /// turret refunds 2; a 2-scrap rune refunds 1.
 pub const SHOP_SELL_FRACTION: f32 = 0.5;
-/// Backwards-compatibility alias: existing callers that don't yet
-/// distinguish turret/rune/mod still reference `SHOP_ITEM_COST`.
-/// Pointed at `SHOP_TURRET_COST` so the most expensive baseline wins
-/// when used as a guardrail (e.g. cost-display defaults).
-pub const SHOP_ITEM_COST: u32 = SHOP_TURRET_COST;
+
+/// Per-tier shop turret cost. Barrels = 1 → 2 scrap (vanilla T1);
+/// 2 → 5 (T2); 3 → 12 (T3). The shop can roll a higher-tier turret
+/// directly, skipping the merge grind for a steep premium.
+pub fn turret_cost_for_barrels(barrels: u8) -> u32 {
+    match barrels.max(1) {
+        1 => 2,
+        2 => 5,
+        _ => 12,
+    }
+}
+
+/// Roll a shop turret tier. 89% T1 / 10% T2 / 1% T3. Per-slot,
+/// independent — each of the three shop slots rolls separately,
+/// so seeing a T2 or T3 is a moment.
+fn roll_turret_tier(rng: &mut impl rand::Rng) -> u8 {
+    let r = rng.gen::<f32>();
+    if r < 0.01 { 3 } else if r < 0.11 { 2 } else { 1 }
+}
 
 /// Roll a fresh set of offerings. Used by both the startup init and the
 /// runtime reroll button. Always returns a fully-stocked shop (every
 /// slot Some(...)), so a reroll restocks anything the player bought.
+/// Weighted-random sampling without replacement against
+/// [`MOD_LIBRARY`]. Picks one entry from `pool` proportional to
+/// each entry's `rarity.weight()`, removes it from the pool, and
+/// returns the picked library index. Used by the shop reroll +
+/// initial roll so the three slots draw distinct mods with rarity
+/// frequencies that match the per-tier weight table.
+/// Roll one mod from the full library using the per-rarity weight
+/// table. Used by chests to surface a single random pick (the shop
+/// uses a 3-pick variant with replacement disabled — see
+/// `weighted_pick_without_replacement`).
+pub fn roll_one_mod() -> ShopMod {
+    let mut rng = rand::thread_rng();
+    let mut pool: Vec<usize> = (0..MOD_LIBRARY.len()).collect();
+    let idx = weighted_pick_without_replacement(&mut rng, &mut pool)
+        .unwrap_or(0);
+    ShopMod { spec_idx: idx }
+}
+
+fn weighted_pick_without_replacement(
+    rng: &mut impl rand::Rng,
+    pool: &mut Vec<usize>,
+) -> Option<usize> {
+    if pool.is_empty() { return None; }
+    let total: f32 = pool.iter().map(|&i| MOD_LIBRARY[i].rarity.weight()).sum();
+    if total <= 0.0 { return pool.pop(); }
+    let mut roll = rng.gen_range(0.0..total);
+    for (pos, &idx) in pool.iter().enumerate() {
+        let w = MOD_LIBRARY[idx].rarity.weight();
+        if roll < w {
+            pool.remove(pos);
+            return Some(idx);
+        }
+        roll -= w;
+    }
+    // Numerical edge — `roll` exhausted the loop. Just take the
+    // last entry so the shop slot still gets a card.
+    pool.pop()
+}
+
 pub fn roll_fresh_stock() -> CustomizeShop {
     let mut rng = rand::thread_rng();
     let weapons = [
@@ -260,51 +785,45 @@ pub fn roll_fresh_stock() -> CustomizeShop {
     let mut turrets = Vec::with_capacity(3);
     for _ in 0..3 {
         let w = *weapons.choose(&mut rng).unwrap();
-        turrets.push(Some(ShopTurretOffer { weapon: w, barrels: 1 }));
+        let barrels = roll_turret_tier(&mut rng);
+        turrets.push(Some(ShopTurretOffer { weapon: w, barrels }));
     }
     let mut runes_owned: Vec<_> = runes_pool.to_vec();
     runes_owned.shuffle(&mut rng);
     let runes = runes_owned.into_iter().take(2).map(Some).collect();
-    let mut mods = Vec::with_capacity(3);
+    // Three distinct mods per shop offering — weighted sampling
+    // without replacement so the same card never appears twice in
+    // one row, AND rarer tiers stay rare. See
+    // `weighted_pick_without_replacement` for the per-pick logic.
+    let mut pool: Vec<usize> = (0..MOD_LIBRARY.len()).collect();
+    let mut mods: Vec<Option<ShopMod>> = Vec::with_capacity(3);
     for _ in 0..3 {
-        let kind = *StatKind::ALL.choose(&mut rng).unwrap();
-        // Roughly one in three rolls is a trade-off card: bigger
-        // buff on the primary stat plus a nerf on a DIFFERENT
-        // stat. Forces the player to weigh each mod against their
-        // build instead of clicking everything. Pure-buff mods use
-        // the standard `debug_step` value; trade-off cards bump
-        // the buff to 1.5x and apply a -1.25x nerf to a random
-        // other stat — Brotato-style "buff favored but nerf bites":
-        // ~20% headroom (1.5 / 1.25), so the trade-off is worth
-        // taking when the side stat is dump-worthy and a real cost
-        // otherwise.
-        let trade_off = rng.gen_bool(0.33);
-        if trade_off {
-            // Pick a side-effect stat that isn't the primary.
-            let side_kind = loop {
-                let k = *StatKind::ALL.choose(&mut rng).unwrap();
-                if k != kind { break k; }
-            };
-            let buff = kind.debug_step() * 1.5;
-            let nerf = -side_kind.debug_step() * 1.25;
-            mods.push(Some(ShopMod {
-                kind,
-                delta: buff,
-                side: Some((side_kind, nerf)),
-            }));
-        } else {
-            mods.push(Some(ShopMod {
-                kind,
-                delta: kind.debug_step(),
-                side: None,
-            }));
+        if let Some(idx) = weighted_pick_without_replacement(&mut rng, &mut pool) {
+            mods.push(Some(ShopMod { spec_idx: idx }));
         }
     }
-    CustomizeShop { turrets, runes, mods }
+    let _ = StatKind::ROLLABLE; // retained for legacy use elsewhere.
+    CustomizeShop {
+        turrets, runes, mods,
+        turrets_locked: [false; 3],
+        runes_locked:   [false; 2],
+        mods_locked:    [false; 3],
+    }
 }
 
-pub fn init_customize_shop(mut commands: Commands) {
-    commands.insert_resource(roll_fresh_stock());
+pub fn init_customize_shop(
+    mut commands: Commands,
+    existing: Option<Res<CustomizeShop>>,
+) {
+    // Cold start (Startup, no resource yet) rolls a fresh shop.
+    // Subsequent entries (OnEnter(Customize) between stages) re-roll
+    // only the unlocked slots so the player's locked picks survive
+    // across the whole run — locks reset only on a full game restart.
+    let next = match existing.as_deref() {
+        Some(shop) => shop.reroll_preserving_locked(),
+        None => roll_fresh_stock(),
+    };
+    commands.insert_resource(next);
 }
 
 // ---------- Cursor tracking ----------
@@ -409,9 +928,13 @@ fn click_buy_shop(
     shop: &mut CustomizeShop,
     scrap: &mut crate::Scrap,
 ) -> bool {
-    // Cost depends on what the player is buying.
+    // Cost depends on what the player is buying — turret cost scales
+    // with tier (barrels), rune is flat.
     let cost = match source {
-        DragSourceKind::ShopTurret(_) => SHOP_TURRET_COST,
+        DragSourceKind::ShopTurret(idx) => {
+            let Some(offer) = shop.turrets.get(idx).copied().flatten() else { return false };
+            turret_cost_for_barrels(offer.barrels)
+        }
         DragSourceKind::ShopRune(_)   => SHOP_RUNE_COST,
         _ => return false,
     };
@@ -443,6 +966,7 @@ fn try_place_shop_item(
                 runes: [None; 3],
             };
             if let Some(slot) = shop.turrets.get_mut(idx) { *slot = None; }
+            if let Some(flag) = shop.turrets_locked.get_mut(idx) { *flag = false; }
             true
         }
         DragSourceKind::ShopRune(idx) => {
@@ -453,6 +977,7 @@ fn try_place_shop_item(
                     if cfg.slots[slot_i].runes[r].is_none() {
                         cfg.slots[slot_i].runes[r] = Some(rune);
                         if let Some(slot) = shop.runes.get_mut(idx) { *slot = None; }
+                        if let Some(flag) = shop.runes_locked.get_mut(idx) { *flag = false; }
                         return true;
                     }
                 }
@@ -715,7 +1240,11 @@ pub fn complete_drag(
         DragSourceKind::ShopTurret(_) | DragSourceKind::ShopRune(_)
     );
     let shop_cost = match picked.source {
-        DragSourceKind::ShopTurret(_) => SHOP_TURRET_COST,
+        DragSourceKind::ShopTurret(idx) => shop
+            .as_deref()
+            .and_then(|s| s.turrets.get(idx).copied().flatten())
+            .map(|o| turret_cost_for_barrels(o.barrels))
+            .unwrap_or(SHOP_TURRET_COST),
         DragSourceKind::ShopRune(_) => SHOP_RUNE_COST,
         _ => 0,
     };
@@ -838,7 +1367,12 @@ pub fn sell_refund_for(source: &DragSourceKind, cfg: &TurretConfig) -> u32 {
         DragSourceKind::ShipSlot(slot) => {
             let s = cfg.slots[slot];
             if !s.equipped { return 0; }
-            let mut total_cost = SHOP_TURRET_COST * s.barrels.max(1) as u32;
+            // Refund the tier price so a T2 / T3 directly bought from
+            // the shop returns ~50% of its 5 / 12 sticker. Stacked-up
+            // turrets refund the same — the player has chosen to
+            // "compress" their barrels into one slot and the refund
+            // reflects the slot's current tier, not the buy history.
+            let mut total_cost = turret_cost_for_barrels(s.barrels);
             for _ in s.runes.iter().flatten() {
                 total_cost += SHOP_RUNE_COST;
             }
@@ -874,10 +1408,16 @@ fn consume_shop_slot(source: &DragSourceKind, shop: &mut CustomizeShop) {
             if let Some(slot) = shop.turrets.get_mut(*idx) {
                 *slot = None;
             }
+            if let Some(flag) = shop.turrets_locked.get_mut(*idx) {
+                *flag = false;
+            }
         }
         DragSourceKind::ShopRune(idx) => {
             if let Some(slot) = shop.runes.get_mut(*idx) {
                 *slot = None;
+            }
+            if let Some(flag) = shop.runes_locked.get_mut(*idx) {
+                *flag = false;
             }
         }
         _ => {}
@@ -948,6 +1488,16 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
         (Payload::Rune(rune), DropTargetKind::ShipRune { slot, rune_idx }) => {
             if !cfg.slots[slot].equipped {
                 return false;
+            }
+            // Amplifier sockets beyond its broadcast tier are
+            // blocked — a T1 Amp shares only socket 0, so 1 and 2
+            // refuse drops. Visible to the player via the hash
+            // overlay handled in `update_customize_ship`.
+            if matches!(cfg.slots[slot].weapon, WeaponType::Amplifier) {
+                let cap = cfg.slots[slot].barrels.clamp(1, 3) as usize;
+                if rune_idx >= cap {
+                    return false;
+                }
             }
             if let DragSourceKind::ShipRune { slot: s, rune_idx: r } = picked.source {
                 if s == slot && r == rune_idx {

@@ -4,8 +4,10 @@
 //! Architected as its own `AppState` variant so combat sim freezes for
 //! the duration (gameplay-affecting systems are already gated on
 //! `state == Playing`, so they idle automatically). The screen is a
-//! transparent overlay with centred accent text — no dark backdrop, so
-//! the player can still see their ship sitting in the cleared arena.
+//! full-coverage modal with a translucent dark wash so the payout
+//! readout (EARNED / INTEREST / TOTAL) is legible against the bright
+//! ocean below — same visual treatment as the multiplayer "YOU DIED"
+//! overlay so end-of-stage and team-wipe read in the same voice.
 //!
 //! Lifecycle:
 //! - `OnEnter(StageComplete)` spawns the UI + resets the timer.
@@ -179,15 +181,17 @@ pub fn enter_stage_complete(
     mut timer: ResMut<StageCompleteTimer>,
     mut scrap_earned: ResMut<ScrapEarnedThisStage>,
     mut scrap: ResMut<crate::Scrap>,
+    pixel: Option<Res<crate::fonts::PixelFont>>,
+    thaleah: Option<Res<crate::fonts::ThaleahFont>>,
 ) {
     timer.0 = 0.0;
-    // Interest: +1 scrap per 5 held going INTO the stage, before this
+    // Interest: +1 scrap per 3 held going INTO the stage, before this
     // round's wave-clear earnings stack onto the pile. Subtracting
     // `scrap_earned.0` from the current total gives the principal the
     // player walked into the stage with.
     let earned_pre_interest = scrap_earned.0;
     let pre_round_principal = scrap.0.saturating_sub(scrap_earned.0);
-    let interest = pre_round_principal / 5;
+    let interest = pre_round_principal / 3;
     if interest > 0 {
         scrap.0 = scrap.0.saturating_add(interest);
         scrap_earned.0 = scrap_earned.0.saturating_add(interest);
@@ -195,18 +199,27 @@ pub fn enter_stage_complete(
     let total = earned_pre_interest + interest;
 
     // Two colours: the bright accent on the `+N` value (the thing
-    // the eye should land on), and a dim muted tone for the
-    // "EARNED" / "INTEREST" / "TOTAL" labels + the "SCRAP" unit
-    // suffix. Splitting label vs value colours is the readability
-    // win — the player used to see one homogeneous gold blob.
+    // the eye should land on), and a brighter-than-ON_SURFACE_DIM
+    // off-white for the "EARNED" / "INTEREST" / "TOTAL" labels +
+    // the "SCRAP" unit suffix. The old DIM tone disappeared into
+    // the translucent backdrop; lifting to a near-white keeps the
+    // hierarchy (label < value) while staying clearly legible.
     let value_color  = Color::srgb(1.0, 0.88, 0.40);
     let total_color  = theme::ACCENT;
-    let label_color  = theme::ON_SURFACE_DIM;
+    let label_color  = Color::srgb(0.92, 0.93, 0.96);
     let line_specs: [(&str, u32, Color); 3] = [
         ("EARNED",   earned_pre_interest, value_color),
         ("INTEREST", interest,            value_color),
         ("TOTAL",    total,               total_color),
     ];
+
+    // Drop shadow used on every text node so the chunky glyphs read
+    // cleanly against the bright ocean below. Mirrors the YOU DIED
+    // overlay's silhouette treatment.
+    let drop_shadow = TextShadow {
+        offset: Vec2::splat(2.0),
+        color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+    };
 
     commands
         .spawn((
@@ -219,9 +232,15 @@ pub fn enter_stage_complete(
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
+                row_gap: Val::Px(theme::GAP_LG),
                 ..default()
             },
-            BackgroundColor(Color::NONE),
+            // Translucent dark wash — same treatment as the
+            // multiplayer YOU DIED / WAITING FOR PARTNER overlay.
+            // The PAYOUT card below sits ON TOP of this wash with a
+            // solid surface tone so the numbers read against a
+            // controlled background instead of the dim play world.
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
             ZIndex(180),
             Visibility::Inherited,
             StageCompleteUi,
@@ -243,14 +262,20 @@ pub fn enter_stage_complete(
                     // Use a non-breaking space for the gap so the
                     // glyph node doesn't collapse / get trimmed.
                     let s = if ch == ' ' { "\u{00A0}".to_string() } else { ch.to_string() };
-                    row.spawn((
-                        Text::new(s),
+                    let title_font = if let Some(t) = thaleah.as_deref() {
+                        crate::fonts::thaleah_text_font(t, 36.0)
+                    } else {
                         TextFont {
-                            font_size: 48.0,
+                            font_size: 36.0,
                             font_smoothing: FontSmoothing::None,
                             ..default()
-                        },
+                        }
+                    };
+                    row.spawn((
+                        Text::new(s),
+                        title_font,
                         TextColor(theme::ACCENT),
+                        drop_shadow,
                         Node {
                             position_type: PositionType::Relative,
                             ..default()
@@ -259,29 +284,96 @@ pub fn enter_stage_complete(
                     ));
                 }
             });
-            // Three payout rows stagger-revealed by `tick_payout_reveal`.
-            // Each row: `LABEL  +N SCRAP`. Label + unit are dim and
-            // small; the `+N` value is large and bright so the eye
-            // lands on the gain instantly. The flash-pulse on reveal
-            // hits the value text only.
-            root.spawn(Node {
-                margin: UiRect { top: Val::Px(28.0), ..default() },
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                row_gap: Val::Px(10.0),
-                ..default()
-            })
-            .with_children(|wrap| {
+            // Payout card — a solid-surface panel that holds the
+            // three rows. Lifts the labels and values off the
+            // translucent wash so they read clearly. The card sits
+            // inside the modal's centred column so the title stays
+            // above.
+            root.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Stretch,
+                    justify_content: JustifyContent::Center,
+                    padding: UiRect::axes(
+                        Val::Px(theme::PAD_LG),
+                        Val::Px(theme::PAD_MD),
+                    ),
+                    border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
+                    row_gap: Val::Px(4.0),
+                    min_width: Val::Px(220.0),
+                    ..default()
+                },
+                BackgroundColor(theme::SURFACE_RAISED),
+                BorderColor(theme::ACCENT),
+                BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
+            ))
+            .with_children(|card| {
+                // Column header: "+ SCRAP" above the value column
+                // so the unit is stated once instead of repeated
+                // per row.
+                card.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Baseline,
+                    justify_content: JustifyContent::SpaceBetween,
+                    column_gap: Val::Px(theme::GAP_LG),
+                    margin: UiRect::bottom(Val::Px(4.0)),
+                    ..default()
+                })
+                .with_children(|h| {
+                    let header_font = if let Some(p) = pixel.as_deref() {
+                        crate::fonts::pixel_text_font(p, 11.0)
+                    } else {
+                        TextFont { font_size: 11.0, font_smoothing: FontSmoothing::None, ..default() }
+                    };
+                    let header_color = theme::ON_SURFACE_DIM;
+                    h.spawn((
+                        Text::new("PAYOUT"),
+                        header_font.clone(),
+                        TextColor(header_color),
+                    ));
+                    h.spawn((
+                        Text::new("SCRAP"),
+                        header_font,
+                        TextColor(header_color),
+                    ));
+                });
                 for (idx, (label, value, value_base)) in line_specs.iter().enumerate() {
                     let is_total = idx == 2;
-                    let label_font = if is_total { 22.0 } else { 18.0 };
-                    let value_font = if is_total { 56.0 } else { 40.0 };
-                    let unit_font  = if is_total { 22.0 } else { 18.0 };
-                    wrap.spawn((
+                    // Label + value share a font size per row so the
+                    // table reads as columns; total row is one step
+                    // larger to anchor the eye on the final number.
+                    let label_font_size = if is_total { 16.0 } else { 13.0 };
+                    let value_font_size = if is_total { 22.0 } else { 18.0 };
+                    let label_text_font = if let Some(p) = pixel.as_deref() {
+                        crate::fonts::pixel_text_font(p, label_font_size)
+                    } else {
+                        TextFont { font_size: label_font_size, font_smoothing: FontSmoothing::None, ..default() }
+                    };
+                    // Value uses Thaleah for the loud number.
+                    let value_text_font = if let Some(t) = thaleah.as_deref() {
+                        crate::fonts::thaleah_text_font(t, value_font_size)
+                    } else {
+                        TextFont { font_size: value_font_size, font_smoothing: FontSmoothing::None, ..default() }
+                    };
+                    // Optional divider before the TOTAL row so the
+                    // final-number gets a separator from the parts.
+                    if is_total {
+                        card.spawn((
+                            Node {
+                                width: Val::Percent(100.0),
+                                height: Val::Px(2.0),
+                                margin: UiRect::axes(Val::Px(0.0), Val::Px(4.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.15)),
+                        ));
+                    }
+                    card.spawn((
                         Node {
                             flex_direction: FlexDirection::Row,
                             align_items: AlignItems::Baseline,
-                            column_gap: Val::Px(theme::GAP_MD),
+                            justify_content: JustifyContent::SpaceBetween,
+                            column_gap: Val::Px(theme::GAP_LG),
                             ..default()
                         },
                         BackgroundColor(Color::NONE),
@@ -289,45 +381,21 @@ pub fn enter_stage_complete(
                         StagePayoutLine { idx: idx as u8 },
                     ))
                     .with_children(|row| {
-                        // LABEL — dim, small. Tells the player which
-                        // bucket the value below is for.
                         row.spawn((
                             Text::new(label.to_string()),
-                            TextFont {
-                                font_size: label_font,
-                                font_smoothing: FontSmoothing::None,
-                                ..default()
-                            },
+                            label_text_font,
                             TextColor(label_color),
+                            drop_shadow,
                         ));
-                        // VALUE — the bright `+N`. This is what the
-                        // flash-pulse animates. Big font so the eye
-                        // can read it at a glance.
                         row.spawn((
                             Text::new(format!("+{}", value)),
-                            TextFont {
-                                font_size: value_font,
-                                font_smoothing: FontSmoothing::None,
-                                ..default()
-                            },
+                            value_text_font,
                             TextColor(*value_base),
+                            drop_shadow,
                             StagePayoutValue {
                                 idx: idx as u8,
                                 base_color: *value_base,
                             },
-                        ));
-                        // UNIT — dim "SCRAP" suffix so the player
-                        // sees exactly what they're earning. Same
-                        // tone as the label so the row reads as
-                        // "label  +N  unit".
-                        row.spawn((
-                            Text::new("SCRAP"),
-                            TextFont {
-                                font_size: unit_font,
-                                font_smoothing: FontSmoothing::None,
-                                ..default()
-                            },
-                            TextColor(label_color),
                         ));
                     });
                 }
@@ -418,14 +486,19 @@ pub fn tick_stage_complete(
     mut materials: ResMut<Assets<ColorMaterial>>,
     pending: Res<crate::xp::LevelUpsPending>,
     boss_reward: Res<crate::boss_reward::BossRewardPending>,
+    chests: Res<crate::chest::PendingChests>,
     mut next: ResMut<NextState<crate::AppState>>,
 ) {
     timer.0 += time.delta_secs();
     if timer.0 < DURATION { return; }
-    // Pick order: boss reward → level-up cards → shop. The wipe only
-    // fires on the shop hop (last step before Customize); the other
-    // hops are interstitial overlays that don't need a screen wipe.
-    if boss_reward.0.is_some() {
+    // Pick order: chests → boss reward → level-up cards → shop. The
+    // chest modal loops back to itself until the queue drains, then
+    // continues with the same chain via `next_state_after_chests`.
+    // The wipe only fires on the shop hop (last step before
+    // Customize); other hops are interstitial overlays.
+    if !chests.0.is_empty() {
+        next.set(crate::AppState::ChestOpen);
+    } else if boss_reward.0.is_some() {
         next.set(crate::AppState::BossReward);
     } else if pending.0 > 0 {
         next.set(crate::AppState::LevelUp);

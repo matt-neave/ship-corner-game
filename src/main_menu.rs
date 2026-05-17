@@ -167,6 +167,22 @@ impl Plugin for MainMenuPlugin {
                     .run_if(in_state(AppState::MainMenu))
                     .after(track_menu_cursor),
             )
+            // Multiplayer click router — native-only sibling of
+            // handle_menu_click. Splitting it out keeps both systems
+            // under Bevy's 16-SystemParam ceiling.
+            .add_systems(
+                Update,
+                {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        handle_mp_menu_clicks
+                            .run_if(in_state(AppState::MainMenu))
+                            .after(track_menu_cursor)
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    { || {} }
+                },
+            )
             // Shared bevy_ui settings-button handlers — used by the
             // pause-menu's settings panel (which is still bevy_ui).
             // Registered here, not in `pause`, because the click
@@ -311,19 +327,26 @@ pub struct MenuLabel(pub MenuButtonItem);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MenuButtonItem {
     Play,
+    Host,
+    Join,
     Settings,
+    Quit,
     Night,
     Crt,
     Vsync,
+    Bloom,
     WindowMode,
     Resolution,
     SfxVolume,
+    MusicVolume,
     Background,
     Back,
 }
 
 impl MenuButtonItem {
-    fn is_root(self) -> bool { matches!(self, Self::Play | Self::Settings) }
+    fn is_root(self) -> bool {
+        matches!(self, Self::Play | Self::Host | Self::Join | Self::Settings | Self::Quit)
+    }
 }
 
 /// Marker on each menu-fleet hull sailing in the play world. Same
@@ -397,11 +420,15 @@ const Z_BG: f32 = 1.0;
 const Z_FG: f32 = 2.0;
 
 /// Y where each row of root-view chrome sits, in spec units (0 = centre,
-/// +Y = up). Title above zero, PLAY below it, SETTINGS below that.
-/// Title is naked text (drop-shadowed) — no backdrop slab.
+/// +Y = up). Title above zero, then PLAY / HOST / JOIN / SETTINGS
+/// stacked below it. Title is naked text (drop-shadowed) — no backdrop
+/// slab.
 const TITLE_Y: f32     =  60.0;
-const PLAY_Y: f32      =   0.0;
-const SETTINGS_Y: f32  = -22.0;
+const PLAY_Y: f32      =  30.0;
+const HOST_Y: f32      =  10.0;
+const JOIN_Y: f32      = -10.0;
+const SETTINGS_Y: f32  = -30.0;
+const QUIT_Y: f32      = -50.0;
 
 const BUTTON_W: f32 = 72.0;
 const BUTTON_H: f32 = 16.0;
@@ -706,7 +733,7 @@ pub fn setup_main_menu_chrome(
         &thaleah,
     );
 
-    // ---- PLAY / SETTINGS buttons (root view) ----
+    // ---- PLAY / HOST / JOIN / SETTINGS buttons (root view) ----
     spawn_menu_button(
         &mut commands, &mut meshes, &mut materials,
         Vec2::new(0.0, PLAY_Y), Vec2::new(BUTTON_W, BUTTON_H),
@@ -714,8 +741,23 @@ pub fn setup_main_menu_chrome(
     );
     spawn_menu_button(
         &mut commands, &mut meshes, &mut materials,
+        Vec2::new(0.0, HOST_Y), Vec2::new(BUTTON_W, BUTTON_H),
+        MenuButtonItem::Host, "HOST", BUTTON_FONT, true,
+    );
+    spawn_menu_button(
+        &mut commands, &mut meshes, &mut materials,
+        Vec2::new(0.0, JOIN_Y), Vec2::new(BUTTON_W, BUTTON_H),
+        MenuButtonItem::Join, "JOIN", BUTTON_FONT, true,
+    );
+    spawn_menu_button(
+        &mut commands, &mut meshes, &mut materials,
         Vec2::new(0.0, SETTINGS_Y), Vec2::new(BUTTON_W, BUTTON_H),
         MenuButtonItem::Settings, "SETTINGS", BUTTON_FONT, true,
+    );
+    spawn_menu_button(
+        &mut commands, &mut meshes, &mut materials,
+        Vec2::new(0.0, QUIT_Y), Vec2::new(BUTTON_W, BUTTON_H),
+        MenuButtonItem::Quit, "QUIT", BUTTON_FONT, true,
     );
 
     // ---- Settings sub-page (hidden until SETTINGS clicked) ----
@@ -725,9 +767,11 @@ pub fn setup_main_menu_chrome(
         MenuButtonItem::Night,
         MenuButtonItem::Crt,
         MenuButtonItem::Vsync,
+        MenuButtonItem::Bloom,
         MenuButtonItem::WindowMode,
         MenuButtonItem::Resolution,
         MenuButtonItem::SfxVolume,
+        MenuButtonItem::MusicVolume,
         MenuButtonItem::Background,
         MenuButtonItem::Back,
     ];
@@ -1068,24 +1112,31 @@ pub fn update_menu_label_text(
     night: Res<NightMode>,
     crt: Res<CrtMode>,
     vsync: Res<VsyncMode>,
+    bloom: Res<crate::modes::BloomMode>,
     win_mode: Res<crate::modes::WindowModeSetting>,
     res: Res<crate::modes::ResolutionSetting>,
     sfx_vol: Res<crate::sfx::SfxVolume>,
+    music_vol: Res<crate::sfx::MusicVolume>,
     bg: Res<crate::modes::BackgroundSetting>,
     mut q: Query<(&MenuLabel, &mut Text2d)>,
 ) {
     for (label, mut text) in &mut q {
         let s = match label.0 {
-            MenuButtonItem::Play       => "PLAY".to_string(),
-            MenuButtonItem::Settings   => "SETTINGS".to_string(),
-            MenuButtonItem::Night      => format!("NIGHT: {}", on_off(night.active)),
-            MenuButtonItem::Crt        => format!("CRT: {}",   on_off(crt.active)),
-            MenuButtonItem::Vsync      => format!("VSYNC: {}", on_off(vsync.enabled)),
-            MenuButtonItem::WindowMode => format!("WINDOW: {}", win_mode.mode.label()),
-            MenuButtonItem::Resolution => format!("RES: {}",    res.res.label()),
-            MenuButtonItem::SfxVolume  => format!("SFX: {}",    sfx_vol.label()),
-            MenuButtonItem::Background => format!("BG: {}",     bg.kind.label()),
-            MenuButtonItem::Back       => "BACK".to_string(),
+            MenuButtonItem::Play        => "PLAY".to_string(),
+            MenuButtonItem::Host        => "HOST".to_string(),
+            MenuButtonItem::Join        => "JOIN".to_string(),
+            MenuButtonItem::Settings    => "SETTINGS".to_string(),
+            MenuButtonItem::Quit        => "QUIT".to_string(),
+            MenuButtonItem::Night       => format!("NIGHT: {}", on_off(night.active)),
+            MenuButtonItem::Crt         => format!("CRT: {}",   on_off(crt.active)),
+            MenuButtonItem::Vsync       => format!("VSYNC: {}", on_off(vsync.enabled)),
+            MenuButtonItem::Bloom       => format!("BLOOM: {}", on_off(bloom.active)),
+            MenuButtonItem::WindowMode  => format!("WINDOW: {}", win_mode.mode.label()),
+            MenuButtonItem::Resolution  => format!("RES: {}",    res.res.label()),
+            MenuButtonItem::SfxVolume   => format!("SFX: {}",    sfx_vol.label()),
+            MenuButtonItem::MusicVolume => format!("MUSIC: {}",  music_vol.label()),
+            MenuButtonItem::Background  => format!("BG: {}",     bg.kind.label()),
+            MenuButtonItem::Back        => "BACK".to_string(),
         };
         if text.0 != s { text.0 = s; }
     }
@@ -1128,10 +1179,13 @@ pub fn handle_menu_click(
     mut night: ResMut<NightMode>,
     mut crt: ResMut<CrtMode>,
     mut vsync: ResMut<VsyncMode>,
+    mut bloom: ResMut<crate::modes::BloomMode>,
     mut win_mode: ResMut<crate::modes::WindowModeSetting>,
     mut res: ResMut<crate::modes::ResolutionSetting>,
     mut sfx_vol: ResMut<crate::sfx::SfxVolume>,
+    mut music_vol: ResMut<crate::sfx::MusicVolume>,
     mut bg: ResMut<crate::modes::BackgroundSetting>,
+    mut exit: EventWriter<bevy::app::AppExit>,
     buttons: Query<(&Transform, &HitArea, &MenuButton)>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) { return; }
@@ -1148,15 +1202,23 @@ pub fn handle_menu_click(
 
         match btn.item {
             MenuButtonItem::Play       => next_state.set(AppState::HullSelect),
+            // HOST / JOIN routing lives in `handle_mp_menu_clicks` —
+            // splitting it out keeps `handle_menu_click` under Bevy's
+            // 16-`SystemParam` limit (the MP resources push us over).
+            MenuButtonItem::Host       => { /* see handle_mp_menu_clicks */ }
+            MenuButtonItem::Join       => { /* see handle_mp_menu_clicks */ }
             MenuButtonItem::Settings   => *view = MainMenuView::Settings,
+            MenuButtonItem::Quit       => { exit.write(bevy::app::AppExit::Success); }
             MenuButtonItem::Night      => night.active = !night.active,
             MenuButtonItem::Crt        => crt.active = !crt.active,
             MenuButtonItem::Vsync      => vsync.enabled = !vsync.enabled,
+            MenuButtonItem::Bloom      => bloom.active = !bloom.active,
             MenuButtonItem::WindowMode => win_mode.mode = win_mode.mode.cycle(),
             MenuButtonItem::Resolution => res.res = res.res.cycle(),
-            MenuButtonItem::SfxVolume  => *sfx_vol = sfx_vol.cycle(),
-            MenuButtonItem::Background => bg.kind = bg.kind.cycle(),
-            MenuButtonItem::Back       => *view = MainMenuView::Root,
+            MenuButtonItem::SfxVolume   => *sfx_vol = sfx_vol.cycle(),
+            MenuButtonItem::MusicVolume => *music_vol = music_vol.cycle(),
+            MenuButtonItem::Background  => bg.kind = bg.kind.cycle(),
+            MenuButtonItem::Back        => *view = MainMenuView::Root,
         }
         return;
     }
@@ -1189,18 +1251,67 @@ pub fn play_menu_click_sound(
     }
 }
 
+/// Sibling click router for HOST / JOIN — split out of
+/// `handle_menu_click` because the multiplayer resources push the
+/// main handler over Bevy's 16-`SystemParam` limit. Same hit-test
+/// shape, narrower button match. Native-only signature; the WASM
+/// build still has the buttons in the chrome but this system
+/// isn't registered there (see `MainMenuPlugin::build`).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn handle_mp_menu_clicks(
+    mouse: Res<ButtonInput<MouseButton>>,
+    viewport: Res<MainMenuViewport>,
+    view: Res<MainMenuView>,
+    mut net_mode: ResMut<crate::multiplayer::NetMode>,
+    buttons: Query<(&Transform, &HitArea, &MenuButton)>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) { return; }
+    let Some(cursor) = viewport.spec_cursor else { return };
+    let active_view_root = *view == MainMenuView::Root;
+    for (tf, hit, btn) in &buttons {
+        let in_view = if active_view_root { btn.item.is_root() } else { !btn.item.is_root() };
+        if !in_view { continue; }
+        let c = tf.translation.truncate();
+        let half = hit.size * 0.5;
+        if (cursor.x - c.x).abs() > half.x { continue; }
+        if (cursor.y - c.y).abs() > half.y { continue; }
+
+        match btn.item {
+            MenuButtonItem::Host => {
+                // Open the name-entry popover; actual socket bind +
+                // state transition happens after the user confirms
+                // their name with Enter (see `capture_name_keys`).
+                *net_mode = crate::multiplayer::NetMode::NamingForHost;
+            }
+            MenuButtonItem::Join => {
+                // Same two-step flow as Host: name first, IP entry
+                // second. `capture_name_keys` advances to
+                // `JoiningEntry` on Enter.
+                *net_mode = crate::multiplayer::NetMode::NamingForJoin;
+            }
+            _ => continue,
+        }
+        return;
+    }
+}
+
 fn initial_label_for(item: MenuButtonItem) -> &'static str {
     match item {
         MenuButtonItem::Play       => "PLAY",
+        MenuButtonItem::Host       => "HOST",
+        MenuButtonItem::Join       => "JOIN",
         MenuButtonItem::Settings   => "SETTINGS",
+        MenuButtonItem::Quit       => "QUIT",
         MenuButtonItem::Night      => "NIGHT",
         MenuButtonItem::Crt        => "CRT",
         MenuButtonItem::Vsync      => "VSYNC",
+        MenuButtonItem::Bloom      => "BLOOM",
         MenuButtonItem::WindowMode => "WINDOW",
         MenuButtonItem::Resolution => "RES",
-        MenuButtonItem::SfxVolume  => "SFX",
-        MenuButtonItem::Background => "BG",
-        MenuButtonItem::Back       => "BACK",
+        MenuButtonItem::SfxVolume   => "SFX",
+        MenuButtonItem::MusicVolume => "MUSIC",
+        MenuButtonItem::Background  => "BG",
+        MenuButtonItem::Back        => "BACK",
     }
 }
 
@@ -1647,9 +1758,11 @@ pub enum SettingsItem {
     Night,
     Crt,
     Vsync,
+    Bloom,
     WindowMode,
     Resolution,
     SfxVolume,
+    MusicVolume,
     Background,
 }
 
@@ -1665,21 +1778,25 @@ pub fn handle_settings_item_click(
     mut night: ResMut<NightMode>,
     mut crt: ResMut<CrtMode>,
     mut vsync: ResMut<VsyncMode>,
+    mut bloom: ResMut<crate::modes::BloomMode>,
     mut win_mode: ResMut<crate::modes::WindowModeSetting>,
     mut res: ResMut<crate::modes::ResolutionSetting>,
     mut sfx_vol: ResMut<crate::sfx::SfxVolume>,
+    mut music_vol: ResMut<crate::sfx::MusicVolume>,
     mut bg: ResMut<crate::modes::BackgroundSetting>,
 ) {
     for (interaction, item) in &interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
         match *item {
-            SettingsItem::Night      => night.active = !night.active,
-            SettingsItem::Crt        => crt.active = !crt.active,
-            SettingsItem::Vsync      => vsync.enabled = !vsync.enabled,
-            SettingsItem::WindowMode => win_mode.mode = win_mode.mode.cycle(),
-            SettingsItem::Resolution => res.res = res.res.cycle(),
-            SettingsItem::SfxVolume  => *sfx_vol = sfx_vol.cycle(),
-            SettingsItem::Background => bg.kind = bg.kind.cycle(),
+            SettingsItem::Night       => night.active = !night.active,
+            SettingsItem::Crt         => crt.active = !crt.active,
+            SettingsItem::Vsync       => vsync.enabled = !vsync.enabled,
+            SettingsItem::Bloom       => bloom.active = !bloom.active,
+            SettingsItem::WindowMode  => win_mode.mode = win_mode.mode.cycle(),
+            SettingsItem::Resolution  => res.res = res.res.cycle(),
+            SettingsItem::SfxVolume   => *sfx_vol = sfx_vol.cycle(),
+            SettingsItem::MusicVolume => *music_vol = music_vol.cycle(),
+            SettingsItem::Background  => bg.kind = bg.kind.cycle(),
         }
     }
 }
@@ -1706,21 +1823,25 @@ pub fn update_settings_labels(
     night: Res<NightMode>,
     crt: Res<CrtMode>,
     vsync: Res<VsyncMode>,
+    bloom: Res<crate::modes::BloomMode>,
     win_mode: Res<crate::modes::WindowModeSetting>,
     res: Res<crate::modes::ResolutionSetting>,
     sfx_vol: Res<crate::sfx::SfxVolume>,
+    music_vol: Res<crate::sfx::MusicVolume>,
     bg: Res<crate::modes::BackgroundSetting>,
     mut q: Query<(&SettingsItemLabel, &mut Text)>,
 ) {
     for (label, mut text) in &mut q {
         let s = match label.0 {
-            SettingsItem::Night      => format!("NIGHT: {}", on_off(night.active)),
-            SettingsItem::Crt        => format!("CRT: {}",   on_off(crt.active)),
-            SettingsItem::Vsync      => format!("VSYNC: {}", on_off(vsync.enabled)),
-            SettingsItem::WindowMode => format!("WINDOW: {}", win_mode.mode.label()),
-            SettingsItem::Resolution => format!("RES: {}",    res.res.label()),
-            SettingsItem::SfxVolume  => format!("SFX: {}",    sfx_vol.label()),
-            SettingsItem::Background => format!("BG: {}",     bg.kind.label()),
+            SettingsItem::Night       => format!("NIGHT: {}", on_off(night.active)),
+            SettingsItem::Crt         => format!("CRT: {}",   on_off(crt.active)),
+            SettingsItem::Vsync       => format!("VSYNC: {}", on_off(vsync.enabled)),
+            SettingsItem::Bloom       => format!("BLOOM: {}", on_off(bloom.active)),
+            SettingsItem::WindowMode  => format!("WINDOW: {}", win_mode.mode.label()),
+            SettingsItem::Resolution  => format!("RES: {}",    res.res.label()),
+            SettingsItem::SfxVolume   => format!("SFX: {}",    sfx_vol.label()),
+            SettingsItem::MusicVolume => format!("MUSIC: {}",  music_vol.label()),
+            SettingsItem::Background  => format!("BG: {}",     bg.kind.label()),
         };
         if text.0 != s { text.0 = s; }
     }

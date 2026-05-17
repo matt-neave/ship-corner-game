@@ -13,7 +13,8 @@ use bevy::render::view::RenderLayers;
 use crate::balance::{CUSTOMIZE_LAYER, UPSCALE_LAYER};
 use crate::stats::PlayerStats;
 
-use super::drag::{CustomizeShop, DragState};
+use super::drag::{ActiveLegendaries, CustomizeShop, DragState, ModEffect};
+use crate::stats_panel_overlay::HighlightedStats;
 use super::render::CustomizeViewport;
 use super::setup::HitArea;
 use super::CustomizeOpen;
@@ -24,11 +25,12 @@ use super::CustomizeOpen;
 // at the bumped 14pt font, with the row staying narrow enough to
 // keep the shop column anchored far enough left that the sell strip
 // fits cleanly under the ship.
-pub const MOD_CARD_W: f32 = 30.0;
-// Tall enough to fit 4 lines of card text (value + name + side
-// value + side name) on trade-off mods. Pure mods only use the
-// upper half but the consistent sizing keeps the row tidy.
-pub const MOD_CARD_H: f32 = 36.0;
+pub const MOD_CARD_W: f32 = 32.0;
+// Tightened so the mod row + cost label + reroll button all clear
+// the bottom of the canvas without scrolling. Pure mods only show
+// 2 lines anyway; trade-off cards still fit their 3 (name + buff
+// + nerf) at the smaller font, with margin.
+pub const MOD_CARD_H: f32 = 22.0;
 pub const MOD_CARD_GAP: f32 = 4.0;
 const Z_OUTLINE: f32 = 99.0;
 const Z_FILL: f32 = 99.5;
@@ -101,7 +103,11 @@ fn spawn_card(commands: &mut Commands, font: &crate::fonts::PixelFont, idx: usiz
     ));
     commands.spawn((
         Text2d::new(""),
-        crate::fonts::pixel_text_font(font, 14.0),
+        // Smaller body font (10 vs the earlier 14) — keeps every
+        // "+10% LABEL" line well inside the now-narrower card and
+        // leaves headroom for trade-off mods' 3 stacked lines
+        // without overflowing into the neighbour card.
+        crate::fonts::pixel_text_font(font, 10.0),
         TextColor(Color::srgb(1.0, 0.85, 0.30)),
         // Centre the two-line value/name pair so each line stacks
         // on its own row inside the card.
@@ -130,6 +136,16 @@ fn spawn_card(commands: &mut Commands, font: &crate::fonts::PixelFont, idx: usiz
         ShopModSlot { idx },
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
+    // Right-click lock badge — gold frame around the card edge +
+    // corner padlock, hidden by default. `sync_lock_badges`
+    // toggles on the matching `mods_locked[idx]` flag.
+    super::shop_lock::spawn_lock_badge(
+        commands,
+        super::shop_lock::ShopSlotKind::Mod,
+        idx,
+        spec_pos,
+        Vec2::new(MOD_CARD_W, MOD_CARD_H),
+    );
 }
 
 /// Per-frame layout + visibility + content sync.
@@ -162,16 +178,29 @@ pub fn update_shop_mod_cards(
     }
     let shop = shop.unwrap();
     let s = viewport.display_scale;
+    // Card size stays in spec×display_scale so it lines up with
+    // the `HitArea` (which is spec-coord) at every resolution.
+    // The per-line text scales with `UiScale` separately; we keep
+    // glyph counts under control via shorter `short_stat_label`
+    // names instead of resizing the card itself.
     let fill_size = Vec2::new(MOD_CARD_W * s, MOD_CARD_H * s);
     let outline_size = fill_size + Vec2::splat(2.0 * BORDER_PX);
 
     for (slot, mut vis, mut tf, mut sprite) in &mut outlines {
-        let occupied = shop.mods.get(slot.idx).map_or(false, |m| m.is_some());
+        let m = shop.mods.get(slot.idx).and_then(|m| *m);
+        let occupied = m.is_some();
         set_vis(&mut vis, if occupied { Visibility::Inherited } else { Visibility::Hidden });
         if !occupied { continue; }
         if sprite.custom_size != Some(outline_size) { sprite.custom_size = Some(outline_size); }
         tf.translation.x = slot.spec_pos.x * s;
         tf.translation.y = slot.spec_pos.y * s;
+        // Tint the outline by the mod's rarity so the card shouts
+        // its tier at a glance: white = common, blue = uncommon,
+        // purple = rare, red = legendary.
+        if let Some(m) = m {
+            let want = m.spec().rarity.border_color();
+            if sprite.color != want { sprite.color = want; }
+        }
     }
     for (slot, mut vis, mut tf, mut sprite) in &mut fills {
         let occupied = shop.mods.get(slot.idx).map_or(false, |m| m.is_some());
@@ -218,13 +247,17 @@ pub fn update_shop_mod_cards(
                     .find(|(_, t)| t.idx == slot.idx)
                     .map(|(e, _)| e);
                 if let Some(parent) = parent {
+                    let rarity_label = m.spec().rarity.label();
+                    let rarity_color = m.spec().rarity.border_color();
                     commands.entity(parent).with_children(|p| {
                         let lines: Vec<&str> = label.split('\n').collect();
                         for (li, line) in lines.iter().enumerate() {
                             // Per-line tint: green for `+`, red
-                            // for `-`, neutral for everything
-                            // else (the stat-name lines).
-                            let line_color = if line.starts_with('+') {
+                            // for `-`, rarity-tinted for the rarity
+                            // tag, neutral for the rest.
+                            let line_color = if *line == rarity_label {
+                                rarity_color
+                            } else if line.starts_with('+') {
                                 crate::ui_kit::theme::BUFF_FG
                             } else if line.starts_with('-') {
                                 crate::ui_kit::theme::NERF_FG
@@ -242,7 +275,7 @@ pub fn update_shop_mod_cards(
                             };
                             p.spawn((
                                 TextSpan::new(txt),
-                                crate::fonts::pixel_text_font(&pixel_font, 14.0),
+                                crate::fonts::pixel_text_font(&pixel_font, 10.0),
                                 TextColor(line_color),
                                 ShopModTextSpan { idx: slot.idx },
                             ));
@@ -261,12 +294,14 @@ pub fn update_shop_mod_cards(
             }
         }
     }
-    let cost_label = super::drag::SHOP_ITEM_COST.to_string();
     for (slot, mut vis, mut tf, mut text) in &mut cost_texts {
-        let occupied = shop.mods.get(slot.idx).map_or(false, |m| m.is_some());
+        let m = shop.mods.get(slot.idx).and_then(|m| *m);
+        let occupied = m.is_some();
         set_vis(&mut vis, if occupied { Visibility::Inherited } else { Visibility::Hidden });
-        if !occupied { continue; }
-        if text.0 != cost_label { text.0 = cost_label.clone(); }
+        let Some(m) = m else { continue };
+        // Per-card cost from the mod's rarity — 2 / 3 / 4 / 6 scrap.
+        let cost_label = m.spec().rarity.cost().to_string();
+        if text.0 != cost_label { text.0 = cost_label; }
         tf.translation.x = slot.spec_pos.x * s;
         tf.translation.y = slot.spec_pos.y * s;
         let glyph = ui_scale.0;
@@ -280,9 +315,49 @@ fn set_vis(vis: &mut Visibility, want: Visibility) {
 }
 fn hide_one(vis: &mut Visibility) { set_vis(vis, Visibility::Hidden); }
 
-/// Click handler — applies the mod and consumes the slot. Costs
-/// `SHOP_ITEM_COST` scrap; does nothing when the player can't afford
-/// it (slot and scrap both untouched).
+/// Per-frame: find which (if any) shop mod card the cursor is
+/// over, and push its impacted `StatKind`s into
+/// [`HighlightedStats`] so the customize stats panel can tint
+/// matching rows. The First-schedule clear in
+/// `StatsPanelOverlayPlugin` keeps the set fresh — no entry =
+/// nothing hovered.
+pub fn update_mod_hover_highlight(
+    open: Res<CustomizeOpen>,
+    drag: Res<DragState>,
+    shop: Option<Res<CustomizeShop>>,
+    mut highlight: ResMut<HighlightedStats>,
+    btn_q: Query<(&Transform, &HitArea, &ShopModSlot)>,
+) {
+    if !open.open { return; }
+    let Some(cursor) = drag.spec_cursor else { return };
+    let Some(shop) = shop else { return };
+    for (tf, hit, slot) in &btn_q {
+        let c = tf.translation.truncate();
+        let half = hit.size * 0.5;
+        if cursor.x < c.x - half.x || cursor.x > c.x + half.x { continue; }
+        if cursor.y < c.y - half.y || cursor.y > c.y + half.y { continue; }
+        let Some(m) = shop.mods.get(slot.idx).and_then(|m| *m) else { return };
+        for &(kind, delta) in m.spec().changes {
+            let sign = if delta >= 0.0 {
+                crate::stats_panel_overlay::HighlightSign::Buff
+            } else {
+                crate::stats_panel_overlay::HighlightSign::Nerf
+            };
+            // Mods always add to `.flat` (see the click handler).
+            highlight.kinds.insert(
+                kind,
+                crate::stats_panel_overlay::HighlightEntry {
+                    sign, delta, to_flat: true,
+                },
+            );
+        }
+        return;
+    }
+}
+
+/// Click handler — applies the mod and consumes the slot. Cost is
+/// per-rarity (`ModRarity::cost()` → 2/3/4/6); does nothing when the
+/// player can't afford it (slot and scrap both untouched).
 pub fn handle_shop_mod_click(
     open: Res<CustomizeOpen>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -290,6 +365,7 @@ pub fn handle_shop_mod_click(
     shop: Option<ResMut<CustomizeShop>>,
     mut stats: ResMut<PlayerStats>,
     mut scrap: ResMut<crate::Scrap>,
+    mut active: ResMut<ActiveLegendaries>,
     btn_q: Query<(&Transform, &HitArea, &ShopModSlot)>,
 ) {
     if !open.open { return; }
@@ -297,7 +373,6 @@ pub fn handle_shop_mod_click(
     if drag.picked.is_some() { return; }
     let Some(cursor) = drag.spec_cursor else { return };
     let Some(mut shop) = shop else { return };
-    if scrap.0 < super::drag::SHOP_ITEM_COST { return; }
     for (tf, hit, slot) in &btn_q {
         let centre = tf.translation.truncate();
         let half = hit.size * 0.5;
@@ -308,19 +383,45 @@ pub fn handle_shop_mod_click(
         { continue; }
         let Some(slot_entry) = shop.mods.get_mut(slot.idx) else { return };
         let Some(m) = *slot_entry else { return };
-        // Apply the primary effect.
-        let stat = m.kind.stat_mut(&mut stats);
-        stat.flat += m.delta;
-        // Trade-off cards also apply a side-effect on a different
-        // stat. Side delta is typically negative (a nerf paired
-        // with the primary buff) but the apply path is identical -
-        // both halves write to `stat.flat`.
-        if let Some((side_kind, side_delta)) = m.side {
-            let s = side_kind.stat_mut(&mut stats);
-            s.flat += side_delta;
+        let cost = m.spec().rarity.cost();
+        if scrap.0 < cost { return; }
+        // Apply every stat change defined by this mod's spec.
+        // Pure-buff mods carry one change; trade-off mods carry
+        // two (or more) — the apply loop is identical either way.
+        for &(kind, delta) in m.spec().changes {
+            let stat = kind.stat_mut(&mut stats);
+            stat.flat += delta;
+        }
+        // Apply the build-warping effect, if any. Ongoing effects
+        // flip a flag in `ActiveLegendaries`; one-shot effects run
+        // their stat mutation right here.
+        if let Some(eff) = m.spec().effect {
+            match eff {
+                ModEffect::Monomaniac => { active.monomaniac = true; }
+                ModEffect::Duelist    => { active.duelist    = true; }
+                ModEffect::Harmony    => { active.harmony    = true; }
+                ModEffect::Purist     => { active.purist     = true; }
+                ModEffect::Specialist => { active.specialist = true; }
+                ModEffect::Turtle => {
+                    // Snapshot the current shield_max and transfer
+                    // it 1:1 into HP. `flat` deltas (not `percent`)
+                    // so the conversion is invariant under later
+                    // shield-max bumps — the bonus HP stays, and
+                    // any new shield pickups start fresh.
+                    let s = stats.shield_max.effective().max(0.0);
+                    stats.hp.flat += s;
+                    stats.shield_max.flat -= s;
+                }
+            }
         }
         *slot_entry = None;
-        scrap.0 = scrap.0.saturating_sub(super::drag::SHOP_ITEM_COST);
+        // Buying clears the lock — locks only protect held inventory,
+        // they don't auto-reapply to whatever rolls into the empty
+        // slot on the next reroll.
+        if let Some(flag) = shop.mods_locked.get_mut(slot.idx) {
+            *flag = false;
+        }
+        scrap.0 = scrap.0.saturating_sub(cost);
         return;
     }
 }

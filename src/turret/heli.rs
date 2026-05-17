@@ -67,7 +67,9 @@ pub fn sync_helipad_helicopters(
     cfg: Res<TurretConfig>,
     pm: Option<Res<PaletteMaterials>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    ship_q: Query<&Transform, (With<Friendly>, Without<Helicopter>)>,
+    // LocalPlayer disambiguates from MP's remote-peer ship which is
+    // also `Friendly`. `single()` would bail with two friendlies.
+    ship_q: Query<&Transform, (With<crate::components::LocalPlayer>, Without<Helicopter>)>,
     helis: Query<(Entity, &Helicopter)>,
 ) {
     let Some(pm) = pm else { return; };
@@ -95,93 +97,134 @@ pub fn sync_helipad_helicopters(
         let outward = (init_pos - ship_pos).try_normalize().unwrap_or(Vec2::Y);
         let init_heading = (-outward.x).atan2(outward.y);
 
-        let body_mesh = meshes.add(Capsule2d::new(2.0, 2.5));
-        let rotor_mesh = meshes.add(Rectangle::new(8.0, 0.8));
-        let nose_base_mesh = meshes.add(Circle::new(1.7));
-        let nose_barrel_mesh = meshes.add(Rectangle::new(1.0, 3.5));
-        let body_mat = pm.helipad_deck.clone();
-        let nose_mat = pm.turret.clone();
-        let rotor_mat = pm.turret.clone();
-        let tail_mat = pm.helipad_deck.clone();
-        let canopy_mat = pm.ally_flag.clone();
-        let tail_boom_mesh = meshes.add(Rectangle::new(0.7, 3.6));
-        let tail_rotor_mesh = meshes.add(Rectangle::new(2.6, 0.4));
-        let canopy_mesh = meshes.add(Circle::new(0.7));
-
-        let heli = commands.spawn((
-            Mesh2d(body_mesh),
-            MeshMaterial2d(body_mat),
-            Transform::from_xyz(init_pos.x, init_pos.y, 2.5)
-                .with_rotation(Quat::from_rotation_z(init_heading)),
-            Helicopter {
-                owner_slot: idx,
-                fire_cd: 0.0,
-                heading: init_heading,
-                next_barrel: 0,
-            },
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-
-        let tail_boom = commands.spawn((
-            Mesh2d(tail_boom_mesh),
-            MeshMaterial2d(tail_mat.clone()),
-            Transform::from_xyz(0.0, -4.6, 0.02),
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-        commands.entity(tail_boom).insert(ChildOf(heli));
-
-        let tail_rotor = commands.spawn((
-            Mesh2d(tail_rotor_mesh),
-            MeshMaterial2d(rotor_mat.clone()),
-            Transform::from_xyz(0.0, -6.7, 0.03),
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-        commands.entity(tail_rotor).insert(ChildOf(heli));
-
-        let canopy = commands.spawn((
-            Mesh2d(canopy_mesh),
-            MeshMaterial2d(canopy_mat),
-            Transform::from_xyz(0.0, 0.4, 0.03),
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-        commands.entity(canopy).insert(ChildOf(heli));
-
-        let nose_base = commands.spawn((
-            Mesh2d(nose_base_mesh),
-            MeshMaterial2d(nose_mat.clone()),
-            Transform::from_xyz(0.0, 1.5, 0.04),
-            RenderLayers::layer(PLAY_LAYER),
-        )).id();
-        commands.entity(nose_base).insert(ChildOf(heli));
-
-        // Three nose barrels spawned every time so a `barrels` change
-        // can flip visibility without rebuilding the helicopter.
-        for idx in 0u8..3 {
-            let lateral = HELI_BARREL_LATERAL[idx as usize];
-            let nose_barrel = commands.spawn((
-                Mesh2d(nose_barrel_mesh.clone()),
-                MeshMaterial2d(nose_mat.clone()),
-                Transform::from_xyz(lateral, 3.2, 0.05),
-                RenderLayers::layer(PLAY_LAYER),
-                Visibility::Hidden,
-                HeliNoseBarrel { heli, idx },
-            )).id();
-            commands.entity(nose_barrel).insert(ChildOf(heli));
-        }
-
-        // Two rotors crossed in an X — 90° offset gives a 4-bladed look.
-        for rot_offset in [0.0, std::f32::consts::FRAC_PI_2] {
-            let rotor = commands.spawn((
-                Mesh2d(rotor_mesh.clone()),
-                MeshMaterial2d(rotor_mat.clone()),
-                Transform::from_xyz(0.0, 0.0, 0.06)
-                    .with_rotation(Quat::from_rotation_z(rot_offset)),
-                HeliRotor,
-                RenderLayers::layer(PLAY_LAYER),
-            )).id();
-            commands.entity(rotor).insert(ChildOf(heli));
-        }
+        let heli = spawn_helicopter_visual(&mut commands, &pm, &mut meshes, init_pos, init_heading);
+        commands.entity(heli).insert(Helicopter {
+            owner_slot: idx,
+            fire_cd: 0.0,
+            heading: init_heading,
+            next_barrel: 0,
+        });
     }
+}
+
+/// Spawn the full helicopter visual hierarchy (body, tail boom +
+/// rotor, canopy, nose base + barrels, main rotors) and return the
+/// root entity. Pure visuals — no AI / fire / gameplay components.
+///
+/// Callers layer their gameplay tags on top:
+/// - `sync_helipad_helicopters` (owner side) → `insert(Helicopter { … })`
+/// - `apply_peer_units_snapshot` (mirror side) → `insert(PeerUnitMirror { … })`
+///
+/// Single source of truth for the helicopter look — any future
+/// chassis change propagates to peer mirrors automatically.
+pub fn spawn_helicopter_visual(
+    commands: &mut Commands,
+    pm: &PaletteMaterials,
+    meshes: &mut Assets<Mesh>,
+    pos: Vec2,
+    heading: f32,
+) -> Entity {
+    let body_mesh = meshes.add(Capsule2d::new(2.0, 2.5));
+    let body_shadow_mesh = body_mesh.clone();
+    let rotor_mesh = meshes.add(Rectangle::new(8.0, 0.8));
+    let nose_base_mesh = meshes.add(Circle::new(1.7));
+    let nose_barrel_mesh = meshes.add(Rectangle::new(1.0, 3.5));
+    let body_mat = pm.helipad_deck.clone();
+    let nose_mat = pm.turret.clone();
+    let rotor_mat = pm.turret.clone();
+    let tail_mat = pm.helipad_deck.clone();
+    let canopy_mat = pm.ally_flag.clone();
+    let tail_boom_mesh = meshes.add(Rectangle::new(0.7, 3.6));
+    let tail_rotor_mesh = meshes.add(Rectangle::new(2.6, 0.4));
+    let canopy_mesh = meshes.add(Circle::new(0.7));
+
+    let heli = commands.spawn((
+        Mesh2d(body_mesh),
+        MeshMaterial2d(body_mat),
+        Transform::from_xyz(pos.x, pos.y, 2.5)
+            .with_rotation(Quat::from_rotation_z(heading)),
+        RenderLayers::layer(PLAY_LAYER),
+    )).id();
+    // Airborne drop-shadow — bigger world-space offset than
+    // sea-level entities to fake altitude. The shadow tracks the
+    // body capsule only (not tail boom / rotors) so the
+    // silhouette reads as the chopper's mass rather than the
+    // whole fuselage, matching the top-down arcade convention.
+    crate::shadow::spawn_for_with_offset(
+        commands,
+        pm.shadow.clone(),
+        body_shadow_mesh,
+        heli,
+        1.0,
+        crate::shadow::SHADOW_OFFSET_AIR,
+        pos,
+        Quat::from_rotation_z(heading),
+    );
+
+    let tail_boom = commands.spawn((
+        Mesh2d(tail_boom_mesh),
+        MeshMaterial2d(tail_mat.clone()),
+        Transform::from_xyz(0.0, -4.6, 0.02),
+        RenderLayers::layer(PLAY_LAYER),
+    )).id();
+    commands.entity(tail_boom).insert(ChildOf(heli));
+
+    let tail_rotor = commands.spawn((
+        Mesh2d(tail_rotor_mesh),
+        MeshMaterial2d(rotor_mat.clone()),
+        Transform::from_xyz(0.0, -6.7, 0.03),
+        RenderLayers::layer(PLAY_LAYER),
+    )).id();
+    commands.entity(tail_rotor).insert(ChildOf(heli));
+
+    let canopy = commands.spawn((
+        Mesh2d(canopy_mesh),
+        MeshMaterial2d(canopy_mat),
+        Transform::from_xyz(0.0, 0.4, 0.03),
+        RenderLayers::layer(PLAY_LAYER),
+    )).id();
+    commands.entity(canopy).insert(ChildOf(heli));
+
+    let nose_base = commands.spawn((
+        Mesh2d(nose_base_mesh),
+        MeshMaterial2d(nose_mat.clone()),
+        Transform::from_xyz(0.0, 1.5, 0.04),
+        RenderLayers::layer(PLAY_LAYER),
+    )).id();
+    commands.entity(nose_base).insert(ChildOf(heli));
+
+    // Three nose barrels — `sync_helipad_nose_barrels` toggles
+    // their visibility on the owner side based on `barrels` tier.
+    // For mirrors, leave them all visible (tier sync would need
+    // the SlotCfg.barrels in the snapshot; current snapshot is
+    // pos+rot only).
+    for bi in 0u8..3 {
+        let lateral = HELI_BARREL_LATERAL[bi as usize];
+        let nose_barrel = commands.spawn((
+            Mesh2d(nose_barrel_mesh.clone()),
+            MeshMaterial2d(nose_mat.clone()),
+            Transform::from_xyz(lateral, 3.2, 0.05),
+            RenderLayers::layer(PLAY_LAYER),
+            Visibility::Hidden,
+            HeliNoseBarrel { heli, idx: bi },
+        )).id();
+        commands.entity(nose_barrel).insert(ChildOf(heli));
+    }
+
+    // Two rotors crossed in an X — 90° offset gives a 4-bladed look.
+    for rot_offset in [0.0, std::f32::consts::FRAC_PI_2] {
+        let rotor = commands.spawn((
+            Mesh2d(rotor_mesh.clone()),
+            MeshMaterial2d(rotor_mat.clone()),
+            Transform::from_xyz(0.0, 0.0, 0.06)
+                .with_rotation(Quat::from_rotation_z(rot_offset)),
+            HeliRotor,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(rotor).insert(ChildOf(heli));
+    }
+
+    heli
 }
 
 /// Toggle each helicopter's nose-barrel visibility from the owning
@@ -218,7 +261,7 @@ pub fn helicopter_ai(
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
     synergies: Res<crate::synergy::Synergies>,
-    ship_q: Query<&Transform, (With<Friendly>, Without<Helicopter>, Without<Enemy>)>,
+    ship_q: Query<&Transform, (With<crate::components::LocalPlayer>, Without<Helicopter>, Without<HeliRotor>, Without<Enemy>)>,
     enemies: Query<(&Transform, &Faction, &Health), (With<Enemy>, Without<Helicopter>)>,
     mut helis: Query<(&mut Transform, &mut Helicopter), Without<HeliRotor>>,
     mut rotors: Query<&mut Transform, (With<HeliRotor>, Without<Helicopter>, Without<Enemy>, Without<Friendly>)>,
@@ -329,15 +372,23 @@ pub fn helicopter_ai(
         heli.fire_cd -= dt;
         let Some((_, ep)) = best else { continue; };
         if heli.fire_cd > 0.0 { continue; }
-        // Aim-gate: bullets exit along the body's forward, so mid-turn
-        // shots would otherwise spray off-target.
+        // Aim-gate. The bullet's flight direction is recomputed
+        // muzzle → enemy below, so the heli technically *could*
+        // fire 360°, but a generous gate keeps shots looking like
+        // they emerge from the front of the body rather than
+        // launching backwards from a heli still turning. PI/3 (60°)
+        // is wide enough that a mid-orbit heli almost never has to
+        // skip a shot, which was the original "heli misses
+        // everything" symptom — the gate was at PI/8 (22.5°) and
+        // the heli's orbit kept its body offset from the target by
+        // more than that for long stretches.
         let to_enemy = ep - new_pos;
         if to_enemy.length_squared() > 0.01 {
             let desired = (-to_enemy.x).atan2(to_enemy.y);
             let delta = (heli.heading - desired + std::f32::consts::PI)
                 .rem_euclid(std::f32::consts::TAU)
                 - std::f32::consts::PI;
-            if delta.abs() > std::f32::consts::FRAC_PI_8 {
+            if delta.abs() > std::f32::consts::FRAC_PI_3 {
                 continue;
             }
         }

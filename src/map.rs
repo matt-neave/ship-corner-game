@@ -39,26 +39,17 @@ pub use anim::{advance_map_anim_timeline, map_begin_phase, update_anim_beams, up
 pub use boss_patrol::{boss_patrol_movement, spawn_boss_patrols, BossPatrol};
 pub use build::{apply_view_mode, refresh_map_fill};
 pub use buildings::{
-    close_popup_on_view_change, handle_building_choice_clicks, level_complete_check,
-    queue_next_stage_combat,
-    level_fail_check, setup_progress_assets, tick_buildings, update_building_button_tints,
-    update_building_description, update_building_hover_tooltip, update_building_progress_bars,
+    clear_anims_on_view_change, level_complete_check, queue_next_stage_combat,
+    level_fail_check,
 };
-pub use hud::{
-    setup_currency_ui, setup_level_status_ui,
-    update_currency_ui, update_level_status_ui,
-    update_refined_steel_text, update_scrap_text, update_steel_text, DebugUiVisible,
-};
+pub use hud::{setup_level_status_ui, update_level_status_ui, DebugUiVisible};
 #[cfg(not(feature = "demo"))]
 pub use hud::{
     handle_debug_buttons, setup_debug_ui, sync_debug_panel_visibility,
     toggle_debug_ui_on_hash, update_claim_label, update_debug_button_tints,
 };
 pub use input::{map_boat_movement, map_click_input};
-pub use setup::{setup_map, sync_owned_slot_visuals, update_map_slot_labels};
-
-use crate::i18n::tr;
-use std::collections::HashMap;
+pub use setup::setup_map;
 
 // ---------- Layer + Z constants ----------
 
@@ -68,12 +59,11 @@ pub const MAP_LAYER: usize = 3;
 
 /// Z-band used by map entities so they layer cleanly:
 ///   0.5 = section fills,    0.7  = boundary segments,
-///   0.85 = slot box,         0.90 = star marks,
+///   0.90 = star marks,
 ///   1.0  = phase animations (pulses/beams),
 ///   1.5  = boat token.
 pub(crate) const Z_FILL:      f32 = 0.5;
 pub(crate) const Z_OUTLINE:   f32 = 0.7;
-pub(crate) const Z_SLOT_BOX:  f32 = 0.85;
 pub(crate) const Z_SLOT_STAR: f32 = 0.90;
 pub(crate) const Z_ANIM:      f32 = 1.0;
 pub(crate) const Z_BOAT:      f32 = 1.5;
@@ -81,26 +71,19 @@ pub(crate) const Z_BOAT:      f32 = 1.5;
 /// Visual scale of the map boat token relative to its in-combat size.
 pub(crate) const MAP_BOAT_SCALE: f32 = 0.5;
 
-/// Slot box geometry. World-space units; the play area is `PLAY_WORLD`
-/// (=200) wide so a 10-unit box reads as a small but clickable tile.
-pub(crate) const SLOT_SIZE: f32 = 10.0;
-pub(crate) const SLOT_HALF: f32 = SLOT_SIZE / 2.0;
 /// Star-mark geometry — small filled squares stacked horizontally above
-/// the slot. With `STAR_SIZE = 2` and `STAR_GAP = 2`, stars render as
-/// 2-px filled squares with 2-px gaps.
+/// each section's centre. With `STAR_SIZE = 2` and `STAR_GAP = 2`,
+/// stars render as 2-px filled squares with 2-px gaps.
 pub(crate) const STAR_SIZE: f32 = 2.0;
 pub(crate) const STAR_GAP:  f32 = 2.0;
 pub(crate) const STAR_Y_OFFSET: f32 = 9.0;
 
 // Animation tuning — short, snappy. Tweak here.
-pub(crate) const ANIM_PULSE_DUR: f32 = 0.45;
-pub(crate) const ANIM_BEAM_DUR:  f32 = 0.40;
 pub(crate) const ANIM_PULSE_PEAK_ALPHA: f32 = 0.55;
 pub(crate) const ANIM_BEAM_PEAK_ALPHA:  f32 = 0.85;
 pub(crate) const ANIM_PULSE_PEAK_SCALE: f32 = 1.30;
-pub(crate) const ANIM_PULSE_SIZE: f32 = SLOT_SIZE + 4.0;
+pub(crate) const ANIM_PULSE_SIZE: f32 = 14.0;
 pub(crate) const ANIM_BEAM_THICKNESS: f32 = 1.4;
-pub(crate) const ANIM_STEP_OVERLAP: f32 = 0.5;
 
 // ---------- Resources ----------
 
@@ -174,6 +157,12 @@ pub struct CombatContext {
 pub struct PendingSpawn {
     pub pos: Vec2,
     pub indicator: Entity,
+    /// Pre-rolled variant. `None` means "let the drip site roll one
+    /// from the stage's mix" (the default path). `Some(v)` forces a
+    /// specific variant — used by Swarmer cluster expansion so a
+    /// rolled Swarmer balloons into 4-7 PendingSpawns that all
+    /// spawn the same variant from one direction.
+    pub variant: Option<crate::enemy::EnemyVariant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,6 +173,26 @@ pub enum WavePhase {
     Fighting,
     /// All enemies dead — short pause before the next wave.
     Cooldown,
+}
+
+impl WavePhase {
+    /// Stable wire-format discriminant for multiplayer wave sync.
+    /// Append-only — same rules as the other `to_u8` enums.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            WavePhase::Spawning => 0,
+            WavePhase::Fighting => 1,
+            WavePhase::Cooldown => 2,
+        }
+    }
+    pub fn from_u8(n: u8) -> Option<Self> {
+        Some(match n {
+            0 => WavePhase::Spawning,
+            1 => WavePhase::Fighting,
+            2 => WavePhase::Cooldown,
+            _ => return None,
+        })
+    }
 }
 
 /// Seconds of breathing room between waves. Kept short so cleared
@@ -269,58 +278,37 @@ impl CombatContext {
         // Spawning state will refill on next tick.
         self.pending_spawns.clear();
     }
-}
 
-/// Buildings that can be placed in a section's upgrade slot. Adding a
-/// new variant is a four-place edit (variant + label + description +
-/// options_for_stars + 2 translation rows).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MapBuilding {
-    Weaponry,
-    Dockyard,
-    Foundry,
-    Crane,
-    Refinery,
-}
-
-impl MapBuilding {
-    pub fn label(self) -> &'static str {
-        match self {
-            MapBuilding::Weaponry => tr("map_building_weaponry"),
-            MapBuilding::Dockyard => tr("map_building_dockyard"),
-            MapBuilding::Foundry  => tr("map_building_foundry"),
-            MapBuilding::Crane    => tr("map_building_crane"),
-            MapBuilding::Refinery => tr("map_building_refinery"),
-        }
+    /// Pure-logic half of the spawner's Fighting branch. Returns true
+    /// iff the phase just transitioned Fighting → Cooldown (caller
+    /// then performs the side-effects: grant scrap, queue level-ups).
+    ///
+    /// The early-return on the non-Fighting phase is intentional —
+    /// the caller drives the state machine via a match, but extracting
+    /// the transition here lets unit tests assert it without dragging
+    /// in the spawner's graphics deps. Catches the regression class
+    /// where a stuck wave silently never advances.
+    pub fn try_advance_fighting(&mut self, enemy_count: usize) -> bool {
+        if self.wave_phase != WavePhase::Fighting { return false; }
+        if enemy_count != 0 { return false; }
+        self.wave_phase = WavePhase::Cooldown;
+        self.wave_cd = BETWEEN_WAVES_DURATION;
+        true
     }
 
-    pub fn description(self) -> &'static str {
-        match self {
-            MapBuilding::Weaponry => tr("map_building_weaponry_desc"),
-            MapBuilding::Dockyard => tr("map_building_dockyard_desc"),
-            MapBuilding::Foundry  => tr("map_building_foundry_desc"),
-            MapBuilding::Crane    => tr("map_building_crane_desc"),
-            MapBuilding::Refinery => tr("map_building_refinery_desc"),
-        }
-    }
-
-    pub fn options_for_stars(stars: u8) -> Vec<MapBuilding> {
-        let mut opts = Vec::new();
-        if stars >= 1 { opts.push(MapBuilding::Weaponry); }
-        if stars >= 1 { opts.push(MapBuilding::Dockyard); }
-        if stars >= 1 { opts.push(MapBuilding::Foundry);  }
-        if stars >= 2 { opts.push(MapBuilding::Crane);    }
-        if stars >= 3 { opts.push(MapBuilding::Refinery); }
-        opts
-    }
-
-    pub fn cost_scrap(self) -> u32 {
-        match self {
-            MapBuilding::Weaponry => 10,
-            MapBuilding::Dockyard => 10,
-            MapBuilding::Foundry  => 10,
-            MapBuilding::Crane    => 20,
-            MapBuilding::Refinery => 30,
+    /// Pure-logic half of the spawner's Cooldown branch. Returns true
+    /// iff the cooldown finished AND this isn't the last wave — i.e.,
+    /// `advance_wave` was called. On the last wave, returns false
+    /// (the level-complete check takes over there).
+    pub fn try_advance_cooldown(&mut self, dt: f32) -> bool {
+        if self.wave_phase != WavePhase::Cooldown { return false; }
+        self.wave_cd -= dt;
+        if self.wave_cd > 0.0 { return false; }
+        if self.wave_idx + 1 < self.wave_count {
+            self.advance_wave();
+            true
+        } else {
+            false
         }
     }
 }
@@ -332,24 +320,12 @@ pub struct MapSection {
     pub center: Vec2,
     pub adjacencies: Vec<u32>,
     pub stars: u8,
-    pub slots: Vec<Option<MapBuilding>>,
     /// Boss assigned to this section. Populated for 5★ sections at
     /// `MapState::new` time with a random `ShipClass`; `None` for
     /// every other tier. Drives both the patrol entity rendered on
     /// the map view and the boss spawned during the section's final
     /// combat wave.
     pub boss_class: Option<crate::ally::ShipClass>,
-}
-
-#[derive(Default)]
-pub struct BuildingTickState {
-    pub cooldown: f32,
-    pub fueled: bool,
-}
-
-#[derive(Resource, Default)]
-pub struct BuildingTimers {
-    pub state: HashMap<(u32, usize), BuildingTickState>,
 }
 
 #[derive(Resource)]
@@ -415,15 +391,14 @@ impl MapState {
         ];
         for (i, s) in sections.iter_mut().enumerate() {
             s.stars = stars[i];
-            s.slots = vec![None; 1];
             // Boss assignment by star tier — 5★ always, 4★ commonly,
             // 3★ occasionally. The sprinkled patrols on lower tiers
             // make the map feel populated with telegraphed threats
             // rather than two fixed end-zone bosses.
             let boss_chance: f32 = match s.stars {
                 5 => 1.0,
-                4 => 0.55,
-                3 => 0.30,
+                4 => 0.25,
+                3 => 0.10,
                 _ => 0.0,
             };
             s.boss_class = if rng.gen::<f32>() < boss_chance {
@@ -446,18 +421,6 @@ impl MapState {
     pub fn neighbors(&self, section_id: u32) -> &[u32] {
         &self.sections[section_id as usize].adjacencies
     }
-
-    /// `(neighbor_id, building)` for every built building in any neighbor
-    /// of `section_id`.
-    pub fn neighbor_buildings(
-        &self,
-        section_id: u32,
-    ) -> impl Iterator<Item = (u32, MapBuilding)> + '_ {
-        self.neighbors(section_id).iter().flat_map(move |&nid| {
-            self.sections[nid as usize].slots.iter()
-                .filter_map(move |slot| slot.map(|b| (nid, b)))
-        })
-    }
 }
 
 /// Tear down every map-view entity and rebuild `MapState` at the
@@ -467,21 +430,15 @@ impl MapState {
 ///
 /// Order in the OnExit chain: this fires FIRST, then `setup_map` +
 /// `spawn_boss_patrols` rebuild visuals from the regenerated state.
-/// `BuildingTimers` are cleared too — `(section_id, slot)` keys
-/// would otherwise carry stale references to a map that no longer
-/// exists.
 pub fn regenerate_map(
     mut commands: Commands,
     map_size: Res<MapSize>,
     mut state: ResMut<MapState>,
-    mut building_timers: ResMut<BuildingTimers>,
     despawn_q: Query<
         Entity,
         Or<(
             With<MapFillSprite>,
             With<MapSectionBoundary>,
-            With<MapSlotBox>,
-            With<MapSlotLabel>,
             With<MapSlotStar>,
             With<MapBoat>,
             With<BossPatrol>,
@@ -491,7 +448,6 @@ pub fn regenerate_map(
     for e in &despawn_q {
         commands.entity(e).despawn();
     }
-    building_timers.state.clear();
     *state = MapState::new(map_size.sections());
 }
 
@@ -530,6 +486,10 @@ pub struct TimelineStep {
     pub action: TimelineAction,
 }
 
+// Variants kept around for future per-section map animations even
+// though nothing populates the timeline today (the building-driven
+// Dockyard pulses that used them are gone).
+#[allow(dead_code)]
 pub enum TimelineAction {
     Pulse { pos: Vec2, color: Color, duration: f32 },
     Beam { from: Vec2, to: Vec2, color: Color, duration: f32 },
@@ -559,64 +519,8 @@ pub struct MapFillSprite;
 #[derive(Component)]
 pub struct MapSectionBoundary;
 
-/// Grey square at a section's center where a building can be placed.
-#[derive(Component)]
-#[allow(dead_code)]
-pub struct MapSlotBox {
-    pub section_id: u32,
-    pub slot_index: usize,
-}
-
 #[derive(Component)]
 pub struct MapSlotStar;
-
-#[derive(Component)]
-pub struct MapSlotLabel {
-    pub section_id: u32,
-    pub slot_index: usize,
-}
-
-/// Root entity of a building-choice popup.
-#[derive(Component)]
-pub struct BuildingPopup;
-
-#[derive(Component)]
-pub struct BuildingChoiceButton {
-    pub section_id: u32,
-    pub slot_index: usize,
-    pub building: MapBuilding,
-}
-
-/// Description text element at the bottom of a building popup.
-#[derive(Component)]
-pub struct BuildingPopupDescription;
-
-#[derive(Component)]
-#[allow(dead_code)]
-pub struct BuildingCostLabel {
-    pub cost: u32,
-}
-
-/// Hover tooltip that appears next to the cursor over a placed
-/// building's slot.
-#[derive(Component)]
-pub struct BuildingTooltip {
-    pub building: MapBuilding,
-}
-
-// ---------- Currency UI markers ----------
-
-#[derive(Component)]
-pub struct CurrencyUi;
-
-#[derive(Component)]
-pub struct ScrapText;
-
-#[derive(Component)]
-pub struct SteelText;
-
-#[derive(Component)]
-pub struct RefinedSteelText;
 
 // ---------- Level status markers ----------
 
@@ -628,35 +532,6 @@ pub struct LevelStatusText;
 
 #[derive(Component)]
 pub struct LevelEnemyBar;
-
-// ---------- Converter progress bar markers ----------
-
-#[derive(Component)]
-pub struct BuildingProgressBg {
-    #[allow(dead_code)]
-    pub section_id: u32,
-    #[allow(dead_code)]
-    pub slot_index: usize,
-}
-
-#[derive(Component)]
-pub struct BuildingProgressBar {
-    pub section_id: u32,
-    pub slot_index: usize,
-    pub interval: f32,
-    pub left_x: f32,
-    pub y: f32,
-    pub max_w: f32,
-    pub z: f32,
-}
-
-#[derive(Resource)]
-pub struct ProgressBarAssets {
-    pub bg_mesh: Handle<Mesh>,
-    pub fill_mesh: Handle<Mesh>,
-    pub bg_material: Handle<ColorMaterial>,
-    pub fill_material: Handle<ColorMaterial>,
-}
 
 // ---------- Debug panel markers ----------
 //
@@ -742,4 +617,129 @@ pub(crate) fn point_in_polygon(p: Vec2, poly: &[Vec2]) -> bool {
         j = i;
     }
     inside
+}
+
+#[cfg(test)]
+mod wave_state_tests {
+    //! Regression tests for the wave state machine. Specifically
+    //! the Fighting → Cooldown → AdvanceWave / hold-on-last-wave
+    //! transitions that previously lived inside `spawn_enemies` and
+    //! were untestable without graphics deps.
+    //!
+    //! Each test is named for the stuck-state class it would catch.
+
+    use super::*;
+
+    fn fresh_ctx(wave_idx: u8, wave_count: u8) -> CombatContext {
+        let mut c = CombatContext::default();
+        // Override `reset_for`-supplied values so tests can pin the
+        // wave layout independently of `balance::waves_for_stars`.
+        c.wave_idx = wave_idx;
+        c.wave_count = wave_count;
+        c
+    }
+
+    #[test]
+    fn fighting_advances_to_cooldown_when_field_clear() {
+        let mut c = fresh_ctx(0, 3);
+        c.wave_phase = WavePhase::Fighting;
+        c.wave_cd = 0.0;
+
+        assert!(c.try_advance_fighting(0), "field empty → should transition");
+        assert_eq!(c.wave_phase, WavePhase::Cooldown);
+        assert_eq!(c.wave_cd, BETWEEN_WAVES_DURATION);
+    }
+
+    #[test]
+    fn fighting_holds_when_enemies_still_alive() {
+        let mut c = fresh_ctx(0, 3);
+        c.wave_phase = WavePhase::Fighting;
+
+        for n in 1..=10 {
+            assert!(!c.try_advance_fighting(n), "enemy_count={n}: no transition");
+            assert_eq!(c.wave_phase, WavePhase::Fighting);
+        }
+    }
+
+    #[test]
+    fn fighting_branch_is_phase_gated() {
+        // Calling try_advance_fighting on a Spawning / Cooldown ctx
+        // must not silently transition. This guards against
+        // accidentally double-running the branch from a stray site.
+        for phase in [WavePhase::Spawning, WavePhase::Cooldown] {
+            let mut c = fresh_ctx(0, 3);
+            c.wave_phase = phase;
+            assert!(!c.try_advance_fighting(0));
+            assert_eq!(c.wave_phase, phase);
+        }
+    }
+
+    #[test]
+    fn cooldown_advances_next_wave_when_timer_elapses() {
+        let mut c = fresh_ctx(0, 3);
+        c.wave_phase = WavePhase::Cooldown;
+        c.wave_cd = 0.5;
+
+        assert!(!c.try_advance_cooldown(0.3), "cd still positive");
+        assert_eq!(c.wave_phase, WavePhase::Cooldown);
+
+        assert!(c.try_advance_cooldown(0.3), "cd elapsed → next wave");
+        assert_eq!(c.wave_phase, WavePhase::Spawning);
+        assert_eq!(c.wave_idx, 1);
+    }
+
+    #[test]
+    fn cooldown_holds_on_last_wave() {
+        // On the LAST wave, cooldown elapsing must NOT advance the
+        // wave (no more waves) — level_complete_check takes over.
+        let mut c = fresh_ctx(2, 3);
+        c.wave_phase = WavePhase::Cooldown;
+        c.wave_cd = 0.1;
+
+        assert!(!c.try_advance_cooldown(0.5), "last wave: no advance");
+        assert_eq!(c.wave_phase, WavePhase::Cooldown,
+            "phase must NOT silently flip back to Spawning");
+        assert_eq!(c.wave_idx, 2, "wave_idx must not advance past wave_count-1");
+    }
+
+    #[test]
+    fn cooldown_branch_is_phase_gated() {
+        // Calling try_advance_cooldown while in Fighting/Spawning is
+        // a no-op. Catches the bug where a tick from the wrong branch
+        // silently drains wave_cd.
+        for phase in [WavePhase::Spawning, WavePhase::Fighting] {
+            let mut c = fresh_ctx(0, 3);
+            c.wave_phase = phase;
+            c.wave_cd = 1.0;
+            assert!(!c.try_advance_cooldown(0.5));
+            assert_eq!(c.wave_cd, 1.0, "wave_cd must NOT drain in {phase:?}");
+        }
+    }
+
+    #[test]
+    fn full_round_trip_fighting_to_next_wave_spawning() {
+        // End-to-end: Fighting (1 enemy) → field clears (0 enemies)
+        // → Cooldown ticks down → AdvanceWave → Spawning. This is the
+        // stuck-state regression: if any step silently fails to fire,
+        // the wave is stuck.
+        let mut c = fresh_ctx(0, 3);
+        c.wave_phase = WavePhase::Fighting;
+
+        // Frame N: enemy still alive.
+        assert!(!c.try_advance_fighting(1));
+
+        // Frame N+1: enemy died.
+        assert!(c.try_advance_fighting(0));
+        assert_eq!(c.wave_phase, WavePhase::Cooldown);
+
+        // Drain cooldown across a few frames at 30fps.
+        let dt = 1.0 / 30.0;
+        let mut advanced = false;
+        for _ in 0..120 {
+            if c.try_advance_cooldown(dt) { advanced = true; break; }
+        }
+        assert!(advanced, "cooldown never elapsed");
+        assert_eq!(c.wave_phase, WavePhase::Spawning);
+        assert_eq!(c.wave_idx, 1);
+    }
 }

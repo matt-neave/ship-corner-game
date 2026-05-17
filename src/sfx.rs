@@ -52,6 +52,9 @@ pub enum Sfx {
     GameOver,
     /// Enemy entity drops in.
     EnemySpawn,
+    /// Enemy hull destroyed — short pop / break, distinct from the
+    /// scrap-pickup `Coin` jingle.
+    EnemyDestroyed,
 }
 
 /// Asset table. Filled once at Startup; read on every play.
@@ -96,6 +99,36 @@ impl SfxVolume {
     }
 }
 
+/// Master music volume (`0.0..=1.0` linear). Persisted via
+/// `settings.rs`. Default sits well below SFX so the soundtrack
+/// stays atmospheric and gameplay hits stay punchy.
+#[derive(Resource, Clone, Copy, PartialEq, Debug)]
+pub struct MusicVolume(pub f32);
+
+impl Default for MusicVolume {
+    fn default() -> Self { Self(0.35) }
+}
+
+impl MusicVolume {
+    pub const STEPS: &'static [f32] = &[0.0, 0.15, 0.35, 0.55, 0.8];
+    pub fn cycle(self) -> Self {
+        let nearest_idx = Self::STEPS
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                (*a - self.0).abs().partial_cmp(&(*b - self.0).abs()).unwrap()
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let next = (nearest_idx + 1) % Self::STEPS.len();
+        Self(Self::STEPS[next])
+    }
+    pub fn label(self) -> String {
+        if self.0 <= 0.0 { "OFF".to_string() }
+        else { format!("{}%", (self.0 * 100.0).round() as i32) }
+    }
+}
+
 /// Per-`Sfx` last-played + streak counter for the repeat-pitch logic.
 /// Resource (not a Component) so cross-frame state survives the
 /// one-shot AudioPlayer entities which despawn on completion.
@@ -124,7 +157,76 @@ impl Plugin for SfxPlugin {
         app.init_resource::<SfxLibrary>()
             .init_resource::<SfxVolume>()
             .init_resource::<SfxRepeatState>()
-            .add_systems(Startup, load_sfx);
+            .add_systems(Startup, load_sfx)
+            // Universal button-click feedback. Any bevy_ui `Button`
+            // that just transitioned to `Pressed` plays the Switch
+            // sample — same crisp click the player heard on the
+            // main menu. Per-button handlers can still fire their
+            // own Sfx on top (e.g. settings cycle) but they no
+            // longer need to remember the click sound at all.
+            .add_systems(Update, play_button_click_sound);
+    }
+}
+
+/// Background music plugin. Spawns a single looping `AudioPlayer`
+/// at startup that plays the Kubbi "Ember" track (licensed under CC
+/// BY 4.0 — see https://kubbimusic.com/album/ember, same track SNKRX
+/// shipped under). One track for the whole session for now; expand
+/// to a per-state playlist if the game wants scene-specific themes.
+pub struct MusicPlugin;
+
+impl Plugin for MusicPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<MusicVolume>()
+            .add_systems(Startup, start_music)
+            // Apply live volume edits to the audio sink. Reads the
+            // `MusicVolume` resource; cheap diff via the sink's
+            // current value.
+            .add_systems(Update, apply_music_volume);
+    }
+}
+
+#[derive(Component)]
+pub struct MusicTrack;
+
+fn start_music(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    volume: Res<MusicVolume>,
+) {
+    commands.spawn((
+        AudioPlayer::new(asset_server.load("music/kubbi_ember.ogg")),
+        // LOOP keeps the track restarting on completion. Initial
+        // volume comes from `MusicVolume`; `apply_music_volume`
+        // tracks live edits via the audio sink.
+        PlaybackSettings::LOOP.with_volume(Volume::Linear(volume.0)),
+        MusicTrack,
+    ));
+}
+
+fn apply_music_volume(
+    volume: Res<MusicVolume>,
+    mut sinks: Query<&mut bevy::audio::AudioSink, With<MusicTrack>>,
+) {
+    if !volume.is_changed() { return; }
+    for mut sink in &mut sinks {
+        sink.set_volume(Volume::Linear(volume.0));
+    }
+}
+
+/// Fire `Sfx::Switch` whenever any `bevy_ui::Button` transitions to
+/// `Interaction::Pressed`. `Changed<Interaction>` keeps this idle
+/// most frames — only fires on press enter, not hold. Single-source
+/// of truth so adding a new button anywhere gets the click sound
+/// for free, with no per-handler plumbing.
+fn play_button_click_sound(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<Button>)>,
+    mut sfx: SfxPlayer,
+) {
+    for interaction in &interactions {
+        if matches!(*interaction, Interaction::Pressed) {
+            sfx.play(Sfx::Switch);
+        }
     }
 }
 
@@ -137,14 +239,15 @@ fn load_sfx(asset_server: Res<AssetServer>, mut lib: ResMut<SfxLibrary>) {
         (Sfx::Cannon,     "sounds/cannon.ogg"),
         (Sfx::Hit,        "sounds/hit.ogg"),
         (Sfx::Explosion,  "sounds/explosion.ogg"),
-        (Sfx::PlayerHit,  "sounds/player_hit.ogg"),
+        (Sfx::PlayerHit,  "sounds/heavy_attack.ogg"),
         (Sfx::Coin,       "sounds/coin.ogg"),
         (Sfx::LevelUp,    "sounds/level_up.ogg"),
         (Sfx::UiClick,    "sounds/ui_click.ogg"),
         (Sfx::Switch,     "sounds/switch.ogg"),
         (Sfx::Victory,    "sounds/victory.ogg"),
         (Sfx::GameOver,   "sounds/game_over.ogg"),
-        (Sfx::EnemySpawn, "sounds/enemy_spawn.ogg"),
+        (Sfx::EnemySpawn,     "sounds/enemy_spawn.ogg"),
+        (Sfx::EnemyDestroyed, "sounds/subtle_pop.mp3"),
     ];
     for &(sfx, path) in map {
         lib.handles.insert(sfx, asset_server.load(path));
@@ -164,6 +267,59 @@ pub struct SfxPlayer<'w, 's> {
 }
 
 impl SfxPlayer<'_, '_> {
+    /// Single mapping from a player-weapon variant to the SFX
+    /// fired on each shot. `None` means the weapon doesn't make a
+    /// muzzle sound (autonomous units fire from their own bodies;
+    /// support / passive weapons don't fire at all; Flamethrower
+    /// runs at per-frame puff cadence and would spam the repeat-
+    /// pitch buffer).
+    ///
+    /// Living here keeps "what does each weapon sound like" a
+    /// one-spot edit. Adding a new `Sfx::SniperShot` later is one
+    /// match-arm change — every firing site already calls through
+    /// this lookup.
+    pub fn weapon_fire_sfx(weapon: crate::weapon::WeaponType) -> Option<Sfx> {
+        use crate::weapon::WeaponType;
+        match weapon {
+            // Crisp small-arms beat.
+            WeaponType::Standard
+            | WeaponType::Sniper
+            | WeaponType::MachineGun
+            | WeaponType::Shotgun
+            | WeaponType::Harpoon => Some(Sfx::Shoot),
+            // Heavy boom — anything with real mass behind the shot.
+            WeaponType::Cannon
+            | WeaponType::Railgun
+            | WeaponType::Mortar
+            | WeaponType::SpreadRockets
+            | WeaponType::PlasmaTorpedo => Some(Sfx::Cannon),
+            // Autonomous + passive weapons make no muzzle sound at
+            // the deck level. (Their own units may play sounds
+            // later — that's a separate hook.)
+            WeaponType::HeliPad
+            | WeaponType::Booster
+            | WeaponType::Blade
+            | WeaponType::Cage
+            | WeaponType::Flamethrower
+            | WeaponType::SpikedPlate
+            | WeaponType::Amplifier
+            | WeaponType::SharkNet
+            | WeaponType::AnchorFlail
+            | WeaponType::CrowsNest => None,
+        }
+    }
+
+    /// Convenience: play the per-weapon fire SFX, silently no-op
+    /// if the weapon has no mapped sound. Call sites just write
+    /// `sfx.play_fire(weapon)` next to the muzzle-flash spawn so
+    /// adding sound to a new weapon is one match-arm edit (in
+    /// `weapon_fire_sfx`) instead of touching every firing site.
+    pub fn play_fire(&mut self, weapon: crate::weapon::WeaponType) {
+        if let Some(s) = Self::weapon_fire_sfx(weapon) {
+            self.play(s);
+        }
+    }
+
     /// Spawn a one-shot audio entity for `sfx`. Silent when volume is
     /// 0.0 (no entity spawned at all). Pitch picks up the per-shot
     /// jitter and a cumulative bump if the same `Sfx` fired again

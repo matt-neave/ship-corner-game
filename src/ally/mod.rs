@@ -65,7 +65,7 @@ pub use mine::{
 };
 pub use missile::{
     homing_missile_track, missile_launcher_fire, spawn_homing_missile_full,
-    MissileLauncher,
+    HomingMissile, MissileLauncher,
 };
 pub use oil::{
     oil_slick_burn_tick, oil_slick_grow_tick, oil_tanker_cycle,
@@ -92,6 +92,10 @@ pub struct Ally {
 /// A type of ship — its hull, stats, and turret layout. Faction-agnostic;
 /// today only friendly `Ally`s use it, future boss enemies will reuse the
 /// same classes (see module docs).
+///
+/// Discriminants assigned via `to_u8` / `from_u8` for multiplayer
+/// wire-format. Treat them as append-only — clients running an older
+/// build use `from_u8` to skip unknown variants instead of crashing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ShipClass {
     /// Small retro pirate ship — 4 broadside cannons (2 per side).
@@ -143,6 +147,37 @@ pub enum ShipClass {
 }
 
 impl ShipClass {
+    /// Wire-format discriminant for multiplayer `BossSpawned` /
+    /// boss-flagged `EnemyEntry`. Append-only: new variants take
+    /// the next free number. Sentinel `0xFF` is reserved for
+    /// "no boss" in `EnemyEntry.boss_class`.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            ShipClass::PirateShip => 0,
+            ShipClass::Carrier    => 1,
+            ShipClass::Submarine  => 2,
+            ShipClass::Minelayer  => 3,
+            ShipClass::Tender     => 4,
+            ShipClass::Blackbeard => 5,
+            ShipClass::OilTanker  => 6,
+            ShipClass::Viking     => 7,
+        }
+    }
+
+    pub fn from_u8(n: u8) -> Option<Self> {
+        Some(match n {
+            0 => ShipClass::PirateShip,
+            1 => ShipClass::Carrier,
+            2 => ShipClass::Submarine,
+            3 => ShipClass::Minelayer,
+            4 => ShipClass::Tender,
+            5 => ShipClass::Blackbeard,
+            6 => ShipClass::OilTanker,
+            7 => ShipClass::Viking,
+            _ => return None,
+        })
+    }
+
     pub fn hp(self) -> i32 {
         // Boss-tier HP ladder. Ordered roughly by "how late this boss
         // feels in a run". Carrier sits at the top as the apex bullet
@@ -374,6 +409,14 @@ impl ShipClass {
         }
     }
 
+    /// Whether this class casts a drop shadow on the water. Above-
+    /// water hulls do; submerged hulls (Submarine) don't. Other
+    /// underwater visuals — shark-net projectiles, helicopters
+    /// (in the air) — are handled at their own spawn sites.
+    pub fn casts_shadow(self) -> bool {
+        !matches!(self, ShipClass::Submarine)
+    }
+
     /// Convenience iterator over every class — handy for the debug
     /// "spawn one of each" UI so adding a class auto-shows up there.
     pub const ALL: &'static [ShipClass] = &[
@@ -564,7 +607,7 @@ pub fn spawn_boss(
 /// Friendly side gets `target = Enemy / heal = Friendly`; boss side
 /// gets `target = Friendly / heal = Enemy`. Same chassis, mirrored
 /// targeting — that's the whole point of carving the function out.
-fn build_ship_for_faction(
+pub fn build_ship_for_faction(
     commands: &mut Commands,
     pm: &PaletteMaterials,
     em: &EffectMeshes,
@@ -973,8 +1016,8 @@ pub fn spawn_ship_chassis(
     let dir = Vec2::new(-heading.sin(), heading.cos());
 
     let body_mat = pm.hull_for_class(class).clone();
-    commands.spawn((
-        Mesh2d(hull_mesh),
+    let ship = commands.spawn((
+        Mesh2d(hull_mesh.clone()),
         MeshMaterial2d(body_mat.clone()),
         Transform::from_xyz(pos.x, pos.y, 1.0)
             .with_rotation(Quat::from_rotation_z(heading)),
@@ -986,7 +1029,21 @@ pub fn spawn_ship_chassis(
         HitFx::new(body_mat),
         FireExtent(Vec2::new(hull_w * 0.5, hull_h * 0.5)),
         RenderLayers::layer(PLAY_LAYER),
-    )).id()
+    )).id();
+    // Drop shadow — every above-water class casts; submerged
+    // classes (Submarine) opt out via `casts_shadow()`.
+    if class.casts_shadow() {
+        crate::shadow::spawn_for(
+            commands,
+            pm.shadow.clone(),
+            hull_mesh,
+            ship,
+            1.0,
+            pos,
+            Quat::from_rotation_z(heading),
+        );
+    }
+    ship
 }
 
 /// Build a slightly bowed flag mesh: a wide rectangle of size

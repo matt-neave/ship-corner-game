@@ -34,7 +34,7 @@ use crate::weapon::WeaponType;
 /// Damage cone reach (world units) in front of the slot's mount
 /// direction. Matched to the upper end of the particle travel
 /// distance so the visible flame and the damage area line up.
-const FLAMETHROWER_REACH: f32 = 50.0;
+const FLAMETHROWER_REACH: f32 = 80.0;
 /// Half-angle of the cone (radians). ~10° each side → ~20° total
 /// arc. Tight focus reads as a directed flame spear; the slot's
 /// mount direction is FIXED (like Blade) so the player aims by
@@ -58,15 +58,17 @@ pub fn flamethrower_cooldown_for_tier(barrels: u8) -> f32 {
 /// as a dark outline around a glowing core (pixel-art fire pattern).
 /// Spew is continuous — independent of the damage cadence — so the
 /// flame visibly fills the cone the entire time the burner is on.
-const FLAMETHROWER_PARTICLES_PER_FRAME: u32 = 3;
+const FLAMETHROWER_PARTICLES_PER_FRAME: u32 = 2;
 /// Outer-stroke radius multiplier relative to the inner core. >1.0
 /// means the dark stroke wraps the bright inner with a visible rim.
 const FLAMETHROWER_STROKE_SCALE: f32 = 1.55;
 /// Particle velocity range. Tuned so `speed × life ≈ FLAMETHROWER_REACH`
 /// — particles visibly travel the full damage cone rather than
-/// dying within the first quarter.
-const FLAMETHROWER_PARTICLE_SPEED_MIN: f32 = 110.0;
-const FLAMETHROWER_PARTICLE_SPEED_MAX: f32 = 160.0;
+/// dying within the first quarter. Scaled with `FLAMETHROWER_REACH`
+/// (×1.6 from the original 110/160 tuning) so the flame visibly
+/// covers the longer cone in roughly the same particle lifetime.
+const FLAMETHROWER_PARTICLE_SPEED_MIN: f32 = 175.0;
+const FLAMETHROWER_PARTICLE_SPEED_MAX: f32 = 260.0;
 /// Particle lifetime range. Combined with the speed above, particles
 /// reach the cone's outer edge before fading.
 const FLAMETHROWER_PARTICLE_LIFE_MIN: f32 = 0.22;

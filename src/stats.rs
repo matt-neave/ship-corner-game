@@ -50,9 +50,12 @@ pub fn shield_recharge_system(
     mut q: Query<&mut Shield>,
 ) {
     let dt = time.delta_secs();
-    let max = stats.shield_max.effective().max(0.0);
+    let max = stats.effective_shield_max();
     let delay = stats.shield_recharge_delay.effective().max(0.0);
-    let rate_per_sec = (stats.shield_recharge_rate_pct.effective() / 100.0).max(0.0) * max;
+    // Flat shield-per-second — independent of `shield_max`. A
+    // 50-max-shield build regenerates at the same rate as a
+    // 500-max-shield build, just refilling proportionally faster.
+    let rate_per_sec = stats.shield_recharge_rate.effective().max(0.0);
     for mut shield in &mut q {
         // Don't clamp current down to max — Ward (and any future
         // overflow source) is allowed to sit above shield_max as a
@@ -116,7 +119,9 @@ pub struct PlayerStats {
     /// granted = base_xp × (1 + xp_harvest_pct/100), rounded.
     pub xp_harvest_pct: Stat,
     pub shield_max: Stat,
-    pub shield_recharge_rate_pct: Stat,
+    /// Flat shield points regenerated per second once the
+    /// post-damage delay has elapsed. Independent of `shield_max`.
+    pub shield_recharge_rate: Stat,
     pub shield_recharge_delay: Stat,
     /// Raw rune-damage scalar (default 1.0). Each rune declares its
     /// effect as a percentage of this value — Fire's "100% rune damage
@@ -129,7 +134,53 @@ pub struct PlayerStats {
     /// `sync_turret_config`. 0.0 = +0% (no change); +25.0 = ×1.25.
     /// All consumers go through `turret_damage_mult()` below.
     pub turret_damage_pct: Stat,
+    /// Percentage cooldown REDUCTION on every turret. Folded into
+    /// `slot.fire_rate` via `cooldown_mult()` — +25% cooldown
+    /// reduction means each weapon's reload window shrinks 20% (the
+    /// reciprocal). 0.0 = unchanged. Capped well below 100% by
+    /// the effective method so weapons can't fire infinitely fast.
+    pub cooldown_pct: Stat,
+    /// Chance to ignore an incoming damage instance entirely, in
+    /// percent. Capped at [`DEFENSIVE_CAP_PCT`] so the player can't
+    /// become invulnerable through stacking. Rolled per damage
+    /// instance on the local player; the host's ghost-of-peer skips
+    /// the roll so the relayed amount stays correct on the peer.
+    pub dodge_pct: Stat,
+    /// Flat percentage damage reduction applied after dodge (if not
+    /// dodged) and before shield absorption. Capped at
+    /// [`DEFENSIVE_CAP_PCT`] for the same invulnerability reason.
+    pub armour_pct: Stat,
+    /// Additive bonus chest drop chance, in percent. Stacks with the
+    /// base `chest::CHEST_DROP_CHANCE` (1%) so a player with +4%
+    /// from mods sees ~5% per-kill chance. No cap — chest rolls are
+    /// rare events even at high stack counts.
+    pub chest_chance_pct: Stat,
 }
+
+/// Shared cap on both Dodge and Armour. Either stat solo at 100%
+/// would make the player invulnerable, and stacking both would let
+/// armour negate the un-dodged residual to zero. 60% is the
+/// negotiated max — high enough to be a meaningful build target,
+/// low enough that bursts still kill an unprepared player.
+pub const DEFENSIVE_CAP_PCT: f32 = 60.0;
+
+/// Maximum penalty Armour can impose when negative. -100% would
+/// double incoming damage; we cap at 100 so a stack of nerf mods
+/// (BERSERKER, future trade-off legendaries) can't make a single
+/// hit one-shot a max-HP build. The asymmetry vs. `DEFENSIVE_CAP_PCT`
+/// keeps the player from being instantly punished by random rolls
+/// while still letting "Armour -6 = +6% damage taken" read clearly.
+pub const NEGATIVE_ARMOUR_CAP_PCT: f32 = 100.0;
+
+/// Min effective `move_speed`. A few % of `MOVE_SPEED_BASE` rather
+/// than 0 so stacked nerfs don't freeze the ship in place — the
+/// player should always be able to crawl, even mid-build-collapse.
+pub const MIN_MOVE_SPEED: f32 = 6.0;
+
+/// Min effective `range_pct` (in percent of baseline). 10% leaves
+/// every weapon with a sliver of range so a worst-case build still
+/// has reachable enemies, instead of the slot becoming a paperweight.
+pub const MIN_RANGE_PCT: f32 = 10.0;
 
 /// Baseline `move_speed` value. Pulled out as a named constant so
 /// `StatKind::format_delta` can express speed mod deltas as a
@@ -157,10 +208,14 @@ impl Default for PlayerStats {
             harvest_pct: Stat::new(0.0),
             xp_harvest_pct: Stat::new(0.0),
             shield_max: Stat::new(0.0),
-            shield_recharge_rate_pct: Stat::new(5.0),
+            shield_recharge_rate: Stat::new(5.0),
             shield_recharge_delay: Stat::new(3.0),
             rune_damage: Stat::new(1.0),
             turret_damage_pct: Stat::new(0.0),
+            cooldown_pct: Stat::new(0.0),
+            dodge_pct: Stat::new(0.0),
+            armour_pct: Stat::new(0.0),
+            chest_chance_pct: Stat::new(0.0),
         }
     }
 }
@@ -175,8 +230,33 @@ impl PlayerStats {
     }
     /// Range multiplier (1.0 at 100% baseline). Multiplied with each
     /// weapon's intrinsic `range_mult` and any pier/slot buff.
+    /// Floored at [`MIN_RANGE_PCT`] so stacked range nerfs (e.g.
+    /// Rammer hull -70% + MERCHANT future scaling) still leave the
+    /// weapon with a usable horizon — the slot shouldn't ever
+    /// become a paperweight.
     pub fn range_mult(&self) -> f32 {
-        self.range_pct.effective() / 100.0
+        self.range_pct.effective().max(MIN_RANGE_PCT) / 100.0
+    }
+
+    /// Effective movement speed in world units / s. Floored at
+    /// [`MIN_MOVE_SPEED`] so a stack of speed-nerf mods can't
+    /// freeze the ship in place — the player can always crawl.
+    pub fn effective_move_speed(&self) -> f32 {
+        self.move_speed.effective().max(MIN_MOVE_SPEED)
+    }
+
+    /// Effective shield_max, floored at 0. Negative `flat` from a
+    /// future trade-off mod can't push shield_max below zero where
+    /// the recharge math would treat it as a sentinel.
+    pub fn effective_shield_max(&self) -> f32 {
+        self.shield_max.effective().max(0.0)
+    }
+
+    /// Effective XP-harvest fraction (0.0 = base XP, +0.5 = 150% XP).
+    /// Floored at -90% so a hypothetical XP-nerf mod still grants
+    /// at least 10% of the baseline rather than zeroing kills out.
+    pub fn xp_harvest_mult(&self) -> f32 {
+        1.0 + (self.xp_harvest_pct.effective() / 100.0).max(-0.9)
     }
     /// Rune-damage scalar (default 1.0). Each rune coefficient
     /// multiplies this directly — fire's "100%" → `1.0 × rune_damage`.
@@ -192,6 +272,19 @@ impl PlayerStats {
     /// `slot.damage` without per-system plumbing.
     pub fn turret_damage_mult(&self) -> f32 {
         (1.0 + self.turret_damage_pct.effective() / 100.0).max(0.0)
+    }
+    /// Fire-rate multiplier from `cooldown_pct`. +25% cooldown
+    /// reduction means the slot fires `1 / (1 - 0.25) ≈ 1.33×` as
+    /// fast. Capped at 0.9 (max 90% reduction) so weapons can't
+    /// reach instant reload through stacked nerfs / mods.
+    pub fn cooldown_mult(&self) -> f32 {
+        let reduction = (self.cooldown_pct.effective() / 100.0).clamp(-2.0, 0.9);
+        // Negative reduction (player taking penalties) slows fire
+        // rate, positive speeds it up. `1 - reduction` is the
+        // remaining cooldown fraction; the multiplier on fire
+        // rate is the reciprocal.
+        let cooldown_frac = (1.0 - reduction).max(0.1);
+        1.0 / cooldown_frac
     }
     /// Additive bonus to rune proc strength, expressed as 0..1.
     pub fn proc_strength_bonus(&self) -> f32 {
@@ -245,17 +338,59 @@ impl PlayerStats {
         let max = std::f32::consts::TAU; // 360°/s
         self.turret_turn_speed.effective().min(max)
     }
+
+    /// Effective dodge chance as a 0..1 probability, clamped to
+    /// [`DEFENSIVE_CAP_PCT`]. UI shows the same clamped value so
+    /// the player understands they've hit the cap.
+    pub fn dodge_chance(&self) -> f32 {
+        (self.dodge_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT)) / 100.0
+    }
+
+    /// Effective armour as a signed fraction of incoming damage to
+    /// remove. Positive values reduce damage (capped at
+    /// [`DEFENSIVE_CAP_PCT`]); negative values AMPLIFY damage (e.g.
+    /// BERSERKER's `Armour -6` makes the player take +6% more damage),
+    /// floored at `-NEGATIVE_ARMOUR_CAP_PCT` so a stack of nerfs
+    /// can't infinitely multiply the next hit.
+    pub fn armour_reduction(&self) -> f32 {
+        self.armour_pct
+            .effective()
+            .clamp(-NEGATIVE_ARMOUR_CAP_PCT, DEFENSIVE_CAP_PCT) / 100.0
+    }
+
+    /// Apply the full defensive stack (dodge → armour) to one
+    /// incoming damage instance. Returns the post-mitigation damage
+    /// the rest of the pipeline (shield + HP) should consume.
+    /// Dodge is binary (full damage or zero); armour is a signed
+    /// percentage change on the un-dodged residual — positive
+    /// reduces, negative amplifies. Dodge capped at
+    /// [`DEFENSIVE_CAP_PCT`]; armour clamped to
+    /// `[-NEGATIVE_ARMOUR_CAP_PCT, DEFENSIVE_CAP_PCT]`.
+    pub fn mitigate_incoming(&self, rng: &mut impl Rng, damage: i32) -> i32 {
+        if damage <= 0 { return damage; }
+        if rng.r#gen::<f32>() < self.dodge_chance() { return 0; }
+        // `1.0 - armour` is the damage-pass-through fraction. Positive
+        // armour shrinks it (e.g. 0.6 = take 40% damage); negative
+        // armour grows it past 1.0 (e.g. -0.6 = take 160% damage).
+        let pass_through = 1.0 - self.armour_reduction();
+        let reduced = (damage as f32 * pass_through).round() as i32;
+        reduced.max(0)
+    }
 }
 
 /// Identifier for one displayable stat. Used by UI panels (the live
 /// stat readout, future upgrade cards) to enumerate stats and pull
 /// values without the UI hardcoding each one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
 pub enum StatKind {
     Hp,
     MoveSpeed,
     TurnSpeed,
+    /// Hidden from `ALL` / `ROLLABLE` — kept around so a future hull
+    /// or skill could surface it without resurrecting the variant.
     TurretTurnSpeed,
+    /// Hidden from `ALL` / `ROLLABLE` — same reasoning as above.
     TurretArcBonus,
     Luck,
     ProcStrength,
@@ -275,6 +410,20 @@ pub enum StatKind {
     /// composes multiplicatively with synergies in
     /// `sync_turret_config`. 0% = no change, +25% = 1.25x damage.
     TurretDamage,
+    /// Chance per incoming damage instance to take zero damage,
+    /// percent. Capped at [`DEFENSIVE_CAP_PCT`].
+    Dodge,
+    /// Flat percentage reduction on un-dodged damage, applied
+    /// before shield. Capped at [`DEFENSIVE_CAP_PCT`].
+    Armour,
+    /// Percentage cooldown reduction on every weapon. +25 = -25%
+    /// cooldown ≈ +33% effective fire rate. Capped server-side at
+    /// 90% via `cooldown_mult()`.
+    Cooldown,
+    /// Additive percentage chest drop chance, stacked onto the
+    /// base 1% in `enemy_death_check`. Each pickup point = 1% more
+    /// chests per kill on average.
+    ChestChance,
 }
 
 impl StatKind {
@@ -283,11 +432,12 @@ impl StatKind {
     pub const ALL: &'static [StatKind] = &[
         StatKind::Hp,
         StatKind::Shield,
+        StatKind::Dodge,
+        StatKind::Armour,
         StatKind::MoveSpeed,
         StatKind::TurnSpeed,
-        StatKind::TurretTurnSpeed,
-        StatKind::TurretArcBonus,
         StatKind::TurretDamage,
+        StatKind::Cooldown,
         StatKind::Range,
         StatKind::Crit,
         StatKind::Luck,
@@ -295,6 +445,31 @@ impl StatKind {
         StatKind::Harvest,
         StatKind::XpHarvest,
         StatKind::RuneDamage,
+        StatKind::ChestChance,
+    ];
+    /// Subset of [`ALL`](Self::ALL) that the shop's mod-card and
+    /// level-up roll systems pick from. `TurretArcBonus` +
+    /// `TurretTurnSpeed` are omitted from both the readout AND the
+    /// roll pool — they still exist on `PlayerStats` and apply at
+    /// runtime if anything mutates them (e.g. future hull
+    /// bonuses), but they aren't shown or rolled for.
+    pub const ROLLABLE: &'static [StatKind] = &[
+        StatKind::Hp,
+        StatKind::Shield,
+        StatKind::Dodge,
+        StatKind::Armour,
+        StatKind::MoveSpeed,
+        StatKind::TurnSpeed,
+        StatKind::TurretDamage,
+        StatKind::Range,
+        StatKind::Cooldown,
+        StatKind::Crit,
+        StatKind::Luck,
+        StatKind::ProcStrength,
+        StatKind::Harvest,
+        StatKind::XpHarvest,
+        StatKind::RuneDamage,
+        StatKind::ChestChance,
     ];
     /// Full label rendered in the panel. Plain words, no shorthand.
     pub fn label(self) -> &'static str {
@@ -313,6 +488,10 @@ impl StatKind {
             StatKind::ShieldMax => "SHIELD",
             StatKind::RuneDamage => "RUNE EFFECT",
             StatKind::TurretDamage => "WEAPON DAMAGE",
+            StatKind::Dodge => "DODGE",
+            StatKind::Armour => "ARMOUR",
+            StatKind::Cooldown => "COOLDOWN",
+            StatKind::ChestChance => "CHEST CHANCE",
         }
     }
     /// Formatted current value (with units / sign where helpful).
@@ -408,6 +587,27 @@ impl StatKind {
                 let total_pct = base_mult * naval_mult * 100.0;
                 format!("{:.0}%", total_pct)
             }
+            // Both clamped at DEFENSIVE_CAP_PCT so the readout
+            // can't disagree with the actual mitigation that
+            // `mitigate_incoming` performs.
+            StatKind::Dodge => {
+                let v = stats.dodge_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT);
+                format!("{:.0}%", v)
+            }
+            StatKind::Armour => {
+                let v = stats.armour_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT);
+                format!("{:.0}%", v)
+            }
+            StatKind::Cooldown => {
+                let v = stats.cooldown_pct.effective();
+                format!("{:+.0}%", v)
+            }
+            StatKind::ChestChance => {
+                // Effective per-kill chance: base 1% + stat. No cap.
+                let v = crate::chest::CHEST_DROP_CHANCE * 100.0
+                    + stats.chest_chance_pct.effective();
+                format!("{:.0}%", v)
+            }
         }
     }
 }
@@ -418,6 +618,9 @@ impl StatKind { #[allow(non_upper_case_globals)] pub const Shield: StatKind = St
 impl StatKind {
     /// Long-form description for the hover tooltip. Looked up in
     /// `data/translations.csv` so adding a language is one column.
+    /// Static — for the "what this stat does" baseline copy with no
+    /// numbers folded in. Hover tooltips that want the live value
+    /// should call [`dynamic_description`](Self::dynamic_description).
     pub fn description(self) -> &'static str {
         match self {
             StatKind::Hp => crate::i18n::tr("stat_hp_desc"),
@@ -434,10 +637,154 @@ impl StatKind {
             StatKind::ShieldMax => crate::i18n::tr("stat_shield_max_desc"),
             StatKind::RuneDamage => crate::i18n::tr("stat_rune_damage_desc"),
             StatKind::TurretDamage => crate::i18n::tr("stat_turret_damage_desc"),
+            StatKind::Dodge => crate::i18n::tr("stat_dodge_desc"),
+            StatKind::Armour => crate::i18n::tr("stat_armour_desc"),
+            StatKind::Cooldown => crate::i18n::tr("stat_cooldown_desc"),
+            StatKind::ChestChance => crate::i18n::tr("stat_chest_chance_desc"),
         }
     }
-    /// Step size for one click of the debug `+/-` button. Tuned per-stat
-    /// so each click is a meaningful nudge in that stat's natural unit.
+
+    /// Per-stat description with the player's CURRENT effective
+    /// value baked in. Falls back to the static `description()` for
+    /// stats that don't have a useful number to fold (e.g. straight
+    /// "raw HP value" already shows the number in the readout).
+    ///
+    /// `Crit` is the special-case one: the RoR-style tier roll
+    /// means a single "N% chance" reading lies. 50% → 50% chance
+    /// of 2×; 150% → 50% chance of 3× (with 2× as the floor); etc.
+    /// We surface both the floor multiplier and the fractional
+    /// chance for the next tier so the player can read what they
+    /// actually get on every shot.
+    pub fn dynamic_description(self, stats: &PlayerStats) -> String {
+        match self {
+            StatKind::Dodge => {
+                let v = stats.dodge_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT);
+                format!(
+                    "{:.0}% chance to negate an incoming hit entirely. Capped at {:.0}%.",
+                    v, DEFENSIVE_CAP_PCT,
+                )
+            }
+            StatKind::Armour => {
+                let v = stats.armour_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT);
+                format!(
+                    "Reduces incoming damage by {:.0}% (after dodge, before shield). Capped at {:.0}%.",
+                    v, DEFENSIVE_CAP_PCT,
+                )
+            }
+            StatKind::Crit => {
+                let pct = stats.crit_pct.effective().max(0.0);
+                let p = pct / 100.0;
+                let guaranteed_extra = p.floor() as u32; // tiers above 1× that always fire
+                let fraction = (p.fract() * 100.0).round() as u32; // chance for one more tier
+                let floor_mult = 1 + guaranteed_extra; // always at least this
+                if guaranteed_extra == 0 && fraction == 0 {
+                    "No crit chance.".to_string()
+                } else if fraction == 0 {
+                    // Whole-tier — always crits, no fractional roll.
+                    format!("Every hit deals {}x damage.", floor_mult)
+                } else if guaranteed_extra == 0 {
+                    // Pure chance at 2× (e.g. 50% → "50% chance for 2x").
+                    format!("{}% chance to deal {}x damage.", fraction, floor_mult + 1)
+                } else {
+                    // Always at least floor_mult×, fraction% chance for one more tier.
+                    format!(
+                        "Every hit deals {}x damage; {}% chance to deal {}x instead.",
+                        floor_mult, fraction, floor_mult + 1,
+                    )
+                }
+            }
+            StatKind::Range => {
+                let pct = stats.range_pct.effective();
+                format!(
+                    "Weapon firing range — currently {:.0}% of baseline.",
+                    pct,
+                )
+            }
+            StatKind::Harvest => {
+                let chance = stats.harvest_pct.effective().clamp(0.0, 100.0);
+                format!("{:.0}% chance an enemy drops 1 scrap on death.", chance)
+            }
+            StatKind::Luck => {
+                let pct = stats.luck_pct.effective().max(0.0);
+                format!(
+                    "Free re-rolls on failed rune procs. Currently {:.0}% — every 100% buys one guaranteed reroll per shot.",
+                    pct,
+                )
+            }
+            StatKind::ProcStrength => {
+                let pct = stats.proc_strength_pct.effective().max(0.0);
+                format!(
+                    "+{:.0}% to every rune's proc roll on hit.",
+                    pct,
+                )
+            }
+            StatKind::XpHarvest => {
+                // Same formula as `xp::grant_kill_xp`: base XP ×
+                // `xp_harvest_mult()` (which floors the negative tail
+                // at -90% so a hypothetical nerf never zeroes
+                // XP), rounded up to at least 1 so the tooltip
+                // never lies about a "0 XP" kill.
+                let mult = stats.xp_harvest_mult();
+                let per_kill = (1.0_f32 * mult).round().max(1.0) as u32;
+                let per_boss = (5.0_f32 * mult).round().max(1.0) as u32;
+                format!(
+                    "{} XP per kill, {} per boss.",
+                    per_kill, per_boss,
+                )
+            }
+            StatKind::RuneDamage => {
+                let pct = (stats.rune_damage.effective() * 100.0).round() as i32;
+                format!("Runes have {}% strength.", pct)
+            }
+            StatKind::TurretDamage => {
+                let base_mult = stats.turret_damage_mult();
+                let total_pct = (base_mult * 100.0).round() as i32;
+                format!(
+                    "Damage multiplier on every weapon. Currently {}% before Naval synergy.",
+                    total_pct,
+                )
+            }
+            StatKind::ShieldMax => {
+                let _max = stats.shield_max.effective().max(0.0);
+                let rate = stats.shield_recharge_rate.effective().max(0.0);
+                let delay = stats.shield_recharge_delay.effective().max(0.0);
+                format!(
+                    "Absorbs damage before HP. Recharges {:.1}/s after {:.1}s without taking a hit.",
+                    rate, delay,
+                )
+            }
+            StatKind::Cooldown => {
+                let mult = stats.cooldown_mult();
+                let pct = ((mult - 1.0) * 100.0).round() as i32;
+                format!(
+                    "Weapon cooldown reduction. Effective fire rate currently {:+}% of baseline.",
+                    pct,
+                )
+            }
+            StatKind::ChestChance => {
+                let base = crate::chest::CHEST_DROP_CHANCE * 100.0;
+                let bonus = stats.chest_chance_pct.effective();
+                let total = base + bonus;
+                format!(
+                    "Chance an enemy drops a chest on death. Base {:.0}%, currently {:.0}%.",
+                    base, total,
+                )
+            }
+            // Stats whose static blurb already reads cleanly (the
+            // raw value is visible in the readout column right next
+            // to the description tooltip, so no need to fold it in).
+            StatKind::Hp
+            | StatKind::MoveSpeed
+            | StatKind::TurnSpeed
+            | StatKind::TurretTurnSpeed
+            | StatKind::TurretArcBonus => self.description().to_string(),
+        }
+    }
+    /// Step size for one click of the debug `+/-` button. Tuned
+    /// per-stat so each click is a meaningful nudge in that stat's
+    /// natural unit. Bigger than `upgrade_step` because debug
+    /// testing wants to traverse the stat range quickly; player-
+    /// facing pickups (level-up + shop mods) use the smaller step.
     pub fn debug_step(self) -> f32 {
         match self {
             StatKind::Hp => 10.0,
@@ -454,6 +801,38 @@ impl StatKind {
             StatKind::ShieldMax => 5.0,
             StatKind::RuneDamage => 0.1,
             StatKind::TurretDamage => 10.0, // +10 percentage points / step
+            StatKind::Dodge => 5.0,
+            StatKind::Armour => 5.0,
+            StatKind::Cooldown => 10.0,
+            StatKind::ChestChance => 5.0,
+        }
+    }
+
+    /// Player-facing per-pickup step size — used by level-up card
+    /// rolls and as a baseline for shop mod authoring. Smaller than
+    /// `debug_step` so a single level-up is a meaningful nudge
+    /// rather than a build-defining swing. Tuning targets a build-
+    /// up that takes ~10 picks per stat to feel significant.
+    pub fn upgrade_step(self) -> f32 {
+        match self {
+            StatKind::Hp => 5.0,
+            StatKind::MoveSpeed => 1.5,           // half of debug
+            StatKind::TurnSpeed => 0.25,          // half of debug
+            StatKind::TurretTurnSpeed => 0.25,    // unused in rolls
+            StatKind::TurretArcBonus => 5.0,      // unused in rolls
+            StatKind::Luck => 5.0,                // was 25
+            StatKind::ProcStrength => 5.0,
+            StatKind::Crit => 5.0,                // was 25 — crit was a build-finisher in one card
+            StatKind::Range => 5.0,
+            StatKind::Harvest => 1.0,             // already conservative
+            StatKind::XpHarvest => 3.0,
+            StatKind::ShieldMax => 5.0,
+            StatKind::RuneDamage => 0.05,         // half of debug
+            StatKind::TurretDamage => 5.0,
+            StatKind::Dodge => 3.0,               // 20 picks to hit the 60% cap
+            StatKind::Armour => 3.0,
+            StatKind::Cooldown => 5.0,
+            StatKind::ChestChance => 1.0,         // +1% per pick; +5 picks = doubles base
         }
     }
 
@@ -473,7 +852,11 @@ impl StatKind {
             | StatKind::ProcStrength
             | StatKind::Range
             | StatKind::Harvest
-            | StatKind::XpHarvest => format!("{:+.0}%", delta),
+            | StatKind::XpHarvest
+            | StatKind::Dodge
+            | StatKind::Armour
+            | StatKind::Cooldown
+            | StatKind::ChestChance => format!("{:+.0}%", delta),
             // Movement / turning are stored as raw world units but a
             // raw "+3" doesn't tell the player anything. Express as
             // a percentage of the baseline so "+3 SPEED" reads as
@@ -517,6 +900,10 @@ impl StatKind {
             StatKind::ShieldMax => &stats.shield_max,
             StatKind::RuneDamage => &stats.rune_damage,
             StatKind::TurretDamage => &stats.turret_damage_pct,
+            StatKind::Dodge => &stats.dodge_pct,
+            StatKind::Armour => &stats.armour_pct,
+            StatKind::Cooldown => &stats.cooldown_pct,
+            StatKind::ChestChance => &stats.chest_chance_pct,
         }
     }
 
@@ -538,6 +925,10 @@ impl StatKind {
             StatKind::ShieldMax => &mut stats.shield_max,
             StatKind::RuneDamage => &mut stats.rune_damage,
             StatKind::TurretDamage => &mut stats.turret_damage_pct,
+            StatKind::Dodge => &mut stats.dodge_pct,
+            StatKind::Armour => &mut stats.armour_pct,
+            StatKind::Cooldown => &mut stats.cooldown_pct,
+            StatKind::ChestChance => &mut stats.chest_chance_pct,
         }
     }
 }

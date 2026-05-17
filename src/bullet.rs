@@ -50,13 +50,56 @@ use crate::weapon::WeaponType;
 /// returns the amount actually dealt (clamped to remaining HP, so overkill
 /// doesn't inflate stat tallies).
 ///
-/// Future damage modifiers (per-target debuffs, +N% crit, fire-vulnerable
+/// Per-target damage modifiers (per-target debuffs, +N% crit, fire-vulnerable
 /// armor, …) belong here so every source compounds them automatically.
+///
+/// **For PLAYER-side damage** (anything that reduces the local Friendly's
+/// HP), do NOT call this directly — go through [`apply_friendly_damage`]
+/// so dodge / armour / shield all run uniformly. `apply_damage` is the raw
+/// "subtract from any entity's HP" primitive.
 pub fn apply_damage(h: &mut Health, fx: &mut HitFx, amount: i32) -> i32 {
     let dealt = amount.min(h.0).max(0);
     h.0 = (h.0 - amount).max(0);
     fx.pulse();
     dealt
+}
+
+/// Central entry point for damaging a friendly ship. Bakes in the
+/// full defensive chain so every incoming damage source — enemy
+/// bullets, kamikaze detonations, hull-ram self damage, network-
+/// relayed peer damage — goes through the same dodge / armour /
+/// shield pipeline. Without this, defensive stats only apply at
+/// the call sites that remembered to call them, which is exactly
+/// the situation this helper exists to prevent.
+///
+/// Order: dodge roll (binary) → armour reduction (%) → shield
+/// absorption → HP subtraction. Dodge + armour run only when
+/// `is_local_player` is true; the host-side ghost of a peer
+/// (Friendly without LocalPlayer) takes full damage so the relay
+/// delta to that peer stays correct — the peer's own
+/// `apply_friendly_damage` call applies their stats on receipt.
+///
+/// Returns the actual HP loss so the caller can gate SFX / hit
+/// particles on "did this land?".
+pub fn apply_friendly_damage(
+    h: &mut Health,
+    fx: &mut HitFx,
+    shield: Option<&mut crate::stats::Shield>,
+    stats: &crate::stats::PlayerStats,
+    rng: &mut impl rand::Rng,
+    incoming: i32,
+    is_local_player: bool,
+) -> i32 {
+    if incoming <= 0 { return 0; }
+    let mitigated = if is_local_player {
+        stats.mitigate_incoming(rng, incoming)
+    } else {
+        incoming
+    };
+    let after_shield = shield
+        .map(|s| s.absorb(mitigated))
+        .unwrap_or(mitigated);
+    apply_damage(h, fx, after_shield)
 }
 
 /// Squared distance from point `p` to the line segment `[a, b]`.
@@ -112,38 +155,28 @@ pub enum DamageSource {
 /// chip-down (or the original damage when the matching slot isn't a
 /// Spike Plate). Both ship-position `fp` and impact-position `ip` are
 /// in world coords; `heading` is the ship's hull yaw.
+/// Sum the per-plate damage reduction across every equipped Spike
+/// Plate slot. Global (no per-side mapping): each plate chips
+/// `SPIKED_PLATE_REDUCTION` off the incoming damage. Stacks
+/// linearly so multiple plates compound — the player can budget
+/// "how much armour do I want" instead of having to puzzle out
+/// which slot side just got hit.
 fn spiked_plate_reduction(
     cfg: &crate::turret::TurretConfig,
-    fp: Vec2,
-    ip: Vec2,
-    heading: f32,
+    _fp: Vec2,
+    _ip: Vec2,
+    _heading: f32,
     damage: i32,
 ) -> i32 {
-    let dir = ip - fp;
-    if dir.length_squared() < 0.001 { return damage; }
-    let world_angle = (-dir.x).atan2(dir.y);
-    let mut local_angle = world_angle - heading;
-    local_angle = (local_angle + std::f32::consts::PI)
-        .rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-    let mut best: Option<(usize, f32)> = None;
-    for (i, &mount) in crate::balance::TURRET_MOUNTS.iter().enumerate() {
-        let mut delta = local_angle - mount;
-        delta = (delta + std::f32::consts::PI)
-            .rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-        let abs = delta.abs();
-        if best.map_or(true, |(_, b)| abs < b) {
-            best = Some((i, abs));
-        }
-    }
-    let Some((idx, _)) = best else { return damage };
-    let slot = cfg.slots[idx];
-    if slot.equipped
-        && matches!(slot.weapon, crate::weapon::WeaponType::SpikedPlate)
-    {
-        (damage - crate::balance::SPIKED_PLATE_REDUCTION).max(0)
-    } else {
-        damage
-    }
+    let plate_count = cfg.slots.iter().filter(|s| {
+        s.equipped && matches!(s.weapon, crate::weapon::WeaponType::SpikedPlate)
+    }).count() as i32;
+    if plate_count == 0 { return damage; }
+    let total_reduction = plate_count * crate::balance::SPIKED_PLATE_REDUCTION;
+    // Minimum 1 chip damage if anything was going to land — stacked
+    // plates can't make the ship completely unhittable against
+    // weak attackers.
+    (damage - total_reduction).max(0).max(if damage > 0 { 1 } else { 0 })
 }
 
 #[derive(Component)]
@@ -210,12 +243,39 @@ pub fn make_pierce(stacks: u8, rune_effect: f32) -> Pierce {
 pub fn bullet_update(
     time: Res<Time>,
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Bullet, &Velocity)>,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<EffectMeshes>>,
+    mut q: Query<(
+        Entity,
+        &Transform,
+        &mut Bullet,
+        &Velocity,
+        Option<&crate::ally::missile::HomingMissile>,
+    )>,
 ) {
     let dt = time.delta_secs();
-    for (e, mut b, v) in &mut q {
+    let mut rng = rand::thread_rng();
+    for (e, tf, mut b, v, homing) in &mut q {
         b.remaining -= v.0.length() * dt;
         if b.remaining <= 0.0 {
+            // Homing rockets get a small puff of friendly-bullet
+            // particles when they reach their lifetime — sells the
+            // "engine ran out" beat instead of the rocket vanishing
+            // silently into open water. Regular bullets stay quiet
+            // (they're cheap enough that the player won't notice).
+            if homing.is_some() {
+                if let (Some(pm), Some(em)) = (pm.as_deref(), em.as_deref()) {
+                    spawn_hit_particles(
+                        &mut commands,
+                        em,
+                        &pm.bullet_friendly,
+                        tf.translation.truncate(),
+                        6,
+                        30.0,
+                        &mut rng,
+                    );
+                }
+            }
             commands.entity(e).despawn();
         }
     }
@@ -276,6 +336,15 @@ pub struct VampireAccumulator(pub f32);
 #[derive(Resource, Default)]
 pub struct GreedAccumulator(pub u32);
 
+/// Bundled `SystemParam` holding both accumulator resources. Lets
+/// damage-event consumers carry the pair as one slot under Bevy
+/// 0.16's 16-SystemParam cap — see `process_damage_events`.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct LootAccumulators<'w> {
+    pub vampire: ResMut<'w, VampireAccumulator>,
+    pub greed:   ResMut<'w, GreedAccumulator>,
+}
+
 impl PendingDamageQueue {
     /// Convenience helper — push a fresh DamageEvent (proc_strength
     /// 1.0, no procced yet) onto the queue. `runes` is a slice of
@@ -325,8 +394,13 @@ pub fn bullet_collisions(
     >,
     mut pierces: Query<&mut Pierce>,
     enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
-    mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>, &crate::components::Heading), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
+    mut friendly: Query<(
+        Entity, &Transform, &mut Health, &mut HitFx,
+        Option<&mut crate::stats::Shield>, &crate::components::Heading,
+        bevy::ecs::query::Has<crate::components::LocalPlayer>,
+    ), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
+    mut harpoon_attached: EventWriter<crate::harpoon::HarpoonAttachedEvent>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
@@ -401,9 +475,16 @@ pub fn bullet_collisions(
                         // path uses below. Bosses (Enemy + Ally) break
                         // free in 1s instead of the standard 4s.
                         let is_boss = allies.get(ee).is_ok();
-                        if let Ok((fe, _, _, _, _, _)) = friendly.single() {
+                        if let Ok((fe, _, _, _, _, _, _)) = friendly.single() {
                             crate::harpoon::attach_harpoon(
                                 &mut commands, &em, &pm, fe, ee, is_boss,
+                            );
+                            // Owner-side signal for the multiplayer
+                            // bridge to broadcast as `NetMsg::HarpoonAttached`.
+                            // Peers spawn a `RemoteHarpoonChain` between
+                            // the ghost-of-owner and the target's mirror.
+                            harpoon_attached.write(
+                                crate::harpoon::HarpoonAttachedEvent { target: ee, is_boss },
                             );
                         }
                     }
@@ -434,7 +515,7 @@ pub fn bullet_collisions(
                 // compounds with the player's mitigations.
                 let incoming = difficulty.scale_damage(b.damage);
                 let mut consumed = false;
-                for (_fe, ftf, mut h, mut fx, shield_opt, fheading) in &mut friendly {
+                for (_fe, ftf, mut h, mut fx, shield_opt, fheading, is_local) in &mut friendly {
                     let fp = ftf.translation.truncate();
                     // Swept segment vs ship hit radius (5).
                     if point_segment_dist_sq(fp, prev_bp, bp) < 5.0 * 5.0 {
@@ -443,20 +524,26 @@ pub fn bullet_collisions(
                         // slot's mount angle is closest to the impact
                         // direction and chip 1 off the incoming damage
                         // if that slot holds a Spike Plate. This is
-                        // pre-shield so an incoming hit absorbed by
-                        // the shield still gets the chip-down (matches
-                        // the "deflected by spikes before reaching the
-                        // shield" mental model).
+                        // pre-dodge/armour/shield so the spike chip
+                        // applies even to mitigated hits (matches the
+                        // "deflected by spikes before anything else"
+                        // mental model).
                         let dmg = spiked_plate_reduction(&cfg, fp, bp, fheading.0, incoming);
-                        let after_shield = shield_opt
-                            .map(|mut s| s.absorb(dmg))
-                            .unwrap_or(dmg);
-                        apply_damage(&mut h, &mut fx, after_shield);
+                        let dealt = apply_friendly_damage(
+                            &mut h, &mut fx,
+                            shield_opt.map(|s| s.into_inner()),
+                            &player_stats, &mut rng, dmg, is_local,
+                        );
                         let hit_pos = ftf.translation.truncate();
                         spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
                         // Only fire SFX if damage actually landed
-                        // (shield-absorbed shots stay silent).
-                        if after_shield > 0 {
+                        // (dodged / fully shield-absorbed shots stay
+                        // silent). Hitstop on damage was removed —
+                        // the brief world-freeze read as an FPS hitch
+                        // rather than a juice beat. Kept the
+                        // infrastructure (HitStopController) in case
+                        // a later trigger wants it back.
+                        if dealt > 0 {
                             sfx.play(crate::sfx::Sfx::PlayerHit);
                         }
                         consumed = true;
@@ -502,10 +589,10 @@ pub fn process_damage_events(
     mut stats: ResMut<DamageStats>,
     player_stats: Res<crate::stats::PlayerStats>,
     synergies: Res<crate::synergy::Synergies>,
+    legendary: crate::customize::drag::LegendaryContext,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
-    mut vampire_acc: ResMut<VampireAccumulator>,
-    mut greed_acc: ResMut<GreedAccumulator>,
+    mut loot: LootAccumulators,
     mut scrap_w: crate::stage_complete::ScrapWriter,
     mut on_kill: crate::rune::OnKillBookkeeping,
     mut friendly: Query<
@@ -518,6 +605,7 @@ pub fn process_damage_events(
     >,
     on_conduit: Query<&OnConduit>,
     on_resonate: Query<&OnResonate>,
+    mut proc_fx: EventWriter<crate::proc_fx::ProcFxFired>,
 ) {
     let Some(pm) = pm else { return; };
     let Some(em) = em else { return; };
@@ -527,6 +615,11 @@ pub fn process_damage_events(
     // target for this many seconds per hit. 0 when no Future tiers
     // are active so the per-event check below is a free branch.
     let future_stun = synergies.future_stun_duration();
+    // Legendary rune gates. Purist disables rune procs entirely;
+    // Specialist multiplies their proc strength when every weapon
+    // shares a tag (precomputed once per drain).
+    let runes_disabled = legendary.active.purist;
+    let specialist_bonus = if legendary.active.specialist_armed(&legendary.cfg) { 1.5 } else { 1.0 };
 
     // Snapshot for chain-target picking (Shock / Cascade). Built from
     // the mutable enemies query's read-only iteration before any
@@ -551,10 +644,10 @@ pub fn process_damage_events(
         process_damage_event(
             ev, &mut queue.0,
             &mut commands, &mut stats, &player_stats, &pm, &em,
-            future_stun,
-            &enemy_snap, &mut enemies, &mut friendly, &mut vampire_acc,
-            &mut greed_acc, &mut *scrap_w.total, &mut *scrap_w.earned,
-            &on_conduit, &on_resonate, &mut rng,
+            future_stun, runes_disabled, specialist_bonus,
+            &enemy_snap, &mut enemies, &mut friendly, &mut *loot.vampire,
+            &mut *loot.greed, &mut *scrap_w.total, &mut *scrap_w.earned,
+            &on_conduit, &on_resonate, &mut rng, &mut proc_fx,
         );
 
         // Was the hit lethal? Read the target's HP back via the
@@ -630,6 +723,13 @@ fn process_damage_event(
     pm: &PaletteMaterials,
     em: &EffectMeshes,
     future_stun: f32,
+    // `runes_disabled`: Purist legendary — skip the per-event rune
+    // loop entirely so no runes can proc on this hit.
+    // `specialist_bonus`: Specialist legendary multiplier folded
+    // into the per-rune proc-strength roll. `1.0` when inactive,
+    // `1.5` (= +50%) when every equipped weapon shares a tag.
+    runes_disabled: bool,
+    specialist_bonus: f32,
     enemy_snap: &[(Entity, Vec2, f32)],
     enemies: &mut Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
     friendly: &mut Query<(&mut Health, Option<&mut crate::stats::Shield>), (With<Friendly>, Without<Enemy>)>,
@@ -640,6 +740,7 @@ fn process_damage_event(
     on_conduit: &Query<&OnConduit>,
     on_resonate: &Query<&OnResonate>,
     rng: &mut rand::rngs::ThreadRng,
+    proc_fx: &mut EventWriter<crate::proc_fx::ProcFxFired>,
 ) {
     let Ok((_, _, en, mut h, mut fx, _)) = enemies.get_mut(ev.target) else { return; };
     if h.0 <= 0 { return; } // already dead from an earlier hit this frame
@@ -775,6 +876,13 @@ fn process_damage_event(
         // Blast AOE reads as a distinct "explosive" cue independent
         // of the host weapon's bullet colour.
         spawn_blast_ring(commands, em, &pm.blast, ev.hit_pos, radius, rng);
+        // Blast is a single-point AOE — `to == from` signals "no
+        // second endpoint" to the receive-side spawn logic.
+        proc_fx.write(crate::proc_fx::ProcFxFired {
+            kind: crate::proc_fx::kind::BLAST_RING,
+            from: ev.hit_pos,
+            to:   ev.hit_pos,
+        });
     }
 
     // Lethal-only branch: Cascade is the one rune that fires *because*
@@ -788,6 +896,10 @@ fn process_damage_event(
     // instead of each rune adding a marker component on the dying
     // entity. See `crate::rune::KillEvent`.
     if h.0 <= 0 {
+        // Purist legendary: all rune effects off. Skip the entire
+        // on-kill rune branch (Greed payout, Ward overflow, Cascade
+        // fanout) so no rune contributes anything.
+        if runes_disabled { return; }
         // Greed scrap-on-Nth-kill (fires regardless of proc roll).
         // Stacks reduce the threshold (more frequent payouts), Rune
         // Effect divides the remainder. Increment runs once per kill
@@ -816,7 +928,15 @@ fn process_damage_event(
         // above max, so the overflow only decays by absorbing hits.
         let ward_stacks = ev.runes.iter().filter(|&&r| r == Rune::Ward).count();
         if ward_stacks > 0 {
-            let gain = ward_stacks as f32 * player_stats.rune_damage_mult();
+            // Base 1 shield per Ward stack per kill, scaled by
+            // rune-damage strength. With default `rune_damage_mult`
+            // (1.0), a single Ward gives 1 shield/kill; a +50%
+            // RuneDamage build pushes that to 1.5. Stacks add
+            // linearly so three Wards yield 3–4.5 per kill.
+            const WARD_BASE_PER_STACK: f32 = 1.0;
+            let gain = ward_stacks as f32
+                * WARD_BASE_PER_STACK
+                * player_stats.rune_damage_mult();
             for (_, sh_opt) in friendly.iter_mut() {
                 if let Some(mut sh) = sh_opt {
                     sh.current += gain;
@@ -846,7 +966,12 @@ fn process_damage_event(
                 });
             let Some((target, target_pos, _)) = next else { break };
             excluded.push(target);
-            spawn_lightning_arc(commands, em, &pm.bullet_friendly_outer, ev.hit_pos, target_pos);
+            spawn_lightning_arc(commands, em, &pm.cascade, ev.hit_pos, target_pos);
+            proc_fx.write(crate::proc_fx::ProcFxFired {
+                kind: crate::proc_fx::kind::CASCADE,
+                from: ev.hit_pos,
+                to:   target_pos,
+            });
             chain.push(DamageEvent {
                 target,
                 amount: ev.amount,
@@ -862,8 +987,10 @@ fn process_damage_event(
     }
 
     if ev.proc_strength <= 0.0 { return; }
-
-    // Conduit proc-strength buff — if the target carries OnConduit,
+    // Purist legendary — runes do nothing. Skip the entire proc
+    // loop so neither base procs nor chain hops fire. Done after
+    // primary damage + Cascade so the bullet itself still hits.
+    if runes_disabled { return; }
     // every rune attached to this hit gets a more reliable proc roll.
     // Capped at 1.0 in the eventual `>=` comparison so the visible
     // effect is "chain hops at full strength" rather than "absurd
@@ -882,7 +1009,10 @@ fn process_damage_event(
         .get(ev.target)
         .map(|c| c.proc_mult(player_stats.rune_damage_mult()))
         .unwrap_or(1.0);
-    let strength = (ev.proc_strength * conduit_mult + bonus).min(1.0);
+    // Specialist legendary multiplies proc strength (capped to 1.0
+    // by the `.min(1.0)` below). Same multiplier applied to every
+    // rune on this hit since the legendary is loadout-wide.
+    let strength = (ev.proc_strength * conduit_mult * specialist_bonus + bonus).min(1.0);
 
     // Group the bullet's runes by kind first so duplicates (3 Fire,
     // 2 Shock, etc.) get rolled + applied ONCE per kind with the
@@ -910,7 +1040,7 @@ fn process_damage_event(
         // sit alongside it as parallel methods.
         rune.apply_proc(
             stacks, &ev, chain, commands, player_stats, pm, em,
-            on_resonate, enemy_snap, rng,
+            on_resonate, enemy_snap, rng, proc_fx,
         );
     }
 }
@@ -985,7 +1115,7 @@ fn spawn_blast_ring(
 /// strung between sample points along the line `a → b`; interior
 /// points get a random perpendicular jitter so the bolt forks like
 /// real lightning instead of a flat ruler-line. Used by both Shock
-/// (cyan chain) and Cascade (gold on-kill snowball).
+/// (electric yellow chain) and Cascade (lime-green on-kill snowball).
 pub(crate) fn spawn_lightning_arc(
     commands: &mut Commands,
     em: &EffectMeshes,

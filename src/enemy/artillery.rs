@@ -143,10 +143,17 @@ pub fn artillery_shell_tick(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     difficulty: Res<crate::Difficulty>,
+    stats: Res<crate::stats::PlayerStats>,
     mut shells: Query<(Entity, &mut ArtilleryShell)>,
     mut reticles: Query<(&mut ArtilleryReticle, &mut Transform), Without<ArtilleryShell>>,
     mut friendly: Query<
-        (&Transform, &mut Health, &mut HitFx),
+        (
+            &Transform,
+            &mut Health,
+            &mut HitFx,
+            Option<&mut crate::stats::Shield>,
+            Has<crate::components::LocalPlayer>,
+        ),
         (With<Friendly>, Without<Ally>, Without<ArtilleryShell>, Without<ArtilleryReticle>),
     >,
     mut allies: Query<
@@ -174,18 +181,43 @@ pub fn artillery_shell_tick(
         // Impact — AOE damage to friendly + non-submerged allies.
         // Difficulty scales damage at application time so the same
         // multiplier hits every entity in the AOE.
+        //
+        // Hit-check radius INCLUDES the target's hit radius (ship /
+        // ally extent), not just the splash circle. The visual
+        // indicator paints the splash circle; without folding the
+        // target radius in, a ship whose CENTRE is just outside the
+        // circle but whose HULL EDGE is inside takes no damage —
+        // reads as "the indicator lied". With the radius folded in,
+        // anything visually touching the reticle takes the hit.
         let center = shell.target;
-        let r2 = shell.splash_radius * shell.splash_radius;
         let damage = difficulty.scale_damage(shell.damage);
-        if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
-            if ftf.translation.truncate().distance_squared(center) < r2 {
+        let splash = shell.splash_radius;
+        // Player ship hit radius — half the hull width is the
+        // conservative read (matches the bullet collision radius).
+        const SHIP_HIT_RADIUS: f32 = 5.0;
+        if let Ok((ftf, mut h, mut fx, shield_opt, is_local)) = friendly.single_mut() {
+            let r = splash + SHIP_HIT_RADIUS;
+            if ftf.translation.truncate().distance_squared(center) < r * r {
                 fx.pulse();
-                h.0 = (h.0 - damage).max(0);
+                // Route through the central friendly-damage pipeline
+                // so dodge / armour / shield all apply. Direct
+                // `h.0 -= damage` bypassed all three and the shell
+                // chunked HP even with a full shield up.
+                crate::bullet::apply_friendly_damage(
+                    &mut h, &mut fx,
+                    shield_opt.map(|s| s.into_inner()),
+                    &stats, &mut rng, damage, is_local,
+                );
             }
         }
         for (atf, ally, mut h, mut fx) in &mut allies {
             if ally_is_submerged(ally) { continue; }
-            if atf.translation.truncate().distance_squared(center) >= r2 { continue; }
+            // Use a generic ally hit radius. Most allies are roughly
+            // ship-sized; if a class-specific value matters later,
+            // swap in `crate::ally::ally_hit_radius(ally)` (same
+            // helper bullet collisions use).
+            let r = splash + crate::ally::ally_hit_radius(ally);
+            if atf.translation.truncate().distance_squared(center) >= r * r { continue; }
             fx.pulse();
             h.0 = (h.0 - damage).max(0);
         }

@@ -69,11 +69,13 @@ pub enum WeaponType {
     /// rune — burn is a separate effect from Fire status. See
     /// `flamethrower.rs` for the cone + tick logic.
     Flamethrower,
-    /// Spike-armoured deck plate. Doesn't fire anything. Each equipped
-    /// slot adds `SPIKED_PLATE_DAMAGE_BONUS` to the ship's contact-ram
-    /// damage AND reduces incoming bullet damage by
-    /// `SPIKED_PLATE_REDUCTION` when the bullet hits the hull on the
-    /// same side this slot occupies. Tagged Melee + Support.
+    /// Spike-armoured deck plate. Doesn't fire anything. Each
+    /// equipped slot adds `SPIKED_PLATE_DAMAGE_BONUS` to the ship's
+    /// contact-ram damage AND reduces every incoming bullet by
+    /// `SPIKED_PLATE_REDUCTION` damage. Both effects are global —
+    /// the previous "same side" rule was invisible to players and
+    /// has been dropped. Stacks linearly across multiple plates.
+    /// Tagged Melee + Support.
     SpikedPlate,
     /// Rune-share support node. Doesn't fire. Its own three rune
     /// sockets are mirrored into the empty rune slots of every
@@ -110,6 +112,64 @@ pub enum WeaponType {
     /// `Pirate` for the deck-mast flavour and `Support` for the
     /// adjacency-buff family.
     CrowsNest,
+}
+
+impl WeaponType {
+    /// Stable wire-format discriminant for the multiplayer damage
+    /// relay. Append-only — renumbering breaks compatibility with
+    /// peers running an older build. Mirrors the `Rune::to_u8`
+    /// pattern.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            WeaponType::Standard       =>  0,
+            WeaponType::Sniper         =>  1,
+            WeaponType::MachineGun     =>  2,
+            WeaponType::Shotgun        =>  3,
+            WeaponType::Railgun        =>  4,
+            WeaponType::Mortar         =>  5,
+            WeaponType::HeliPad        =>  6,
+            WeaponType::Cannon         =>  7,
+            WeaponType::Booster        =>  8,
+            WeaponType::Blade          =>  9,
+            WeaponType::Cage           => 10,
+            WeaponType::Harpoon        => 11,
+            WeaponType::SpreadRockets  => 12,
+            WeaponType::Flamethrower   => 13,
+            WeaponType::SpikedPlate    => 14,
+            WeaponType::Amplifier      => 15,
+            WeaponType::SharkNet       => 16,
+            WeaponType::AnchorFlail    => 17,
+            WeaponType::PlasmaTorpedo  => 18,
+            WeaponType::CrowsNest      => 19,
+        }
+    }
+    /// Inverse of `to_u8`. `None` for unknown discriminants so peers
+    /// running a future build don't crash older clients.
+    pub fn from_u8(n: u8) -> Option<Self> {
+        Some(match n {
+             0 => WeaponType::Standard,
+             1 => WeaponType::Sniper,
+             2 => WeaponType::MachineGun,
+             3 => WeaponType::Shotgun,
+             4 => WeaponType::Railgun,
+             5 => WeaponType::Mortar,
+             6 => WeaponType::HeliPad,
+             7 => WeaponType::Cannon,
+             8 => WeaponType::Booster,
+             9 => WeaponType::Blade,
+            10 => WeaponType::Cage,
+            11 => WeaponType::Harpoon,
+            12 => WeaponType::SpreadRockets,
+            13 => WeaponType::Flamethrower,
+            14 => WeaponType::SpikedPlate,
+            15 => WeaponType::Amplifier,
+            16 => WeaponType::SharkNet,
+            17 => WeaponType::AnchorFlail,
+            18 => WeaponType::PlasmaTorpedo,
+            19 => WeaponType::CrowsNest,
+            _ => return None,
+        })
+    }
 }
 
 /// Gameplay-class tag attached to each weapon. Used by the tooltip to
@@ -347,11 +407,12 @@ impl WeaponType {
             // ship isn't a meat-grinder; one harpoon at a time keeps
             // the chain visual readable.
             WeaponType::Harpoon    => (1, 0.7),
-            // Spread Rockets: 4 rockets per shot, fire rate = 0.4Hz
-            // (one volley every 2.5s). Damage per rocket — modest so
+            // Spread Rockets: 4 rockets per shot, fire rate = 0.22Hz
+            // (one volley every ~4.5s). Damage per rocket — modest so
             // a full salvo lands as a satisfying chunk without being
-            // a Mortar-replacement.
-            WeaponType::SpreadRockets => (2, 0.4),
+            // a Mortar-replacement. Slow cadence reins in the
+            // multi-rocket-per-volley DPS so the weapon isn't OP.
+            WeaponType::SpreadRockets => (2, 0.22),
             // Flamethrower: damage / tick repurposed by `flamethrower.rs`
             // as "1 damage every 0.5s during the active burn phase".
             // Fire rate = 2.0Hz drives the per-tick cadence; the
@@ -441,7 +502,7 @@ impl WeaponType {
     /// Half-angle (rad) of random firing cone. 0 means perfectly accurate.
     pub fn spread(self) -> f32 {
         match self {
-            WeaponType::MachineGun => 0.18, // ~±10°
+            WeaponType::MachineGun => 0.32, // ~±18°
             _ => 0.0,
         }
     }

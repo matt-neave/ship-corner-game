@@ -10,11 +10,11 @@ use bevy::window::PrimaryWindow;
 use crate::balance::{
     ARENA_H, ARENA_W, BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH,
     HULL_HALF_LEN, HULL_LEN, HULL_WIDTH,
-    PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
+    PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W, TURRET_MOUNTS, TURRET_POSITIONS,
 };
-use crate::components::{Faction, FactionKind, Friendly, Health, Heading, Velocity};
+use crate::components::{Faction, FactionKind, Friendly, Health, Heading, LocalPlayer, Velocity};
 use crate::effects::{EffectMeshes, HitFx};
-use crate::enemy::Enemy;
+use crate::enemy::{Enemy, EnemyVariant};
 use crate::modes::play_area_screen_rect;
 use crate::palette::{Palette, PaletteMaterials};
 use crate::rune::{FireExtent, OnFrost};
@@ -28,6 +28,21 @@ use crate::turret::{BarrelIndex, HeliPadDecal, TurretBarrel, TurretConfig, Turre
 /// hull when the player returns to MainMenu.
 #[derive(Component)]
 pub struct PlayBorder;
+
+/// Sibling shadow entity that paints the ship's silhouette in
+/// translucent black, offset down-right in WORLD space (always
+/// the same screen direction regardless of hull heading). Mirrors
+/// the SNKRX "shadow_canvas" effect — projects the hull onto the
+/// ocean for a hint of depth. `sync_ship_shadow` writes its
+/// translation + rotation each frame to follow the live ship.
+#[derive(Component)]
+pub struct ShipShadow;
+
+/// World-space offset (always the same screen direction) from the
+/// ship's centre to the shadow's centre. SE so it reads as
+/// top-left lighting — matches the cobalt-water ambient feel.
+pub const SHIP_SHADOW_OFFSET: Vec2 = Vec2::new(1.5, -1.5);
+
 
 /// Build the cached `PaletteMaterials` + `EffectMeshes` resources that
 /// every play-world entity references. Runs once at Startup so the
@@ -69,6 +84,15 @@ pub fn spawn_player_world(
     pm: Res<PaletteMaterials>,
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
+    // In MP, `LocalDeathState.dead = true` means we've been killed and
+    // are in spectate mode. We must NOT respawn the local Friendly
+    // on every `OnEnter(Playing)` — that would revive the dead peer
+    // mid-stage on the very first between-wave LevelUp bounce
+    // (Playing → LevelUp → Playing). Revive only happens on stage
+    // transition via `host_broadcast_revive_on_stage_complete`,
+    // which clears `LocalDeathState.dead` before the next
+    // `OnEnter(Playing)`.
+    local_death: Res<crate::multiplayer::death::LocalDeathState>,
     existing: Query<Entity, With<Friendly>>,
 ) {
     // Discard the unused-binding warning on the default (no-feature)
@@ -76,6 +100,7 @@ pub fn spawn_player_world(
     #[cfg(not(feature = "stacked_standard_turret"))]
     let _ = &mut materials;
     if !existing.is_empty() { return; }
+    if local_death.dead { return; }
 
     // 1px play-area border drawn around the *arena* (z=6 so it always
     // frames the action). With `big_arena` the border tracks the
@@ -115,15 +140,40 @@ pub fn spawn_player_world(
     let hull_radius = HULL_WIDTH / 2.0;
     let hull_inner = HULL_LEN - HULL_WIDTH;
     let hull_mesh = meshes.add(Capsule2d::new(hull_radius, hull_inner));
+
+    // Shadow — same hull capsule, dark translucent, sitting on
+    // the water layer (z=0.5, below the hull's z=1.0). Lives as
+    // a SIBLING (not a child) so the SE offset stays fixed in
+    // world space when the ship rotates; `sync_ship_shadow`
+    // copies the ship's rotation each frame but keeps the
+    // translation offset constant in world coords. Tagged
+    // `PlayBorder` so `despawn_player_world` sweeps it up
+    // alongside the rest of the play-world chrome.
+    let shadow_mat = materials.add(Color::srgba(0.0, 0.0, 0.0, 0.42));
+    let shadow_mesh = meshes.add(Capsule2d::new(hull_radius, hull_inner));
+    commands.spawn((
+        Mesh2d(shadow_mesh),
+        MeshMaterial2d(shadow_mat),
+        Transform::from_xyz(SHIP_SHADOW_OFFSET.x, SHIP_SHADOW_OFFSET.y, 0.5),
+        RenderLayers::layer(PLAY_LAYER),
+        ShipShadow,
+        PlayBorder,
+    ));
+
     let ship = commands.spawn((
         Mesh2d(hull_mesh),
         MeshMaterial2d(pm.hull.clone()),
         Transform::from_xyz(0.0, 0.0, 1.0),
         Visibility::Inherited,
         Friendly,
+        // LocalPlayer disambiguates from multiplayer's remote-peer
+        // ship (which is also Friendly so enemies target it, but
+        // shouldn't be driven by local input or counted in trail /
+        // HUD single() queries).
+        LocalPlayer,
         Faction(FactionKind::Friendly),
         Health(stats.max_hp()),
-        Velocity(Vec2::new(0.0, stats.move_speed.effective())),
+        Velocity(Vec2::new(0.0, stats.effective_move_speed())),
         crate::stats::Shield::default(),
         Heading(0.0),
         HitFx::new(pm.hull.clone()),
@@ -341,9 +391,11 @@ fn build_effect_meshes(meshes: &mut Assets<Mesh>) -> EffectMeshes {
 
 // ---------- Movement ----------
 
-/// The friendly ship follows the cursor when it's over the play area;
-/// otherwise it auto-engages the nearest enemy at a comfortable range.
-/// (Wave mode is gone, so the auto-battle short-circuit went with it.)
+/// The friendly ship follows the cursor when it's over the play area.
+/// Cursor outside the play area → ship holds station (zero velocity,
+/// keeps current heading). The previous behaviour was an auto-engage
+/// branch that picked the nearest enemy and orbited at range — that
+/// "auto-pathing" is disabled for now per the player's request.
 pub fn friendly_movement(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -351,7 +403,21 @@ pub fn friendly_movement(
     buffs: Res<crate::rune::BuffStacks>,
     enemies: Query<&Transform, (With<Enemy>, Without<Friendly>)>,
     play_camera: Query<&Transform, (With<crate::palette::PlayCamera>, Without<Friendly>, Without<Enemy>)>,
-    mut q: Query<(&mut Transform, &mut Velocity, &mut Heading), With<Friendly>>,
+    // LocalPlayer only — the ghost (other peer's ship) is moved by
+    // snapshots, not by local input. Iterating all Friendlies here
+    // would yank the ghost around on every cursor move.
+    // `Without<Enemy>` + `Without<PlayCamera>` make this statically
+    // disjoint from the read-only Transform queries above for
+    // Bevy's parameter-conflict checker.
+    mut q: Query<
+        (&mut Transform, &mut Velocity, &mut Heading),
+        (
+            With<crate::components::LocalPlayer>,
+            Without<crate::multiplayer::ghost::RemoteGhost>,
+            Without<Enemy>,
+            Without<crate::palette::PlayCamera>,
+        ),
+    >,
 ) {
     let dt = time.delta_secs();
     let Ok(win) = windows.single() else { return; };
@@ -386,49 +452,20 @@ pub fn friendly_movement(
         }
     });
 
+    // `enemies` query is unused while auto-engage is disabled but
+    // kept in the signature so re-enabling the branch is a one-line
+    // restore.
+    let _ = &enemies;
+
     for (mut tf, mut vel, mut heading) in &mut q {
         let pos = tf.translation.truncate();
 
-        // Pick a steering target. Cursor over play area → follow it. Otherwise
-        // compute a "tactical" target that engages the nearest enemy at a
-        // comfortable range, biased toward the centroid when multiple are around.
-        let target = if let Some(t) = target_world {
-            t
-        } else {
-            let mut nearest: Option<(f32, Vec2)> = None;
-            let mut centroid_sum = Vec2::ZERO;
-            let mut centroid_count = 0u32;
-            for etf in &enemies {
-                let ep = etf.translation.truncate();
-                let d = ep.distance(pos);
-                if nearest.map_or(true, |(bd, _)| d < bd) { nearest = Some((d, ep)); }
-                if d < TURRET_RANGE * 1.5 {
-                    centroid_sum += ep;
-                    centroid_count += 1;
-                }
-            }
-            if let Some((d, ep)) = nearest {
-                let to = ep - pos;
-                let unit = to.normalize_or_zero();
-                let desired_range = TURRET_RANGE * 0.7;
-                if d > desired_range + 8.0 {
-                    ep // approach
-                } else if d < desired_range - 8.0 {
-                    pos - unit * 30.0 // back away
-                } else {
-                    // Hold range: orbit perpendicularly so multiple turrets bear.
-                    // Bias the orbit direction toward the enemy centroid so we
-                    // sweep toward where the action is.
-                    let perp = Vec2::new(-unit.y, unit.x);
-                    let bias = if centroid_count > 0 {
-                        let c = centroid_sum / centroid_count as f32;
-                        if perp.dot(c - pos) >= 0.0 { 1.0 } else { -1.0 }
-                    } else { 1.0 };
-                    pos + perp * (bias * 30.0)
-                }
-            } else {
-                Vec2::ZERO // no enemies — drift toward play-area center
-            }
+        // Cursor outside the play area → hold station. Zero velocity,
+        // keep current heading. No tactical auto-engage.
+        let Some(target) = target_world else {
+            vel.0 = Vec2::ZERO;
+            tf.rotation = Quat::from_rotation_z(heading.0);
+            continue;
         };
 
         // Keep target inside the playable area so we don't crash the wall.
@@ -454,7 +491,7 @@ pub fn friendly_movement(
             crate::rune::RALLY_PER_STACK,
             stats.rune_damage_mult(),
         );
-        vel.0 = dir * stats.move_speed.effective() * rally_mult;
+        vel.0 = dir * stats.effective_move_speed() * rally_mult;
         tf.rotation = Quat::from_rotation_z(heading.0);
     }
 }
@@ -579,6 +616,10 @@ pub fn friendly_ram_damage(
     mut shake: ResMut<crate::modes::ScreenShake>,
     cfg: Res<crate::turret::TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
+    difficulty: Res<crate::Difficulty>,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<EffectMeshes>>,
+    mut sfx: crate::sfx::SfxPlayer,
     mut friendly: Query<
         (
             Entity,
@@ -588,6 +629,7 @@ pub fn friendly_ram_damage(
             &mut HitFx,
             Option<&mut crate::stats::Shield>,
             Option<&mut RamSelfGrace>,
+            bevy::ecs::query::Has<crate::components::LocalPlayer>,
         ),
         (With<Friendly>, Without<Enemy>),
     >,
@@ -596,29 +638,44 @@ pub fn friendly_ram_damage(
         Without<Friendly>,
     >,
 ) {
-    let Ok((fe, f_tf, f_heading, mut fh, mut ffx, f_shield, f_self_grace)) = friendly.single_mut() else { return };
-    let f_pos = f_tf.translation.truncate();
-    let hull_yaw = f_heading.0;
     let dt = time.delta_secs();
+    // MP: host has TWO Friendlies (local + remote-peer ghost). The
+    // old `single_mut()` Err'd and skipped contact damage entirely
+    // — that's why "bullets work but rams don't" on host. Iterate
+    // every friendly so both ships take their own contact hits;
+    // `relay_ghost_damage` forwards the ghost's damage to the peer.
+    for (fe, f_tf, f_heading, mut fh, mut ffx, f_shield, f_self_grace, f_is_local) in &mut friendly {
+        let f_pos = f_tf.translation.truncate();
+        let hull_yaw = f_heading.0;
 
-    // Tick the ship's own collision-grace so a sustained overlap can't
-    // chunk us 60 times a second. We still fire screenshake + enemy
-    // damage on each enemy's individual grace expiry, but only chip
-    // the ship once per `RAM_GRACE` window regardless of how many
-    // enemies are pressed against it at the same time.
-    let mut self_grace_remaining = f_self_grace.as_ref().map(|g| g.remaining).unwrap_or(0.0);
-    if let Some(mut g) = f_self_grace {
-        g.remaining -= dt;
-        if g.remaining <= 0.0 {
-            commands.entity(fe).remove::<RamSelfGrace>();
-            self_grace_remaining = 0.0;
-        } else {
-            self_grace_remaining = g.remaining;
+        let mut self_grace_remaining = f_self_grace.as_ref().map(|g| g.remaining).unwrap_or(0.0);
+        if let Some(mut g) = f_self_grace {
+            g.remaining -= dt;
+            if g.remaining <= 0.0 {
+                commands.entity(fe).remove::<RamSelfGrace>();
+                self_grace_remaining = 0.0;
+            } else {
+                self_grace_remaining = g.remaining;
+            }
         }
-    }
-    let mut shield_opt = f_shield;
+        let mut shield_opt = f_shield;
 
     for (e, etf, en, mut h, mut fx, grace) in &mut enemies {
+        // Kamikaze variants (Bomber, Rammer) take the same contact
+        // path as everyone else so the impact "feels the same" as a
+        // standard collision — what differs is the payload + the
+        // explosion. They one-shot themselves on impact and deal
+        // their full detonation damage to the player.
+        let kamikaze_payload = match en.variant {
+            EnemyVariant::Bomber  => Some(15),
+            EnemyVariant::Rammer  => Some(5),
+            // Swarmer: 5 per hit, multiplied by the cluster size —
+            // a 5-swarmer cloud all landing simultaneously deals
+            // 25 total. Dodgeable (the cloud is small) but a
+            // standing player gets shredded.
+            EnemyVariant::Swarmer => Some(5),
+            _                     => None,
+        };
         // Tick down any active enemy grace and skip damage while it's hot.
         if let Some(mut g) = grace {
             g.remaining -= dt;
@@ -647,25 +704,71 @@ pub fn friendly_ram_damage(
             let ram_damage = RAM_DAMAGE_TO_ENEMY
                 + spiked_plate_contact_bonus(&cfg, f_pos, ep, hull_yaw)
                 + thorns_bonus;
-            // Damage the enemy + flash.
+            // Damage the enemy + flash. Kamikazes get bulldozed to 0
+            // HP regardless of the ram-damage value so they always
+            // detonate on first contact, even at the lowest difficulty
+            // tier where 5 ram damage wouldn't cleanly kill a 2-HP
+            // Bomber if its scaled HP rounded up.
             crate::bullet::apply_damage(&mut h, &mut fx, ram_damage);
+            if kamikaze_payload.is_some() {
+                h.0 = 0;
+            }
             shake.add_trauma(RAM_TRAUMA);
             commands.entity(e).insert(RamGrace { remaining: RAM_GRACE });
 
             // Self-damage: chip the ship through its shield first,
             // gated by the global self-grace so simultaneous contacts
-            // don't stack in one frame.
+            // don't stack in one frame. Kamikazes deal their
+            // explosion payload (difficulty-scaled) instead of the
+            // flat ram self-damage.
             if self_grace_remaining <= 0.0 {
-                let after_shield = shield_opt
-                    .as_mut()
-                    .map(|s| s.absorb(RAM_DAMAGE_TO_SELF))
-                    .unwrap_or(RAM_DAMAGE_TO_SELF);
-                crate::bullet::apply_damage(&mut fh, &mut ffx, after_shield);
+                let mut rng = rand::thread_rng();
+                let payload = match kamikaze_payload {
+                    Some(base) => difficulty.scale_damage(base),
+                    None       => RAM_DAMAGE_TO_SELF,
+                };
+                crate::bullet::apply_friendly_damage(
+                    &mut fh, &mut ffx,
+                    shield_opt.as_deref_mut(),
+                    &stats, &mut rng,
+                    payload, f_is_local,
+                );
                 commands.entity(fe).insert(RamSelfGrace { remaining: RAM_GRACE });
                 self_grace_remaining = RAM_GRACE;
             }
+
+            // Explosion VFX + SFX for kamikaze contact. Mirrors what
+            // the old `bomber_detonate` system painted: a two-tone
+            // particle burst sized per-variant, plus the explosion
+            // SFX. Spawned even if the enemy was already at 0 HP
+            // from `apply_damage` above so the particles always read.
+            if let (Some(payload), Some(pm), Some(em)) =
+                (kamikaze_payload, pm.as_deref(), em.as_deref())
+            {
+                let _ = payload;
+                sfx.play(crate::sfx::Sfx::Explosion);
+                let (n1, n2, sp1, sp2) = match en.variant {
+                    EnemyVariant::Bomber  => (14, 8, 80.0, 100.0),
+                    EnemyVariant::Rammer  => (8,  4, 60.0, 80.0),
+                    // Swarmer: small puff per pop, but a cluster
+                    // simultaneously detonating reads as a solid
+                    // burst regardless.
+                    EnemyVariant::Swarmer => (4,  2, 50.0, 65.0),
+                    _ => (0, 0, 0.0, 0.0),
+                };
+                if n1 > 0 {
+                    let mut rng = rand::thread_rng();
+                    crate::effects::spawn_hit_particles(
+                        &mut commands, em, &pm.enemy,        ep, n1, sp1, &mut rng,
+                    );
+                    crate::effects::spawn_hit_particles(
+                        &mut commands, em, &pm.bullet_enemy, ep, n2, sp2, &mut rng,
+                    );
+                }
+            }
         }
     }
+    }  // end per-friendly loop
 }
 
 /// Mirror of `RamGrace` but on the friendly ship. Throttles
@@ -707,23 +810,43 @@ pub fn slot_for_contact(
     best.map(|(idx, _)| idx)
 }
 
-/// Bonus damage added to a ram hit when the contacted enemy is on
-/// the side of a Spike Plate slot. Same `slot_for_contact` mapping
-/// `spiked_plate_reduction` uses for incoming bullets, so the
-/// player can reason about both effects identically.
+/// Track the ship's translation + rotation each frame so the
+/// shadow sibling follows it. Offset stays in WORLD space (always
+/// SE), rotation copies straight from the hull so the silhouette
+/// matches what the player sees. Despawning the player wipes the
+/// shadow via the `PlayBorder` sweep in `despawn_player_world`,
+/// so no cleanup needed here.
+pub fn sync_ship_shadow(
+    player: Query<&Transform, (With<LocalPlayer>, Without<ShipShadow>)>,
+    mut shadow: Query<&mut Transform, With<ShipShadow>>,
+) {
+    let Ok(p) = player.single() else { return };
+    for mut s in &mut shadow {
+        let want = Vec3::new(
+            p.translation.x + SHIP_SHADOW_OFFSET.x,
+            p.translation.y + SHIP_SHADOW_OFFSET.y,
+            // z below the hull (1.0) but above the trail (0.5).
+            0.75,
+        );
+        if s.translation != want { s.translation = want; }
+        if s.rotation != p.rotation { s.rotation = p.rotation; }
+    }
+}
+
+/// Bonus damage added to a ram hit per equipped Spike Plate slot,
+/// regardless of which side of the hull the rammed enemy contacted.
+/// Stacks linearly — 3 plates = +15 ram damage on every contact.
+/// Used to be per-side (matching `spiked_plate_reduction`) but the
+/// hidden mapping made stacked plates feel like nothing was
+/// happening; going global makes each plate a legible +5 to ram.
 fn spiked_plate_contact_bonus(
     cfg: &crate::turret::TurretConfig,
-    ship_pos: Vec2,
-    enemy_pos: Vec2,
-    hull_yaw: f32,
+    _ship_pos: Vec2,
+    _enemy_pos: Vec2,
+    _hull_yaw: f32,
 ) -> i32 {
-    let Some(idx) = slot_for_contact(ship_pos, enemy_pos, hull_yaw) else { return 0 };
-    let slot = cfg.slots[idx];
-    if slot.equipped
-        && matches!(slot.weapon, crate::weapon::WeaponType::SpikedPlate)
-    {
-        crate::balance::SPIKED_PLATE_DAMAGE_BONUS
-    } else {
-        0
-    }
+    let plate_count = cfg.slots.iter().filter(|s| {
+        s.equipped && matches!(s.weapon, crate::weapon::WeaponType::SpikedPlate)
+    }).count() as i32;
+    plate_count * crate::balance::SPIKED_PLATE_DAMAGE_BONUS
 }

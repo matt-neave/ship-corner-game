@@ -98,7 +98,7 @@ pub struct HeliPadDecal;
 
 /// Player-set per-slot configuration. UI mutates `slots`; `sync_turret_config`
 /// pushes those changes (plus any pier adjacency buffs) into each `TurretSlot`.
-#[derive(Resource)]
+#[derive(Resource, Clone, Debug)]
 pub struct TurretConfig {
     pub slots: [SlotCfg; 8],
 }
@@ -123,7 +123,7 @@ impl Default for TurretConfig {
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Debug)]
 pub struct SlotCfg {
     pub equipped: bool,
     pub weapon: WeaponType,
@@ -144,6 +144,7 @@ pub fn sync_turret_config(
     cfg: Res<TurretConfig>,
     synergies: Res<crate::synergy::Synergies>,
     stats: Res<crate::stats::PlayerStats>,
+    active: Res<crate::customize::drag::ActiveLegendaries>,
     pm: Option<Res<PaletteMaterials>>,
     mut q: Query<(&mut TurretSlot, &mut Visibility, &mut Transform, &mut MeshMaterial2d<ColorMaterial>, &Children)>,
     mut barrels: Query<
@@ -155,9 +156,17 @@ pub fn sync_turret_config(
         (With<HeliPadDecal>, Without<TurretBarrel>, Without<TurretSlot>),
     >,
 ) {
-    if !cfg.is_changed() && !stats.is_changed() { return; }
+    // Re-run when ActiveLegendaries flips too — buying Monomaniac
+    // mid-shop should retint slot.damage on the next frame so the
+    // tooltip + bullets reflect the new build identity.
+    if !cfg.is_changed() && !stats.is_changed() && !active.is_changed() { return; }
     let Some(pm) = pm else { return; };
-    let turret_damage_mult = stats.turret_damage_mult();
+    // Fold legendary build-warpers into the global damage / fire-
+    // rate multipliers before per-slot baking. Same shape as the
+    // existing `turret_damage_mult` math — every weapon inherits.
+    let legendary_dmg_mult = active.weapon_damage_mult(&cfg);
+    let legendary_rate_mult = active.fire_rate_mult(&cfg);
+    let turret_damage_mult = stats.turret_damage_mult() * legendary_dmg_mult;
     for (mut slot, mut vis, mut tf, mut mat, children) in &mut q {
         let s = cfg.slots[slot.index];
         let tags = s.weapon.tags();
@@ -177,7 +186,9 @@ pub fn sync_turret_config(
         slot.damage = (s.damage as f32 * turret_damage_mult * damage_mult).round() as i32;
         slot.fire_rate = s.fire_rate
             * crate::booster::boost_multiplier_for_slot(&cfg, slot.index)
-            * synergy_rate_mult;
+            * synergy_rate_mult
+            * legendary_rate_mult
+            * stats.cooldown_mult();
         slot.weapon = s.weapon;
         // Non-firing weapons (HeliPad / Booster / Blade) skip
         // `turret_aim_fire`, so without an explicit reset here a slot
@@ -286,7 +297,19 @@ pub fn turret_aim_fire(
     cfg: Res<TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
     mut thirst: ResMut<crate::rune::ThirstPending>,
-    ship_q: Query<(&Transform, &Heading), With<Friendly>>,
+    mut sfx: crate::sfx::SfxPlayer,
+    // LocalPlayer (not just Friendly) — the host has two Friendly
+    // entities in MP (local + remote-peer ghost). `single()` would
+    // Err and the system would bail every frame → the host's
+    // turrets never aim or fire.
+    // `Without<TurretSlot>` + `Without<TurretBarrel>` make this
+    // statically disjoint from the mut Transform `turrets` query
+    // below (Bevy's parameter-conflict checker doesn't know
+    // LocalPlayer implies Friendly).
+    ship_q: Query<
+        (&Transform, &Heading),
+        (With<crate::components::LocalPlayer>, Without<TurretSlot>, Without<TurretBarrel>),
+    >,
     enemies: Query<(Entity, &Transform, &Faction, &Health), With<Enemy>>,
     mut turrets: Query<
         (Entity, &mut TurretSlot, &mut Transform, &Visibility),
@@ -464,14 +487,23 @@ pub fn turret_aim_fire(
 
                 // Muzzle flash — parented to the turret so it stays glued to
                 // the barrel as the ship moves and the turret rotates.
+                // Uses the shared HDR `muzzle_glow` so the flash blooms
+                // brightly while the bullet's SDR inner core doesn't
+                // halo as it travels.
                 let flash = commands.spawn((
                     Mesh2d(em.muzzle_flash.clone()),
-                    MeshMaterial2d(inner_mat.clone()),
+                    MeshMaterial2d(pm.muzzle_glow.clone()),
                     Transform::from_xyz(lateral, effective_tip, 2.0),
                     MuzzleFlash { life: 0.18, max_life: 0.18 },
                     RenderLayers::layer(PLAY_LAYER),
                 )).id();
                 commands.entity(flash).insert(ChildOf(turret_entity));
+                // Fire SFX — one-spot table in `SfxPlayer::weapon_fire_sfx`
+                // decides which sample plays for this weapon. Silently
+                // no-ops for autonomous / passive weapons that have no
+                // muzzle sound. Pitch jitter + repeat-burst pitch bump
+                // ride on top automatically.
+                sfx.play_fire(slot.weapon);
 
                 match slot.weapon {
                     WeaponType::HeliPad => {

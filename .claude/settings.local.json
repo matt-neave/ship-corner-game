@@ -30,7 +30,9 @@
       "Bash(cp \"../snkrx/assets/sounds/Explosion Grenade_04.ogg\" \"assets/sounds/explosion.ogg\")",
       "Bash(cp \"../snkrx/assets/sounds/Player Takes Damage 2.ogg\" \"assets/sounds/player_hit.ogg\")",
       "Bash(grep -E \"\\(turret/mod|turret\\\\\\\\\\\\\\\\mod\\)\")",
-      "Bash(cargo test *)"
+      "Bash(cargo test *)",
+      "Bash(grep -n \"pub fn setup_hud\\\\|pub fn spawn_xp_track\\\\|asset_server\\\\|PixelFont\" C:\\\\\\\\Users\\\\\\\\matth\\\\\\\\Documents\\\\\\\\projects\\\\\\\\ship-game\\\\\\\\src\\\\\\\\ui\\\\\\\\hud.rs C:\\\\\\\\Users\\\\\\\\matth\\\\\\\\Documents\\\\\\\\projects\\\\\\\\ship-game\\\\\\\\src\\\\\\\\xp.rs)",
+      "Bash(grep -rn \"border:\" --include=\"*.rs\" C:\\\\\\\\Users\\\\\\\\matth\\\\\\\\Documents\\\\\\\\projects\\\\\\\\ship-game\\\\\\\\src)"
     ]
   }
 }

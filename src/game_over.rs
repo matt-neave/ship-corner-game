@@ -53,7 +53,11 @@ pub struct GameOverMainMenuButton;
 #[derive(Component)]
 pub struct GameOverQuitButton;
 
-pub fn enter_game_over(mut commands: Commands, mut sfx: crate::sfx::SfxPlayer) {
+pub fn enter_game_over(
+    mut commands: Commands,
+    mut sfx: crate::sfx::SfxPlayer,
+    thaleah: Option<Res<crate::fonts::ThaleahFont>>,
+) {
     sfx.play(crate::sfx::Sfx::GameOver);
     commands
         .spawn((
@@ -81,11 +85,28 @@ pub fn enter_game_over(mut commands: Commands, mut sfx: crate::sfx::SfxPlayer) {
             Button,
         ))
         .with_children(|root| {
-            root.spawn(ui_kit::label(
-                "GAME OVER",
-                theme::FONT_LG * 1.8,
-                Color::srgb(0.95, 0.30, 0.30),
-            ));
+            // Match the multiplayer "YOU DIED" overlay's typography
+            // (Thaleah Fat + red + drop shadow) so transitioning
+            // from a per-peer death overlay to the team-wipe GameOver
+            // reads as the same beat in the same voice.
+            if let Some(thaleah) = thaleah.as_deref() {
+                root.spawn((
+                    Text::new("GAME OVER"),
+                    crate::fonts::thaleah_text_font(thaleah, 80.0),
+                    TextColor(Color::srgb(0.95, 0.30, 0.30)),
+                    TextShadow {
+                        offset: Vec2::splat(2.0),
+                        color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+                    },
+                ));
+            } else {
+                // Fallback while fonts are still loading on first frame.
+                root.spawn(ui_kit::label(
+                    "GAME OVER",
+                    theme::FONT_LG * 1.8,
+                    Color::srgb(0.95, 0.30, 0.30),
+                ));
+            }
 
             root.spawn((ui_kit::button(theme::SURFACE_RAISED), RestartButton))
                 .with_children(|b| {
@@ -116,6 +137,7 @@ pub fn exit_game_over(mut commands: Commands, q: Query<Entity, With<GameOverRoot
 pub fn reset_run_for_restart(
     mut stats: ResMut<crate::stats::PlayerStats>,
     mut scrap: ResMut<crate::Scrap>,
+    mut scrap_earned: ResMut<crate::stage_complete::ScrapEarnedThisStage>,
     mut campaign: ResMut<crate::CampaignProgress>,
     mut cfg: ResMut<crate::turret::TurretConfig>,
     mut combat_ctx: ResMut<CombatContext>,
@@ -125,7 +147,10 @@ pub fn reset_run_for_restart(
     mut pending: ResMut<crate::xp::LevelUpsPending>,
     mut seen_variants: ResMut<crate::onboarding::SeenVariants>,
     selected_hull: Res<crate::hull::SelectedHull>,
-    mut friendly: Query<&mut crate::components::Health, With<crate::components::Friendly>>,
+    // LocalPlayer (not just Friendly) so the host's `single_mut()`
+    // doesn't Err with two Friendlies in MP (local + remote-peer
+    // ghost).
+    mut friendly: Query<&mut crate::components::Health, With<crate::components::LocalPlayer>>,
     arena: Query<
         Entity,
         Or<(
@@ -151,6 +176,12 @@ pub fn reset_run_for_restart(
     // MainMenu and re-PLAY-ing routes through HullSelect to repick.
     selected_hull.0.apply(&mut stats);
     scrap.0 = 0;
+    // Wipe the per-stage earned tally too. Dying mid-stage skips the
+    // `OnExit(StageComplete)` reset, which would otherwise leave a
+    // stale `scrap_earned` that the first StageComplete of the
+    // fresh run reads into `pre_round_principal` (corrupting the
+    // interest math) AND surfaces as the "+N EARNED" line.
+    scrap_earned.0 = 0;
     *campaign = crate::CampaignProgress::default();
     *cfg = crate::turret::TurretConfig::default();
     // Reset onboarding so a RESTART re-introduces every enemy
@@ -159,6 +190,15 @@ pub fn reset_run_for_restart(
     *damage_stats = crate::ui::DamageStats::default();
     xp.reset();
     pending.0 = 0;
+    // Wipe the shop so the next run starts with a fresh roll +
+    // every lock cleared. Without this, `init_customize_shop`'s
+    // `reroll_preserving_locked` carries the dead run's locks
+    // forward into the new run's first shop.
+    commands.remove_resource::<crate::customize::drag::CustomizeShop>();
+    // Drop any unclaimed chest offers + clear the Active flags for
+    // any legendary effects picked up from chests this run.
+    commands.insert_resource(crate::chest::PendingChests::default());
+    commands.insert_resource(crate::customize::drag::ActiveLegendaries::default());
 
     if let Ok(mut h) = friendly.single_mut() {
         h.0 = stats.max_hp();

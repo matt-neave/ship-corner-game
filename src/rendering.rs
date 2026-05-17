@@ -53,10 +53,13 @@ pub struct PlayRenderImage(#[allow(dead_code)] pub Handle<Image>);
 pub fn make_scanline_image() -> Image {
     let w = PLAY_INTERNAL_W;
     let h = PLAY_INTERNAL_H;
-    // ~12% black on darkened rows. Half the rows × 12% alpha works out to
-    // ~6% average darkening — enough that scanlines read at a glance
-    // without dimming the whole scene the way a 38% overlay did.
-    const DARK_ALPHA: u8 = 32;
+    // Trimmed alpha: ~7% on dark rows averages out to ~3.5% over the
+    // play area — enough that scanlines hint at the CRT effect when
+    // looking for them, without making the scene visibly dimmer
+    // through normal play. Earlier 12% darkening read as "the game
+    // got darker when I turned CRT on" rather than as a stylistic
+    // overlay.
+    const DARK_ALPHA: u8 = 18;
     let mut data = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         let dark = (y % 2) == 0;
@@ -437,10 +440,24 @@ pub fn setup_render(
     // ViewMode is Map, so we start with PlayCamera disabled. MSAA off —
     // multi-sampling against a low-res render target softens every
     // primitive edge, killing the chunky-pixel look.
-    let proj = || Projection::Orthographic(OrthographicProjection {
+    // Play camera fills the play target's aspect (matches arena
+    // size when wide_play is on).
+    let play_proj = || Projection::Orthographic(OrthographicProjection {
         scaling_mode: bevy::render::camera::ScalingMode::Fixed {
             width: PLAY_WORLD_W,
             height: PLAY_WORLD_H,
+        },
+        ..OrthographicProjection::default_2d()
+    });
+
+    // Map camera locks to vertical world height with horizontal auto.
+    // With wide_play (render target 360×200) this keeps the square
+    // 200×200 map content centred — extra width on either side
+    // shows clear-color ocean rather than horizontally stretching
+    // the planet grid into rectangles.
+    let map_proj = || Projection::Orthographic(OrthographicProjection {
+        scaling_mode: bevy::render::camera::ScalingMode::FixedVertical {
+            viewport_height: PLAY_WORLD_H,
         },
         ..OrthographicProjection::default_2d()
     });
@@ -452,12 +469,26 @@ pub fn setup_render(
             clear_color: ClearColorConfig::Custom(palette.ocean),
             order: -1,
             is_active: false, // map view is the default
+            // HDR + Bloom are owned by `apply_bloom_mode` (in modes.rs)
+            // so the BLOOM setting can toggle them at runtime. Defaults
+            // to LDR here; the first apply pass writes the user's
+            // chosen state on frame 0.
+            hdr: false,
             ..default()
         },
-        proj(),
+        play_proj(),
         RenderLayers::layer(PLAY_LAYER),
         PlayCamera,
         Msaa::Off,
+        // `Tonemapping::None` keeps LDR colours pixel-for-pixel
+        // identical between bloom-on and bloom-off: filmic
+        // tonemappers (TonyMcMapface, AgX, etc.) crush mid-tones
+        // and desaturate the whole scene, which reads as "the
+        // game got darker when I enabled bloom". With None, bloom
+        // still picks up HDR (>1.0) energy from `muzzle_glow`
+        // and haloes accordingly; non-HDR pixels just clamp on
+        // the sRGB write.
+        bevy::core_pipeline::tonemapping::Tonemapping::None,
     ));
 
     commands.spawn((
@@ -469,7 +500,7 @@ pub fn setup_render(
             is_active: true,
             ..default()
         },
-        proj(),
+        map_proj(),
         RenderLayers::layer(MAP_LAYER),
         MapCamera,
         Msaa::Off,
@@ -510,7 +541,7 @@ pub fn setup_render(
             clear_color: ClearColorConfig::None,
             ..default()
         },
-        proj(),
+        play_proj(),
         RenderLayers::layer(HUD_LAYER),
         Msaa::Off,
         HudCamera,
@@ -683,12 +714,14 @@ pub fn update_hud_camera_viewport(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut hud: Query<&mut Camera, With<HudCamera>>,
     mut last_phys: Local<UVec2>,
+    mut last_cam_target: Local<UVec2>,
+    mut last_mode: Local<Option<bevy::window::WindowMode>>,
     mut steady_frames: Local<u8>,
 ) {
     let Ok(window) = windows.single() else { return; };
     let phys_target = window.physical_size();
 
-    // Wipe the viewport in three cases so wgpu never sees a scissor
+    // Wipe the viewport in four cases so wgpu never sees a scissor
     // larger than the swap-chain target:
     //
     //   1. Window is degenerate (≤ 1 px on either axis) — minimize,
@@ -696,7 +729,18 @@ pub fn update_hud_camera_viewport(
     //   2. Physical size changed since last frame — the surface has
     //      to reconfigure, and the first re-rendered frame might
     //      still see the old 1×1 placeholder texture.
-    //   3. We haven't yet seen the current size stable for two
+    //   3. `WindowMode` flipped (fullscreen ↔ windowed). The
+    //      physical_size briefly stays stale across this transition
+    //      while the swapchain reconfigures — without this guard,
+    //      the previous frame's viewport gets validated against the
+    //      new (smaller) swapchain texture and wgpu panics in
+    //      `RenderPass::end` over scissor bounds. Tracking mode
+    //      specifically (rather than `Changed<Window>`) avoids
+    //      firing on every cursor move, which would keep the
+    //      viewport perpetually wiped — HudCamera would render
+    //      world coords to the whole window, making enemy HP bars
+    //      appear oversized and off-target.
+    //   4. We haven't yet seen the current size stable for two
     //      frames — guards against startup races where the window
     //      reports its final size before the surface is configured.
     //
@@ -708,13 +752,42 @@ pub fn update_hud_camera_viewport(
             if cam.viewport.is_some() { cam.viewport = None; }
         }
     };
-    if phys_target.x <= 1 || phys_target.y <= 1 {
+    // The camera's `physical_target_size()` reflects the size wgpu
+    // last allocated for the surface texture — which is what scissor
+    // validation runs against. `window.physical_size()` can disagree
+    // (Windows minimise leaves the window reporting its pre-minimise
+    // dimensions for a frame while the swapchain has already
+    // collapsed to 1×1). Bail on either being degenerate.
+    let cam_target = hud
+        .iter()
+        .next()
+        .and_then(|c| c.physical_target_size());
+    let target_size = cam_target.unwrap_or(phys_target);
+    if phys_target.x <= 1 || phys_target.y <= 1
+        || target_size.x <= 1 || target_size.y <= 1
+    {
         *steady_frames = 0;
         bail(&mut hud);
         return;
     }
     if phys_target != *last_phys {
         *last_phys = phys_target;
+        *steady_frames = 1;
+        bail(&mut hud);
+        return;
+    }
+    // Also wipe if the swapchain texture changed size while
+    // physical_size stayed the same — happens on some platforms
+    // during fullscreen ↔ windowed where the window remembers its
+    // size but the surface reconfigures with a different DPI scale.
+    if target_size != *last_cam_target {
+        *last_cam_target = target_size;
+        *steady_frames = 1;
+        bail(&mut hud);
+        return;
+    }
+    if last_mode.as_ref() != Some(&window.mode) {
+        *last_mode = Some(window.mode);
         *steady_frames = 1;
         bail(&mut hud);
         return;

@@ -250,7 +250,13 @@ pub fn oil_slick_burn_tick(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     _materials: Res<Assets<ColorMaterial>>,
-    mut victims: Query<(Entity, &Transform, &Faction, &mut Health, &mut HitFx)>,
+    player_stats: Res<crate::stats::PlayerStats>,
+    mut victims: Query<(
+        Entity, &Transform, &Faction, &mut Health, &mut HitFx,
+        Option<&mut crate::stats::Shield>,
+        Has<crate::components::LocalPlayer>,
+        Has<crate::components::Friendly>,
+    )>,
     mut slicks: Query<(
         Entity,
         &Transform,
@@ -267,7 +273,7 @@ pub fn oil_slick_burn_tick(
 
     let victim_snap: Vec<(Entity, Vec2, FactionKind)> = victims
         .iter()
-        .map(|(e, t, f, _, _)| (e, t.translation.truncate(), f.0))
+        .map(|(e, t, f, _, _, _, _, _)| (e, t.translation.truncate(), f.0))
         .collect();
 
     for (slick_e, slick_tf, mut slick, fire_opt, mut mat) in &mut slicks {
@@ -305,8 +311,20 @@ pub fn oil_slick_burn_tick(
         for &(e, ep, f) in &victim_snap {
             if f != slick.target_faction { continue; }
             if ep.distance_squared(sp) >= r2 { continue; }
-            if let Ok((_, _, _, mut h, mut fx)) = victims.get_mut(e) {
-                let dealt = crate::bullet::apply_damage(&mut h, &mut fx, OIL_BURN_DAMAGE);
+            if let Ok((_, _, _, mut h, mut fx, shield_opt, is_local, is_friendly)) = victims.get_mut(e) {
+                // Route Friendly victims through `apply_friendly_damage`
+                // so dodge / armour / shield all apply. Allies +
+                // enemies stay on the plain `apply_damage` path.
+                let dealt = if is_friendly {
+                    crate::bullet::apply_friendly_damage(
+                        &mut h, &mut fx,
+                        shield_opt.map(|s| s.into_inner()),
+                        &player_stats, &mut rng,
+                        OIL_BURN_DAMAGE, is_local,
+                    )
+                } else {
+                    crate::bullet::apply_damage(&mut h, &mut fx, OIL_BURN_DAMAGE)
+                };
                 crate::bullet::credit_damage(
                     &mut stats,
                     Some(crate::bullet::DamageSource::Ally(ShipClass::OilTanker)),

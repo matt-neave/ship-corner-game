@@ -24,7 +24,29 @@ pub struct StatsPanelOverlayPlugin;
 
 impl Plugin for StatsPanelOverlayPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, update_stat_panel_tooltip);
+        app.init_resource::<HighlightedStats>()
+            // Clear the highlight set first thing each frame; the
+            // hover producers (level-up cards, shop mod cards)
+            // refill it later in Update. No-hover state = empty set.
+            .add_systems(First, |mut h: bevy::prelude::ResMut<HighlightedStats>| {
+                h.kinds.clear();
+            })
+            // Tooltip is hover-driven via `Changed<Interaction>`.
+            // The row-tint consumer reads `HighlightedStats` so it
+            // ordered AFTER the customize producer + the level-up
+            // producer — without these `.after`s, the producer
+            // sometimes ran in the same frame AFTER this consumer,
+            // and the next-frame interleaving flicker showed up
+            // as "highlight blinks on/off every other frame".
+            .add_systems(
+                Update,
+                (
+                    update_stat_panel_tooltip,
+                    apply_stat_panel_highlight
+                        .after(crate::customize::shop_mods::update_mod_hover_highlight)
+                        .after(crate::xp::update_level_up_tooltip),
+                ),
+            );
     }
 }
 
@@ -32,6 +54,39 @@ impl Plugin for StatsPanelOverlayPlugin {
 /// `Interaction` + this kind to populate the description text.
 #[derive(Component, Clone, Copy)]
 pub struct StatPanelRow(pub StatKind);
+
+/// Sign of a hover-highlight entry. Producers tag each affected
+/// stat with `Buff` (delta positive, paint green) or `Nerf`
+/// (delta negative, paint red). When two producers conflict on
+/// the same stat the later writer wins — fine in practice since
+/// only one card is hovered at a time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HighlightSign { Buff, Nerf }
+
+/// One affected stat in a hover-highlight set. `delta` + `to_flat`
+/// describe how the producer would apply the change to a `Stat`:
+/// `to_flat=true` adds to `.flat`, `to_flat=false` adds to `.percent`.
+/// The consumer (customize stats panel) clones `PlayerStats`,
+/// re-applies the delta into a probe copy, and renders both the
+/// current and the would-be value in the row.
+#[derive(Clone, Copy, Debug)]
+pub struct HighlightEntry {
+    pub sign: HighlightSign,
+    pub delta: f32,
+    pub to_flat: bool,
+}
+
+/// Shared cross-screen hover-highlight signal. Producers (level-up
+/// buff-card hover, shop mod-card hover) write each affected
+/// `StatKind` along with the sign of the change + the delta the
+/// producer would apply; consumers tint rows (sign-based) AND
+/// render before / after numbers (delta-based).
+///
+/// Cleared every frame by `First` — no entry means no hover.
+#[derive(bevy::prelude::Resource, Default, Clone)]
+pub struct HighlightedStats {
+    pub kinds: std::collections::HashMap<StatKind, HighlightEntry>,
+}
 
 /// Marker on the tooltip text node. One per spawned panel.
 #[derive(Component)]
@@ -147,14 +202,39 @@ pub fn spawn_stats_panel(parent: &mut ChildSpawnerCommands, stats: &PlayerStats)
 /// the same markers regardless of which screen spawned them. When
 /// neither screen is up there are no entities and the system is a
 /// no-op.
+/// Tint matching rows in the shared bevy_ui stats panel based on
+/// `HighlightedStats`. Writes a translucent accent backdrop on
+/// rows whose `StatKind` is currently being targeted by a hovered
+/// mod/buff card; reverts to transparent when not.
+pub fn apply_stat_panel_highlight(
+    highlight: bevy::prelude::Res<HighlightedStats>,
+    mut rows: bevy::prelude::Query<(&StatPanelRow, &mut bevy::prelude::BackgroundColor)>,
+) {
+    // Translucent green / red wash sized to match the row text's
+    // BUFF_FG / NERF_FG so the backdrop colour-codes the change
+    // sign at a glance. Alpha low enough that text stays legible.
+    let on_buff = bevy::prelude::Color::srgba(0.45, 0.92, 0.55, 0.20);
+    let on_nerf = bevy::prelude::Color::srgba(0.95, 0.45, 0.45, 0.20);
+    let off = bevy::prelude::Color::NONE;
+    for (row, mut bg) in &mut rows {
+        let want = match highlight.kinds.get(&row.0).map(|e| e.sign) {
+            Some(HighlightSign::Buff) => on_buff,
+            Some(HighlightSign::Nerf) => on_nerf,
+            None => off,
+        };
+        if bg.0 != want { bg.0 = want; }
+    }
+}
+
 pub fn update_stat_panel_tooltip(
     rows: Query<(&Interaction, &StatPanelRow), Changed<Interaction>>,
+    stats: Res<crate::stats::PlayerStats>,
     mut tooltips: Query<(&mut Text, &mut Visibility), With<StatPanelTooltip>>,
 ) {
     for (interaction, row) in &rows {
         let (text_value, vis_value) = match *interaction {
             Interaction::Hovered | Interaction::Pressed => (
-                format!("{}: {}", row.0.label(), row.0.description()),
+                format!("{}: {}", row.0.label(), row.0.dynamic_description(&stats)),
                 Visibility::Inherited,
             ),
             Interaction::None => (String::new(), Visibility::Hidden),

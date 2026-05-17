@@ -280,6 +280,7 @@ fn enemy_short_desc(v: EnemyVariant) -> &'static str {
         EnemyVariant::Rammer    => "Charges hull first at full speed.",
         EnemyVariant::Sniper    => "Stops to aim. Fires heavy rounds.",
         EnemyVariant::Artillery => "Lobs shells from afar.",
+        EnemyVariant::Swarmer   => "1-HP cloud of 4-7. Pops on a single bullet.",
     }
 }
 

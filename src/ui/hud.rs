@@ -64,17 +64,36 @@ pub struct WaveHpTrack;
 /// Coloured fill inside the track — width animated by `update_wave_ui`.
 #[derive(Component)]
 pub struct WaveHpFill;
-/// Numeric readout overlaid centered inside the track.
+/// Wrapper Node for the stacked HP readout (1 main Thaleah glyph
+/// + 8 black stroke twins at diagonal/cardinal offsets). Children
+/// are tagged with `WaveHpTextPart` so the per-frame label sync
+/// updates every twin in lockstep.
 #[derive(Component)]
 pub struct WaveHpText;
-/// Shield bar overlaid on the HP track. Sits between `WaveHpFill`
-/// and the numeric overlay so shield depletion reveals HP underneath.
-/// Width is set per-frame from `Shield::current / stats.shield_max`.
+
+/// One Text child of the `WaveHpText` wrapper. The main child paints
+/// in the readout colour; stroke children paint black behind it so
+/// the visible glyph picks up an 8-direction outline.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub enum WaveHpTextPart {
+    Stroke,
+    Main,
+}
+/// Top cyan stripe inside `WaveHpTrack`. Hidden when the build
+/// has no shield (`shield_max == 0 && cur == 0`); when hidden the
+/// HP zone expands to fill the whole bounding box so the player
+/// isn't left staring at empty dark space at the top.
 #[derive(Component)]
-pub struct ShieldFill;
-/// Vertical tick line inside the track, one per 50-HP mark.
+pub struct ShieldBarUi;
 #[derive(Component)]
-pub struct HpBarSubdivider;
+pub struct ShieldBarTrack;
+#[derive(Component)]
+pub struct ShieldBarFill;
+/// Marker on the inner HP zone Node — `update_shield_bar` mutates
+/// its `top` + `height` to collapse or expand depending on whether
+/// the shield stripe is active.
+#[derive(Component)]
+pub struct WaveHpZone;
 
 /// Container below the main HP bar that holds one bar per live ally.
 #[derive(Component)]
@@ -90,7 +109,10 @@ pub struct AllyHpFill { pub ally: Entity }
 
 // ---------- Setup ----------
 
-pub fn setup_hud(commands: &mut Commands) {
+pub fn setup_hud(
+    commands: &mut Commands,
+    thaleah: &crate::fonts::ThaleahFont,
+) {
     // Score banner removed for the prototype — re-enable by restoring
     // the spawn with `ScoreText` + `Text::new(format!("{} 0", tr("score_label")))`.
     // `update_score_text` is harmless when the entity doesn't exist
@@ -215,17 +237,17 @@ pub fn setup_hud(commands: &mut Commands) {
     .with_children(|p| {
         // XP track — its own bordered bar, sits on top of the HP
         // bar in the column stack.
-        crate::xp::spawn_xp_track(p);
-        // HP track — 180×22 with fill, ticks, right-aligned readout.
-        // `overflow: clip` keeps the shield overlay bounded inside
-        // the track — when shield_max + HP would overflow the bar,
-        // the cyan portion gets cropped at the border rather than
-        // spilling onto the world.
+        crate::xp::spawn_xp_track(p, thaleah);
+        // Unified HP+Shield track — one chunky-bordered container
+        // with two stacked horizontal stripes inside: cyan shield
+        // on top (7 px), green HP on bottom (15 px). Independent
+        // fills + readouts, hidden shield stripe is just empty +
+        // text-blank so the bounding box geometry stays constant.
         p.spawn((
             Node {
-                width: Val::Px(180.0),
+                width: Val::Px(150.0),
                 height: Val::Px(22.0),
-                border: UiRect::all(Val::Px(2.0)),
+                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                 position_type: PositionType::Relative,
                 overflow: Overflow::clip(),
                 ..default()
@@ -235,6 +257,22 @@ pub fn setup_hud(commands: &mut Commands) {
             WaveHpTrack,
         ))
         .with_children(|track| {
+            // Overwatch-style horizontal bar: HP segment on the LEFT,
+            // shield segment on the RIGHT, segment widths scaled to
+            // `hp_max / (hp_max + shield_pool)` and
+            // `shield_pool / (hp_max + shield_pool)` respectively.
+            // `shield_pool = max(shield_max, shield_cur)` so a Ward
+            // overflow pushes the shield segment wider mid-combat
+            // (HP segment proportionally shrinks). `update_wave_ui`
+            // recomputes every frame so the boundary slides smoothly
+            // as shield is gained / spent.
+            //
+            // Each segment's inner Fill paints its `cur / max` of the
+            // segment's own width — so the HP fill shrinks left-to-
+            // right as you take damage WITHIN its segment, and the
+            // shield fill empties separately within its segment.
+
+            // ---- HP segment (left) ----
             track.spawn((
                 Node {
                     position_type: PositionType::Absolute,
@@ -242,33 +280,66 @@ pub fn setup_hud(commands: &mut Commands) {
                     left: Val::Px(0.0),
                     width: Val::Percent(100.0),
                     height: Val::Percent(100.0),
+                    overflow: Overflow::clip(),
                     ..default()
                 },
-                BackgroundColor(Color::srgb(0.25, 0.85, 0.30)),
-                WaveHpFill,
-            ));
-            // Shield overlay — drawn on top of the green HP fill at
-            // the leading edge of the bar. `update_wave_ui` sizes it
-            // as `min(shield_cur, max_hp)` so it can never extend
-            // past the track's right edge (the `overflow: clip` on
-            // the track is a belt-and-braces gate).
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.20)),
+                WaveHpZone,
+            ))
+            .with_children(|zone| {
+                zone.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(0.0),
+                        left: Val::Px(0.0),
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.25, 0.85, 0.30)),
+                    WaveHpFill,
+                ));
+            });
+
+            // ---- Shield segment (right) ----
+            // Default `width: 0%` so the segment is invisible until
+            // `update_wave_ui` writes a real width.
             track.spawn((
                 Node {
                     position_type: PositionType::Absolute,
                     top: Val::Px(0.0),
-                    left: Val::Px(0.0),
+                    left: Val::Percent(100.0),
                     width: Val::Percent(0.0),
                     height: Val::Percent(100.0),
+                    overflow: Overflow::clip(),
                     ..default()
                 },
-                BackgroundColor(Color::srgb(0.35, 0.85, 0.95)),
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.30)),
                 Visibility::Hidden,
-                ShieldFill,
-            ));
-            // Numeric overlay — high ZIndex so the readout renders
-            // above the per-50-HP subdivider lines (which are
-            // dynamically respawned by `update_hp_subdividers` and
-            // would otherwise occlude the digits).
+                ShieldBarUi,
+                ShieldBarTrack,
+            ))
+            .with_children(|zone| {
+                zone.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(0.0),
+                        left: Val::Px(0.0),
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.55, 0.78, 0.85)),
+                    ShieldBarFill,
+                ));
+            });
+
+            // ---- HP / shield readout ----
+            // Wrapper sits at the WaveHpTrack root (not inside the
+            // shrinking HP zone) so the digits stay the same size
+            // and centred regardless of whether the shield stripe is
+            // visible. Same 8-direction Thaleah stroke pattern as the
+            // WAVE indicator — 8 black twins + 1 coloured main glyph.
             track.spawn((
                 Node {
                     position_type: PositionType::Absolute,
@@ -282,24 +353,46 @@ pub fn setup_hud(commands: &mut Commands) {
                     ..default()
                 },
                 ZIndex(10),
+                WaveHpText,
             ))
             .with_children(|over| {
-                over.spawn((
-                    // Placeholder text — `update_wave_ui` rewrites
-                    // this every frame from the live HP+shield pool.
-                    Text::new("0/0"),
-                    TextFont { font_size: 13.0, ..default() },
-                    TextColor(theme::ON_SURFACE),
-                    // Black drop shadow so the white digits read
-                    // clearly over BOTH the green HP fill and the
-                    // dark empty-bar background (without the shadow
-                    // they vanish into the green at high HP).
-                    TextShadow {
-                        offset: Vec2::splat(1.0),
-                        color: Color::srgba(0.0, 0.0, 0.0, 0.85),
-                    },
-                    WaveHpText,
-                ));
+                const STROKE_OFFSETS: &[(f32, f32)] = &[
+                    (-2.0, -2.0), ( 2.0, -2.0), (-2.0,  2.0), ( 2.0,  2.0),
+                    (-2.0,  0.0), ( 2.0,  0.0), ( 0.0, -2.0), ( 0.0,  2.0),
+                ];
+                // Wrapping inner node holds the stack — sits inside
+                // the right-aligned flex column at the wrapper level
+                // so the stroke twins overlay the main glyph cleanly.
+                over.spawn(Node {
+                    position_type: PositionType::Relative,
+                    width: Val::Auto,
+                    height: Val::Auto,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                })
+                .with_children(|stack| {
+                    for &(dx, dy) in STROKE_OFFSETS {
+                        stack.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                top: Val::Px(dy),
+                                left: Val::Px(dx),
+                                ..default()
+                            },
+                            Text::new("0/0"),
+                            crate::fonts::thaleah_text_font(thaleah, 18.0),
+                            TextColor(Color::srgba(0.0, 0.0, 0.0, 0.95)),
+                            WaveHpTextPart::Stroke,
+                        ));
+                    }
+                    stack.spawn((
+                        Text::new("0/0"),
+                        crate::fonts::thaleah_text_font(thaleah, 18.0),
+                        TextColor(theme::ON_SURFACE),
+                        WaveHpTextPart::Main,
+                    ));
+                });
             });
         });
 
@@ -383,20 +476,54 @@ pub fn update_vsync_label(
     }
 }
 
-/// Show the MAP button only in Combat view — Map view exits via clicking
-/// sections, not via this button.
+/// Show the MAP button only in Combat view AND only when the debug
+/// UI toggle is on (`#` key) — Map view exits via clicking sections,
+/// and the debug toggle hides this HUD chrome alongside the FPS /
+/// VSYNC / FOLLOW buttons so a polished play view stays clean.
 pub fn update_map_button(
     view: Res<ViewMode>,
+    debug_visible: Res<crate::map::DebugUiVisible>,
+    customize_open: Res<crate::customize::CustomizeOpen>,
     mut q: Query<&mut Visibility, With<ReturnToMapButton>>,
 ) {
-    if !view.is_changed() { return; }
-    let target = match *view {
-        ViewMode::Combat => Visibility::Inherited,
-        ViewMode::Map    => Visibility::Hidden,
-    };
+    // Runs every frame (no `is_changed` early-bail) because the
+    // customize-render toggle would otherwise force-show this
+    // button on customize close without re-firing our gate.
+    let want_show = matches!(*view, ViewMode::Combat)
+        && debug_visible.0
+        && !customize_open.open;
+    let target = if want_show { Visibility::Inherited } else { Visibility::Hidden };
     for mut v in &mut q {
         if *v != target { *v = target; }
     }
+}
+
+/// Gate the FPS / VSYNC / FOLLOW top-right HUD buttons on the
+/// `DebugUiVisible` toggle (`#` key) AND hide them while customize
+/// is open so the shop view stays clean. These are dev-quality
+/// readouts — hidden by default so the play view stays clean for
+/// screenshots / players.
+pub fn sync_hud_dev_buttons_visibility(
+    debug_visible: Res<crate::map::DebugUiVisible>,
+    customize_open: Res<crate::customize::CustomizeOpen>,
+    mut fps_q: Query<
+        &mut Visibility,
+        (With<FpsText>, Without<VsyncButton>, Without<CameraFollowButton>),
+    >,
+    mut vsync_q: Query<
+        &mut Visibility,
+        (With<VsyncButton>, Without<FpsText>, Without<CameraFollowButton>),
+    >,
+    mut follow_q: Query<
+        &mut Visibility,
+        (With<CameraFollowButton>, Without<FpsText>, Without<VsyncButton>),
+    >,
+) {
+    let want_show = debug_visible.0 && !customize_open.open;
+    let want = if want_show { Visibility::Inherited } else { Visibility::Hidden };
+    for mut v in &mut fps_q    { if *v != want { *v = want; } }
+    for mut v in &mut vsync_q  { if *v != want { *v = want; } }
+    for mut v in &mut follow_q { if *v != want { *v = want; } }
 }
 
 /// Toggle pier + HP-bar visibility and drive the bar's fill width +
@@ -405,100 +532,105 @@ pub fn update_map_button(
 pub fn update_wave_ui(
     view: Res<ViewMode>,
     stats: Res<crate::stats::PlayerStats>,
+    customize_open: Res<crate::customize::CustomizeOpen>,
+    paused: Res<crate::pause::Paused>,
     friendly: Query<(&Health, Option<&crate::stats::Shield>), With<Friendly>>,
     mut hp_root_q: Query<&mut Visibility, With<WaveHpUi>>,
-    mut hp_fill_q: Query<&mut Node, (With<WaveHpFill>, Without<ShieldFill>)>,
-    mut hp_text_q: Query<&mut Text, With<WaveHpText>>,
-    mut shield_q: Query<(&mut Node, &mut Visibility), (With<ShieldFill>, Without<WaveHpFill>, Without<WaveHpUi>)>,
+    mut hp_zone_q: Query<
+        &mut Node,
+        (With<WaveHpZone>, Without<WaveHpFill>, Without<ShieldBarTrack>, Without<ShieldBarFill>),
+    >,
+    mut hp_fill_q: Query<
+        &mut Node,
+        (With<WaveHpFill>, Without<WaveHpZone>, Without<ShieldBarTrack>, Without<ShieldBarFill>),
+    >,
+    mut shield_zone_q: Query<
+        (&mut Node, &mut Visibility),
+        (With<ShieldBarTrack>, Without<WaveHpZone>, Without<WaveHpFill>, Without<ShieldBarFill>, Without<WaveHpUi>),
+    >,
+    mut shield_fill_q: Query<
+        &mut Node,
+        (With<ShieldBarFill>, Without<WaveHpZone>, Without<WaveHpFill>, Without<ShieldBarTrack>),
+    >,
+    mut hp_text_q: Query<&mut Text, With<WaveHpTextPart>>,
 ) {
-    if view.is_changed() {
-        let want = if matches!(*view, ViewMode::Combat) {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        for mut v in &mut hp_root_q {
-            if *v != want { *v = want; }
-        }
+    // Run the visibility flip every frame so any other writer that
+    // flips WaveHpUi visible can't sneak in a stale state. Show
+    // ONLY when in Combat view AND the shop / pause overlays
+    // aren't on top — otherwise the bars poke through the shop /
+    // pause backdrop or sit on the map view.
+    let want = if matches!(*view, ViewMode::Combat)
+        && !customize_open.open
+        && !paused.0
+    {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut hp_root_q {
+        if *v != want { *v = want; }
     }
 
     let Ok((h, shield)) = friendly.single() else { return; };
-    let max_hp = stats.max_hp();
-    let shield_max = stats.shield_max.effective().max(0.0).round() as i32;
+    let max_hp = stats.max_hp().max(1) as f32;
+    let hp_cur = h.0.max(0) as f32;
+    let shield_max = stats.shield_max.effective().max(0.0);
     let shield_cur = shield.map(|s| s.current).unwrap_or(0.0).max(0.0);
 
-    // Bar pool = HP + shield. The bar's full width represents this
-    // combined pool. HP fills from the left; shield stacks ON TOP
-    // of the HP fill (anchored to its right edge), so the cyan
-    // always butts up against the green and slides left as HP
-    // drops. No gap between the two segments at any HP level.
-    let total_pool = (max_hp + shield_max).max(1) as f32;
+    // Overwatch-style horizontal layout. The shield SLOT (visible
+    // segment width) is `max(shield_max, shield_cur)` so a Ward
+    // overflow grows the segment on the fly. With both at zero the
+    // shield segment hides and HP takes the full bar.
+    let shield_pool = shield_max.max(shield_cur);
+    let total_pool = max_hp + shield_pool;
+    let hp_pool_pct = if total_pool > 0.0 { (max_hp / total_pool) * 100.0 } else { 100.0 };
+    let shield_pool_pct = (100.0 - hp_pool_pct).max(0.0);
+    let hp_cur_pct = (hp_cur / max_hp).clamp(0.0, 1.0) * 100.0;
+    let shield_cur_pct = if shield_pool > 0.0 {
+        (shield_cur / shield_pool).clamp(0.0, 1.0) * 100.0
+    } else {
+        0.0
+    };
+    let shield_active = shield_pool > 0.0;
 
-    let hp_fill_pct = (h.0 as f32 / total_pool).clamp(0.0, 1.0);
-    // Shield width is its own contribution to the pool, capped so
-    // the combined fill can never exceed 100%.
-    let shield_fill_pct = (shield_cur / total_pool)
-        .clamp(0.0, (1.0 - hp_fill_pct).max(0.0));
-
-    // Readout: "HP+shield / max_hp". With 100 HP + 25 shield this
-    // reads "125/100" — the slash is "current effective pool / hp
-    // baseline", so the player can see total survivability at a
-    // glance.
-    let total_cur = h.0.max(0) + shield_cur.round() as i32;
-    for mut t in &mut hp_text_q {
-        **t = format!("{}/{}", total_cur, max_hp);
+    // HP segment + its fill.
+    for mut node in &mut hp_zone_q {
+        let want_w = Val::Percent(hp_pool_pct);
+        if node.width != want_w { node.width = want_w; }
     }
-
     for mut node in &mut hp_fill_q {
-        node.width = Val::Percent(hp_fill_pct * 100.0);
+        let want_w = Val::Percent(hp_cur_pct);
+        if node.width != want_w { node.width = want_w; }
     }
 
-    // Shield fill: anchored to the right edge of the HP fill so the
-    // cyan always touches the green. Hidden entirely when
-    // `shield_max == 0` (no shield bought).
-    let want_vis = if shield_max > 0 { Visibility::Inherited } else { Visibility::Hidden };
-    for (mut node, mut vis) in &mut shield_q {
-        let want_left = Val::Percent(hp_fill_pct * 100.0);
-        let want_w = Val::Percent(shield_fill_pct * 100.0);
+    // Shield segment: position right after HP segment, sized to its
+    // share of the pool, visibility off when zero.
+    let want_shield_vis = if shield_active { Visibility::Inherited } else { Visibility::Hidden };
+    for (mut node, mut vis) in &mut shield_zone_q {
+        let want_left = Val::Percent(hp_pool_pct);
+        let want_w = Val::Percent(shield_pool_pct);
         if node.left != want_left { node.left = want_left; }
         if node.width != want_w { node.width = want_w; }
-        if *vis != want_vis { *vis = want_vis; }
+        if *vis != want_shield_vis { *vis = want_shield_vis; }
     }
-}
+    for mut node in &mut shield_fill_q {
+        let want_w = Val::Percent(shield_cur_pct);
+        if node.width != want_w { node.width = want_w; }
+    }
 
-/// Despawn + respawn the bar's vertical tick lines whenever max HP
-/// changes (PlayerStats.hp upgrades).
-pub fn update_hp_subdividers(
-    stats: Res<crate::stats::PlayerStats>,
-    mut commands: Commands,
-    track_q: Query<Entity, With<WaveHpTrack>>,
-    subdivider_q: Query<Entity, With<HpBarSubdivider>>,
-) {
-    if !stats.is_changed() { return; }
-    for e in &subdivider_q { commands.entity(e).despawn(); }
-    let Ok(track) = track_q.single() else { return; };
-
-    let max_hp = stats.max_hp();
-    commands.entity(track).with_children(|t| {
-        let step = 50;
-        let mut hp = step;
-        while hp < max_hp {
-            let pct = hp as f32 / max_hp as f32 * 100.0;
-            t.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Percent(pct),
-                    top: Val::Px(0.0),
-                    width: Val::Px(1.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                BackgroundColor(theme::BORDER_DARK),
-                HpBarSubdivider,
-            ));
-            hp += step;
-        }
-    });
+    // Numeric readout: `(hp_cur + shield_cur) / hp_max` so Ward
+    // overflow pushes the numerator past the denominator
+    // ("175/100"). When shield is zero, collapses to plain HP.
+    let max_hp_int = max_hp.round() as i32;
+    let shield_cur_int = shield_cur.round() as i32;
+    let label = if shield_active {
+        format!("{}/{}", (h.0.max(0) + shield_cur_int), max_hp_int)
+    } else {
+        format!("{}/{}", h.0.max(0), max_hp_int)
+    };
+    for mut t in &mut hp_text_q {
+        if t.0 != label { **t = label.clone(); }
+    }
 }
 
 fn spawn_ally_hp_bar(parent: &mut ChildSpawnerCommands, ally: Entity) {
