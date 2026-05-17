@@ -360,14 +360,11 @@ pub fn update_claim_label(
 #[derive(Resource)]
 pub struct DebugUiVisible(pub bool);
 impl Default for DebugUiVisible {
-    /// Visible by default on dev builds, off in demo builds. The demo
-    /// build never spawns the debug panel anyway (its setup system is
-    /// stripped in `main.rs`), but flipping the default to off here
-    /// also disables the customize-screen `+/-` stat-debug glyphs,
-    /// which self-gate on this resource.
-    #[cfg(not(feature = "demo"))]
-    fn default() -> Self { Self(true) }
-    #[cfg(feature = "demo")]
+    /// Off by default everywhere — the `#` key toggles it on when
+    /// you want the customize-screen `+/-` debug glyphs + the
+    /// bottom-right debug panel. Demo builds never spawn the panel
+    /// at all (the setup system is stripped in `main.rs`), so the
+    /// default for them is just "doesn't matter."
     fn default() -> Self { Self(false) }
 }
 

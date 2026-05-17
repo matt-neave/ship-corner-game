@@ -751,23 +751,20 @@ pub fn slot_for_contact(
     best.map(|(idx, _)| idx)
 }
 
-/// Bonus damage added to a ram hit when the contacted enemy is on
-/// the side of a Spike Plate slot. Same `slot_for_contact` mapping
-/// `spiked_plate_reduction` uses for incoming bullets, so the
-/// player can reason about both effects identically.
+/// Bonus damage added to a ram hit per equipped Spike Plate slot,
+/// regardless of which side of the hull the rammed enemy contacted.
+/// Stacks linearly — 3 plates = +15 ram damage on every contact.
+/// Used to be per-side (matching `spiked_plate_reduction`) but the
+/// hidden mapping made stacked plates feel like nothing was
+/// happening; going global makes each plate a legible +5 to ram.
 fn spiked_plate_contact_bonus(
     cfg: &crate::turret::TurretConfig,
-    ship_pos: Vec2,
-    enemy_pos: Vec2,
-    hull_yaw: f32,
+    _ship_pos: Vec2,
+    _enemy_pos: Vec2,
+    _hull_yaw: f32,
 ) -> i32 {
-    let Some(idx) = slot_for_contact(ship_pos, enemy_pos, hull_yaw) else { return 0 };
-    let slot = cfg.slots[idx];
-    if slot.equipped
-        && matches!(slot.weapon, crate::weapon::WeaponType::SpikedPlate)
-    {
-        crate::balance::SPIKED_PLATE_DAMAGE_BONUS
-    } else {
-        0
-    }
+    let plate_count = cfg.slots.iter().filter(|s| {
+        s.equipped && matches!(s.weapon, crate::weapon::WeaponType::SpikedPlate)
+    }).count() as i32;
+    plate_count * crate::balance::SPIKED_PLATE_DAMAGE_BONUS
 }

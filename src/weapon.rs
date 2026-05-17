@@ -69,11 +69,13 @@ pub enum WeaponType {
     /// rune — burn is a separate effect from Fire status. See
     /// `flamethrower.rs` for the cone + tick logic.
     Flamethrower,
-    /// Spike-armoured deck plate. Doesn't fire anything. Each equipped
-    /// slot adds `SPIKED_PLATE_DAMAGE_BONUS` to the ship's contact-ram
-    /// damage AND reduces incoming bullet damage by
-    /// `SPIKED_PLATE_REDUCTION` when the bullet hits the hull on the
-    /// same side this slot occupies. Tagged Melee + Support.
+    /// Spike-armoured deck plate. Doesn't fire anything. Each
+    /// equipped slot adds `SPIKED_PLATE_DAMAGE_BONUS` to the ship's
+    /// contact-ram damage AND reduces every incoming bullet by
+    /// `SPIKED_PLATE_REDUCTION` damage. Both effects are global —
+    /// the previous "same side" rule was invisible to players and
+    /// has been dropped. Stacks linearly across multiple plates.
+    /// Tagged Melee + Support.
     SpikedPlate,
     /// Rune-share support node. Doesn't fire. Its own three rune
     /// sockets are mirrored into the empty rune slots of every

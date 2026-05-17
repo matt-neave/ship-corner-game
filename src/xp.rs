@@ -145,18 +145,17 @@ impl Buff {
     }
 }
 
-/// Master list of buffs the level-up screen can roll. Deltas mirror
-/// `StatKind::debug_step` so a level-up pick is exactly equivalent
-/// to a shop mod purchase — no surprise that "+10 RANGE" from a
-/// level-up means the same as "+10 RANGE" from a mod card. Pulls
-/// from `StatKind::ROLLABLE` (not `ALL`) so `TurretArcBonus` /
-/// `TurretTurnSpeed` never come up as picks while still being
-/// configurable from the stats panel.
+/// Master list of buffs the level-up screen can roll. Deltas use
+/// `StatKind::upgrade_step` — the conservative player-facing step,
+/// not the larger `debug_step` (which is for the dev `+/-`
+/// buttons). Pulls from `StatKind::ROLLABLE` (not `ALL`) so
+/// `TurretArcBonus` / `TurretTurnSpeed` never come up as picks
+/// while still being configurable from the stats panel.
 fn buff_pool() -> Vec<Buff> {
     StatKind::ROLLABLE
         .iter()
         .copied()
-        .map(|kind| Buff { kind, delta: kind.debug_step(), flat: true })
+        .map(|kind| Buff { kind, delta: kind.upgrade_step(), flat: true })
         .collect()
 }
 

@@ -24,12 +24,12 @@ use super::CustomizeOpen;
 // at the bumped 14pt font, with the row staying narrow enough to
 // keep the shop column anchored far enough left that the sell strip
 // fits cleanly under the ship.
-pub const MOD_CARD_W: f32 = 30.0;
+pub const MOD_CARD_W: f32 = 32.0;
 // Tightened so the mod row + cost label + reroll button all clear
 // the bottom of the canvas without scrolling. Pure mods only show
-// 2 lines anyway; trade-off cards still fit their 4 because each
-// span auto-flows tightly inside the smaller box.
-pub const MOD_CARD_H: f32 = 26.0;
+// 2 lines anyway; trade-off cards still fit their 3 (name + buff
+// + nerf) at the smaller font, with margin.
+pub const MOD_CARD_H: f32 = 22.0;
 pub const MOD_CARD_GAP: f32 = 4.0;
 const Z_OUTLINE: f32 = 99.0;
 const Z_FILL: f32 = 99.5;
@@ -102,7 +102,11 @@ fn spawn_card(commands: &mut Commands, font: &crate::fonts::PixelFont, idx: usiz
     ));
     commands.spawn((
         Text2d::new(""),
-        crate::fonts::pixel_text_font(font, 14.0),
+        // Smaller body font (10 vs the earlier 14) — keeps every
+        // "+10% LABEL" line well inside the now-narrower card and
+        // leaves headroom for trade-off mods' 3 stacked lines
+        // without overflowing into the neighbour card.
+        crate::fonts::pixel_text_font(font, 10.0),
         TextColor(Color::srgb(1.0, 0.85, 0.30)),
         // Centre the two-line value/name pair so each line stacks
         // on its own row inside the card.
@@ -163,6 +167,11 @@ pub fn update_shop_mod_cards(
     }
     let shop = shop.unwrap();
     let s = viewport.display_scale;
+    // Card size stays in spec×display_scale so it lines up with
+    // the `HitArea` (which is spec-coord) at every resolution.
+    // The per-line text scales with `UiScale` separately; we keep
+    // glyph counts under control via shorter `short_stat_label`
+    // names instead of resizing the card itself.
     let fill_size = Vec2::new(MOD_CARD_W * s, MOD_CARD_H * s);
     let outline_size = fill_size + Vec2::splat(2.0 * BORDER_PX);
 
@@ -243,7 +252,7 @@ pub fn update_shop_mod_cards(
                             };
                             p.spawn((
                                 TextSpan::new(txt),
-                                crate::fonts::pixel_text_font(&pixel_font, 14.0),
+                                crate::fonts::pixel_text_font(&pixel_font, 10.0),
                                 TextColor(line_color),
                                 ShopModTextSpan { idx: slot.idx },
                             ));
@@ -309,16 +318,12 @@ pub fn handle_shop_mod_click(
         { continue; }
         let Some(slot_entry) = shop.mods.get_mut(slot.idx) else { return };
         let Some(m) = *slot_entry else { return };
-        // Apply the primary effect.
-        let stat = m.kind.stat_mut(&mut stats);
-        stat.flat += m.delta;
-        // Trade-off cards also apply a side-effect on a different
-        // stat. Side delta is typically negative (a nerf paired
-        // with the primary buff) but the apply path is identical -
-        // both halves write to `stat.flat`.
-        if let Some((side_kind, side_delta)) = m.side {
-            let s = side_kind.stat_mut(&mut stats);
-            s.flat += side_delta;
+        // Apply every stat change defined by this mod's spec.
+        // Pure-buff mods carry one change; trade-off mods carry
+        // two (or more) — the apply loop is identical either way.
+        for &(kind, delta) in m.spec().changes {
+            let stat = kind.stat_mut(&mut stats);
+            stat.flat += delta;
         }
         *slot_entry = None;
         scrap.0 = scrap.0.saturating_sub(super::drag::SHOP_ITEM_COST);

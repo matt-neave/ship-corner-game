@@ -558,6 +558,7 @@ pub fn handle_reroll_button(
     open: Res<CustomizeOpen>,
     mouse: Res<ButtonInput<bevy::input::mouse::MouseButton>>,
     drag: Res<DragState>,
+    shop: Option<Res<super::drag::CustomizeShop>>,
     mut scrap: ResMut<crate::Scrap>,
     mut commands: Commands,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -619,9 +620,69 @@ pub fn handle_reroll_button(
             && cursor.y <= centre.y + half.y
         {
             scrap.0 -= SHOP_REROLL_COST;
-            commands.insert_resource(roll_fresh_stock());
+            // Preserve locked slots across the reroll. Falls back
+            // to a plain fresh roll if (somehow) the shop resource
+            // is missing — same first-run path as before.
+            let next_shop = shop
+                .as_deref()
+                .map(|s| s.reroll_preserving_locked())
+                .unwrap_or_else(roll_fresh_stock);
+            commands.insert_resource(next_shop);
             return;
         }
+    }
+}
+
+/// Right-click on a shop turret / rune / mod tile toggles its
+/// lock flag. Locked slots persist across `reroll_preserving_locked`
+/// so the player can hold an interesting offer while rolling the
+/// rest. Right-click doesn't consume the slot — only left-click
+/// drag + place / left-click apply consumes (existing flows).
+pub fn handle_right_click_lock(
+    open: Res<CustomizeOpen>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    drag: Res<super::drag::DragState>,
+    mut shop: Option<ResMut<super::drag::CustomizeShop>>,
+    sources: Query<(&Transform, &super::setup::HitArea, &super::setup::DragSourceMarker)>,
+    mod_slots: Query<(&Transform, &super::setup::HitArea, &super::shop_mods::ShopModSlot)>,
+) {
+    if !open.open { return; }
+    if !mouse.just_pressed(MouseButton::Right) { return; }
+    let Some(cursor) = drag.spec_cursor else { return };
+    let Some(shop) = shop.as_deref_mut() else { return };
+
+    let hit = |centre: Vec2, half: Vec2| {
+        cursor.x >= centre.x - half.x
+            && cursor.x <= centre.x + half.x
+            && cursor.y >= centre.y - half.y
+            && cursor.y <= centre.y + half.y
+    };
+
+    // Turret + rune sources carry their idx via DragSourceMarker.
+    for (tf, hit_area, marker) in &sources {
+        let centre = tf.translation.truncate();
+        if !hit(centre, hit_area.size * 0.5) { continue; }
+        match marker.0 {
+            super::drag::DragSourceKind::ShopTurret(idx) => {
+                if let Some(slot) = shop.turrets_locked.get_mut(idx) { *slot = !*slot; }
+                return;
+            }
+            super::drag::DragSourceKind::ShopRune(idx) => {
+                if let Some(slot) = shop.runes_locked.get_mut(idx) { *slot = !*slot; }
+                return;
+            }
+            // Ship-side drag sources (slot / rune sockets) don't
+            // belong in the lock pool — they're inventory, not shop
+            // offers.
+            _ => {}
+        }
+    }
+    // Mod slots carry their idx via the dedicated ShopModSlot marker.
+    for (tf, hit_area, slot) in &mod_slots {
+        let centre = tf.translation.truncate();
+        if !hit(centre, hit_area.size * 0.5) { continue; }
+        if let Some(b) = shop.mods_locked.get_mut(slot.idx) { *b = !*b; }
+        return;
     }
 }
 

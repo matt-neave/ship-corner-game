@@ -125,10 +125,10 @@ use turret::{
     TurretConfig,
 };
 use ui::{
-    setup_damage_panel, setup_ui,
-    setup_wave_indicator, sync_ally_hp_bars, sync_damage_panel_visibility,
-    ui_button_system, update_ally_hp_values, update_damage_panel,
-    update_damage_row_icons, update_fps_text, update_hp_bar_pixel_scale,
+    setup_ui,
+    setup_wave_indicator, sync_ally_hp_bars, sync_hud_dev_buttons_visibility,
+    ui_button_system, update_ally_hp_values,
+    update_fps_text, update_hp_bar_pixel_scale,
     update_hp_subdividers, update_map_button,
     update_score_text, update_vsync_label, update_wave_indicator,
     update_wave_ui, DamageStats,
@@ -482,44 +482,43 @@ pub struct SpawnTimer { pub t: f32, pub elapsed: f32 }
 pub struct Difficulty(pub u8);
 
 impl Default for Difficulty {
-    /// Default to the baseline tier (1) so a fresh install plays the
-    /// originally-tuned campaign.
-    fn default() -> Self { Self(1) }
+    /// Default to the centre tier of the 3×3 grid (tier 4 of 0..8)
+    /// so a fresh install plays at 1.0× HP / 1.0× damage — the
+    /// originally-tuned baseline.
+    fn default() -> Self { Self(4) }
 }
 
 impl Difficulty {
-    pub const VALUES: &'static [u8] = &[0, 1, 2];
+    /// Nine tiers, displayed as a 3×3 grid in HullSelect. Tier 0 is
+    /// the gentlest, tier 4 is the baseline, tier 8 is the hardest
+    /// — every step bumps enemy HP + outgoing damage by the same
+    /// fixed fraction so the curve is even.
+    pub const VALUES: &'static [u8] = &[0, 1, 2, 3, 4, 5, 6, 7, 8];
 
     pub fn label(self) -> &'static str {
         match self.0 {
-            0 => "0",
-            1 => "1",
-            2 => "2",
+            0 => "0", 1 => "1", 2 => "2",
+            3 => "3", 4 => "4", 5 => "5",
+            6 => "6", 7 => "7", 8 => "8",
             _ => "?",
         }
     }
 
     /// Multiplier applied to enemy max HP at spawn (both regular
-    /// variants and bosses). Easier difficulty thins enemies, harder
-    /// thickens them.
+    /// variants and bosses). Linear step of `0.125x` per tier centred
+    /// on `4 → 1.0×`, giving the extremes:
+    /// tier 0 → 0.50×, tier 4 → 1.00×, tier 8 → 1.50×.
     pub fn hp_mult(self) -> f32 {
-        match self.0 {
-            0 => 0.75,
-            1 => 1.0,
-            2 => 1.5,
-            _ => 1.0,
-        }
+        let t = self.0.clamp(0, 8) as f32;
+        (0.5 + t * 0.125).max(0.1)
     }
 
-    /// Multiplier applied to outgoing enemy damage at the source
-    /// (bullet `damage`, contact `contact_damage`, landmine yield).
+    /// Multiplier applied to outgoing enemy damage at the source.
+    /// Same shape + step as `hp_mult` so HP and damage scale in
+    /// lockstep through the 9 tiers.
     pub fn damage_mult(self) -> f32 {
-        match self.0 {
-            0 => 0.75,
-            1 => 1.0,
-            2 => 1.5,
-            _ => 1.0,
-        }
+        let t = self.0.clamp(0, 8) as f32;
+        (0.5 + t * 0.125).max(0.1)
     }
 
     /// Apply `hp_mult` to a baseline HP value, rounding to the nearest
@@ -718,7 +717,6 @@ fn main() {
             #[cfg(not(feature = "demo"))]
             setup_debug_ui,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
-            setup_damage_panel,
             setup_wave_indicator, setup_spawn_indicator_assets,
         ).chain())
         // Bridge runs first so the rest of Update sees synced flags.
@@ -876,7 +874,12 @@ fn main() {
                     handle_debug_buttons, update_debug_button_tints, update_claim_label,
                     toggle_debug_ui_on_hash, sync_debug_panel_visibility,
                 ),
-                update_damage_panel, update_damage_row_icons, sync_damage_panel_visibility,
+                // HUD dev buttons (FPS / VSYNC / FOLLOW) gated on
+                // the same `DebugUiVisible` toggle as the debug
+                // panel. Outside the `not(demo)` cfg because demo
+                // builds should ALSO hide them (the resource
+                // default is `false` everywhere now).
+                sync_hud_dev_buttons_visibility,
                 update_wave_indicator,
                 tick_spawn_indicators,
                 xp::update_xp_bar,

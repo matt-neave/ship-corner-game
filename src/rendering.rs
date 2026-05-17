@@ -53,10 +53,13 @@ pub struct PlayRenderImage(#[allow(dead_code)] pub Handle<Image>);
 pub fn make_scanline_image() -> Image {
     let w = PLAY_INTERNAL_W;
     let h = PLAY_INTERNAL_H;
-    // ~12% black on darkened rows. Half the rows × 12% alpha works out to
-    // ~6% average darkening — enough that scanlines read at a glance
-    // without dimming the whole scene the way a 38% overlay did.
-    const DARK_ALPHA: u8 = 32;
+    // Trimmed alpha: ~7% on dark rows averages out to ~3.5% over the
+    // play area — enough that scanlines hint at the CRT effect when
+    // looking for them, without making the scene visibly dimmer
+    // through normal play. Earlier 12% darkening read as "the game
+    // got darker when I turned CRT on" rather than as a stylistic
+    // overlay.
+    const DARK_ALPHA: u8 = 18;
     let mut data = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         let dark = (y % 2) == 0;

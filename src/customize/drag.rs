@@ -118,6 +118,55 @@ pub struct CustomizeShop {
     /// Stat-modifier cards. Click-to-apply: the delta is added to the
     /// stat's `flat` field and the slot is consumed.
     pub mods: Vec<Option<ShopMod>>,
+    /// Per-slot locks — right-click toggles the corresponding flag.
+    /// Locked slots survive `reroll_preserving_locked` so the player
+    /// can hold an interesting offer while rolling the rest. Fixed
+    /// to the shop's authored slot count (3 / 2 / 3); enlarged with
+    /// `false` if the lock array got out of sync with the Vec
+    /// during a save-load.
+    pub turrets_locked: [bool; 3],
+    pub runes_locked:   [bool; 2],
+    pub mods_locked:    [bool; 3],
+}
+
+impl CustomizeShop {
+    /// Roll a fresh shop but keep any locked slot's offer in place.
+    /// Lock flags themselves persist so the player's lock survives
+    /// across rerolls.
+    pub fn reroll_preserving_locked(&self) -> Self {
+        let mut fresh = roll_fresh_stock();
+        // Copy lock flags forward first so the visual badges don't
+        // flicker through "unlocked → locked" on the same frame.
+        fresh.turrets_locked = self.turrets_locked;
+        fresh.runes_locked   = self.runes_locked;
+        fresh.mods_locked    = self.mods_locked;
+        // Carry over the offer in each locked slot. Skip slots
+        // whose live offer was already consumed (`None`) — locking
+        // an empty slot is a no-op rather than a guarantee of
+        // future offers.
+        for (i, &locked) in self.turrets_locked.iter().enumerate() {
+            if locked {
+                if let Some(existing) = self.turrets.get(i).copied().flatten() {
+                    if let Some(slot) = fresh.turrets.get_mut(i) { *slot = Some(existing); }
+                }
+            }
+        }
+        for (i, &locked) in self.runes_locked.iter().enumerate() {
+            if locked {
+                if let Some(existing) = self.runes.get(i).copied().flatten() {
+                    if let Some(slot) = fresh.runes.get_mut(i) { *slot = Some(existing); }
+                }
+            }
+        }
+        for (i, &locked) in self.mods_locked.iter().enumerate() {
+            if locked {
+                if let Some(existing) = self.mods.get(i).copied().flatten() {
+                    if let Some(slot) = fresh.mods.get_mut(i) { *slot = Some(existing); }
+                }
+            }
+        }
+        fresh
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -126,62 +175,139 @@ pub struct ShopTurretOffer {
     pub barrels: u8,
 }
 
+/// One canonical mod entry — a name + an arbitrary list of stat
+/// changes. The shop rolls indexes into [`MOD_LIBRARY`] so adding
+/// a new mod is one struct literal at the bottom of that array.
+pub struct ModSpec {
+    pub name: &'static str,
+    /// Each entry is `(stat, delta)`. Positive deltas are buffs,
+    /// negative are nerfs; the card-text pass colours them green
+    /// vs red automatically by sign.
+    pub changes: &'static [(StatKind, f32)],
+}
+
+/// All shop mods. Pure-buff entries have a single `+` change;
+/// trade-off entries pair a buff with a nerf. Add a new mod by
+/// appending to this list — the shop roll, the click handler, and
+/// the card label all read straight from here.
+///
+/// Number scale: pure mods are ≈ `StatKind::upgrade_step` (one
+/// level-up's worth). Trade-off mods buff at ≈ 2× upgrade_step
+/// and pair a ≈ 1× nerf, so the net is roughly +1 step (Brotato
+/// "the trade-off mod is the favoured pick when the side stat is
+/// dump-worthy" pattern). Crit is intentionally small (5%) — a
+/// build-defining stat shouldn't swing from one card.
+pub static MOD_LIBRARY: &[ModSpec] = &[
+    // ---- Pure-buff mods ----
+    ModSpec { name: "RELOADED",   changes: &[(StatKind::TurretDamage, 5.0)] },
+    ModSpec { name: "FOCUS",      changes: &[(StatKind::Crit, 5.0)] },
+    ModSpec { name: "OUTRIDER",   changes: &[(StatKind::MoveSpeed, 1.5)] },
+    ModSpec { name: "HOMING",     changes: &[(StatKind::Range, 5.0)] },
+    ModSpec { name: "SCOUT",      changes: &[(StatKind::TurnSpeed, 0.25)] },
+    ModSpec { name: "PLATING",    changes: &[(StatKind::Hp, 5.0)] },
+    ModSpec { name: "PADDING",    changes: &[(StatKind::Armour, 2.0)] },
+    ModSpec { name: "DODGER",     changes: &[(StatKind::Dodge, 2.0)] },
+    ModSpec { name: "BARRIER",    changes: &[(StatKind::ShieldMax, 3.0)] },
+    ModSpec { name: "FIELD KIT",  changes: &[(StatKind::Harvest, 1.0)] },
+    ModSpec { name: "TUTOR",      changes: &[(StatKind::XpHarvest, 5.0)] },
+    ModSpec { name: "ENERGISED",  changes: &[(StatKind::RuneDamage, 0.05)] },
+    ModSpec { name: "PYRO",       changes: &[(StatKind::ProcStrength, 5.0)] },
+    ModSpec { name: "GAMBLER",    changes: &[(StatKind::Luck, 5.0)] },
+
+    // ---- Trade-off mods (named after their character) ----
+    ModSpec {
+        name: "GLASS CANNON",
+        changes: &[(StatKind::TurretDamage, 12.0), (StatKind::Hp, -8.0)],
+    },
+    ModSpec {
+        name: "STEADY AIM",
+        changes: &[(StatKind::Crit, 10.0), (StatKind::MoveSpeed, -1.5)],
+    },
+    ModSpec {
+        name: "BERSERKER",
+        changes: &[(StatKind::TurretDamage, 10.0), (StatKind::Armour, -4.0)],
+    },
+    ModSpec {
+        name: "EVASIVE",
+        changes: &[(StatKind::Dodge, 4.0), (StatKind::TurretDamage, -5.0)],
+    },
+    ModSpec {
+        name: "JUGGERNAUT",
+        changes: &[(StatKind::Hp, 12.0), (StatKind::MoveSpeed, -1.5)],
+    },
+    ModSpec {
+        name: "MERCHANT",
+        changes: &[(StatKind::Harvest, 2.0), (StatKind::TurretDamage, -5.0)],
+    },
+    ModSpec {
+        name: "FAR SHOT",
+        changes: &[(StatKind::Range, 10.0), (StatKind::ProcStrength, -5.0)],
+    },
+];
+
+/// Live shop mod entry — just an index into [`MOD_LIBRARY`]. Kept
+/// `Copy` so the existing `Vec<Option<ShopMod>>` slot model works
+/// unchanged. The card text, click apply, and tooltip all dispatch
+/// through `spec()`.
 #[derive(Clone, Copy)]
 pub struct ShopMod {
-    pub kind: StatKind,
-    pub delta: f32,
-    /// Optional trade-off side-effect: a SECOND stat that ALSO
-    /// changes when this mod is picked, typically a nerf paired
-    /// with the primary buff. None for plain mods. The roll table
-    /// in `roll_fresh_stock` mixes pure buffs with these trade-off
-    /// cards so the shop offers genuine choices, not just always-
-    /// good upgrades.
-    pub side: Option<(StatKind, f32)>,
+    pub spec_idx: usize,
 }
 
 impl ShopMod {
-    /// Card text. Pure mods render two lines (value + short name).
-    /// Trade-off mods render FOUR — primary buff on top, side
-    /// nerf below — so the player sees both halves of the deal at
-    /// a glance. The colour pass on the card paints buffs green /
-    /// nerfs red automatically (it sees the sign on each segment).
+    pub fn spec(&self) -> &'static ModSpec {
+        &MOD_LIBRARY[self.spec_idx.min(MOD_LIBRARY.len().saturating_sub(1))]
+    }
+
+    /// Card text — name on the first line, a blank spacer line,
+    /// then one `±N STAT` line per change. The blank line breaks
+    /// the name visually from the change list so the card reads as
+    /// "header / body" rather than four tight rows. The colour
+    /// pass on the card paints buffs green / nerfs red automatically
+    /// from each line's leading character.
     pub fn label(self) -> String {
-        let main = format!(
-            "{}\n{}",
-            self.kind.format_delta(self.delta),
-            short_stat_label(self.kind),
-        );
-        match self.side {
-            Some((k, d)) => format!(
-                "{}\n{}\n{}",
-                main,
-                k.format_delta(d),
-                short_stat_label(k),
-            ),
-            None => main,
+        let spec = self.spec();
+        let mut lines = String::from(spec.name);
+        // Spacer line — the renderer splits on `\n` and emits a
+        // blank TextSpan for the empty entry, which displays as a
+        // small visible gap below the name.
+        lines.push('\n');
+        for &(kind, delta) in spec.changes {
+            lines.push('\n');
+            lines.push_str(&format!(
+                "{} {}",
+                kind.format_delta(delta),
+                short_stat_label(kind),
+            ));
         }
+        lines
     }
 }
 
 /// Compact card-friendly label for a stat. The stats panel uses
 /// `StatKind::label` for the full form; this trims the longer
-/// names down so the mod card text stays one line.
+/// names down so each `±N% LABEL` line fits the mod card's
+/// narrow width without wrapping or overflowing.
+///
+/// Target length: <= 8 characters so a "+10% LABEL" line stays
+/// inside a single card-width line. Anything longer was clipping
+/// across into the neighbour card at the typical play resolution.
 fn short_stat_label(kind: StatKind) -> &'static str {
     match kind {
-        StatKind::Hp                => "HEALTH",
+        StatKind::Hp                => "HP",
         StatKind::ShieldMax         => "SHIELD",
         StatKind::MoveSpeed         => "SPEED",
         StatKind::TurnSpeed         => "TURN",
-        StatKind::TurretTurnSpeed   => "TURRET TURN",
-        StatKind::TurretArcBonus    => "TURRET ARC",
+        StatKind::TurretTurnSpeed   => "T.TURN",
+        StatKind::TurretArcBonus    => "T.ARC",
         StatKind::Range             => "RANGE",
         StatKind::Crit              => "CRIT",
         StatKind::Luck              => "LUCK",
-        StatKind::ProcStrength      => "PROC STRENGTH",
+        StatKind::ProcStrength      => "PROCS",
         StatKind::Harvest           => "HARVEST",
-        StatKind::XpHarvest         => "XP GAIN",
-        StatKind::RuneDamage        => "RUNE EFFECT",
-        StatKind::TurretDamage      => "TURRET DAMAGE",
+        StatKind::XpHarvest         => "XP",
+        StatKind::RuneDamage        => "RUNES",
+        StatKind::TurretDamage      => "DAMAGE",
         StatKind::Dodge             => "DODGE",
         StatKind::Armour            => "ARMOUR",
     }
@@ -267,45 +393,22 @@ pub fn roll_fresh_stock() -> CustomizeShop {
     let mut runes_owned: Vec<_> = runes_pool.to_vec();
     runes_owned.shuffle(&mut rng);
     let runes = runes_owned.into_iter().take(2).map(Some).collect();
-    let mut mods = Vec::with_capacity(3);
-    for _ in 0..3 {
-        // Roll from `ROLLABLE` (not `ALL`) so the random pool skips
-        // `TurretArcBonus` / `TurretTurnSpeed` — those stay
-        // configurable in the panel but shouldn't burn a shop draw.
-        let kind = *StatKind::ROLLABLE.choose(&mut rng).unwrap();
-        // Roughly one in three rolls is a trade-off card: bigger
-        // buff on the primary stat plus a nerf on a DIFFERENT
-        // stat. Forces the player to weigh each mod against their
-        // build instead of clicking everything. Pure-buff mods use
-        // the standard `debug_step` value; trade-off cards bump
-        // the buff to 1.5x and apply a -1.25x nerf to a random
-        // other stat — Brotato-style "buff favored but nerf bites":
-        // ~20% headroom (1.5 / 1.25), so the trade-off is worth
-        // taking when the side stat is dump-worthy and a real cost
-        // otherwise.
-        let trade_off = rng.gen_bool(0.33);
-        if trade_off {
-            // Pick a side-effect stat that isn't the primary.
-            let side_kind = loop {
-                let k = *StatKind::ROLLABLE.choose(&mut rng).unwrap();
-                if k != kind { break k; }
-            };
-            let buff = kind.debug_step() * 1.5;
-            let nerf = -side_kind.debug_step() * 1.25;
-            mods.push(Some(ShopMod {
-                kind,
-                delta: buff,
-                side: Some((side_kind, nerf)),
-            }));
-        } else {
-            mods.push(Some(ShopMod {
-                kind,
-                delta: kind.debug_step(),
-                side: None,
-            }));
-        }
+    // Three distinct mods per shop offering — sample without
+    // replacement so the same card never appears twice in one row.
+    let mut mod_indices: Vec<usize> = (0..MOD_LIBRARY.len()).collect();
+    mod_indices.shuffle(&mut rng);
+    let mods: Vec<Option<ShopMod>> = mod_indices
+        .into_iter()
+        .take(3)
+        .map(|i| Some(ShopMod { spec_idx: i }))
+        .collect();
+    let _ = StatKind::ROLLABLE; // retained for legacy use elsewhere.
+    CustomizeShop {
+        turrets, runes, mods,
+        turrets_locked: [false; 3],
+        runes_locked:   [false; 2],
+        mods_locked:    [false; 3],
     }
-    CustomizeShop { turrets, runes, mods }
 }
 
 pub fn init_customize_shop(mut commands: Commands) {

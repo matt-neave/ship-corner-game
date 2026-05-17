@@ -377,15 +377,15 @@ pub fn setup_customize_ui(
     // inside the canvas without scrolling.
     spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y - 92.0), "MODS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
     // Mod card centre: header at -92, card top edge at -106, centre
-    // at -106 - MOD_CARD_H/2 = -106 - 13 = -119. Round to -118.
-    super::shop_mods::spawn_mod_cards(&mut commands, &pixel_font, shop_x, shop_top_y - 118.0);
+    // at -106 - MOD_CARD_H/2 = -106 - 11 = -117.
+    super::shop_mods::spawn_mod_cards(&mut commands, &pixel_font, shop_x, shop_top_y - 117.0);
 
     // Reroll button — sits at the bottom of the shop column. Costs
     // `SHOP_REROLL_COST` scrap (`drag::SHOP_REROLL_COST`); refills every
-    // sold slot with fresh offerings. Mod-card bottom at -118 - 13
-    // = -131; cost label at -131 - 6 = -137; reroll lifted to -148
+    // sold slot with fresh offerings. Mod-card bottom at -117 - 11
+    // = -128; cost label at -128 - 6 = -134; reroll lifted to -144
     // to clear it cleanly while staying inside the canvas.
-    let reroll_pos = Vec2::new(shop_x, shop_top_y - 148.0);
+    let reroll_pos = Vec2::new(shop_x, shop_top_y - 144.0);
     spawn_container(
         &mut commands,
         &mut meshes,
@@ -419,7 +419,10 @@ pub fn setup_customize_ui(
     // ---------- Centre ship + slots + sockets ----------
     // Ship sits left of canvas centre so the RHS stats column has room
     // to flow down the right edge.
-    let ship_centre = Vec2::new(-10.0, 0.0);
+    // Ship + sell strip nudged +15 spec px to the right so the
+    // bigger shop column (wider mod cards + spread-out turrets)
+    // has room without crowding the hull's portside slots.
+    let ship_centre = Vec2::new(5.0, 0.0);
     spawn_hull(&mut commands, ship_centre, hull_capsule, hull_mat);
 
     for (slot, &(gx, gy)) in TURRET_POSITIONS.iter().enumerate() {

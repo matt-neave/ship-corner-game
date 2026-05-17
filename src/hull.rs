@@ -464,8 +464,22 @@ fn spawn_overlay(
                             theme::ACCENT,
                         ),
                     ));
-                    for &value in crate::Difficulty::VALUES {
-                        spawn_difficulty_pill(run, font, value, value == difficulty.0);
+                    // 3×3 grid of difficulty pills. Render as three
+                    // rows of three; the inner row uses Display::Flex
+                    // with column gaps so the pills sit side-by-side.
+                    for row_start in [0u8, 3, 6] {
+                        run.spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            column_gap: Val::Px(theme::GAP_SM),
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            for v in row_start..row_start + 3 {
+                                spawn_difficulty_pill(row, font, v, v == difficulty.0);
+                            }
+                        });
                     }
                     // Spacer pushes PLAY + BACK to the card bottom.
                     run.spawn(Node {

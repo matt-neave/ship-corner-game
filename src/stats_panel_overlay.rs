@@ -149,12 +149,13 @@ pub fn spawn_stats_panel(parent: &mut ChildSpawnerCommands, stats: &PlayerStats)
 /// no-op.
 pub fn update_stat_panel_tooltip(
     rows: Query<(&Interaction, &StatPanelRow), Changed<Interaction>>,
+    stats: Res<crate::stats::PlayerStats>,
     mut tooltips: Query<(&mut Text, &mut Visibility), With<StatPanelTooltip>>,
 ) {
     for (interaction, row) in &rows {
         let (text_value, vis_value) = match *interaction {
             Interaction::Hovered | Interaction::Pressed => (
-                format!("{}: {}", row.0.label(), row.0.description()),
+                format!("{}: {}", row.0.label(), row.0.dynamic_description(&stats)),
                 Visibility::Inherited,
             ),
             Interaction::None => (String::new(), Visibility::Hidden),

@@ -236,9 +236,10 @@ pub fn enter_stage_complete(
                 ..default()
             },
             // Translucent dark wash — same treatment as the
-            // multiplayer YOU DIED / WAITING FOR PARTNER overlay so
-            // the debrief reads as a real modal moment and the
-            // payout text isn't fighting the bright ocean below.
+            // multiplayer YOU DIED / WAITING FOR PARTNER overlay.
+            // The PAYOUT card below sits ON TOP of this wash with a
+            // solid surface tone so the numbers read against a
+            // controlled background instead of the dim play world.
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
             ZIndex(180),
             Visibility::Inherited,
@@ -283,52 +284,96 @@ pub fn enter_stage_complete(
                     ));
                 }
             });
-            // Three payout rows stagger-revealed by `tick_payout_reveal`.
-            // Each row: `LABEL  +N SCRAP`. Label + unit are dim and
-            // small; the `+N` value is large and bright so the eye
-            // lands on the gain instantly. The flash-pulse on reveal
-            // hits the value text only.
-            root.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                row_gap: Val::Px(10.0),
-                ..default()
-            })
-            .with_children(|wrap| {
+            // Payout card — a solid-surface panel that holds the
+            // three rows. Lifts the labels and values off the
+            // translucent wash so they read clearly. The card sits
+            // inside the modal's centred column so the title stays
+            // above.
+            root.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Stretch,
+                    justify_content: JustifyContent::Center,
+                    padding: UiRect::axes(
+                        Val::Px(theme::PAD_LG * 2.0),
+                        Val::Px(theme::PAD_LG),
+                    ),
+                    border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
+                    row_gap: Val::Px(8.0),
+                    min_width: Val::Px(380.0),
+                    ..default()
+                },
+                BackgroundColor(theme::SURFACE_RAISED),
+                BorderColor(theme::ACCENT),
+                BorderRadius::all(Val::Px(theme::CHUNKY_RADIUS)),
+            ))
+            .with_children(|card| {
+                // Column header: "+ SCRAP" above the value column
+                // so the unit is stated once instead of repeated
+                // per row.
+                card.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Baseline,
+                    justify_content: JustifyContent::SpaceBetween,
+                    column_gap: Val::Px(theme::GAP_LG),
+                    margin: UiRect::bottom(Val::Px(4.0)),
+                    ..default()
+                })
+                .with_children(|h| {
+                    let header_font = if let Some(p) = pixel.as_deref() {
+                        crate::fonts::pixel_text_font(p, 16.0)
+                    } else {
+                        TextFont { font_size: 16.0, font_smoothing: FontSmoothing::None, ..default() }
+                    };
+                    let header_color = theme::ON_SURFACE_DIM;
+                    h.spawn((
+                        Text::new("PAYOUT"),
+                        header_font.clone(),
+                        TextColor(header_color),
+                    ));
+                    h.spawn((
+                        Text::new("SCRAP"),
+                        header_font,
+                        TextColor(header_color),
+                    ));
+                });
                 for (idx, (label, value, value_base)) in line_specs.iter().enumerate() {
                     let is_total = idx == 2;
-                    // One step up across the board — the previous
-                    // 18 / 22pt labels were swallowed by the
-                    // translucent backdrop even with the new drop
-                    // shadow. 24 / 28 keeps the small-vs-large
-                    // hierarchy but lifts the floor above the
-                    // "can't read at a glance" line.
-                    let label_font_size = if is_total { 28.0 } else { 24.0 };
+                    // Label + value share a font size per row so the
+                    // table reads as columns; total row is one step
+                    // larger to anchor the eye on the final number.
+                    let label_font_size = if is_total { 32.0 } else { 24.0 };
                     let value_font_size = if is_total { 56.0 } else { 40.0 };
-                    let unit_font_size  = if is_total { 28.0 } else { 24.0 };
                     let label_text_font = if let Some(p) = pixel.as_deref() {
                         crate::fonts::pixel_text_font(p, label_font_size)
                     } else {
                         TextFont { font_size: label_font_size, font_smoothing: FontSmoothing::None, ..default() }
                     };
-                    let unit_text_font = if let Some(p) = pixel.as_deref() {
-                        crate::fonts::pixel_text_font(p, unit_font_size)
-                    } else {
-                        TextFont { font_size: unit_font_size, font_smoothing: FontSmoothing::None, ..default() }
-                    };
-                    // Value uses Thaleah for the loud number; the
-                    // chunkier face matches the title's shout and
-                    // gives the eye a single thing to land on per row.
+                    // Value uses Thaleah for the loud number.
                     let value_text_font = if let Some(t) = thaleah.as_deref() {
                         crate::fonts::thaleah_text_font(t, value_font_size)
                     } else {
                         TextFont { font_size: value_font_size, font_smoothing: FontSmoothing::None, ..default() }
                     };
-                    wrap.spawn((
+                    // Optional divider before the TOTAL row so the
+                    // final-number gets a separator from the parts.
+                    if is_total {
+                        card.spawn((
+                            Node {
+                                width: Val::Percent(100.0),
+                                height: Val::Px(2.0),
+                                margin: UiRect::axes(Val::Px(0.0), Val::Px(4.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.15)),
+                        ));
+                    }
+                    card.spawn((
                         Node {
                             flex_direction: FlexDirection::Row,
                             align_items: AlignItems::Baseline,
-                            column_gap: Val::Px(theme::GAP_MD),
+                            justify_content: JustifyContent::SpaceBetween,
+                            column_gap: Val::Px(theme::GAP_LG),
                             ..default()
                         },
                         BackgroundColor(Color::NONE),
@@ -336,17 +381,12 @@ pub fn enter_stage_complete(
                         StagePayoutLine { idx: idx as u8 },
                     ))
                     .with_children(|row| {
-                        // LABEL — dim, small. Tells the player which
-                        // bucket the value below is for.
                         row.spawn((
                             Text::new(label.to_string()),
                             label_text_font,
                             TextColor(label_color),
                             drop_shadow,
                         ));
-                        // VALUE — the bright `+N`. This is what the
-                        // flash-pulse animates. Big font so the eye
-                        // can read it at a glance.
                         row.spawn((
                             Text::new(format!("+{}", value)),
                             value_text_font,
@@ -356,16 +396,6 @@ pub fn enter_stage_complete(
                                 idx: idx as u8,
                                 base_color: *value_base,
                             },
-                        ));
-                        // UNIT — dim "SCRAP" suffix so the player
-                        // sees exactly what they're earning. Same
-                        // tone as the label so the row reads as
-                        // "label  +N  unit".
-                        row.spawn((
-                            Text::new("SCRAP"),
-                            unit_text_font,
-                            TextColor(label_color),
-                            drop_shadow,
                         ));
                     });
                 }

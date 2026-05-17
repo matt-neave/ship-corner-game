@@ -152,10 +152,13 @@ type GameplayChromeFilter = Or<(
     // DebugPanel is owned by `map::hud::sync_debug_panel_visibility`
     // (combines the `#` toggle + customize-open + pause). Listing it
     // here would race the two writers.
+    //
+    // FpsText / ReturnToMapButton / CameraFollowButton are owned by
+    // `ui::sync_hud_dev_buttons_visibility` + `ui::update_map_button`
+    // — both already read `CustomizeOpen` so they self-hide. Listing
+    // them here would force-show on customize close, fighting the
+    // debug-toggle gate.
     With<crate::ui::ScoreText>,
-    With<crate::ui::FpsText>,
-    With<crate::ui::ReturnToMapButton>,
-    With<crate::ui::CameraFollowButton>,
     With<crate::ui::WaveHpUi>,
     With<crate::ui::AllyHpRow>,
     With<crate::map::LevelStatusUi>,

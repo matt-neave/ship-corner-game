@@ -383,20 +383,54 @@ pub fn update_vsync_label(
     }
 }
 
-/// Show the MAP button only in Combat view — Map view exits via clicking
-/// sections, not via this button.
+/// Show the MAP button only in Combat view AND only when the debug
+/// UI toggle is on (`#` key) — Map view exits via clicking sections,
+/// and the debug toggle hides this HUD chrome alongside the FPS /
+/// VSYNC / FOLLOW buttons so a polished play view stays clean.
 pub fn update_map_button(
     view: Res<ViewMode>,
+    debug_visible: Res<crate::map::DebugUiVisible>,
+    customize_open: Res<crate::customize::CustomizeOpen>,
     mut q: Query<&mut Visibility, With<ReturnToMapButton>>,
 ) {
-    if !view.is_changed() { return; }
-    let target = match *view {
-        ViewMode::Combat => Visibility::Inherited,
-        ViewMode::Map    => Visibility::Hidden,
-    };
+    // Runs every frame (no `is_changed` early-bail) because the
+    // customize-render toggle would otherwise force-show this
+    // button on customize close without re-firing our gate.
+    let want_show = matches!(*view, ViewMode::Combat)
+        && debug_visible.0
+        && !customize_open.open;
+    let target = if want_show { Visibility::Inherited } else { Visibility::Hidden };
     for mut v in &mut q {
         if *v != target { *v = target; }
     }
+}
+
+/// Gate the FPS / VSYNC / FOLLOW top-right HUD buttons on the
+/// `DebugUiVisible` toggle (`#` key) AND hide them while customize
+/// is open so the shop view stays clean. These are dev-quality
+/// readouts — hidden by default so the play view stays clean for
+/// screenshots / players.
+pub fn sync_hud_dev_buttons_visibility(
+    debug_visible: Res<crate::map::DebugUiVisible>,
+    customize_open: Res<crate::customize::CustomizeOpen>,
+    mut fps_q: Query<
+        &mut Visibility,
+        (With<FpsText>, Without<VsyncButton>, Without<CameraFollowButton>),
+    >,
+    mut vsync_q: Query<
+        &mut Visibility,
+        (With<VsyncButton>, Without<FpsText>, Without<CameraFollowButton>),
+    >,
+    mut follow_q: Query<
+        &mut Visibility,
+        (With<CameraFollowButton>, Without<FpsText>, Without<VsyncButton>),
+    >,
+) {
+    let want_show = debug_visible.0 && !customize_open.open;
+    let want = if want_show { Visibility::Inherited } else { Visibility::Hidden };
+    for mut v in &mut fps_q    { if *v != want { *v = want; } }
+    for mut v in &mut vsync_q  { if *v != want { *v = want; } }
+    for mut v in &mut follow_q { if *v != want { *v = want; } }
 }
 
 /// Toggle pier + HP-bar visibility and drive the bar's fill width +

@@ -11,19 +11,15 @@
 
 use bevy::prelude::*;
 
-mod damage_panel;
 mod hud;
 mod wave_indicator;
 
 pub use hud::{
     sync_ally_hp_bars, update_ally_hp_values, update_fps_text, update_hp_bar_pixel_scale,
     update_hp_subdividers, update_map_button, update_score_text, update_vsync_label,
+    sync_hud_dev_buttons_visibility,
     update_wave_ui, AllyHpRow, CameraFollowButton, FpsText, ReturnToMapButton, ScoreText,
     VsyncButton, WaveHpUi,
-};
-pub use damage_panel::{
-    reset_damage_stats, setup_damage_panel, sync_damage_panel_visibility,
-    update_damage_panel, update_damage_row_icons,
 };
 pub use wave_indicator::{setup_wave_indicator, update_wave_indicator};
 
@@ -57,6 +53,18 @@ pub struct DamageStats {
     /// Sized to `ShipClass::COUNT` (currently 6).
     pub per_ally: [u64; crate::ally::ShipClass::COUNT],
     pub total: u64,
+}
+
+/// Reset the per-run damage tally. Run on screen transitions
+/// (`OnExit(Customize)` and `OnExit(MainMenu)`) so each combat
+/// stage starts with fresh stats. Lives here now that the in-game
+/// damage-panel UI has been removed — the stats themselves are
+/// still useful for the post-game customize-shop "damage share"
+/// rollups attached to weapon / rune tooltips.
+pub fn reset_damage_stats(mut stats: ResMut<DamageStats>) {
+    stats.per_slot = [0; 8];
+    stats.per_ally = [0; crate::ally::ShipClass::COUNT];
+    stats.total = 0;
 }
 
 // ---------- Setup ----------

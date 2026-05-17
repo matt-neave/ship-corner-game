@@ -124,7 +124,30 @@ impl Plugin for SfxPlugin {
         app.init_resource::<SfxLibrary>()
             .init_resource::<SfxVolume>()
             .init_resource::<SfxRepeatState>()
-            .add_systems(Startup, load_sfx);
+            .add_systems(Startup, load_sfx)
+            // Universal button-click feedback. Any bevy_ui `Button`
+            // that just transitioned to `Pressed` plays the Switch
+            // sample — same crisp click the player heard on the
+            // main menu. Per-button handlers can still fire their
+            // own Sfx on top (e.g. settings cycle) but they no
+            // longer need to remember the click sound at all.
+            .add_systems(Update, play_button_click_sound);
+    }
+}
+
+/// Fire `Sfx::Switch` whenever any `bevy_ui::Button` transitions to
+/// `Interaction::Pressed`. `Changed<Interaction>` keeps this idle
+/// most frames — only fires on press enter, not hold. Single-source
+/// of truth so adding a new button anywhere gets the click sound
+/// for free, with no per-handler plumbing.
+fn play_button_click_sound(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<Button>)>,
+    mut sfx: SfxPlayer,
+) {
+    for interaction in &interactions {
+        if matches!(*interaction, Interaction::Pressed) {
+            sfx.play(Sfx::Switch);
+        }
     }
 }
 

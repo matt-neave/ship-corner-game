@@ -22,6 +22,7 @@ impl Plugin for PausePlugin {
     fn build(&self, app: &mut App) {
         app
             .insert_resource(Paused::default())
+            .insert_resource(PrePauseState::default())
             .add_systems(Startup, setup_pause_menu)
             .add_systems(Update, (toggle_pause_on_esc, sync_pause_menu_visibility))
             .add_systems(
@@ -31,6 +32,14 @@ impl Plugin for PausePlugin {
             );
     }
 }
+
+/// Captures the `AppState` we were in when pause opened, so the
+/// resume path can drop the player back exactly where they were.
+/// `None` outside a pause cycle. Lets pause work as a dynamic
+/// overlay over Playing / Map / Customize / etc. instead of being
+/// hard-coded to "only Playing → Paused → Playing."
+#[derive(Resource, Default)]
+pub struct PrePauseState(pub Option<AppState>);
 
 /// True while the pause menu is up. Read by `in_combat_view` (in `map`)
 /// so combat-side systems freeze for the duration.
@@ -134,23 +143,46 @@ fn spawn_pause_settings_button(
         });
 }
 
-/// Toggle pause on ESC. Reads `AppState` directly so the toggle only
-/// fires when the player is mid-game — pressing ESC on the main menu
-/// or while the customize overlay is up is a no-op (those screens own
-/// their own dismissal). Desktop drag mode also blocks the toggle so
-/// its own ESC handler can claim the press to exit desktop mode.
+/// Toggle pause on ESC from any in-run screen. Stashes the previous
+/// AppState in `PrePauseState` so resume drops back exactly where
+/// the player was — Playing / Map / Customize / LevelUp / etc all
+/// pause and resume cleanly.
+///
+/// MainMenu / HullSelect / GameOver / Win / Lobby / WaitingForHost
+/// own their own dismissal flow (or have no meaningful "underneath"
+/// to return to) so ESC stays inert there.
 pub fn toggle_pause_on_esc(
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<crate::AppState>>,
     mut next: ResMut<NextState<crate::AppState>>,
+    mut pre: ResMut<PrePauseState>,
 ) {
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
     match *state.get() {
-        crate::AppState::Playing => next.set(crate::AppState::Paused),
-        crate::AppState::Paused => next.set(crate::AppState::Playing),
-        // Main menu / customize manage their own input; ESC stays inert.
+        crate::AppState::Paused => {
+            // Resume back to whatever opened the pause overlay.
+            // Fallback to Playing if nothing was stashed (e.g. a
+            // direct state push during dev/testing).
+            let target = pre.0.take().unwrap_or(crate::AppState::Playing);
+            next.set(target);
+        }
+        // Pausable in-run states. Excludes the per-modal screens
+        // (Customize / LevelUp / HullSelect) because their OnEnter
+        // hooks would re-init the modal on resume (rolling fresh
+        // shop items, losing drag state). Those screens own their
+        // own ESC handling.
+        s @ (crate::AppState::Playing
+            | crate::AppState::Map
+            | crate::AppState::StageComplete
+            | crate::AppState::BossReward) => {
+            pre.0 = Some(s);
+            next.set(crate::AppState::Paused);
+        }
+        // MainMenu / HullSelect / Customize / LevelUp / GameOver /
+        // Win / Lobby / WaitingForHost / BossIntro own their own
+        // ESC handling.
         _ => {}
     }
 }
@@ -174,10 +206,15 @@ pub fn sync_pause_menu_visibility(
 pub fn handle_resume_click(
     interactions: Query<&Interaction, (Changed<Interaction>, With<ResumeButton>)>,
     mut next: ResMut<NextState<crate::AppState>>,
+    mut pre: ResMut<PrePauseState>,
 ) {
     for interaction in &interactions {
         if matches!(*interaction, Interaction::Pressed) {
-            next.set(crate::AppState::Playing);
+            // Restore to the state we paused from. Falls back to
+            // Playing if nothing was stashed — same logic as the
+            // ESC handler above.
+            let target = pre.0.take().unwrap_or(crate::AppState::Playing);
+            next.set(target);
         }
     }
 }

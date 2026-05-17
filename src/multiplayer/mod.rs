@@ -325,7 +325,12 @@ impl Plugin for MultiplayerPlugin {
             // resource in Startup but `Commands::insert_resource`
             // only takes effect at the next sync point, so a
             // sibling Startup system can't read it.
+            .add_event::<ui::NetOverlaySubmit>()
             .add_systems(PostStartup, (ui::setup_overlay, ui::setup_lag_indicator))
+            // GO button click → NetOverlaySubmit. Own add_systems
+            // call so the main pre-connection tuple below stays
+            // under Bevy's tuple-size cap.
+            .add_systems(Update, ui::handle_submit_button_click)
             .add_systems(Update, (
                 tick_handshake,
                 capture_join_ip_keys,
@@ -861,8 +866,11 @@ fn capture_join_ip_keys(
     mut entry: ResMut<JoinIpEntry>,
     keys: Res<ButtonInput<KeyCode>>,
     local_name: Res<LocalPlayerName>,
+    mut submit_events: EventReader<ui::NetOverlaySubmit>,
 ) {
-    if !matches!(*mode, NetMode::JoiningEntry) { return; }
+    if !matches!(*mode, NetMode::JoiningEntry) { submit_events.clear(); return; }
+    let submitted = !submit_events.is_empty();
+    submit_events.clear();
 
     if keys.just_pressed(KeyCode::Escape) {
         *mode = NetMode::Solo;
@@ -884,7 +892,10 @@ fn capture_join_ip_keys(
         entry.last_error = None;
         return;
     }
-    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) {
+    if submitted
+        || keys.just_pressed(KeyCode::Enter)
+        || keys.just_pressed(KeyCode::NumpadEnter)
+    {
         // Don't reset prefill — submitting the prefill as-is is
         // exactly the dev-shortcut use case.
         start_joining(&mut commands, &mut mode, &mut entry, &local_name);
@@ -935,17 +946,25 @@ pub fn capture_name_keys(
     mut roster: ResMut<LobbyRoster>,
     mut name: ResMut<LocalPlayerName>,
     keys: Res<ButtonInput<KeyCode>>,
+    mut submit_events: EventReader<ui::NetOverlaySubmit>,
 ) {
     if *state.get() != AppState::MainMenu { return; }
     let was = *net_mode;
     let in_name_entry = matches!(was, NetMode::NamingForHost | NetMode::NamingForJoin);
-    if !in_name_entry { return; }
+    if !in_name_entry { submit_events.clear(); return; }
 
     if keys.just_pressed(KeyCode::Escape) {
         *net_mode = NetMode::Solo;
         return;
     }
-    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) {
+    // GO button click writes `NetOverlaySubmit`; treat it the same
+    // way as an Enter key press.
+    let submitted = !submit_events.is_empty();
+    submit_events.clear();
+    if submitted
+        || keys.just_pressed(KeyCode::Enter)
+        || keys.just_pressed(KeyCode::NumpadEnter)
+    {
         // Empty name → bail (force the player to type something).
         if name.0.trim().is_empty() { return; }
         match was {
@@ -4189,6 +4208,10 @@ mod tests {
         world.insert_resource(HostStatus::default());
         world.insert_resource(LobbyRoster::default());
         world.insert_resource(NextState::<crate::AppState>::default());
+        // GO-button event is read by `capture_name_keys` now;
+        // initialise the event resource so the param validation
+        // passes even in this minimal test world.
+        world.insert_resource(bevy::ecs::event::Events::<ui::NetOverlaySubmit>::default());
         // Simulate AppState::MainMenu without the full state plugin
         // by inserting a minimal stub `State<AppState>` resource.
         world.insert_resource(State::new(crate::AppState::MainMenu));

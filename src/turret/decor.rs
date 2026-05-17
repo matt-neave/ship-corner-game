@@ -117,24 +117,43 @@ pub struct CrowsNestDecor;
 
 /// Height of the mast pole rising from the deck pad. Reads as a
 /// vertical post even at the chunky-pixel scale.
-const NEST_MAST_HEIGHT: f32 = 3.6;
-const NEST_MAST_WIDTH: f32 = 0.7;
-/// Radius of the lookout platform sitting on top of the mast.
-const NEST_PLATFORM_RADIUS: f32 = 1.5;
+const NEST_MAST_HEIGHT: f32 = 4.0;
+const NEST_MAST_WIDTH: f32 = 0.9;
+/// Outer width of the lookout bucket — wider than the mast so the
+/// silhouette reads as "the deck post with a perched barrel."
+const NEST_BUCKET_W: f32 = 4.2;
+const NEST_BUCKET_H: f32 = 2.4;
+/// Inner cavity of the bucket (where the lookout stands) — drawn
+/// in the lighter "platform" tone over the darker bucket rim to
+/// fake a rim/interior split.
+const NEST_BUCKET_INNER_W: f32 = 2.8;
+const NEST_BUCKET_INNER_H: f32 = 1.4;
+/// Lookout figure — a small dark dot sitting in the bucket.
+const NEST_LOOKOUT_R: f32 = 0.55;
+/// Pennant flag flying off the bucket's top — narrow rectangle
+/// canted slightly so the silhouette reads as a banner.
+const NEST_FLAG_W: f32 = 2.6;
+const NEST_FLAG_H: f32 = 0.8;
 
 pub fn sync_crows_nest_decor(
     mut commands: Commands,
     cfg: Res<TurretConfig>,
     pm: Option<Res<PaletteMaterials>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     slots: Query<(Entity, &TurretSlot, Option<&Children>)>,
     existing: Query<Entity, With<CrowsNestDecor>>,
 ) {
     if !cfg.is_changed() { return; }
     let Some(pm) = pm else { return; };
 
-    let mut mast_mesh: Option<Handle<Mesh>> = None;
-    let mut platform_mesh: Option<Handle<Mesh>> = None;
+    let mut mast_mesh:  Option<Handle<Mesh>> = None;
+    let mut bucket_mesh: Option<Handle<Mesh>> = None;
+    let mut bucket_inner_mesh: Option<Handle<Mesh>> = None;
+    let mut lookout_mesh: Option<Handle<Mesh>> = None;
+    let mut flag_mesh: Option<Handle<Mesh>> = None;
+    let mut lookout_mat: Option<Handle<ColorMaterial>> = None;
+    let mut flag_mat: Option<Handle<ColorMaterial>> = None;
 
     for (slot_entity, slot, children) in &slots {
         let s = cfg.slots[slot.index];
@@ -154,13 +173,26 @@ pub fn sync_crows_nest_decor(
         let mast_h = mast_mesh
             .get_or_insert_with(|| meshes.add(Rectangle::new(NEST_MAST_WIDTH, NEST_MAST_HEIGHT)))
             .clone();
-        let platform_h = platform_mesh
-            .get_or_insert_with(|| meshes.add(Circle::new(NEST_PLATFORM_RADIUS)))
+        let bucket_h = bucket_mesh
+            .get_or_insert_with(|| meshes.add(Rectangle::new(NEST_BUCKET_W, NEST_BUCKET_H)))
+            .clone();
+        let bucket_inner_h = bucket_inner_mesh
+            .get_or_insert_with(|| meshes.add(Rectangle::new(NEST_BUCKET_INNER_W, NEST_BUCKET_INNER_H)))
+            .clone();
+        let lookout_h = lookout_mesh
+            .get_or_insert_with(|| meshes.add(Circle::new(NEST_LOOKOUT_R)))
+            .clone();
+        let flag_h = flag_mesh
+            .get_or_insert_with(|| meshes.add(Rectangle::new(NEST_FLAG_W, NEST_FLAG_H)))
+            .clone();
+        let lookout_m = lookout_mat
+            .get_or_insert_with(|| materials.add(Color::srgb(0.10, 0.10, 0.12)))
+            .clone();
+        let flag_m = flag_mat
+            .get_or_insert_with(|| materials.add(Color::srgb(0.92, 0.22, 0.18)))
             .clone();
 
-        // Mast — centred at +NEST_MAST_HEIGHT/2 so the base sits on
-        // the deck pad and the top reaches +NEST_MAST_HEIGHT. Local
-        // +Y is the slot's mount-forward (and the mast's "up").
+        // Mast — dark wood post running up from the deck pad.
         let mast = commands.spawn((
             Mesh2d(mast_h),
             MeshMaterial2d(pm.turret_crows_nest.clone()),
@@ -170,16 +202,58 @@ pub fn sync_crows_nest_decor(
         )).id();
         commands.entity(mast).insert(ChildOf(slot_entity));
 
-        // Lookout platform — circle sitting atop the mast at the
-        // tip. Slightly higher z so it draws on top of the mast.
-        let platform = commands.spawn((
-            Mesh2d(platform_h),
-            MeshMaterial2d(pm.crows_nest_top.clone()),
-            Transform::from_xyz(0.0, NEST_MAST_HEIGHT, 0.10),
+        // Bucket — wider barrel sitting on the mast tip. Painted in
+        // the dark mast tone so its outer rim reads as the same
+        // weathered wood, with the lighter interior painted on top.
+        let bucket_y = NEST_MAST_HEIGHT;
+        let bucket = commands.spawn((
+            Mesh2d(bucket_h),
+            MeshMaterial2d(pm.turret_crows_nest.clone()),
+            Transform::from_xyz(0.0, bucket_y, 0.08),
             CrowsNestDecor,
             RenderLayers::layer(PLAY_LAYER),
         )).id();
-        commands.entity(platform).insert(ChildOf(slot_entity));
+        commands.entity(bucket).insert(ChildOf(slot_entity));
+
+        // Bucket interior — lighter plank tone, slightly inset, so
+        // the bucket reads as "rim + interior" rather than one slab.
+        let inner = commands.spawn((
+            Mesh2d(bucket_inner_h),
+            MeshMaterial2d(pm.crows_nest_top.clone()),
+            Transform::from_xyz(0.0, bucket_y - 0.15, 0.11),
+            CrowsNestDecor,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(inner).insert(ChildOf(slot_entity));
+
+        // Lookout figure — small dark dot sitting in the bucket.
+        // Gives the silhouette a human cue without needing pixel
+        // art.
+        let lookout = commands.spawn((
+            Mesh2d(lookout_h),
+            MeshMaterial2d(lookout_m),
+            Transform::from_xyz(0.0, bucket_y + 0.25, 0.14),
+            CrowsNestDecor,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(lookout).insert(ChildOf(slot_entity));
+
+        // Red pennant flag, planted slightly off-centre and tilted
+        // a few degrees so it reads as "fluttering in the wind"
+        // even without animation. Anchored at the bucket's right
+        // rim, extending outward.
+        let flag = commands.spawn((
+            Mesh2d(flag_h),
+            MeshMaterial2d(flag_m),
+            Transform {
+                translation: Vec3::new(NEST_BUCKET_W * 0.5 + NEST_FLAG_W * 0.4, bucket_y + 1.6, 0.12),
+                rotation: Quat::from_rotation_z(0.18),
+                scale: Vec3::ONE,
+            },
+            CrowsNestDecor,
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(flag).insert(ChildOf(slot_entity));
     }
 }
 

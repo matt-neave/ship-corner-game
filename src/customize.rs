@@ -104,6 +104,7 @@ impl Plugin for CustomizePlugin {
                     handle_shop_mod_click,
                     handle_close_click,
                     handle_reroll_button,
+                    update::handle_right_click_lock,
                 ).after(track_customize_cursor),
             )
             // Drag chain in its own add_systems — chained tuples
@@ -135,9 +136,7 @@ impl Plugin for CustomizePlugin {
 pub use render::{
     resize_customize_display, setup_customize_render, toggle_customize_render,
 };
-pub use setup::{
-    setup_customize_ui, sync_customize_text, turret_barrel_color_for, turret_color_for,
-};
+pub use setup::{setup_customize_ui, sync_customize_text};
 pub use drag::{
     complete_drag, init_customize_shop, promote_pending_drag, start_drag,
     tick_purchase_particles, track_customize_cursor, update_drag_ghost, DragState,

@@ -437,7 +437,7 @@ pub fn update_customize_tooltip(
         }
         info = Some((
             hover.0.label().to_string(),
-            hover.0.description().to_string(),
+            hover.0.dynamic_description(&data.stats),
             centre,
             half,
         ));
@@ -479,6 +479,7 @@ pub fn update_customize_tooltip(
     // Size the box to fit (title width vs wrapped-body width) and a
     // height proportional to the wrapped body's line count + title.
     let s = viewport.display_scale;
+    let glyph_scale = ui_scale.0.max(0.0001);
     let title_w_native = estimate_text_native_width(&title, TOOLTIP_TITLE_FONT);
     let body_unwrapped_w = estimate_text_native_width(&body, TOOLTIP_BODY_FONT);
     // Wrapped body width never exceeds the cap; if the unwrapped body
@@ -486,17 +487,25 @@ pub fn update_customize_tooltip(
     // tight on short descriptions.
     let body_wrapped_w = body_unwrapped_w.min(TOOLTIP_BODY_MAX_W);
     let text_w_native = title_w_native.max(body_wrapped_w);
-    let fill_w_native = (text_w_native + 2.0 * TOOLTIP_TEXT_PAD_X).max(TOOLTIP_MIN_W * s);
-    // Line-count estimate: how many `TOOLTIP_BODY_MAX_W` slabs the
-    // unwrapped body needs. `ceil(body_w / max_w)`, min 1. Plus the
-    // count of explicit `\n` in the body (e.g. the `[TAG]\n…` chip
-    // line) — those force a break that the width-only calculation
-    // would otherwise miss, leading to truncated short tooltips.
+    // Line-count estimate using an 85% effective width — Bevy's
+    // TextBounds wraps at WORD boundaries, which leaves typical
+    // lines under the max width. The old `ceil(w / max_w)` estimate
+    // routinely undercounted by one when the last word couldn't fit
+    // on the second-to-last line, clipping the final line. The
+    // safety margin trades a slightly taller box for "never clips."
     let explicit_breaks = body.chars().filter(|&c| c == '\n').count() as f32;
-    let body_lines = (body_unwrapped_w / TOOLTIP_BODY_MAX_W).ceil().max(1.0) + explicit_breaks;
+    let effective_wrap_w = TOOLTIP_BODY_MAX_W * 0.85;
+    let body_lines = (body_unwrapped_w / effective_wrap_w).ceil().max(1.0) + explicit_breaks;
+    // Both width and height scale with `UiScale` so the box grows
+    // and shrinks in lockstep with the text glyphs. Without this,
+    // a window much larger or smaller than design left the text
+    // overflowing (large window → big glyphs in old-size box) or
+    // marooned (small window → small glyphs in old-size box).
     let body_block_h = body_lines * TOOLTIP_BODY_FONT * TOOLTIP_LINE_HEIGHT_MULT;
     let title_block_h = TOOLTIP_TITLE_FONT * TOOLTIP_LINE_HEIGHT_MULT;
-    let fill_h_native = title_block_h + body_block_h + 2.0 * TOOLTIP_TEXT_PAD_Y;
+    let fill_w_native = ((text_w_native + 2.0 * TOOLTIP_TEXT_PAD_X) * glyph_scale)
+        .max(TOOLTIP_MIN_W * s);
+    let fill_h_native = (title_block_h + body_block_h + 2.0 * TOOLTIP_TEXT_PAD_Y) * glyph_scale;
     let tooltip_w_spec = fill_w_native / s;
     let tooltip_h_spec = fill_h_native / s;
 
@@ -538,15 +547,12 @@ pub fn update_customize_tooltip(
         }
     }
     // Title pinned to the top of the fill (anchor TopCenter); body
-    // sits directly below it. Top-of-fill y = native_centre.y + h/2 -
-    // pad; body starts at top_y - title_block_h.
-    let fill_top_native = native_centre.y + fill_h_native * 0.5 - TOOLTIP_TEXT_PAD_Y;
-    // Glyph scale follows `UiScale` (window-relative, matches bevy_ui
-    // chrome). Positions are pre-multiplied by `display_scale`
-    // (~4× at design) to land in the customize sprite's screen rect,
-    // but glyphs use `UiScale` (1.0 at design) so they don't render
-    // four times too big.
-    let glyph_scale = ui_scale.0;
+    // sits directly below it. All vertical offsets scale with
+    // `glyph_scale` so the layout stays proportional as the box +
+    // text both scale with `UiScale`.
+    let fill_top_native = native_centre.y
+        + fill_h_native * 0.5
+        - TOOLTIP_TEXT_PAD_Y * glyph_scale;
     let want_text_scale = Vec3::new(glyph_scale, glyph_scale, 1.0);
     if let Ok((mut v, mut tf, mut text)) = title_q.single_mut() {
         if *v != Visibility::Inherited {
@@ -564,7 +570,8 @@ pub fn update_customize_tooltip(
             *v = Visibility::Inherited;
         }
         tf.translation.x = native_centre.x;
-        tf.translation.y = fill_top_native - title_block_h;
+        // Body starts below the visually-scaled title block.
+        tf.translation.y = fill_top_native - title_block_h * glyph_scale;
         if tf.scale != want_text_scale { tf.scale = want_text_scale; }
         // Clear the root section text — all visible text lives in
         // colored `TextSpan` children spawned below. The root stays

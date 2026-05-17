@@ -339,14 +339,17 @@ pub const EXECUTIONER_BONUS_PER_STACK: f32 = 0.50;
 pub const OPENER_BONUS_PER_STACK: f32 = 1.00;
 
 // ---------- Spike Plate (passive armour turret) ----------
-/// Extra ram damage the ship deals on contact for each equipped
-/// Spike Plate slot. Stacks linearly — 3 plates = +15 ram damage.
+/// Extra ram damage the ship deals per equipped Spike Plate slot —
+/// global, no longer per-side, so the player doesn't have to think
+/// about which slot the rammed enemy hit. Stacks linearly — 3
+/// plates = +15 ram damage on every contact regardless of angle.
 pub const SPIKED_PLATE_DAMAGE_BONUS: i32 = 5;
-/// Damage subtracted from an incoming bullet hit when the bullet
-/// impacts the hull on the same side as a Spike Plate slot. Read by
-/// `bullet_collisions` after computing the nearest slot to the
-/// impact direction.
-pub const SPIKED_PLATE_REDUCTION: i32 = 1;
+/// Flat damage subtracted from every incoming bullet hit per
+/// equipped Spike Plate slot, regardless of impact side. Old
+/// per-side mapping was almost invisible (most players don't think
+/// in slot-side terms); going global + bumping the value to 2 makes
+/// each plate read as a meaningful armour pick.
+pub const SPIKED_PLATE_REDUCTION: i32 = 2;
 
 // ---------- Wave structure ----------
 //

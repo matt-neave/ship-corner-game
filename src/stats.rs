@@ -296,11 +296,15 @@ impl PlayerStats {
 /// stat readout, future upgrade cards) to enumerate stats and pull
 /// values without the UI hardcoding each one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum StatKind {
     Hp,
     MoveSpeed,
     TurnSpeed,
+    /// Hidden from `ALL` / `ROLLABLE` — kept around so a future hull
+    /// or skill could surface it without resurrecting the variant.
     TurretTurnSpeed,
+    /// Hidden from `ALL` / `ROLLABLE` — same reasoning as above.
     TurretArcBonus,
     Luck,
     ProcStrength,
@@ -338,8 +342,6 @@ impl StatKind {
         StatKind::Armour,
         StatKind::MoveSpeed,
         StatKind::TurnSpeed,
-        StatKind::TurretTurnSpeed,
-        StatKind::TurretArcBonus,
         StatKind::TurretDamage,
         StatKind::Range,
         StatKind::Crit,
@@ -351,11 +353,10 @@ impl StatKind {
     ];
     /// Subset of [`ALL`](Self::ALL) that the shop's mod-card and
     /// level-up roll systems pick from. `TurretArcBonus` +
-    /// `TurretTurnSpeed` are deliberately omitted: they still show
-    /// in the stats panel (with the debug `+/-` buttons), still
-    /// apply at runtime, but the random roll pools shouldn't burn
-    /// a draw on them. Removing them from [`ALL`](Self::ALL) would
-    /// also hide them in the readout, which we don't want.
+    /// `TurretTurnSpeed` are omitted from both the readout AND the
+    /// roll pool — they still exist on `PlayerStats` and apply at
+    /// runtime if anything mutates them (e.g. future hull
+    /// bonuses), but they aren't shown or rolled for.
     pub const ROLLABLE: &'static [StatKind] = &[
         StatKind::Hp,
         StatKind::Shield,
@@ -507,6 +508,9 @@ impl StatKind { #[allow(non_upper_case_globals)] pub const Shield: StatKind = St
 impl StatKind {
     /// Long-form description for the hover tooltip. Looked up in
     /// `data/translations.csv` so adding a language is one column.
+    /// Static — for the "what this stat does" baseline copy with no
+    /// numbers folded in. Hover tooltips that want the live value
+    /// should call [`dynamic_description`](Self::dynamic_description).
     pub fn description(self) -> &'static str {
         match self {
             StatKind::Hp => crate::i18n::tr("stat_hp_desc"),
@@ -527,8 +531,122 @@ impl StatKind {
             StatKind::Armour => crate::i18n::tr("stat_armour_desc"),
         }
     }
-    /// Step size for one click of the debug `+/-` button. Tuned per-stat
-    /// so each click is a meaningful nudge in that stat's natural unit.
+
+    /// Per-stat description with the player's CURRENT effective
+    /// value baked in. Falls back to the static `description()` for
+    /// stats that don't have a useful number to fold (e.g. straight
+    /// "raw HP value" already shows the number in the readout).
+    ///
+    /// `Crit` is the special-case one: the RoR-style tier roll
+    /// means a single "N% chance" reading lies. 50% → 50% chance
+    /// of 2×; 150% → 50% chance of 3× (with 2× as the floor); etc.
+    /// We surface both the floor multiplier and the fractional
+    /// chance for the next tier so the player can read what they
+    /// actually get on every shot.
+    pub fn dynamic_description(self, stats: &PlayerStats) -> String {
+        match self {
+            StatKind::Dodge => {
+                let v = stats.dodge_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT);
+                format!(
+                    "{:.0}% chance to negate an incoming hit entirely. Capped at {:.0}%.",
+                    v, DEFENSIVE_CAP_PCT,
+                )
+            }
+            StatKind::Armour => {
+                let v = stats.armour_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT);
+                format!(
+                    "Reduces incoming damage by {:.0}% (after dodge, before shield). Capped at {:.0}%.",
+                    v, DEFENSIVE_CAP_PCT,
+                )
+            }
+            StatKind::Crit => {
+                let pct = stats.crit_pct.effective().max(0.0);
+                let p = pct / 100.0;
+                let guaranteed_extra = p.floor() as u32; // tiers above 1× that always fire
+                let fraction = (p.fract() * 100.0).round() as u32; // chance for one more tier
+                let floor_mult = 1 + guaranteed_extra; // always at least this
+                if guaranteed_extra == 0 && fraction == 0 {
+                    "No crit chance.".to_string()
+                } else if fraction == 0 {
+                    // Whole-tier — always crits, no fractional roll.
+                    format!("Every hit deals {}x damage.", floor_mult)
+                } else if guaranteed_extra == 0 {
+                    // Pure chance at 2× (e.g. 50% → "50% chance for 2x").
+                    format!("{}% chance to deal {}x damage.", fraction, floor_mult + 1)
+                } else {
+                    // Always at least floor_mult×, fraction% chance for one more tier.
+                    format!(
+                        "Every hit deals {}x damage; {}% chance to deal {}x instead.",
+                        floor_mult, fraction, floor_mult + 1,
+                    )
+                }
+            }
+            StatKind::Range => {
+                let pct = stats.range_pct.effective();
+                format!(
+                    "Turret firing range — currently {:.0}% of baseline.",
+                    pct,
+                )
+            }
+            StatKind::Harvest => {
+                let chance = stats.harvest_pct.effective().clamp(0.0, 100.0);
+                format!(
+                    "{:.0}% chance an enemy drops 1 scrap on death. Pirate synergy multiplies the chance.",
+                    chance,
+                )
+            }
+            StatKind::Luck => {
+                let pct = stats.luck_pct.effective().max(0.0);
+                format!(
+                    "Free re-rolls on failed rune procs. Currently {:.0}% — every 100% buys one guaranteed reroll per shot.",
+                    pct,
+                )
+            }
+            StatKind::ProcStrength => {
+                let pct = stats.proc_strength_pct.effective().max(0.0);
+                format!(
+                    "+{:.0}% to every rune's proc roll on hit.",
+                    pct,
+                )
+            }
+            StatKind::XpHarvest => {
+                let total = 100.0 + stats.xp_harvest_pct.effective();
+                format!(
+                    "XP gained per kill — currently {:.0}% of baseline (1 XP per kill, 5 per boss).",
+                    total,
+                )
+            }
+            StatKind::RuneDamage => {
+                let pct = (stats.rune_damage.effective() * 100.0).round() as i32;
+                format!(
+                    "Scales rune effects (Fire DoT, Shock chains, AOE radius). Currently {}%.",
+                    pct,
+                )
+            }
+            StatKind::TurretDamage => {
+                let base_mult = stats.turret_damage_mult();
+                let total_pct = (base_mult * 100.0).round() as i32;
+                format!(
+                    "Damage multiplier on every weapon. Currently {}% before Naval synergy.",
+                    total_pct,
+                )
+            }
+            // Stats whose static blurb already reads cleanly (the
+            // raw value is visible in the readout column right next
+            // to the description tooltip, so no need to fold it in).
+            StatKind::Hp
+            | StatKind::MoveSpeed
+            | StatKind::TurnSpeed
+            | StatKind::TurretTurnSpeed
+            | StatKind::TurretArcBonus
+            | StatKind::ShieldMax => self.description().to_string(),
+        }
+    }
+    /// Step size for one click of the debug `+/-` button. Tuned
+    /// per-stat so each click is a meaningful nudge in that stat's
+    /// natural unit. Bigger than `upgrade_step` because debug
+    /// testing wants to traverse the stat range quickly; player-
+    /// facing pickups (level-up + shop mods) use the smaller step.
     pub fn debug_step(self) -> f32 {
         match self {
             StatKind::Hp => 10.0,
@@ -547,6 +665,32 @@ impl StatKind {
             StatKind::TurretDamage => 10.0, // +10 percentage points / step
             StatKind::Dodge => 5.0,
             StatKind::Armour => 5.0,
+        }
+    }
+
+    /// Player-facing per-pickup step size — used by level-up card
+    /// rolls and as a baseline for shop mod authoring. Smaller than
+    /// `debug_step` so a single level-up is a meaningful nudge
+    /// rather than a build-defining swing. Tuning targets a build-
+    /// up that takes ~10 picks per stat to feel significant.
+    pub fn upgrade_step(self) -> f32 {
+        match self {
+            StatKind::Hp => 5.0,
+            StatKind::MoveSpeed => 1.5,           // half of debug
+            StatKind::TurnSpeed => 0.25,          // half of debug
+            StatKind::TurretTurnSpeed => 0.25,    // unused in rolls
+            StatKind::TurretArcBonus => 5.0,      // unused in rolls
+            StatKind::Luck => 5.0,                // was 25
+            StatKind::ProcStrength => 5.0,
+            StatKind::Crit => 5.0,                // was 25 — crit was a build-finisher in one card
+            StatKind::Range => 5.0,
+            StatKind::Harvest => 1.0,             // already conservative
+            StatKind::XpHarvest => 5.0,
+            StatKind::ShieldMax => 3.0,
+            StatKind::RuneDamage => 0.05,         // half of debug
+            StatKind::TurretDamage => 5.0,
+            StatKind::Dodge => 2.0,               // 30 picks to hit the 60% cap
+            StatKind::Armour => 2.0,
         }
     }
 

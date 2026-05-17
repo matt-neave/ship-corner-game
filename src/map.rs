@@ -391,8 +391,8 @@ impl MapState {
             // rather than two fixed end-zone bosses.
             let boss_chance: f32 = match s.stars {
                 5 => 1.0,
-                4 => 0.55,
-                3 => 0.30,
+                4 => 0.25,
+                3 => 0.10,
                 _ => 0.0,
             };
             s.boss_class = if rng.gen::<f32>() < boss_chance {

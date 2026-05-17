@@ -55,7 +55,7 @@ weapon_amplifier_desc,Every adjacent turret fires with its own runes plus the Am
 weapon_sharknet_desc,Unleashes sharks that charge down enemies.
 weapon_anchor_flail_desc,Hurls an anchor outward and retracts it. Damages enemies on both the throw and the return.
 weapon_plasma_torpedo_desc,Slow heavy plasma cannon.
-weapon_crows_nest_desc,Adjacent weapons gain +15% range per tier.
+weapon_crows_nest_desc,Adjacent weapons gain bonus range.
 weapon_tag_naval,NAVAL
 weapon_tag_future,FUTURE
 weapon_tag_autonomous,AUTONOMOUS

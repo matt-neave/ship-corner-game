@@ -53,6 +53,19 @@ pub struct NetStatusHelpText;
 #[derive(Component)]
 pub struct NetStatusSubHelpText;
 
+/// Marker on the popover's "GO" submit button. Click does the
+/// same thing as pressing Enter — gives non-keyboard players an
+/// affordance for committing the name / IP. Hidden when the
+/// current state has nothing to submit (Connected, JoiningWait,
+/// Hosting once bound).
+#[derive(Component)]
+pub struct NetStatusSubmitButton;
+
+/// Marker on the submit button's label so visibility flips with
+/// the parent.
+#[derive(Component)]
+pub struct NetStatusSubmitButtonLabel;
+
 /// Legacy alias kept for tests / external references; the new
 /// structured layout uses [`NetStatusInputText`] for what was the
 /// single status text node.
@@ -206,8 +219,50 @@ pub fn setup_overlay(mut commands: Commands, font: Res<crate::fonts::PixelFont>)
                     ),
                     NetStatusSubHelpText,
                 ));
+
+                // Submit button — same affordance as pressing Enter.
+                // Lets non-keyboard players commit the name / IP.
+                // `update_overlay` hides it for states that have
+                // nothing to confirm.
+                card.spawn((
+                    crate::ui_kit::button(theme::SURFACE_RAISED),
+                    NetStatusSubmitButton,
+                ))
+                .with_children(|b| {
+                    b.spawn((
+                        crate::ui_kit::pixel_label(
+                            &font, "GO",
+                            theme::FONT_LG,
+                            theme::ON_SURFACE,
+                        ),
+                        NetStatusSubmitButtonLabel,
+                    ));
+                });
             });
         });
+}
+
+/// Event fired when the player commits the current popover stage
+/// — either by pressing Enter inside a text field or by clicking
+/// the GO button. Consumed by the same handlers that previously
+/// only saw Enter (`capture_name_keys` for naming states,
+/// `capture_join_ip_keys` for the IP entry).
+#[derive(Event)]
+pub struct NetOverlaySubmit;
+
+/// Translate a click on the GO submit button into a
+/// [`NetOverlaySubmit`] event so the existing Enter handlers in
+/// `capture_name_keys` / `capture_join_ip_keys` pick it up
+/// without per-stage button wiring.
+pub fn handle_submit_button_click(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<NetStatusSubmitButton>)>,
+    mut writer: EventWriter<NetOverlaySubmit>,
+) {
+    for interaction in &interactions {
+        if matches!(*interaction, Interaction::Pressed) {
+            writer.write(NetOverlaySubmit);
+        }
+    }
 }
 
 /// Per-frame: update overlay visibility + text + focus colour from
@@ -219,8 +274,9 @@ pub fn update_overlay(
     join: Res<JoinIpEntry>,
     name: Res<super::LocalPlayerName>,
     state: Res<bevy::prelude::State<crate::AppState>>,
-    mut overlay_q: Query<&mut Visibility, (With<NetStatusOverlay>, Without<NetStatusBackdrop>)>,
-    mut backdrop_q: Query<&mut Visibility, (With<NetStatusBackdrop>, Without<NetStatusOverlay>)>,
+    mut overlay_q: Query<&mut Visibility, (With<NetStatusOverlay>, Without<NetStatusBackdrop>, Without<NetStatusSubmitButton>)>,
+    mut backdrop_q: Query<&mut Visibility, (With<NetStatusBackdrop>, Without<NetStatusOverlay>, Without<NetStatusSubmitButton>)>,
+    mut submit_q: Query<&mut Visibility, (With<NetStatusSubmitButton>, Without<NetStatusOverlay>, Without<NetStatusBackdrop>)>,
     mut field_q: Query<&mut BorderColor, With<NetStatusInputField>>,
     mut title_q: Query<&mut Text, (With<NetStatusTitle>, Without<NetStatusInputText>, Without<NetStatusHelpText>, Without<NetStatusSubHelpText>)>,
     mut input_q: Query<&mut Text, (With<NetStatusInputText>, Without<NetStatusTitle>, Without<NetStatusHelpText>, Without<NetStatusSubHelpText>)>,
@@ -291,7 +347,11 @@ pub fn update_overlay(
             false,
         ),
     };
-    let _ = on_main_menu;
+    // Gate the entire popover on MainMenu state. Once the player
+    // transitions to Lobby (after host bind / welcome receipt) the
+    // lobby screen owns its own UI for showing the LAN IP / peer
+    // roster, so the floating popover would be redundant chrome.
+    let visible = visible && on_main_menu;
 
     if let Ok(mut v) = overlay_q.single_mut() {
         let want_vis = if visible { Visibility::Inherited } else { Visibility::Hidden };
@@ -299,6 +359,17 @@ pub fn update_overlay(
     }
     if let Ok(mut v) = backdrop_q.single_mut() {
         let want_vis = if visible { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want_vis { *v = want_vis; }
+    }
+    // Submit button visible only when there's something to confirm —
+    // naming / IP entry. Hidden during Hosting (already bound) and
+    // JoiningWait (already sent; waiting for handshake).
+    let has_submit = matches!(
+        *mode,
+        NetMode::NamingForHost | NetMode::NamingForJoin | NetMode::JoiningEntry,
+    ) && visible;
+    if let Ok(mut v) = submit_q.single_mut() {
+        let want_vis = if has_submit { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want_vis { *v = want_vis; }
     }
 

@@ -155,38 +155,28 @@ pub enum DamageSource {
 /// chip-down (or the original damage when the matching slot isn't a
 /// Spike Plate). Both ship-position `fp` and impact-position `ip` are
 /// in world coords; `heading` is the ship's hull yaw.
+/// Sum the per-plate damage reduction across every equipped Spike
+/// Plate slot. Global (no per-side mapping): each plate chips
+/// `SPIKED_PLATE_REDUCTION` off the incoming damage. Stacks
+/// linearly so multiple plates compound — the player can budget
+/// "how much armour do I want" instead of having to puzzle out
+/// which slot side just got hit.
 fn spiked_plate_reduction(
     cfg: &crate::turret::TurretConfig,
-    fp: Vec2,
-    ip: Vec2,
-    heading: f32,
+    _fp: Vec2,
+    _ip: Vec2,
+    _heading: f32,
     damage: i32,
 ) -> i32 {
-    let dir = ip - fp;
-    if dir.length_squared() < 0.001 { return damage; }
-    let world_angle = (-dir.x).atan2(dir.y);
-    let mut local_angle = world_angle - heading;
-    local_angle = (local_angle + std::f32::consts::PI)
-        .rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-    let mut best: Option<(usize, f32)> = None;
-    for (i, &mount) in crate::balance::TURRET_MOUNTS.iter().enumerate() {
-        let mut delta = local_angle - mount;
-        delta = (delta + std::f32::consts::PI)
-            .rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-        let abs = delta.abs();
-        if best.map_or(true, |(_, b)| abs < b) {
-            best = Some((i, abs));
-        }
-    }
-    let Some((idx, _)) = best else { return damage };
-    let slot = cfg.slots[idx];
-    if slot.equipped
-        && matches!(slot.weapon, crate::weapon::WeaponType::SpikedPlate)
-    {
-        (damage - crate::balance::SPIKED_PLATE_REDUCTION).max(0)
-    } else {
-        damage
-    }
+    let plate_count = cfg.slots.iter().filter(|s| {
+        s.equipped && matches!(s.weapon, crate::weapon::WeaponType::SpikedPlate)
+    }).count() as i32;
+    if plate_count == 0 { return damage; }
+    let total_reduction = plate_count * crate::balance::SPIKED_PLATE_REDUCTION;
+    // Minimum 1 chip damage if anything was going to land — stacked
+    // plates can't make the ship completely unhittable against
+    // weak attackers.
+    (damage - total_reduction).max(0).max(if damage > 0 { 1 } else { 0 })
 }
 
 #[derive(Component)]

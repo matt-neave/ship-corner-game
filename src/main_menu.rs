@@ -330,6 +330,7 @@ pub enum MenuButtonItem {
     Host,
     Join,
     Settings,
+    Quit,
     Night,
     Crt,
     Vsync,
@@ -342,7 +343,7 @@ pub enum MenuButtonItem {
 
 impl MenuButtonItem {
     fn is_root(self) -> bool {
-        matches!(self, Self::Play | Self::Host | Self::Join | Self::Settings)
+        matches!(self, Self::Play | Self::Host | Self::Join | Self::Settings | Self::Quit)
     }
 }
 
@@ -421,10 +422,11 @@ const Z_FG: f32 = 2.0;
 /// stacked below it. Title is naked text (drop-shadowed) — no backdrop
 /// slab.
 const TITLE_Y: f32     =  60.0;
-const PLAY_Y: f32      =  22.0;
-const HOST_Y: f32      =   0.0;
-const JOIN_Y: f32      = -22.0;
-const SETTINGS_Y: f32  = -44.0;
+const PLAY_Y: f32      =  30.0;
+const HOST_Y: f32      =  10.0;
+const JOIN_Y: f32      = -10.0;
+const SETTINGS_Y: f32  = -30.0;
+const QUIT_Y: f32      = -50.0;
 
 const BUTTON_W: f32 = 72.0;
 const BUTTON_H: f32 = 16.0;
@@ -749,6 +751,11 @@ pub fn setup_main_menu_chrome(
         &mut commands, &mut meshes, &mut materials,
         Vec2::new(0.0, SETTINGS_Y), Vec2::new(BUTTON_W, BUTTON_H),
         MenuButtonItem::Settings, "SETTINGS", BUTTON_FONT, true,
+    );
+    spawn_menu_button(
+        &mut commands, &mut meshes, &mut materials,
+        Vec2::new(0.0, QUIT_Y), Vec2::new(BUTTON_W, BUTTON_H),
+        MenuButtonItem::Quit, "QUIT", BUTTON_FONT, true,
     );
 
     // ---- Settings sub-page (hidden until SETTINGS clicked) ----
@@ -1113,6 +1120,7 @@ pub fn update_menu_label_text(
             MenuButtonItem::Host       => "HOST".to_string(),
             MenuButtonItem::Join       => "JOIN".to_string(),
             MenuButtonItem::Settings   => "SETTINGS".to_string(),
+            MenuButtonItem::Quit       => "QUIT".to_string(),
             MenuButtonItem::Night      => format!("NIGHT: {}", on_off(night.active)),
             MenuButtonItem::Crt        => format!("CRT: {}",   on_off(crt.active)),
             MenuButtonItem::Vsync      => format!("VSYNC: {}", on_off(vsync.enabled)),
@@ -1167,6 +1175,7 @@ pub fn handle_menu_click(
     mut res: ResMut<crate::modes::ResolutionSetting>,
     mut sfx_vol: ResMut<crate::sfx::SfxVolume>,
     mut bg: ResMut<crate::modes::BackgroundSetting>,
+    mut exit: EventWriter<bevy::app::AppExit>,
     buttons: Query<(&Transform, &HitArea, &MenuButton)>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) { return; }
@@ -1189,6 +1198,7 @@ pub fn handle_menu_click(
             MenuButtonItem::Host       => { /* see handle_mp_menu_clicks */ }
             MenuButtonItem::Join       => { /* see handle_mp_menu_clicks */ }
             MenuButtonItem::Settings   => *view = MainMenuView::Settings,
+            MenuButtonItem::Quit       => { exit.write(bevy::app::AppExit::Success); }
             MenuButtonItem::Night      => night.active = !night.active,
             MenuButtonItem::Crt        => crt.active = !crt.active,
             MenuButtonItem::Vsync      => vsync.enabled = !vsync.enabled,
@@ -1279,6 +1289,7 @@ fn initial_label_for(item: MenuButtonItem) -> &'static str {
         MenuButtonItem::Host       => "HOST",
         MenuButtonItem::Join       => "JOIN",
         MenuButtonItem::Settings   => "SETTINGS",
+        MenuButtonItem::Quit       => "QUIT",
         MenuButtonItem::Night      => "NIGHT",
         MenuButtonItem::Crt        => "CRT",
         MenuButtonItem::Vsync      => "VSYNC",

@@ -91,14 +91,21 @@ pub fn track_enemy_damage_for_hp_bars(
 
 /// Per-frame: tick the fade timer, snap position to the enemy, write
 /// the fill scale + offset so the bar shrinks left-anchored as HP drops.
+/// Hidden while paused / customizing so the bars don't poke through
+/// the pause backdrop or shop card.
 pub fn update_enemy_hp_bars(
     time: Res<Time>,
     mut commands: Commands,
+    paused: Res<crate::pause::Paused>,
+    customize_open: Res<crate::customize::CustomizeOpen>,
     enemies: Query<(&Transform, &Health, &Enemy), Without<EnemyHpBar>>,
-    mut bars: Query<(Entity, &mut EnemyHpBar, &mut Transform)>,
+    mut bars: Query<(Entity, &mut EnemyHpBar, &mut Transform, &mut Visibility)>,
 ) {
     let dt = time.delta_secs();
-    for (bar_e, mut bar, mut tf) in &mut bars {
+    let hide_all = paused.0 || customize_open.open;
+    for (bar_e, mut bar, mut tf, mut vis) in &mut bars {
+        let want_vis = if hide_all { Visibility::Hidden } else { Visibility::Inherited };
+        if *vis != want_vis { *vis = want_vis; }
         bar.remaining -= dt;
         if bar.remaining <= 0.0 {
             commands.entity(bar_e).despawn();
