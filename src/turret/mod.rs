@@ -487,9 +487,12 @@ pub fn turret_aim_fire(
 
                 // Muzzle flash — parented to the turret so it stays glued to
                 // the barrel as the ship moves and the turret rotates.
+                // Uses the shared HDR `muzzle_glow` so the flash blooms
+                // brightly while the bullet's SDR inner core doesn't
+                // halo as it travels.
                 let flash = commands.spawn((
                     Mesh2d(em.muzzle_flash.clone()),
-                    MeshMaterial2d(inner_mat.clone()),
+                    MeshMaterial2d(pm.muzzle_glow.clone()),
                     Transform::from_xyz(lateral, effective_tip, 2.0),
                     MuzzleFlash { life: 0.18, max_life: 0.18 },
                     RenderLayers::layer(PLAY_LAYER),

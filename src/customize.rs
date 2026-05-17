@@ -110,6 +110,7 @@ impl Plugin for CustomizePlugin {
                     // curve — must run AFTER sync_customize_text
                     // writes the baseline.
                     stats_panel::apply_stat_pop.after(sync_customize_text),
+                    stats_panel::apply_stats_label_highlight,
                     // After sync_customize_text so the debug-only Hidden
                     // write isn't overwritten by the generic Inherited.
                     sync_stat_debug_visibility.after(sync_customize_text),

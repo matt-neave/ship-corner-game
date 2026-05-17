@@ -44,6 +44,16 @@ pub struct CrtMode {
     pub last_applied: Option<bool>,
 }
 
+/// Toggled by the BLOOM button. When on, the play camera renders in HDR
+/// and a `Bloom` post-process haloes the boosted bullet / muzzle / hit
+/// materials. When off, HDR is disabled and the boosted colours just
+/// clip to white — punchier, no soft glow. Default off.
+#[derive(Resource, Default)]
+pub struct BloomMode {
+    pub active: bool,
+    pub last_applied: Option<bool>,
+}
+
 /// Toggled by the VSYNC button (top-right corner). When active, the primary
 /// window uses `AutoVsync`; when off, `AutoNoVsync` so the FPS counter can
 /// show the engine's true headroom rather than the monitor's refresh cap.
@@ -540,6 +550,33 @@ pub fn play_area_screen_rect(logical_w: f32, logical_h: f32) -> (f32, f32, f32, 
 }
 
 // ---------- Systems ----------
+
+/// Flip `Camera.hdr` + add/remove the `Bloom` post-process component on
+/// PlayCamera when `BloomMode` changes. On the first frame `last_applied`
+/// is `None`, so this also seeds the camera's initial bloom state from
+/// whatever was loaded from `settings.txt` — `setup_render` spawns
+/// PlayCamera with bloom-neutral defaults and lets this system own the
+/// toggle.
+pub fn apply_bloom_mode(
+    mut bloom: ResMut<BloomMode>,
+    mut commands: Commands,
+    mut cams: Query<(Entity, &mut Camera), With<crate::palette::PlayCamera>>,
+) {
+    if bloom.last_applied == Some(bloom.active) { return; }
+    bloom.last_applied = Some(bloom.active);
+    for (e, mut cam) in &mut cams {
+        cam.hdr = bloom.active;
+        if bloom.active {
+            commands.entity(e).insert(bevy::core_pipeline::bloom::Bloom {
+                intensity: 0.25,
+                low_frequency_boost: 0.7,
+                ..bevy::core_pipeline::bloom::Bloom::NATURAL
+            });
+        } else {
+            commands.entity(e).remove::<bevy::core_pipeline::bloom::Bloom>();
+        }
+    }
+}
 
 /// Show / hide the scanline overlay when `CrtMode` flips. Uses `last_applied`
 /// so we don't write the Visibility component every frame.

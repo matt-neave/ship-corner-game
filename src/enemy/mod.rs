@@ -480,6 +480,17 @@ pub fn spawn_enemy(
         FireExtent(Vec2::new(ENEMY_WIDTH * 0.5 * scale, ENEMY_LEN * 0.5 * scale)),
         RenderLayers::layer(PLAY_LAYER),
     )).id();
+    // Drop-shadow sibling — every enemy variant is above-water so
+    // they all cast. `sync_shadows` follows + offsets per frame.
+    crate::shadow::spawn_for(
+        commands,
+        pm.shadow.clone(),
+        em.enemy_body.clone(),
+        id,
+        scale,
+        pos,
+        Quat::from_rotation_z(heading),
+    );
 
     if variant == EnemyVariant::Sniper {
         // Sniper: independent-rotation turret. Base sits at the body

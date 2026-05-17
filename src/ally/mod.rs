@@ -409,6 +409,14 @@ impl ShipClass {
         }
     }
 
+    /// Whether this class casts a drop shadow on the water. Above-
+    /// water hulls do; submerged hulls (Submarine) don't. Other
+    /// underwater visuals — shark-net projectiles, helicopters
+    /// (in the air) — are handled at their own spawn sites.
+    pub fn casts_shadow(self) -> bool {
+        !matches!(self, ShipClass::Submarine)
+    }
+
     /// Convenience iterator over every class — handy for the debug
     /// "spawn one of each" UI so adding a class auto-shows up there.
     pub const ALL: &'static [ShipClass] = &[
@@ -1008,8 +1016,8 @@ pub fn spawn_ship_chassis(
     let dir = Vec2::new(-heading.sin(), heading.cos());
 
     let body_mat = pm.hull_for_class(class).clone();
-    commands.spawn((
-        Mesh2d(hull_mesh),
+    let ship = commands.spawn((
+        Mesh2d(hull_mesh.clone()),
         MeshMaterial2d(body_mat.clone()),
         Transform::from_xyz(pos.x, pos.y, 1.0)
             .with_rotation(Quat::from_rotation_z(heading)),
@@ -1021,7 +1029,21 @@ pub fn spawn_ship_chassis(
         HitFx::new(body_mat),
         FireExtent(Vec2::new(hull_w * 0.5, hull_h * 0.5)),
         RenderLayers::layer(PLAY_LAYER),
-    )).id()
+    )).id();
+    // Drop shadow — every above-water class casts; submerged
+    // classes (Submarine) opt out via `casts_shadow()`.
+    if class.casts_shadow() {
+        crate::shadow::spawn_for(
+            commands,
+            pm.shadow.clone(),
+            hull_mesh,
+            ship,
+            1.0,
+            pos,
+            Quat::from_rotation_z(heading),
+        );
+    }
+    ship
 }
 
 /// Build a slightly bowed flag mesh: a wide rectangle of size

@@ -86,7 +86,12 @@ fn spawn_vignette_sprite(
 /// Build the dithered red ring texture once. Edge pixels are full
 /// alpha; centre pixels are fully transparent. A 4×4 Bayer matrix
 /// pushes the gradient into a stipple — pure alpha at the rim,
-/// scattering toward zero as you approach centre.
+/// scattering toward zero as you approach the inner clear zone.
+///
+/// Uses distance from the nearest play-area edge (not radial distance
+/// from centre) so the ring hugs all four edges with uniform
+/// thickness regardless of aspect — works for both the default
+/// square play area and the `wide_play` 360×200 rectangle.
 fn make_dithered_ring_image() -> Image {
     let w = PLAY_INTERNAL_W;
     let h = PLAY_INTERNAL_H;
@@ -97,30 +102,22 @@ fn make_dithered_ring_image() -> Image {
         [ 3, 11,  1,  9],
         [15,  7, 13,  5],
     ];
-    let cx = w as f32 * 0.5;
-    let cy = h as f32 * 0.5;
-    // Distance at which the ring is at full alpha — pick the
-    // shorter of the two play-area half-dimensions so the ring
-    // hugs the SHORTER axis (square play area = symmetric ring).
-    let max_r = cx.min(cy);
-    // Inner radius below which alpha is fully zero. ~55% of max
-    // gives the ring a generous interior so combat reads clearly.
-    let inner_r = max_r * 0.55;
+    // Ring band thickness in internal pixels. Anchored to the
+    // shorter axis so a wide play area doesn't get a band that
+    // eats the whole vertical extent. 0.225 × short-axis ≈ 45 px
+    // on both layouts — matches the previous radial design's
+    // band width on the square play area.
+    let thickness = (w.min(h) as f32) * 0.225;
     let mut data = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         for x in 0..w {
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let r = (dx * dx + dy * dy).sqrt();
-            // Map distance → 0..1 alpha gradient: 1.0 at edge,
-            // 0.0 at inner_r.
-            let raw = if r <= inner_r {
-                0.0
-            } else if r >= max_r {
-                1.0
-            } else {
-                (r - inner_r) / (max_r - inner_r).max(0.001)
-            };
+            // Distance to the nearest edge of the rectangle.
+            // min(left, right, top, bottom).
+            let dx = (x as f32).min((w - 1 - x) as f32);
+            let dy = (y as f32).min((h - 1 - y) as f32);
+            let edge_d = dx.min(dy);
+            // 1.0 right at the edge, 0.0 at thickness depth.
+            let raw = (1.0 - edge_d / thickness.max(0.001)).clamp(0.0, 1.0);
             // Dither: compare gradient * 16 against the Bayer
             // threshold. Pixel passes (full alpha) if it's
             // above threshold.

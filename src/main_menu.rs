@@ -334,9 +334,11 @@ pub enum MenuButtonItem {
     Night,
     Crt,
     Vsync,
+    Bloom,
     WindowMode,
     Resolution,
     SfxVolume,
+    MusicVolume,
     Background,
     Back,
 }
@@ -765,9 +767,11 @@ pub fn setup_main_menu_chrome(
         MenuButtonItem::Night,
         MenuButtonItem::Crt,
         MenuButtonItem::Vsync,
+        MenuButtonItem::Bloom,
         MenuButtonItem::WindowMode,
         MenuButtonItem::Resolution,
         MenuButtonItem::SfxVolume,
+        MenuButtonItem::MusicVolume,
         MenuButtonItem::Background,
         MenuButtonItem::Back,
     ];
@@ -1108,27 +1112,31 @@ pub fn update_menu_label_text(
     night: Res<NightMode>,
     crt: Res<CrtMode>,
     vsync: Res<VsyncMode>,
+    bloom: Res<crate::modes::BloomMode>,
     win_mode: Res<crate::modes::WindowModeSetting>,
     res: Res<crate::modes::ResolutionSetting>,
     sfx_vol: Res<crate::sfx::SfxVolume>,
+    music_vol: Res<crate::sfx::MusicVolume>,
     bg: Res<crate::modes::BackgroundSetting>,
     mut q: Query<(&MenuLabel, &mut Text2d)>,
 ) {
     for (label, mut text) in &mut q {
         let s = match label.0 {
-            MenuButtonItem::Play       => "PLAY".to_string(),
-            MenuButtonItem::Host       => "HOST".to_string(),
-            MenuButtonItem::Join       => "JOIN".to_string(),
-            MenuButtonItem::Settings   => "SETTINGS".to_string(),
-            MenuButtonItem::Quit       => "QUIT".to_string(),
-            MenuButtonItem::Night      => format!("NIGHT: {}", on_off(night.active)),
-            MenuButtonItem::Crt        => format!("CRT: {}",   on_off(crt.active)),
-            MenuButtonItem::Vsync      => format!("VSYNC: {}", on_off(vsync.enabled)),
-            MenuButtonItem::WindowMode => format!("WINDOW: {}", win_mode.mode.label()),
-            MenuButtonItem::Resolution => format!("RES: {}",    res.res.label()),
-            MenuButtonItem::SfxVolume  => format!("SFX: {}",    sfx_vol.label()),
-            MenuButtonItem::Background => format!("BG: {}",     bg.kind.label()),
-            MenuButtonItem::Back       => "BACK".to_string(),
+            MenuButtonItem::Play        => "PLAY".to_string(),
+            MenuButtonItem::Host        => "HOST".to_string(),
+            MenuButtonItem::Join        => "JOIN".to_string(),
+            MenuButtonItem::Settings    => "SETTINGS".to_string(),
+            MenuButtonItem::Quit        => "QUIT".to_string(),
+            MenuButtonItem::Night       => format!("NIGHT: {}", on_off(night.active)),
+            MenuButtonItem::Crt         => format!("CRT: {}",   on_off(crt.active)),
+            MenuButtonItem::Vsync       => format!("VSYNC: {}", on_off(vsync.enabled)),
+            MenuButtonItem::Bloom       => format!("BLOOM: {}", on_off(bloom.active)),
+            MenuButtonItem::WindowMode  => format!("WINDOW: {}", win_mode.mode.label()),
+            MenuButtonItem::Resolution  => format!("RES: {}",    res.res.label()),
+            MenuButtonItem::SfxVolume   => format!("SFX: {}",    sfx_vol.label()),
+            MenuButtonItem::MusicVolume => format!("MUSIC: {}",  music_vol.label()),
+            MenuButtonItem::Background  => format!("BG: {}",     bg.kind.label()),
+            MenuButtonItem::Back        => "BACK".to_string(),
         };
         if text.0 != s { text.0 = s; }
     }
@@ -1171,9 +1179,11 @@ pub fn handle_menu_click(
     mut night: ResMut<NightMode>,
     mut crt: ResMut<CrtMode>,
     mut vsync: ResMut<VsyncMode>,
+    mut bloom: ResMut<crate::modes::BloomMode>,
     mut win_mode: ResMut<crate::modes::WindowModeSetting>,
     mut res: ResMut<crate::modes::ResolutionSetting>,
     mut sfx_vol: ResMut<crate::sfx::SfxVolume>,
+    mut music_vol: ResMut<crate::sfx::MusicVolume>,
     mut bg: ResMut<crate::modes::BackgroundSetting>,
     mut exit: EventWriter<bevy::app::AppExit>,
     buttons: Query<(&Transform, &HitArea, &MenuButton)>,
@@ -1202,11 +1212,13 @@ pub fn handle_menu_click(
             MenuButtonItem::Night      => night.active = !night.active,
             MenuButtonItem::Crt        => crt.active = !crt.active,
             MenuButtonItem::Vsync      => vsync.enabled = !vsync.enabled,
+            MenuButtonItem::Bloom      => bloom.active = !bloom.active,
             MenuButtonItem::WindowMode => win_mode.mode = win_mode.mode.cycle(),
             MenuButtonItem::Resolution => res.res = res.res.cycle(),
-            MenuButtonItem::SfxVolume  => *sfx_vol = sfx_vol.cycle(),
-            MenuButtonItem::Background => bg.kind = bg.kind.cycle(),
-            MenuButtonItem::Back       => *view = MainMenuView::Root,
+            MenuButtonItem::SfxVolume   => *sfx_vol = sfx_vol.cycle(),
+            MenuButtonItem::MusicVolume => *music_vol = music_vol.cycle(),
+            MenuButtonItem::Background  => bg.kind = bg.kind.cycle(),
+            MenuButtonItem::Back        => *view = MainMenuView::Root,
         }
         return;
     }
@@ -1293,11 +1305,13 @@ fn initial_label_for(item: MenuButtonItem) -> &'static str {
         MenuButtonItem::Night      => "NIGHT",
         MenuButtonItem::Crt        => "CRT",
         MenuButtonItem::Vsync      => "VSYNC",
+        MenuButtonItem::Bloom      => "BLOOM",
         MenuButtonItem::WindowMode => "WINDOW",
         MenuButtonItem::Resolution => "RES",
-        MenuButtonItem::SfxVolume  => "SFX",
-        MenuButtonItem::Background => "BG",
-        MenuButtonItem::Back       => "BACK",
+        MenuButtonItem::SfxVolume   => "SFX",
+        MenuButtonItem::MusicVolume => "MUSIC",
+        MenuButtonItem::Background  => "BG",
+        MenuButtonItem::Back        => "BACK",
     }
 }
 
@@ -1744,9 +1758,11 @@ pub enum SettingsItem {
     Night,
     Crt,
     Vsync,
+    Bloom,
     WindowMode,
     Resolution,
     SfxVolume,
+    MusicVolume,
     Background,
 }
 
@@ -1762,21 +1778,25 @@ pub fn handle_settings_item_click(
     mut night: ResMut<NightMode>,
     mut crt: ResMut<CrtMode>,
     mut vsync: ResMut<VsyncMode>,
+    mut bloom: ResMut<crate::modes::BloomMode>,
     mut win_mode: ResMut<crate::modes::WindowModeSetting>,
     mut res: ResMut<crate::modes::ResolutionSetting>,
     mut sfx_vol: ResMut<crate::sfx::SfxVolume>,
+    mut music_vol: ResMut<crate::sfx::MusicVolume>,
     mut bg: ResMut<crate::modes::BackgroundSetting>,
 ) {
     for (interaction, item) in &interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
         match *item {
-            SettingsItem::Night      => night.active = !night.active,
-            SettingsItem::Crt        => crt.active = !crt.active,
-            SettingsItem::Vsync      => vsync.enabled = !vsync.enabled,
-            SettingsItem::WindowMode => win_mode.mode = win_mode.mode.cycle(),
-            SettingsItem::Resolution => res.res = res.res.cycle(),
-            SettingsItem::SfxVolume  => *sfx_vol = sfx_vol.cycle(),
-            SettingsItem::Background => bg.kind = bg.kind.cycle(),
+            SettingsItem::Night       => night.active = !night.active,
+            SettingsItem::Crt         => crt.active = !crt.active,
+            SettingsItem::Vsync       => vsync.enabled = !vsync.enabled,
+            SettingsItem::Bloom       => bloom.active = !bloom.active,
+            SettingsItem::WindowMode  => win_mode.mode = win_mode.mode.cycle(),
+            SettingsItem::Resolution  => res.res = res.res.cycle(),
+            SettingsItem::SfxVolume   => *sfx_vol = sfx_vol.cycle(),
+            SettingsItem::MusicVolume => *music_vol = music_vol.cycle(),
+            SettingsItem::Background  => bg.kind = bg.kind.cycle(),
         }
     }
 }
@@ -1803,21 +1823,25 @@ pub fn update_settings_labels(
     night: Res<NightMode>,
     crt: Res<CrtMode>,
     vsync: Res<VsyncMode>,
+    bloom: Res<crate::modes::BloomMode>,
     win_mode: Res<crate::modes::WindowModeSetting>,
     res: Res<crate::modes::ResolutionSetting>,
     sfx_vol: Res<crate::sfx::SfxVolume>,
+    music_vol: Res<crate::sfx::MusicVolume>,
     bg: Res<crate::modes::BackgroundSetting>,
     mut q: Query<(&SettingsItemLabel, &mut Text)>,
 ) {
     for (label, mut text) in &mut q {
         let s = match label.0 {
-            SettingsItem::Night      => format!("NIGHT: {}", on_off(night.active)),
-            SettingsItem::Crt        => format!("CRT: {}",   on_off(crt.active)),
-            SettingsItem::Vsync      => format!("VSYNC: {}", on_off(vsync.enabled)),
-            SettingsItem::WindowMode => format!("WINDOW: {}", win_mode.mode.label()),
-            SettingsItem::Resolution => format!("RES: {}",    res.res.label()),
-            SettingsItem::SfxVolume  => format!("SFX: {}",    sfx_vol.label()),
-            SettingsItem::Background => format!("BG: {}",     bg.kind.label()),
+            SettingsItem::Night       => format!("NIGHT: {}", on_off(night.active)),
+            SettingsItem::Crt         => format!("CRT: {}",   on_off(crt.active)),
+            SettingsItem::Vsync       => format!("VSYNC: {}", on_off(vsync.enabled)),
+            SettingsItem::Bloom       => format!("BLOOM: {}", on_off(bloom.active)),
+            SettingsItem::WindowMode  => format!("WINDOW: {}", win_mode.mode.label()),
+            SettingsItem::Resolution  => format!("RES: {}",    res.res.label()),
+            SettingsItem::SfxVolume   => format!("SFX: {}",    sfx_vol.label()),
+            SettingsItem::MusicVolume => format!("MUSIC: {}",  music_vol.label()),
+            SettingsItem::Background  => format!("BG: {}",     bg.kind.label()),
         };
         if text.0 != s { text.0 = s; }
     }

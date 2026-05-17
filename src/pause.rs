@@ -101,9 +101,11 @@ pub fn setup_pause_menu(mut commands: Commands) {
             spawn_pause_settings_button(root, SettingsItem::Night,      "NIGHT");
             spawn_pause_settings_button(root, SettingsItem::Crt,        "CRT");
             spawn_pause_settings_button(root, SettingsItem::Vsync,      "VSYNC");
+            spawn_pause_settings_button(root, SettingsItem::Bloom,      "BLOOM");
             spawn_pause_settings_button(root, SettingsItem::WindowMode, "WINDOW");
             spawn_pause_settings_button(root, SettingsItem::Resolution, "RES");
             spawn_pause_settings_button(root, SettingsItem::SfxVolume,  "SFX");
+            spawn_pause_settings_button(root, SettingsItem::MusicVolume, "MUSIC");
             spawn_pause_settings_button(root, SettingsItem::Background, "BG");
 
             root.spawn((

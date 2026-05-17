@@ -42,6 +42,7 @@ mod onboarding;
 mod fonts;
 mod settings;
 mod sfx;
+mod shadow;
 mod rune;
 mod ship;
 mod stage_complete;
@@ -99,9 +100,9 @@ use map::{
     toggle_debug_ui_on_hash, update_claim_label, update_debug_button_tints,
 };
 use modes::{
-    apply_camera_follow, apply_camera_punch, apply_crt_mode, apply_night_mode, apply_vsync_mode,
-    apply_window_mode_setting,
-    CameraFollow, CrtMode, GameMode, NightMode, VsyncMode,
+    apply_bloom_mode, apply_camera_follow, apply_camera_punch, apply_crt_mode, apply_night_mode,
+    apply_vsync_mode, apply_window_mode_setting,
+    BloomMode, CameraFollow, CrtMode, GameMode, NightMode, VsyncMode,
 };
 use palette::{apply_palette, Palette};
 use rendering::{
@@ -116,7 +117,7 @@ use rune::{
 };
 use ship::{
     apply_velocity, despawn_player_world, friendly_movement, friendly_ram_damage,
-    setup_world, spawn_player_world, tick_stunned,
+    setup_world, spawn_player_world, sync_ship_shadow, tick_stunned,
 };
 use trails::{update_enemy_trails, update_trail, ShipPath};
 use turret::{
@@ -260,6 +261,9 @@ impl Plugin for CombatSimPlugin {
                 friendly_movement,
                 tick_stunned,
                 apply_velocity,
+                // Shadow follows the ship — after apply_velocity so
+                // the hull's transform for this frame is final.
+                sync_ship_shadow,
                 stats::shield_recharge_system,
                 // Host-authoritative enemy simulation. Client mirrors
                 // are visual-only — their Transform/HP are driven by
@@ -695,6 +699,7 @@ fn main() {
         .insert_resource(NightMode::default())
         .insert_resource(CrtMode::default())
         .insert_resource(VsyncMode::default())
+        .insert_resource(BloomMode::default())
         .insert_resource(modes::WindowModeSetting::default())
         .insert_resource(modes::ResolutionSetting::default())
         .insert_resource(modes::BackgroundSetting::default())
@@ -809,6 +814,12 @@ fn main() {
             // past Bevy's 20-system tuple limit.
             update_trail,
             update_enemy_trails,
+            // Generic shadow sync (enemies, allies, bosses, octopus,
+            // menu fleet). Ungated so the main-menu pirates'
+            // shadows follow them as they orbit; the combat-view
+            // gate would freeze them at spawn position outside
+            // gameplay.
+            shadow::sync_shadows,
             tick_hit_fx,
             apply_hit_fx_visuals,
             update_muzzle_flashes,
@@ -827,6 +838,7 @@ fn main() {
                 update_hud_camera_viewport,
                 apply_crt_mode,
                 apply_vsync_mode,
+                apply_bloom_mode,
                 apply_window_mode_setting,
                 apply_camera_follow,
                 apply_camera_punch,

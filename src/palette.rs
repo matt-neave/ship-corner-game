@@ -375,10 +375,20 @@ pub struct PaletteMaterials {
     /// few frames after damage (`HitFx::pulse`). Kept clamped at
     /// 1.0 so the much larger surface area doesn't drown the
     /// scene in bloom — the visual cue is the colour swap, not a
-    /// glow halo around every wounded enemy. Muzzle flashes use
-    /// the per-weapon bullet inner materials (HDR-boosted) for
-    /// their glow instead of a shared flash material.
+    /// glow halo around every wounded enemy.
     pub flash: Handle<ColorMaterial>,
+    /// Shared dark-translucent material used by every drop shadow.
+    /// One handle owned by the palette means spawn sites don't
+    /// need a `ResMut<Assets<ColorMaterial>>` just to allocate a
+    /// shadow — they pull the handle off `PaletteMaterials` and
+    /// pass it into `shadow::spawn_for`.
+    pub shadow: Handle<ColorMaterial>,
+    /// Single shared HDR-boosted warm white used for every turret's
+    /// muzzle flash. Held separate from `bullet_inner_*` so the
+    /// brief flash blooms while the bullet in flight does not — the
+    /// bloom should fire on the gun pop, not paint a halo around
+    /// every projectile travelling across the play area.
+    pub muzzle_glow: Handle<ColorMaterial>,
     pub turret_sniper: Handle<ColorMaterial>,
     pub bullet_sniper: Handle<ColorMaterial>,
     pub bullet_sniper_outer: Handle<ColorMaterial>,
@@ -588,8 +598,10 @@ impl PaletteMaterials {
             enemy_mine_dot:        materials.add(hex(ENEMY_MINE_DOT_HEX)),
             // Bullet inner cores boosted into HDR so PlayCamera's
             // bloom pass haloes them. Outer rings stay clamped so
-            // the bloom focuses on the bright nucleus, not the
-            // dim halo, which keeps the visual hierarchy intact.
+            // the bloom focuses on the bright nucleus, not the dim
+            // halo. `Tonemapping::None` on PlayCamera keeps LDR
+            // pixels pixel-perfect, so the boost only adds glow
+            // on the bright cores without affecting the rest.
             bullet_friendly:       materials.add(boost_hdr(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN), 2.5)),
             bullet_enemy:          materials.add(boost_hdr(lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN), 2.5)),
             bullet_friendly_outer: materials.add(palette.bullet_friendly),
@@ -598,17 +610,23 @@ impl PaletteMaterials {
             // SDR white for the on-hit material swap — see the
             // `flash` field doc.
             flash:                 materials.add(Color::WHITE),
+            shadow:                materials.add(crate::shadow::material_color()),
+            // Single shared HDR-boosted warm white for every turret's
+            // muzzle flash. Brighter than the per-weapon inner cores
+            // (3× vs 2.5×) so the gun-pop reads even bigger than
+            // the bullet halo.
+            muzzle_glow:           materials.add(boost_hdr(Color::srgb(1.0, 0.95, 0.85), 3.0)),
             turret_sniper:         materials.add(sniper),
-            bullet_sniper:         materials.add(hex(SNIPER_BRIGHT_HEX)),
+            bullet_sniper:         materials.add(boost_hdr(hex(SNIPER_BRIGHT_HEX), 2.5)),
             bullet_sniper_outer:   materials.add(sniper),
             turret_mg:             materials.add(mg),
-            bullet_mg:             materials.add(hex(MG_BRIGHT_HEX)),
+            bullet_mg:             materials.add(boost_hdr(hex(MG_BRIGHT_HEX), 2.5)),
             bullet_mg_outer:       materials.add(mg),
             turret_shotgun:        materials.add(shotgun),
-            bullet_shotgun:        materials.add(hex(SHOTGUN_BRIGHT_HEX)),
+            bullet_shotgun:        materials.add(boost_hdr(hex(SHOTGUN_BRIGHT_HEX), 2.5)),
             bullet_shotgun_outer:  materials.add(shotgun),
             turret_railgun:        materials.add(railgun),
-            bullet_railgun:        materials.add(hex(RAILGUN_BRIGHT_HEX)),
+            bullet_railgun:        materials.add(boost_hdr(hex(RAILGUN_BRIGHT_HEX), 2.5)),
             bullet_railgun_outer:  materials.add(railgun),
             turret_mortar:         materials.add(mortar),
             helipad_deck:          materials.add(hex(HELIPAD_DECK_HEX)),

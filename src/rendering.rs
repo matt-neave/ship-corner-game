@@ -469,28 +469,26 @@ pub fn setup_render(
             clear_color: ClearColorConfig::Custom(palette.ocean),
             order: -1,
             is_active: false, // map view is the default
-            // HDR drives the bloom post-process: bright muzzle /
-            // explosion / pickup materials with colour channels
-            // above 1.0 leak into the bloom buffer for a soft
-            // halo. The output target is still 8-bit sRGB — Bevy
-            // tonemaps the HDR intermediate back to it on the
-            // final blit.
-            hdr: true,
+            // HDR + Bloom are owned by `apply_bloom_mode` (in modes.rs)
+            // so the BLOOM setting can toggle them at runtime. Defaults
+            // to LDR here; the first apply pass writes the user's
+            // chosen state on frame 0.
+            hdr: false,
             ..default()
         },
         play_proj(),
         RenderLayers::layer(PLAY_LAYER),
         PlayCamera,
         Msaa::Off,
-        // Subtle bloom — small `intensity` so the chunky-pixel
-        // edges keep their crisp silhouette and only the very
-        // brightest pixels gain a halo.
-        bevy::core_pipeline::bloom::Bloom {
-            intensity: 0.10,
-            low_frequency_boost: 0.5,
-            ..bevy::core_pipeline::bloom::Bloom::NATURAL
-        },
-        bevy::core_pipeline::tonemapping::Tonemapping::TonyMcMapface,
+        // `Tonemapping::None` keeps LDR colours pixel-for-pixel
+        // identical between bloom-on and bloom-off: filmic
+        // tonemappers (TonyMcMapface, AgX, etc.) crush mid-tones
+        // and desaturate the whole scene, which reads as "the
+        // game got darker when I enabled bloom". With None, bloom
+        // still picks up HDR (>1.0) energy from `muzzle_glow`
+        // and haloes accordingly; non-HDR pixels just clamp on
+        // the sRGB write.
+        bevy::core_pipeline::tonemapping::Tonemapping::None,
     ));
 
     commands.spawn((

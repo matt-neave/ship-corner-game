@@ -125,6 +125,7 @@ pub fn spawn_helicopter_visual(
     heading: f32,
 ) -> Entity {
     let body_mesh = meshes.add(Capsule2d::new(2.0, 2.5));
+    let body_shadow_mesh = body_mesh.clone();
     let rotor_mesh = meshes.add(Rectangle::new(8.0, 0.8));
     let nose_base_mesh = meshes.add(Circle::new(1.7));
     let nose_barrel_mesh = meshes.add(Rectangle::new(1.0, 3.5));
@@ -144,6 +145,21 @@ pub fn spawn_helicopter_visual(
             .with_rotation(Quat::from_rotation_z(heading)),
         RenderLayers::layer(PLAY_LAYER),
     )).id();
+    // Airborne drop-shadow — bigger world-space offset than
+    // sea-level entities to fake altitude. The shadow tracks the
+    // body capsule only (not tail boom / rotors) so the
+    // silhouette reads as the chopper's mass rather than the
+    // whole fuselage, matching the top-down arcade convention.
+    crate::shadow::spawn_for_with_offset(
+        commands,
+        pm.shadow.clone(),
+        body_shadow_mesh,
+        heli,
+        1.0,
+        crate::shadow::SHADOW_OFFSET_AIR,
+        pos,
+        Quat::from_rotation_z(heading),
+    );
 
     let tail_boom = commands.spawn((
         Mesh2d(tail_boom_mesh),

@@ -99,6 +99,36 @@ impl SfxVolume {
     }
 }
 
+/// Master music volume (`0.0..=1.0` linear). Persisted via
+/// `settings.rs`. Default sits well below SFX so the soundtrack
+/// stays atmospheric and gameplay hits stay punchy.
+#[derive(Resource, Clone, Copy, PartialEq, Debug)]
+pub struct MusicVolume(pub f32);
+
+impl Default for MusicVolume {
+    fn default() -> Self { Self(0.35) }
+}
+
+impl MusicVolume {
+    pub const STEPS: &'static [f32] = &[0.0, 0.15, 0.35, 0.55, 0.8];
+    pub fn cycle(self) -> Self {
+        let nearest_idx = Self::STEPS
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                (*a - self.0).abs().partial_cmp(&(*b - self.0).abs()).unwrap()
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let next = (nearest_idx + 1) % Self::STEPS.len();
+        Self(Self::STEPS[next])
+    }
+    pub fn label(self) -> String {
+        if self.0 <= 0.0 { "OFF".to_string() }
+        else { format!("{}%", (self.0 * 100.0).round() as i32) }
+    }
+}
+
 /// Per-`Sfx` last-played + streak counter for the repeat-pitch logic.
 /// Resource (not a Component) so cross-frame state survives the
 /// one-shot AudioPlayer entities which despawn on completion.
@@ -147,28 +177,41 @@ pub struct MusicPlugin;
 
 impl Plugin for MusicPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, start_music);
+        app.init_resource::<MusicVolume>()
+            .add_systems(Startup, start_music)
+            // Apply live volume edits to the audio sink. Reads the
+            // `MusicVolume` resource; cheap diff via the sink's
+            // current value.
+            .add_systems(Update, apply_music_volume);
     }
 }
 
 #[derive(Component)]
 pub struct MusicTrack;
 
-/// Volume the music plays at. Tuned well below SFX so the chunky
-/// hit samples sit on top. Bump if the player can't hear it.
-const MUSIC_VOLUME: f32 = 0.35;
-
-fn start_music(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn start_music(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    volume: Res<MusicVolume>,
+) {
     commands.spawn((
         AudioPlayer::new(asset_server.load("music/kubbi_ember.ogg")),
-        // LOOP keeps the track restarting on completion; volume is
-        // dialed down so the music doesn't drown out hit / death
-        // SFX. SFX has its own `SfxVolume` resource — music stays
-        // baked at this constant for now (add a `MusicVolume`
-        // resource + slider when we want a player control).
-        PlaybackSettings::LOOP.with_volume(Volume::Linear(MUSIC_VOLUME)),
+        // LOOP keeps the track restarting on completion. Initial
+        // volume comes from `MusicVolume`; `apply_music_volume`
+        // tracks live edits via the audio sink.
+        PlaybackSettings::LOOP.with_volume(Volume::Linear(volume.0)),
         MusicTrack,
     ));
+}
+
+fn apply_music_volume(
+    volume: Res<MusicVolume>,
+    mut sinks: Query<&mut bevy::audio::AudioSink, With<MusicTrack>>,
+) {
+    if !volume.is_changed() { return; }
+    for mut sink in &mut sinks {
+        sink.set_volume(Volume::Linear(volume.0));
+    }
 }
 
 /// Fire `Sfx::Switch` whenever any `bevy_ui::Button` transitions to

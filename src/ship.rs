@@ -29,6 +29,21 @@ use crate::turret::{BarrelIndex, HeliPadDecal, TurretBarrel, TurretConfig, Turre
 #[derive(Component)]
 pub struct PlayBorder;
 
+/// Sibling shadow entity that paints the ship's silhouette in
+/// translucent black, offset down-right in WORLD space (always
+/// the same screen direction regardless of hull heading). Mirrors
+/// the SNKRX "shadow_canvas" effect — projects the hull onto the
+/// ocean for a hint of depth. `sync_ship_shadow` writes its
+/// translation + rotation each frame to follow the live ship.
+#[derive(Component)]
+pub struct ShipShadow;
+
+/// World-space offset (always the same screen direction) from the
+/// ship's centre to the shadow's centre. SE so it reads as
+/// top-left lighting — matches the cobalt-water ambient feel.
+pub const SHIP_SHADOW_OFFSET: Vec2 = Vec2::new(1.5, -1.5);
+
+
 /// Build the cached `PaletteMaterials` + `EffectMeshes` resources that
 /// every play-world entity references. Runs once at Startup so the
 /// resources exist before any spawn site needs them.
@@ -125,6 +140,26 @@ pub fn spawn_player_world(
     let hull_radius = HULL_WIDTH / 2.0;
     let hull_inner = HULL_LEN - HULL_WIDTH;
     let hull_mesh = meshes.add(Capsule2d::new(hull_radius, hull_inner));
+
+    // Shadow — same hull capsule, dark translucent, sitting on
+    // the water layer (z=0.5, below the hull's z=1.0). Lives as
+    // a SIBLING (not a child) so the SE offset stays fixed in
+    // world space when the ship rotates; `sync_ship_shadow`
+    // copies the ship's rotation each frame but keeps the
+    // translation offset constant in world coords. Tagged
+    // `PlayBorder` so `despawn_player_world` sweeps it up
+    // alongside the rest of the play-world chrome.
+    let shadow_mat = materials.add(Color::srgba(0.0, 0.0, 0.0, 0.42));
+    let shadow_mesh = meshes.add(Capsule2d::new(hull_radius, hull_inner));
+    commands.spawn((
+        Mesh2d(shadow_mesh),
+        MeshMaterial2d(shadow_mat),
+        Transform::from_xyz(SHIP_SHADOW_OFFSET.x, SHIP_SHADOW_OFFSET.y, 0.5),
+        RenderLayers::layer(PLAY_LAYER),
+        ShipShadow,
+        PlayBorder,
+    ));
+
     let ship = commands.spawn((
         Mesh2d(hull_mesh),
         MeshMaterial2d(pm.hull.clone()),
@@ -791,6 +826,29 @@ pub fn slot_for_contact(
         }
     }
     best.map(|(idx, _)| idx)
+}
+
+/// Track the ship's translation + rotation each frame so the
+/// shadow sibling follows it. Offset stays in WORLD space (always
+/// SE), rotation copies straight from the hull so the silhouette
+/// matches what the player sees. Despawning the player wipes the
+/// shadow via the `PlayBorder` sweep in `despawn_player_world`,
+/// so no cleanup needed here.
+pub fn sync_ship_shadow(
+    player: Query<&Transform, (With<LocalPlayer>, Without<ShipShadow>)>,
+    mut shadow: Query<&mut Transform, With<ShipShadow>>,
+) {
+    let Ok(p) = player.single() else { return };
+    for mut s in &mut shadow {
+        let want = Vec3::new(
+            p.translation.x + SHIP_SHADOW_OFFSET.x,
+            p.translation.y + SHIP_SHADOW_OFFSET.y,
+            // z below the hull (1.0) but above the trail (0.5).
+            0.75,
+        );
+        if s.translation != want { s.translation = want; }
+        if s.rotation != p.rotation { s.rotation = p.rotation; }
+    }
 }
 
 /// Bonus damage added to a ram hit per equipped Spike Plate slot,

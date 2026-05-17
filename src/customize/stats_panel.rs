@@ -42,6 +42,14 @@ const ROW_WIDTH: f32 = 64.0;
 #[derive(Component, Clone, Copy)]
 pub struct StatPanelValue(pub StatKind);
 
+/// Marker on the LABEL Text2d of a stat row. Used by
+/// `apply_stats_label_highlight` to tint the name (not the value)
+/// when a hovered mod card targets this row's stat — the user
+/// asked for the name to highlight so values keep their
+/// buff/nerf/baseline colour grammar.
+#[derive(Component, Clone, Copy)]
+pub struct StatPanelLabel(pub StatKind);
+
 /// Per-row pop state. Set when the displayed text changes; decays
 /// in real time. `apply_stat_pop` reads this AFTER `sync_customize_text`
 /// runs and multiplies the baseline glyph scale by a curve so the
@@ -96,7 +104,7 @@ pub fn spawn_stats_panel(commands: &mut Commands, font: &crate::fonts::PixelFont
         let y = top_y - i as f32 * ROW_STEP;
         spawn_debug_button(commands, font, Vec2::new(label_x + MINUS_OFFSET, y), kind, -1);
         spawn_debug_button(commands, font, Vec2::new(label_x + PLUS_OFFSET, y), kind, 1);
-        spawn_label(commands, font, Vec2::new(label_x, y), kind.label());
+        spawn_label(commands, font, Vec2::new(label_x, y), kind.label(), kind);
         spawn_value(commands, font, Vec2::new(value_x, y), kind);
         commands.spawn((
             Transform::from_translation(Vec3::new(hover_centre_x, y, 2.0)),
@@ -202,18 +210,36 @@ pub fn sync_stats_panel(
             ),
             _ => (sv.0.stat(&stats).effective(), sv.0.stat(&baseline).effective()),
         };
-        // Hover-highlight beats baseline tinting — when a mod card
-        // is hovered, all rows it touches paint gold so the player
-        // can scan the impact at a glance.
-        let want = if highlight.kinds.contains(&sv.0) {
-            crate::ui_kit::theme::ACCENT
-        } else if cur > base + 0.001 {
+        // Values always show their buff/nerf/baseline colour
+        // grammar — the hover highlight tints the LABEL instead
+        // (see `apply_stats_label_highlight`) so the value's
+        // numeric reading stays intact.
+        let _ = &highlight; // read so the param isn't dead.
+        let want = if cur > base + 0.001 {
             crate::ui_kit::theme::BUFF_FG // green: buffed
         } else if cur < base - 0.001 {
             crate::ui_kit::theme::NERF_FG // red: nerfed
         } else {
             Color::srgb(0.70, 0.72, 0.78) // grey: baseline
         };
+        if color.0 != want { color.0 = want; }
+    }
+}
+
+/// Per-frame: paint each stat-label gold when the matching
+/// `StatKind` is in [`HighlightedStats`]; otherwise restore the
+/// neutral near-white. Mod-card hover producers fill the
+/// highlight set so the player can scan affected rows by name.
+pub fn apply_stats_label_highlight(
+    open: Res<super::CustomizeOpen>,
+    highlight: Res<crate::stats_panel_overlay::HighlightedStats>,
+    mut q: Query<(&StatPanelLabel, &mut TextColor)>,
+) {
+    if !open.open { return; }
+    const NEUTRAL: Color = Color::srgb(0.92, 0.94, 0.97);
+    let accent = crate::ui_kit::theme::ACCENT;
+    for (label, mut color) in &mut q {
+        let want = if highlight.kinds.contains(&label.0) { accent } else { NEUTRAL };
         if color.0 != want { color.0 = want; }
     }
 }
@@ -247,7 +273,13 @@ pub fn apply_stat_pop(
     }
 }
 
-fn spawn_label(commands: &mut Commands, font: &crate::fonts::PixelFont, spec_pos: Vec2, text: &str) {
+fn spawn_label(
+    commands: &mut Commands,
+    font: &crate::fonts::PixelFont,
+    spec_pos: Vec2,
+    text: &str,
+    kind: StatKind,
+) {
     commands.spawn((
         Text2d::new(text),
         crate::fonts::pixel_text_font(font, LABEL_FONT),
@@ -260,6 +292,7 @@ fn spawn_label(commands: &mut Commands, font: &crate::fonts::PixelFont, spec_pos
         Visibility::Hidden,
         RenderLayers::layer(UPSCALE_LAYER),
         CustomizeText,
+        StatPanelLabel(kind),
         CustomizeTextSpec(spec_pos),
     ));
 }

@@ -416,11 +416,23 @@ pub fn spawn_octopus_visual(
 ) -> Entity {
     let body_mesh = meshes.add(Circle::new(OCTOPUS_BODY_RADIUS));
     let body = commands.spawn((
-        Mesh2d(body_mesh),
+        Mesh2d(body_mesh.clone()),
         MeshMaterial2d(pm.octopus_body.clone()),
         Transform::from_xyz(pos.x, pos.y, 1.5),
         RenderLayers::layer(PLAY_LAYER),
     )).id();
+    // Drop shadow — the octopus body sits above the water-line
+    // visually (it's the "mass" the tentacles emerge from), so it
+    // gets the same SE shadow as every above-water hull.
+    crate::shadow::spawn_for(
+        commands,
+        pm.shadow.clone(),
+        body_mesh,
+        body,
+        1.0,
+        pos,
+        Quat::IDENTITY,
+    );
 
     if with_trail {
         let trail_mesh = meshes.add(empty_dynamic_mesh());
