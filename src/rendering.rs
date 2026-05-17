@@ -700,6 +700,7 @@ pub fn update_hud_camera_viewport(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut hud: Query<&mut Camera, With<HudCamera>>,
     mut last_phys: Local<UVec2>,
+    mut last_cam_target: Local<UVec2>,
     mut last_mode: Local<Option<bevy::window::WindowMode>>,
     mut steady_frames: Local<u8>,
 ) {
@@ -737,13 +738,36 @@ pub fn update_hud_camera_viewport(
             if cam.viewport.is_some() { cam.viewport = None; }
         }
     };
-    if phys_target.x <= 1 || phys_target.y <= 1 {
+    // The camera's `physical_target_size()` reflects the size wgpu
+    // last allocated for the surface texture — which is what scissor
+    // validation runs against. `window.physical_size()` can disagree
+    // (Windows minimise leaves the window reporting its pre-minimise
+    // dimensions for a frame while the swapchain has already
+    // collapsed to 1×1). Bail on either being degenerate.
+    let cam_target = hud
+        .iter()
+        .next()
+        .and_then(|c| c.physical_target_size());
+    let target_size = cam_target.unwrap_or(phys_target);
+    if phys_target.x <= 1 || phys_target.y <= 1
+        || target_size.x <= 1 || target_size.y <= 1
+    {
         *steady_frames = 0;
         bail(&mut hud);
         return;
     }
     if phys_target != *last_phys {
         *last_phys = phys_target;
+        *steady_frames = 1;
+        bail(&mut hud);
+        return;
+    }
+    // Also wipe if the swapchain texture changed size while
+    // physical_size stayed the same — happens on some platforms
+    // during fullscreen ↔ windowed where the window remembers its
+    // size but the surface reconfigures with a different DPI scale.
+    if target_size != *last_cam_target {
+        *last_cam_target = target_size;
         *steady_frames = 1;
         bail(&mut hud);
         return;
