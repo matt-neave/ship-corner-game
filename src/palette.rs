@@ -655,7 +655,7 @@ impl PaletteMaterials {
             turret_amplifier:      materials.add(Color::srgb(0.45, 0.78, 0.82)),
             // Deep ocean blue base for the SharkNet launcher.
             turret_sharknet:       materials.add(Color::srgb(0.18, 0.32, 0.55)),
-            bullet_sharknet:       materials.add(Color::srgb(0.85, 0.92, 1.00)),
+            bullet_sharknet:       materials.add(boost_hdr(Color::srgb(0.85, 0.92, 1.00), 2.5)),
             bullet_sharknet_outer: materials.add(Color::srgb(0.35, 0.55, 0.82)),
             // Mid-grey for the live shark unit — neutral enough to
             // read as "wildlife in the water" against the navy
@@ -672,13 +672,13 @@ impl PaletteMaterials {
             // Plasma projectile colours — bright cyan-white core
             // inside a violet envelope. Reads as energy weaponry
             // distinct from every other bullet on the screen.
-            bullet_plasma:         materials.add(Color::srgb(0.85, 0.95, 1.00)),
+            bullet_plasma:         materials.add(boost_hdr(Color::srgb(0.85, 0.95, 1.00), 2.5)),
             bullet_plasma_outer:   materials.add(Color::srgb(0.55, 0.30, 0.85)),
             // Dark mast wood for the CrowsNest base.
             turret_crows_nest:     materials.add(Color::srgb(0.36, 0.24, 0.16)),
             // Sun-faded plank wood for the lookout platform on top.
             crows_nest_top:        materials.add(Color::srgb(0.72, 0.54, 0.32)),
-            bullet_mortar:         materials.add(hex(MORTAR_BRIGHT_HEX)),
+            bullet_mortar:         materials.add(boost_hdr(hex(MORTAR_BRIGHT_HEX), 2.5)),
             bullet_mortar_outer:   materials.add(mortar),
             pirate_hull:           materials.add(hex(PIRATE_HEX)),
             carrier_hull:          materials.add(hex(CARRIER_HEX)),
@@ -696,7 +696,7 @@ impl PaletteMaterials {
             sail:                  materials.add(hex(SAIL_HEX)),
             plane_hull:            materials.add(hex(PLANE_HEX)),
             bullet_missile_outer:  materials.add(hex(MISSILE_HEX)),
-            bullet_missile_inner:  materials.add(hex(MISSILE_BRIGHT_HEX)),
+            bullet_missile_inner:  materials.add(boost_hdr(hex(MISSILE_BRIGHT_HEX), 2.5)),
             mine_outer:            materials.add(hex(MINE_OUTER_HEX)),
             mine_inner:            materials.add(hex(MINE_INNER_HEX)),
             heal:                  materials.add(hex(HEAL_HEX)),

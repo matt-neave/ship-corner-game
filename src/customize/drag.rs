@@ -398,6 +398,28 @@ impl ModEffect {
             ModEffect::Turtle     => "SHIELD -> HP",
         }
     }
+
+    /// Verbose multi-sentence tooltip body. Read by the customize
+    /// tooltip when the cursor hovers a mod card — the small card
+    /// label is too narrow to spell out what the build-warping
+    /// rule actually does, so the tooltip carries the full
+    /// explanation in human-readable prose.
+    pub fn tooltip_body(self) -> &'static str {
+        match self {
+            ModEffect::Monomaniac =>
+                "All weapons gain +400% damage when you have one equipped. Each additional weapon shaves 50% off that bonus, so two weapons = +350%, three = +300%, eight = +50%. Rewards going all-in on a single weapon type.",
+            ModEffect::Duelist =>
+                "+250% fire rate while you have 2 or fewer weapons equipped. Hard cliff: equipping a third weapon removes the bonus entirely. Pairs well with high single-shot damage.",
+            ModEffect::Harmony =>
+                "+15% weapon damage for every UNIQUE weapon type equipped. Caps at 8 types. Two of the same weapon only count once. Reward for filling the boat with variety; punishes stacking duplicates.",
+            ModEffect::Purist =>
+                "Weapons deal +100% damage, fire +100% faster, and have +20% range. BUT all rune procs (Fire, Frost, Shock, Bleed, Blast, Cascade, etc.) are disabled entirely. Bullets become the only source of damage.",
+            ModEffect::Specialist =>
+                "+75% rune effect AND +50% proc strength, but only if EVERY equipped weapon shares the same tag (Pirate, Naval, Future, Support, etc.). Even one off-tag weapon disables the bonus. Synergy-pure builds only.",
+            ModEffect::Turtle =>
+                "On purchase: converts your entire current shield_max into permanent flat HP, then zeroes your shield_max out. One-time, irreversible. Future shield pickups still grant new shield from zero.",
+        }
+    }
 }
 
 /// All shop mods. Pure-buff entries have a single `+` change;
@@ -575,6 +597,32 @@ impl ShopMod {
         }
         lines
     }
+}
+
+/// Verbose multi-line tooltip body for a shop mod. Composed of:
+///   - One line per stat change, in human-readable form
+///     (`+10% Weapon Damage`, `-3 Move Speed`).
+///   - If the mod carries a build-warping effect, a blank spacer
+///     then the effect's full prose explanation.
+///   - If the mod has no changes AND no effect, a single
+///     "no-op" line so the tooltip body isn't empty.
+///
+/// Lives next to `ModSpec` so adding a new mod naturally extends
+/// this helper through `format_delta` + `StatKind::label`.
+pub fn mod_tooltip_body(spec: &ModSpec) -> String {
+    let mut out = String::new();
+    for &(kind, delta) in spec.changes {
+        if !out.is_empty() { out.push('\n'); }
+        out.push_str(&format!("{} {}", kind.format_delta(delta), kind.label()));
+    }
+    if let Some(eff) = spec.effect {
+        if !out.is_empty() { out.push('\n'); out.push('\n'); }
+        out.push_str(eff.tooltip_body());
+    }
+    if out.is_empty() {
+        out.push_str("No effect.");
+    }
+    out
 }
 
 /// Compact card-friendly label for a stat. The stats panel uses

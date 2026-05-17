@@ -124,10 +124,10 @@ pub struct TooltipLayoutState {
 #[derive(Component, Clone, Copy)]
 pub struct ScrapTooltipHover;
 
-/// Two queries the tooltip update reads to detect hovers over
-/// non-drag-source UI: the stats column and the scrap counter. Bundled
-/// as a `SystemParam` so the parent system stays inside Bevy's 16-arg
-/// `IntoSystem` cap.
+/// Hover queries the tooltip update reads to detect hovers over
+/// non-drag-source UI: the stats column, the scrap counter, and the
+/// shop mod cards. Bundled as a `SystemParam` so the parent system
+/// stays inside Bevy's 16-arg `IntoSystem` cap.
 #[derive(SystemParam)]
 pub struct HoverQueries<'w, 's> {
     pub stat_hovers: Query<'w, 's,
@@ -137,6 +137,10 @@ pub struct HoverQueries<'w, 's> {
     pub scrap_hovers: Query<'w, 's,
         (&'static Transform, &'static HitArea),
         (With<ScrapTooltipHover>, Without<DragSourceMarker>, Without<super::stats_panel::StatHover>),
+    >,
+    pub mod_hovers: Query<'w, 's,
+        (&'static Transform, &'static HitArea, &'static super::shop_mods::ShopModSlot),
+        (Without<DragSourceMarker>, Without<super::stats_panel::StatHover>, Without<ScrapTooltipHover>),
     >,
 }
 
@@ -340,6 +344,7 @@ pub fn update_customize_tooltip(
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
+            Without<super::shop_mods::ShopModSlot>,
         ),
     >,
     mut fill_q: Query<
@@ -352,6 +357,7 @@ pub fn update_customize_tooltip(
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
+            Without<super::shop_mods::ShopModSlot>,
         ),
     >,
     mut title_q: Query<
@@ -364,6 +370,7 @@ pub fn update_customize_tooltip(
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
+            Without<super::shop_mods::ShopModSlot>,
         ),
     >,
     mut body_q: Query<
@@ -376,6 +383,7 @@ pub fn update_customize_tooltip(
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
+            Without<super::shop_mods::ShopModSlot>,
         ),
     >,
 ) {
@@ -468,6 +476,40 @@ pub fn update_customize_tooltip(
         ));
         info_tags = None;
         best_area = area;
+    }
+    // Shop mod card hover — title = name + rarity, body = the
+    // verbose `mod_tooltip_body` (stat changes spelled out in long
+    // form, plus the build-warping effect's full prose). The mod
+    // card's printed face only has room for terse `+10% HP` lines,
+    // so the tooltip is the only place legendaries get their
+    // actual rule explained.
+    if let Some(shop) = shop_ref {
+        for (tf, hit, slot) in &hovers.mod_hovers {
+            let centre = tf.translation.truncate();
+            let half = hit.size * 0.5;
+            if cursor.x < centre.x - half.x
+                || cursor.x > centre.x + half.x
+                || cursor.y < centre.y - half.y
+                || cursor.y > centre.y + half.y
+            {
+                continue;
+            }
+            let area = hit.size.x * hit.size.y;
+            if area >= best_area {
+                continue;
+            }
+            let Some(m) = shop.mods.get(slot.idx).and_then(|m| *m) else { continue };
+            let spec = m.spec();
+            let title = format!("{} - {}", spec.name, spec.rarity.label());
+            info = Some((
+                title,
+                super::drag::mod_tooltip_body(spec),
+                centre,
+                half,
+            ));
+            info_tags = None;
+            best_area = area;
+        }
     }
 
     let Some((title, body, source_centre, source_half)) = info else {
@@ -1221,6 +1263,7 @@ fn hide_all(
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
+            Without<super::shop_mods::ShopModSlot>,
         ),
     >,
     fill_q: &mut Query<
@@ -1233,6 +1276,7 @@ fn hide_all(
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
+            Without<super::shop_mods::ShopModSlot>,
         ),
     >,
     title_q: &mut Query<
@@ -1245,6 +1289,7 @@ fn hide_all(
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
+            Without<super::shop_mods::ShopModSlot>,
         ),
     >,
     body_q: &mut Query<
@@ -1257,6 +1302,7 @@ fn hide_all(
             Without<DragSourceMarker>,
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
+            Without<super::shop_mods::ShopModSlot>,
         ),
     >,
 ) {
