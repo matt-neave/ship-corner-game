@@ -13,8 +13,8 @@ use crate::weapon::WeaponType;
 use crate::Scrap;
 
 use super::drag::{
-    roll_fresh_stock, CustomizeShop, DragSourceKind, DragState, SHOP_ITEM_COST,
-    SHOP_REROLL_COST,
+    roll_fresh_stock, turret_cost_for_barrels, CustomizeShop, DragSourceKind, DragState,
+    SHOP_REROLL_COST, SHOP_RUNE_COST,
 };
 use super::setup::{
     empty_slot_color, empty_socket_color, rune_color_for, turret_barrel_color_for,
@@ -417,20 +417,22 @@ pub fn update_customize_shop(
     }
 
     // Cost labels — show the scrap price while a tile is stocked,
-    // blank when sold or being dragged. Cost is the same on every
-    // card today (`SHOP_ITEM_COST`); no per-tile math.
-    let cost_str = SHOP_ITEM_COST.to_string();
+    // blank when sold or being dragged. Turret cost scales with tier
+    // (T1=2, T2=5, T3=12); rune cost is flat.
+    let rune_cost_str = SHOP_RUNE_COST.to_string();
     for (cost_marker, mut text) in &mut shop_turret_cost_texts {
         let dragged = dragged_shop_turret == Some(cost_marker.idx);
-        let stocked = !dragged
-            && shop
-                .turrets
-                .get(cost_marker.idx)
-                .and_then(|o| o.as_ref())
-                .is_some();
-        let want: &str = if stocked { cost_str.as_str() } else { "" };
+        let offer = if dragged {
+            None
+        } else {
+            shop.turrets.get(cost_marker.idx).and_then(|o| o.as_ref()).copied()
+        };
+        let want = match offer {
+            Some(o) => turret_cost_for_barrels(o.barrels).to_string(),
+            None => String::new(),
+        };
         if text.0 != want {
-            text.0 = want.to_string();
+            text.0 = want;
         }
     }
     for (cost_marker, mut text) in &mut shop_rune_cost_texts {
@@ -441,7 +443,7 @@ pub fn update_customize_shop(
                 .get(cost_marker.idx)
                 .and_then(|o| o.as_ref())
                 .is_some();
-        let want: &str = if stocked { cost_str.as_str() } else { "" };
+        let want: &str = if stocked { rune_cost_str.as_str() } else { "" };
         if text.0 != want {
             text.0 = want.to_string();
         }

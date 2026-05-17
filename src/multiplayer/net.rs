@@ -378,7 +378,7 @@ pub struct SerializedPlayerStats {
     pub harvest_pct:               [f32; 3],
     pub xp_harvest_pct:            [f32; 3],
     pub shield_max:                [f32; 3],
-    pub shield_recharge_rate_pct:  [f32; 3],
+    pub shield_recharge_rate:      [f32; 3],
     pub shield_recharge_delay:     [f32; 3],
     pub rune_damage:               [f32; 3],
     pub turret_damage_pct:         [f32; 3],

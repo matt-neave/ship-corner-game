@@ -52,7 +52,10 @@ pub fn shield_recharge_system(
     let dt = time.delta_secs();
     let max = stats.shield_max.effective().max(0.0);
     let delay = stats.shield_recharge_delay.effective().max(0.0);
-    let rate_per_sec = (stats.shield_recharge_rate_pct.effective() / 100.0).max(0.0) * max;
+    // Flat shield-per-second — independent of `shield_max`. A
+    // 50-max-shield build regenerates at the same rate as a
+    // 500-max-shield build, just refilling proportionally faster.
+    let rate_per_sec = stats.shield_recharge_rate.effective().max(0.0);
     for mut shield in &mut q {
         // Don't clamp current down to max — Ward (and any future
         // overflow source) is allowed to sit above shield_max as a
@@ -116,7 +119,9 @@ pub struct PlayerStats {
     /// granted = base_xp × (1 + xp_harvest_pct/100), rounded.
     pub xp_harvest_pct: Stat,
     pub shield_max: Stat,
-    pub shield_recharge_rate_pct: Stat,
+    /// Flat shield points regenerated per second once the
+    /// post-damage delay has elapsed. Independent of `shield_max`.
+    pub shield_recharge_rate: Stat,
     pub shield_recharge_delay: Stat,
     /// Raw rune-damage scalar (default 1.0). Each rune declares its
     /// effect as a percentage of this value — Fire's "100% rune damage
@@ -174,7 +179,7 @@ impl Default for PlayerStats {
             harvest_pct: Stat::new(0.0),
             xp_harvest_pct: Stat::new(0.0),
             shield_max: Stat::new(0.0),
-            shield_recharge_rate_pct: Stat::new(5.0),
+            shield_recharge_rate: Stat::new(5.0),
             shield_recharge_delay: Stat::new(3.0),
             rune_damage: Stat::new(1.0),
             turret_damage_pct: Stat::new(0.0),
@@ -584,16 +589,13 @@ impl StatKind {
             StatKind::Range => {
                 let pct = stats.range_pct.effective();
                 format!(
-                    "Turret firing range — currently {:.0}% of baseline.",
+                    "Weapon firing range — currently {:.0}% of baseline.",
                     pct,
                 )
             }
             StatKind::Harvest => {
                 let chance = stats.harvest_pct.effective().clamp(0.0, 100.0);
-                format!(
-                    "{:.0}% chance an enemy drops 1 scrap on death. Pirate synergy multiplies the chance.",
-                    chance,
-                )
+                format!("{:.0}% chance an enemy drops 1 scrap on death.", chance)
             }
             StatKind::Luck => {
                 let pct = stats.luck_pct.effective().max(0.0);
@@ -610,18 +612,20 @@ impl StatKind {
                 )
             }
             StatKind::XpHarvest => {
-                let total = 100.0 + stats.xp_harvest_pct.effective();
+                // Same formula as `xp::grant_kill_xp`: base XP × (1 +
+                // xp_harvest_pct/100), rounded up to at least 1 so the
+                // tooltip never lies about a "0 XP" kill.
+                let mult = 1.0 + stats.xp_harvest_pct.effective() / 100.0;
+                let per_kill = (1.0_f32 * mult).round().max(1.0) as u32;
+                let per_boss = (5.0_f32 * mult).round().max(1.0) as u32;
                 format!(
-                    "XP gained per kill — currently {:.0}% of baseline (1 XP per kill, 5 per boss).",
-                    total,
+                    "{} XP per kill, {} per boss.",
+                    per_kill, per_boss,
                 )
             }
             StatKind::RuneDamage => {
                 let pct = (stats.rune_damage.effective() * 100.0).round() as i32;
-                format!(
-                    "Scales rune effects (Fire DoT, Shock chains, AOE radius). Currently {}%.",
-                    pct,
-                )
+                format!("Runes have {}% strength.", pct)
             }
             StatKind::TurretDamage => {
                 let base_mult = stats.turret_damage_mult();
@@ -631,6 +635,15 @@ impl StatKind {
                     total_pct,
                 )
             }
+            StatKind::ShieldMax => {
+                let _max = stats.shield_max.effective().max(0.0);
+                let rate = stats.shield_recharge_rate.effective().max(0.0);
+                let delay = stats.shield_recharge_delay.effective().max(0.0);
+                format!(
+                    "Absorbs damage before HP. Recharges {:.1}/s after {:.1}s without taking a hit.",
+                    rate, delay,
+                )
+            }
             // Stats whose static blurb already reads cleanly (the
             // raw value is visible in the readout column right next
             // to the description tooltip, so no need to fold it in).
@@ -638,8 +651,7 @@ impl StatKind {
             | StatKind::MoveSpeed
             | StatKind::TurnSpeed
             | StatKind::TurretTurnSpeed
-            | StatKind::TurretArcBonus
-            | StatKind::ShieldMax => self.description().to_string(),
+            | StatKind::TurretArcBonus => self.description().to_string(),
         }
     }
     /// Step size for one click of the debug `+/-` button. Tuned

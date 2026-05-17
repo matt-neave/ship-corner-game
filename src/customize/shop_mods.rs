@@ -289,12 +289,14 @@ pub fn update_shop_mod_cards(
             }
         }
     }
-    let cost_label = super::drag::SHOP_ITEM_COST.to_string();
     for (slot, mut vis, mut tf, mut text) in &mut cost_texts {
-        let occupied = shop.mods.get(slot.idx).map_or(false, |m| m.is_some());
+        let m = shop.mods.get(slot.idx).and_then(|m| *m);
+        let occupied = m.is_some();
         set_vis(&mut vis, if occupied { Visibility::Inherited } else { Visibility::Hidden });
-        if !occupied { continue; }
-        if text.0 != cost_label { text.0 = cost_label.clone(); }
+        let Some(m) = m else { continue };
+        // Per-card cost from the mod's rarity — 2 / 3 / 4 / 6 scrap.
+        let cost_label = m.spec().rarity.cost().to_string();
+        if text.0 != cost_label { text.0 = cost_label; }
         tf.translation.x = slot.spec_pos.x * s;
         tf.translation.y = slot.spec_pos.y * s;
         let glyph = ui_scale.0;
@@ -308,9 +310,9 @@ fn set_vis(vis: &mut Visibility, want: Visibility) {
 }
 fn hide_one(vis: &mut Visibility) { set_vis(vis, Visibility::Hidden); }
 
-/// Click handler — applies the mod and consumes the slot. Costs
-/// `SHOP_ITEM_COST` scrap; does nothing when the player can't afford
-/// it (slot and scrap both untouched).
+/// Click handler — applies the mod and consumes the slot. Cost is
+/// per-rarity (`ModRarity::cost()` → 2/3/4/6); does nothing when the
+/// player can't afford it (slot and scrap both untouched).
 pub fn handle_shop_mod_click(
     open: Res<CustomizeOpen>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -325,7 +327,6 @@ pub fn handle_shop_mod_click(
     if drag.picked.is_some() { return; }
     let Some(cursor) = drag.spec_cursor else { return };
     let Some(mut shop) = shop else { return };
-    if scrap.0 < super::drag::SHOP_ITEM_COST { return; }
     for (tf, hit, slot) in &btn_q {
         let centre = tf.translation.truncate();
         let half = hit.size * 0.5;
@@ -336,6 +337,8 @@ pub fn handle_shop_mod_click(
         { continue; }
         let Some(slot_entry) = shop.mods.get_mut(slot.idx) else { return };
         let Some(m) = *slot_entry else { return };
+        let cost = m.spec().rarity.cost();
+        if scrap.0 < cost { return; }
         // Apply every stat change defined by this mod's spec.
         // Pure-buff mods carry one change; trade-off mods carry
         // two (or more) — the apply loop is identical either way.
@@ -344,7 +347,13 @@ pub fn handle_shop_mod_click(
             stat.flat += delta;
         }
         *slot_entry = None;
-        scrap.0 = scrap.0.saturating_sub(super::drag::SHOP_ITEM_COST);
+        // Buying clears the lock — locks only protect held inventory,
+        // they don't auto-reapply to whatever rolls into the empty
+        // slot on the next reroll.
+        if let Some(flag) = shop.mods_locked.get_mut(slot.idx) {
+            *flag = false;
+        }
+        scrap.0 = scrap.0.saturating_sub(cost);
         return;
     }
 }

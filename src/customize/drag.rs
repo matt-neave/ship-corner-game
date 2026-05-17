@@ -223,6 +223,18 @@ impl ModRarity {
             ModRarity::Legendary => 3.0,
         }
     }
+
+    /// Scrap cost to purchase a mod of this rarity. Rarer cards
+    /// cost more so legendaries feel earned even if you save
+    /// scrap aggressively for the lucky roll.
+    pub fn cost(self) -> u32 {
+        match self {
+            ModRarity::Common    => 2,
+            ModRarity::Uncommon  => 3,
+            ModRarity::Rare      => 4,
+            ModRarity::Legendary => 6,
+        }
+    }
 }
 
 /// One canonical mod entry — a name + an arbitrary list of stat
@@ -435,7 +447,8 @@ fn short_stat_label(kind: StatKind) -> &'static str {
 
 /// Scrap cost to re-roll the shop. Refills every slot — sold or not.
 pub const SHOP_REROLL_COST: u32 = 1;
-/// Scrap cost for a turret purchase.
+/// Scrap cost for a T1 (single-barrel) turret. T2/T3 priced via
+/// [`turret_cost_for_barrels`].
 pub const SHOP_TURRET_COST: u32 = 2;
 /// Scrap cost for a rune purchase.
 pub const SHOP_RUNE_COST: u32 = 2;
@@ -443,11 +456,25 @@ pub const SHOP_RUNE_COST: u32 = 2;
 /// original purchase cost (rounded down). `0.5` → 50%: a 4-scrap
 /// turret refunds 2; a 2-scrap rune refunds 1.
 pub const SHOP_SELL_FRACTION: f32 = 0.5;
-/// Backwards-compatibility alias: existing callers that don't yet
-/// distinguish turret/rune/mod still reference `SHOP_ITEM_COST`.
-/// Pointed at `SHOP_TURRET_COST` so the most expensive baseline wins
-/// when used as a guardrail (e.g. cost-display defaults).
-pub const SHOP_ITEM_COST: u32 = SHOP_TURRET_COST;
+
+/// Per-tier shop turret cost. Barrels = 1 → 2 scrap (vanilla T1);
+/// 2 → 5 (T2); 3 → 12 (T3). The shop can roll a higher-tier turret
+/// directly, skipping the merge grind for a steep premium.
+pub fn turret_cost_for_barrels(barrels: u8) -> u32 {
+    match barrels.max(1) {
+        1 => 2,
+        2 => 5,
+        _ => 12,
+    }
+}
+
+/// Roll a shop turret tier. 89% T1 / 10% T2 / 1% T3. Per-slot,
+/// independent — each of the three shop slots rolls separately,
+/// so seeing a T2 or T3 is a moment.
+fn roll_turret_tier(rng: &mut impl rand::Rng) -> u8 {
+    let r = rng.gen::<f32>();
+    if r < 0.01 { 3 } else if r < 0.11 { 2 } else { 1 }
+}
 
 /// Roll a fresh set of offerings. Used by both the startup init and the
 /// runtime reroll button. Always returns a fully-stocked shop (every
@@ -535,7 +562,8 @@ pub fn roll_fresh_stock() -> CustomizeShop {
     let mut turrets = Vec::with_capacity(3);
     for _ in 0..3 {
         let w = *weapons.choose(&mut rng).unwrap();
-        turrets.push(Some(ShopTurretOffer { weapon: w, barrels: 1 }));
+        let barrels = roll_turret_tier(&mut rng);
+        turrets.push(Some(ShopTurretOffer { weapon: w, barrels }));
     }
     let mut runes_owned: Vec<_> = runes_pool.to_vec();
     runes_owned.shuffle(&mut rng);
@@ -560,8 +588,19 @@ pub fn roll_fresh_stock() -> CustomizeShop {
     }
 }
 
-pub fn init_customize_shop(mut commands: Commands) {
-    commands.insert_resource(roll_fresh_stock());
+pub fn init_customize_shop(
+    mut commands: Commands,
+    existing: Option<Res<CustomizeShop>>,
+) {
+    // Cold start (Startup, no resource yet) rolls a fresh shop.
+    // Subsequent entries (OnEnter(Customize) between stages) re-roll
+    // only the unlocked slots so the player's locked picks survive
+    // across the whole run — locks reset only on a full game restart.
+    let next = match existing.as_deref() {
+        Some(shop) => shop.reroll_preserving_locked(),
+        None => roll_fresh_stock(),
+    };
+    commands.insert_resource(next);
 }
 
 // ---------- Cursor tracking ----------
@@ -666,9 +705,13 @@ fn click_buy_shop(
     shop: &mut CustomizeShop,
     scrap: &mut crate::Scrap,
 ) -> bool {
-    // Cost depends on what the player is buying.
+    // Cost depends on what the player is buying — turret cost scales
+    // with tier (barrels), rune is flat.
     let cost = match source {
-        DragSourceKind::ShopTurret(_) => SHOP_TURRET_COST,
+        DragSourceKind::ShopTurret(idx) => {
+            let Some(offer) = shop.turrets.get(idx).copied().flatten() else { return false };
+            turret_cost_for_barrels(offer.barrels)
+        }
         DragSourceKind::ShopRune(_)   => SHOP_RUNE_COST,
         _ => return false,
     };
@@ -700,6 +743,7 @@ fn try_place_shop_item(
                 runes: [None; 3],
             };
             if let Some(slot) = shop.turrets.get_mut(idx) { *slot = None; }
+            if let Some(flag) = shop.turrets_locked.get_mut(idx) { *flag = false; }
             true
         }
         DragSourceKind::ShopRune(idx) => {
@@ -710,6 +754,7 @@ fn try_place_shop_item(
                     if cfg.slots[slot_i].runes[r].is_none() {
                         cfg.slots[slot_i].runes[r] = Some(rune);
                         if let Some(slot) = shop.runes.get_mut(idx) { *slot = None; }
+                        if let Some(flag) = shop.runes_locked.get_mut(idx) { *flag = false; }
                         return true;
                     }
                 }
@@ -972,7 +1017,11 @@ pub fn complete_drag(
         DragSourceKind::ShopTurret(_) | DragSourceKind::ShopRune(_)
     );
     let shop_cost = match picked.source {
-        DragSourceKind::ShopTurret(_) => SHOP_TURRET_COST,
+        DragSourceKind::ShopTurret(idx) => shop
+            .as_deref()
+            .and_then(|s| s.turrets.get(idx).copied().flatten())
+            .map(|o| turret_cost_for_barrels(o.barrels))
+            .unwrap_or(SHOP_TURRET_COST),
         DragSourceKind::ShopRune(_) => SHOP_RUNE_COST,
         _ => 0,
     };
@@ -1095,7 +1144,12 @@ pub fn sell_refund_for(source: &DragSourceKind, cfg: &TurretConfig) -> u32 {
         DragSourceKind::ShipSlot(slot) => {
             let s = cfg.slots[slot];
             if !s.equipped { return 0; }
-            let mut total_cost = SHOP_TURRET_COST * s.barrels.max(1) as u32;
+            // Refund the tier price so a T2 / T3 directly bought from
+            // the shop returns ~50% of its 5 / 12 sticker. Stacked-up
+            // turrets refund the same — the player has chosen to
+            // "compress" their barrels into one slot and the refund
+            // reflects the slot's current tier, not the buy history.
+            let mut total_cost = turret_cost_for_barrels(s.barrels);
             for _ in s.runes.iter().flatten() {
                 total_cost += SHOP_RUNE_COST;
             }
@@ -1131,10 +1185,16 @@ fn consume_shop_slot(source: &DragSourceKind, shop: &mut CustomizeShop) {
             if let Some(slot) = shop.turrets.get_mut(*idx) {
                 *slot = None;
             }
+            if let Some(flag) = shop.turrets_locked.get_mut(*idx) {
+                *flag = false;
+            }
         }
         DragSourceKind::ShopRune(idx) => {
             if let Some(slot) = shop.runes.get_mut(*idx) {
                 *slot = None;
+            }
+            if let Some(flag) = shop.runes_locked.get_mut(*idx) {
+                *flag = false;
             }
         }
         _ => {}

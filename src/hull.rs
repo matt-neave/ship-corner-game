@@ -172,7 +172,7 @@ impl Hull {
                 "+200 HP",
                 "+80 shield",
                 "+20 turret arc (deg)",
-                "+25% shield recharge",
+                "+2/s shield recharge",
             ],
             Hull::Privateer => &[
                 "+75% scrap harvest",
@@ -191,7 +191,7 @@ impl Hull {
             ],
             Hull::Revenant => &[
                 "+120 shield",
-                "+30% shield recharge",
+                "+5/s shield recharge",
                 "-1.5s shield recharge delay",
             ],
         }
@@ -252,7 +252,7 @@ impl Hull {
                 stats.hp.flat                       =  200.0;
                 stats.shield_max.flat               =   80.0;
                 stats.turret_arc_bonus_deg.flat     =   20.0;
-                stats.shield_recharge_rate_pct.flat =   25.0;
+                stats.shield_recharge_rate.flat     =    2.0;
                 stats.move_speed.flat               =  -12.0;
                 stats.range_pct.flat                =  -25.0;
             }
@@ -278,11 +278,11 @@ impl Hull {
                 stats.turret_arc_bonus_deg.flat = -15.0;
             }
             Hull::Revenant => {
-                stats.shield_max.flat                =  120.0;
-                stats.shield_recharge_rate_pct.flat  =   30.0;
-                stats.shield_recharge_delay.flat     =   -1.5;
-                stats.hp.flat                        =  -50.0;
-                stats.range_pct.flat                 =  -10.0;
+                stats.shield_max.flat               =  120.0;
+                stats.shield_recharge_rate.flat     =    5.0;
+                stats.shield_recharge_delay.flat    =   -1.5;
+                stats.hp.flat                       =  -50.0;
+                stats.range_pct.flat                =  -10.0;
             }
         }
     }

@@ -1303,6 +1303,7 @@ fn describe_source(
             let (title, mut body) = turret_tooltip(
                 s.weapon, s.barrels.max(1), discovered, stats, synergies,
                 Some((damage_stats.per_slot[slot], damage_stats.total)),
+                Some((slot, cfg)),
             );
             if let Some(extra) = weapon_slot_context_line(s.weapon, slot, cfg) {
                 body.push('\n');
@@ -1323,7 +1324,7 @@ fn describe_source(
             .and_then(|s| s.turrets.get(idx))
             .and_then(|o| o.as_ref())
             .map(|o| turret_tooltip(
-                o.weapon, o.barrels.max(1), discovered, stats, synergies, None,
+                o.weapon, o.barrels.max(1), discovered, stats, synergies, None, None,
             )),
         DragSourceKind::ShopRune(idx) => shop
             .and_then(|s| s.runes.get(idx))
@@ -1404,6 +1405,11 @@ fn turret_tooltip(
     stats: &crate::stats::PlayerStats,
     synergies: &Synergies,
     damage_share: Option<(u64, u64)>,
+    // Adjacency context for placed slots — drives Booster fire-rate
+    // and Crow's Nest range folding into the cooldown / range lines,
+    // and lets Amplifier list its own runes by name. `None` for shop
+    // tooltips where there's no slot context yet.
+    slot_ctx: Option<(usize, &TurretConfig)>,
 ) -> (String, String) {
     let title = weapon.label().to_string();
     // Multi-tag weapons render one chip per tag, gated individually
@@ -1425,17 +1431,47 @@ fn turret_tooltip(
     // current tier (`barrels`).
     match weapon {
         WeaponType::Amplifier => {
-            let n = barrels.clamp(1, 3) as u32;
+            let n = barrels.clamp(1, 3) as usize;
             let word = if n == 1 { "rune" } else { "runes" };
-            body.push_str(&format!(
-                "Adjacent weapons inherit {} of this Amplifier's {}.",
-                n, word,
-            ));
+            // For a placed Amplifier, list the actual rune names it's
+            // sharing so the player can see at a glance what bonus is
+            // being broadcast. Shop tooltips fall back to the count-only
+            // phrasing since no runes are socketed yet.
+            let shared = slot_ctx
+                .and_then(|(idx, cfg)| cfg.slots.get(idx).map(|s| s.runes))
+                .map(|runes| {
+                    runes
+                        .iter()
+                        .take(n)
+                        .filter_map(|r| r.map(|r| r.label().to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if shared.is_empty() {
+                body.push_str(&format!(
+                    "Adjacent weapons inherit {} of this Amplifier's {}.",
+                    n, word,
+                ));
+            } else {
+                body.push_str(&format!(
+                    "Adjacent weapons inherit this Amplifier's {}: {}.",
+                    word,
+                    shared.join(", "),
+                ));
+            }
         }
         WeaponType::Booster => {
             let pct = (crate::booster::booster_mult_for_tier(barrels) - 1.0) * 100.0;
             body.push_str(&format!(
                 "Adjacent turrets fire {:.0}% faster.",
+                pct,
+            ));
+        }
+        WeaponType::CrowsNest => {
+            let tier = barrels.clamp(1, 3) as f32;
+            let pct = (crate::crows_nest::CROWS_NEST_RANGE_PER_TIER * tier * 100.0).round() as i32;
+            body.push_str(&format!(
+                "Adjacent weapons gain +{}% range.",
                 pct,
             ));
         }
@@ -1447,8 +1483,8 @@ fn turret_tooltip(
     // is appended only if non-empty so non-firing weapons don't get
     // a stray "Damage 0.0" or orphan whitespace.
     let dmg_line = weapon_damage_line(weapon, stats, synergies);
-    let rate_line = weapon_rate_line(weapon, barrels);
-    let extra_line = weapon_extra_line(weapon, stats);
+    let rate_line = weapon_rate_line(weapon, barrels, slot_ctx);
+    let extra_line = weapon_extra_line(weapon, stats, slot_ctx);
     let mut have_stats_block = false;
     let mut push_stat = |body: &mut String, line: &str| {
         if !have_stats_block {
@@ -1587,21 +1623,30 @@ fn multishot_count(weapon: WeaponType) -> u8 {
 /// cooldown so effective rate is `base x barrels`; cooldown is the
 /// reciprocal. Returns None when the weapon doesn't fire from the
 /// deck (Booster).
-fn weapon_rate_line(weapon: WeaponType, barrels: u8) -> Option<String> {
+fn weapon_rate_line(
+    weapon: WeaponType,
+    barrels: u8,
+    slot_ctx: Option<(usize, &TurretConfig)>,
+) -> Option<String> {
+    // Adjacency: fold in every neighbouring Booster's tier multiplier
+    // so the displayed cooldown matches what actually fires in combat.
+    let boost = slot_ctx
+        .map(|(idx, cfg)| crate::booster::boost_multiplier_for_slot(cfg, idx))
+        .unwrap_or(1.0);
     // Flamethrower's `fire_rate` is the internal damage-tick rate, not
     // a meaningful cooldown to the player — what reads as "cooldown"
     // is the reload phase between burns, which shrinks per tier and
     // disappears entirely at T3.
     if matches!(weapon, WeaponType::Flamethrower) {
         return match barrels.clamp(1, 3) {
-            1 => Some("Cooldown 3.00s".to_string()),
-            2 => Some("Cooldown 1.50s".to_string()),
+            1 => Some(format!("Cooldown {:.2}s", 3.0 / boost)),
+            2 => Some(format!("Cooldown {:.2}s", 1.5 / boost)),
             _ => Some("Always active".to_string()),
         };
     }
     let (_base_dmg, base_rate) = weapon.defaults();
     if base_rate <= 0.0 { return None; }
-    let effective_rate = base_rate * (barrels.max(1) as f32);
+    let effective_rate = base_rate * (barrels.max(1) as f32) * boost;
     let cooldown = 1.0 / effective_rate;
     Some(format!("Cooldown {:.2}s", cooldown))
 }
@@ -1644,8 +1689,15 @@ fn weapon_slot_context_line(
 fn weapon_extra_line(
     weapon: WeaponType,
     stats: &crate::stats::PlayerStats,
+    slot_ctx: Option<(usize, &TurretConfig)>,
 ) -> Option<String> {
-    let final_pct = (weapon.range_mult() * stats.range_mult() * 100.0).round() as i32;
+    // Adjacency: fold in every neighbouring Crow's Nest's tier bonus
+    // so the displayed range matches what the weapon actually shoots
+    // at in combat.
+    let nest = slot_ctx
+        .map(|(idx, cfg)| crate::crows_nest::range_multiplier_for_slot(cfg, idx))
+        .unwrap_or(1.0);
+    let final_pct = (weapon.range_mult() * stats.range_mult() * nest * 100.0).round() as i32;
     // Flamethrower's reach is part of its identity — surface the
     // line even at the 100% baseline so the player can see how the
     // Range stat will extend the cone.

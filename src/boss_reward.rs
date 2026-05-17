@@ -41,8 +41,16 @@ impl Plugin for BossRewardPlugin {
             .insert_resource(RecruitedAllies::default())
             .insert_resource(BossRewardOffer::default())
             // Per-section roster refresh — respawn the recruited fleet
-            // at full HP whenever the player commits to a new combat.
-            .add_systems(OnExit(AppState::Map), respawn_allies_for_stage)
+            // at full HP only when actually starting the next combat,
+            // not on Map → Paused (which would re-roll the roster the
+            // moment the player paused from the map view).
+            .add_systems(
+                OnTransition {
+                    exited: AppState::Map,
+                    entered: AppState::Playing,
+                },
+                respawn_allies_for_stage,
+            )
             // Wipe the roster + clear any in-flight reward offer when
             // the run resets, so a fresh MainMenu / restart starts
             // clean.

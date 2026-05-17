@@ -16,9 +16,9 @@ use bevy::render::view::RenderLayers;
 use rand::Rng;
 use std::collections::VecDeque;
 
-use crate::ally::{ally_is_submerged, Ally};
+use crate::ally::Ally;
 use crate::balance::{
-    ARENA_H, ARENA_W, BOMBER_DETONATE_DIST, BULLET_SPEED, ENEMY_BARREL_TIP,
+    ARENA_H, ARENA_W, BULLET_SPEED, ENEMY_BARREL_TIP,
     ENEMY_BULLET_HALF_LEN, ENEMY_LEN, ENEMY_RANGE, ENEMY_WIDTH, PLAY_LAYER,
 };
 use crate::bullet::Bullet;
@@ -1237,117 +1237,6 @@ pub fn enemy_fire(
             RenderLayers::layer(PLAY_LAYER),
         )).id();
         commands.entity(flash).insert(ChildOf(enemy_entity));
-    }
-}
-
-/// Bombers + Rammers don't shoot — they self-destruct on contact
-/// with the closest of the friendly ship or an ally. Pulses the hit
-/// hull and spawns a particle burst. Bomber hits hard (15 dmg) at
-/// `BOMBER_DETONATE_DIST`; Rammer is a smaller threat (3 dmg, 60%
-/// of the radius) but its real punch is the time-fused landmine
-/// dropped by `enemy_death_check` after this drives HP to 0.
-///
-/// `friendly_ram_damage` deliberately skips these two variants so
-/// the kamikaze hull doesn't get chunked for 5 ram damage before
-/// it can close to detonate range — without that skip the bomber
-/// dies on first touch and the player only takes RAM_DAMAGE_TO_SELF
-/// instead of the intended detonation damage.
-pub fn bomber_detonate(
-    mut commands: Commands,
-    pm: Option<Res<PaletteMaterials>>,
-    em: Option<Res<EffectMeshes>>,
-    difficulty: Res<crate::Difficulty>,
-    stats: Res<crate::stats::PlayerStats>,
-    mut sfx: crate::sfx::SfxPlayer,
-    // `Without<Ally>` keeps boss ships (which carry both Enemy and
-    // Ally) out of the kamikaze branch — they're not actually
-    // Bomber/Rammer variants anyway, but the filter is explicit so
-    // future variant changes can't accidentally turn bosses into
-    // self-destructors.
-    mut bombers: Query<(Entity, &Transform, &Enemy, &mut Health), Without<Ally>>,
-    mut friendly: Query<
-        (
-            &Transform, &mut Health, &mut HitFx,
-            Option<&mut crate::stats::Shield>,
-            bevy::ecs::query::Has<crate::components::LocalPlayer>,
-        ),
-        (With<Friendly>, Without<Ally>, Without<Enemy>),
-    >,
-    mut allies: Query<
-        (Entity, &Transform, &Ally, &mut Health, &mut HitFx),
-        (With<Ally>, Without<Friendly>, Without<Enemy>),
-    >,
-) {
-    let Some(pm) = pm else { return; };
-    let Some(em) = em else { return; };
-    let mut rng = rand::thread_rng();
-
-    for (_be, btf, enemy, mut be_hp) in &mut bombers {
-        let (radius, contact_damage_base) = match enemy.variant {
-            EnemyVariant::Bomber => (BOMBER_DETONATE_DIST, 15),
-            EnemyVariant::Rammer => (BOMBER_DETONATE_DIST * 0.6, 3),
-            _ => continue,
-        };
-        // Difficulty scales contact damage at application time. Same
-        // scaled value is used for both the friendly and the ally
-        // branch so the multiplier is consistent regardless of target.
-        let contact_damage = difficulty.scale_damage(contact_damage_base);
-        let bp = btf.translation.truncate();
-
-        // Friendly first — preferred target if in range. In MP the
-        // host has TWO Friendlies (local + remote-peer ghost); the
-        // OLD `single_mut()` Err'd and skipped contact damage
-        // entirely. Now iterate and damage every friendly within
-        // the blast radius (ghost included — `relay_ghost_damage`
-        // forwards its share to the peer).
-        let mut detonated = false;
-        for (ftf, mut h, mut fx, shield_opt, is_local) in &mut friendly {
-            if bp.distance(ftf.translation.truncate()) < radius {
-                crate::bullet::apply_friendly_damage(
-                    &mut h, &mut fx,
-                    shield_opt.map(|s| s.into_inner()),
-                    &stats, &mut rng,
-                    contact_damage, is_local,
-                );
-                detonated = true;
-            }
-        }
-        if !detonated {
-            let mut best: Option<(Entity, f32)> = None;
-            for (ae, atf, ally, _, _) in &allies {
-                if ally_is_submerged(ally) { continue; }
-                let d = bp.distance(atf.translation.truncate());
-                if d < radius && best.map_or(true, |(_, bd)| d < bd) {
-                    best = Some((ae, d));
-                }
-            }
-            if let Some((ae, _)) = best {
-                if let Ok((_, _, _, mut h, mut fx)) = allies.get_mut(ae) {
-                    fx.pulse();
-                    h.0 = (h.0 - contact_damage).max(0);
-                    detonated = true;
-                }
-            }
-        }
-
-        if detonated {
-            // Drive HP to 0 instead of direct-despawn so
-            // `enemy_death_check` runs the unified death path —
-            // particles, score, scrap, XP, AND the Rammer's
-            // landmine drop. Saves a duplicate landmine-spawn site.
-            be_hp.0 = 0;
-            sfx.play(crate::sfx::Sfx::Explosion);
-            // Bomber gets a heftier two-tone burst; Rammer keeps the
-            // sparkle small so the visual cue stays "small bang +
-            // mine left behind" rather than "bomber-grade boom".
-            let (n1, n2, sp1, sp2) = match enemy.variant {
-                EnemyVariant::Bomber => (14, 8, 80.0, 100.0),
-                EnemyVariant::Rammer => (8, 4, 60.0, 80.0),
-                _ => unreachable!(),
-            };
-            spawn_hit_particles(&mut commands, &em, &pm.enemy,        bp, n1, sp1, &mut rng);
-            spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, bp, n2, sp2, &mut rng);
-        }
     }
 }
 

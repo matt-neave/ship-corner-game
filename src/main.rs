@@ -70,7 +70,7 @@ use effects::{
     update_muzzle_flashes,
 };
 use enemy::{
-    artillery_fire, artillery_shell_tick, bomber_detonate, boss_chaos_spawn,
+    artillery_fire, artillery_shell_tick, boss_chaos_spawn,
     enemy_ai,
     cull_runaway_enemies, enemy_death_check, enemy_fire, enemy_landmine_tick, setup_enemy_hp_bar_assets,
     setup_spawn_indicator_assets, sniper_aim_line_tick, sniper_fire, sniper_turret_aim,
@@ -129,7 +129,7 @@ use ui::{
     setup_wave_indicator, sync_ally_hp_bars, sync_hud_dev_buttons_visibility,
     ui_button_system, update_ally_hp_values,
     update_fps_text, update_hp_bar_pixel_scale,
-    update_hp_subdividers, update_map_button,
+    update_hp_subdividers, update_map_button, update_shield_bar,
     update_score_text, update_vsync_label, update_wave_indicator,
     update_wave_ui, DamageStats,
 };
@@ -272,7 +272,6 @@ impl Plugin for CombatSimPlugin {
                 (
                     enemy_ai,
                     friendly_ram_damage,
-                    bomber_detonate,
                     spawn_enemies,
                     boss_chaos_spawn,
                 ).run_if(not(multiplayer::enemies::is_client)),
@@ -280,7 +279,6 @@ impl Plugin for CombatSimPlugin {
                 (
                     enemy_ai,
                     friendly_ram_damage,
-                    bomber_detonate,
                     spawn_enemies,
                     boss_chaos_spawn,
                 ),
@@ -749,7 +747,15 @@ fn main() {
         // wipe arena debris from last stage. (Permanent ally roster
         // respawn is owned by `BossRewardPlugin`, which also hooks
         // OnExit(Map).)
-        .add_systems(OnExit(AppState::Map), refill_and_clean_for_next_stage)
+        // Wipe leftover arena entities + refill HP only on the actual
+        // Map → Playing handoff, NOT every Map exit. Without the
+        // `OnTransition` gate, pausing from Map (Map → Paused) would
+        // fire this on the way down and reset the stage that's
+        // queued up to start. Same for the boss-reward path.
+        .add_systems(
+            OnTransition { exited: AppState::Map, entered: AppState::Playing },
+            refill_and_clean_for_next_stage,
+        )
         // Run-timer tick — counts wall-clock seconds since the run
         // started, paused on MainMenu/HullSelect.
         .add_systems(Update, tick_run_timer)
@@ -825,6 +831,7 @@ fn main() {
             // MainMenu sets ViewMode::Combat to wake up the menu fleet
             // camera. Gating the whole block keeps the menu clean.
             update_wave_ui,
+            update_shield_bar,
             update_hp_subdividers,
             update_hp_bar_pixel_scale,
             sync_ally_hp_bars,

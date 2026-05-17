@@ -1017,7 +1017,7 @@ fn spawn_shop_rune_tile(
         commands,
         font,
         pos + Vec2::new(0.0, -SOCKET * 0.5 - 18.0),
-        format!("{}", super::drag::SHOP_ITEM_COST),
+        format!("{}", super::drag::SHOP_RUNE_COST),
         Color::srgb(1.0, 0.85, 0.30),
         12.0,
         ShopRuneCostText { idx },

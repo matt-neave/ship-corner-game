@@ -608,6 +608,10 @@ pub fn friendly_ram_damage(
     mut shake: ResMut<crate::modes::ScreenShake>,
     cfg: Res<crate::turret::TurretConfig>,
     stats: Res<crate::stats::PlayerStats>,
+    difficulty: Res<crate::Difficulty>,
+    pm: Option<Res<PaletteMaterials>>,
+    em: Option<Res<EffectMeshes>>,
+    mut sfx: crate::sfx::SfxPlayer,
     mut friendly: Query<
         (
             Entity,
@@ -649,17 +653,16 @@ pub fn friendly_ram_damage(
         let mut shield_opt = f_shield;
 
     for (e, etf, en, mut h, mut fx, grace) in &mut enemies {
-        // Kamikaze variants (Bomber, Rammer) damage the player
-        // exclusively through `bomber_detonate` — their whole point
-        // is the contact explosion at `BOMBER_DETONATE_DIST`. Letting
-        // the ram path fire too would chunk them with 5 ram damage
-        // (RAM_DAMAGE_TO_ENEMY) on first touch, killing their tiny
-        // 2-HP hull BEFORE they ever close to detonate range, so the
-        // player only takes RAM_DAMAGE_TO_SELF = 5 instead of the
-        // intended 15-damage detonation.
-        if matches!(en.variant, EnemyVariant::Bomber | EnemyVariant::Rammer) {
-            continue;
-        }
+        // Kamikaze variants (Bomber, Rammer) take the same contact
+        // path as everyone else so the impact "feels the same" as a
+        // standard collision — what differs is the payload + the
+        // explosion. They one-shot themselves on impact and deal
+        // their full detonation damage to the player.
+        let kamikaze_payload = match en.variant {
+            EnemyVariant::Bomber => Some(15),
+            EnemyVariant::Rammer => Some(5),
+            _                    => None,
+        };
         // Tick down any active enemy grace and skip damage while it's hot.
         if let Some(mut g) = grace {
             g.remaining -= dt;
@@ -688,24 +691,63 @@ pub fn friendly_ram_damage(
             let ram_damage = RAM_DAMAGE_TO_ENEMY
                 + spiked_plate_contact_bonus(&cfg, f_pos, ep, hull_yaw)
                 + thorns_bonus;
-            // Damage the enemy + flash.
+            // Damage the enemy + flash. Kamikazes get bulldozed to 0
+            // HP regardless of the ram-damage value so they always
+            // detonate on first contact, even at the lowest difficulty
+            // tier where 5 ram damage wouldn't cleanly kill a 2-HP
+            // Bomber if its scaled HP rounded up.
             crate::bullet::apply_damage(&mut h, &mut fx, ram_damage);
+            if kamikaze_payload.is_some() {
+                h.0 = 0;
+            }
             shake.add_trauma(RAM_TRAUMA);
             commands.entity(e).insert(RamGrace { remaining: RAM_GRACE });
 
             // Self-damage: chip the ship through its shield first,
             // gated by the global self-grace so simultaneous contacts
-            // don't stack in one frame.
+            // don't stack in one frame. Kamikazes deal their
+            // explosion payload (difficulty-scaled) instead of the
+            // flat ram self-damage.
             if self_grace_remaining <= 0.0 {
                 let mut rng = rand::thread_rng();
+                let payload = match kamikaze_payload {
+                    Some(base) => difficulty.scale_damage(base),
+                    None       => RAM_DAMAGE_TO_SELF,
+                };
                 crate::bullet::apply_friendly_damage(
                     &mut fh, &mut ffx,
                     shield_opt.as_deref_mut(),
                     &stats, &mut rng,
-                    RAM_DAMAGE_TO_SELF, f_is_local,
+                    payload, f_is_local,
                 );
                 commands.entity(fe).insert(RamSelfGrace { remaining: RAM_GRACE });
                 self_grace_remaining = RAM_GRACE;
+            }
+
+            // Explosion VFX + SFX for kamikaze contact. Mirrors what
+            // the old `bomber_detonate` system painted: a two-tone
+            // particle burst sized per-variant, plus the explosion
+            // SFX. Spawned even if the enemy was already at 0 HP
+            // from `apply_damage` above so the particles always read.
+            if let (Some(payload), Some(pm), Some(em)) =
+                (kamikaze_payload, pm.as_deref(), em.as_deref())
+            {
+                let _ = payload;
+                sfx.play(crate::sfx::Sfx::Explosion);
+                let (n1, n2, sp1, sp2) = match en.variant {
+                    EnemyVariant::Bomber => (14, 8, 80.0, 100.0),
+                    EnemyVariant::Rammer => (8,  4, 60.0, 80.0),
+                    _ => (0, 0, 0.0, 0.0),
+                };
+                if n1 > 0 {
+                    let mut rng = rand::thread_rng();
+                    crate::effects::spawn_hit_particles(
+                        &mut commands, em, &pm.enemy,        ep, n1, sp1, &mut rng,
+                    );
+                    crate::effects::spawn_hit_particles(
+                        &mut commands, em, &pm.bullet_enemy, ep, n2, sp2, &mut rng,
+                    );
+                }
             }
         }
     }

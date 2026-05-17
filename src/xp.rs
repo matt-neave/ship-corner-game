@@ -13,7 +13,6 @@
 //! machine drains the queue between StageComplete → Customize.
 
 use bevy::prelude::*;
-use bevy::text::FontSmoothing;
 use rand::seq::SliceRandom;
 
 use crate::stats::{PlayerStats, StatKind};
@@ -39,7 +38,11 @@ impl Plugin for LevelUpPlugin {
             .add_systems(OnExit(AppState::LevelUp), exit_level_up)
             .add_systems(
                 Update,
-                (handle_level_up_click, reveal_level_up_after_layout)
+                (
+                    handle_level_up_click,
+                    reveal_level_up_after_layout,
+                    update_level_up_button_focus,
+                )
                     .run_if(in_state(AppState::LevelUp)),
             );
     }
@@ -199,11 +202,8 @@ pub struct XpBarLabel;
 /// XP bar dimensions — chosen to match the HP bar (`WaveHpTrack`)
 /// exactly so both rails read as the same UI family. Positioned in
 /// the play-area's top-LEFT corner, stacked above the HP bar.
-pub const XP_BAR_WIDTH: f32 = 180.0;
-pub const XP_BAR_HEIGHT: f32 = 22.0;
-/// Pixels from the play-area top edge to the XP bar's top. Leaves a
-/// tiny clearance off the 1-game-pixel frame border.
-pub const XP_BAR_TOP_INSET: f32 = 6.0;
+pub const XP_BAR_WIDTH: f32 = 150.0;
+pub const XP_BAR_HEIGHT: f32 = 16.0;
 const XP_BAR_FILL_COLOR: Color = Color::srgb(1.0, 0.78, 0.20);
 
 /// Spawn the XP track as a child of `WaveHpUi`. Mirrors the HP
@@ -212,13 +212,13 @@ const XP_BAR_FILL_COLOR: Color = Color::srgb(1.0, 0.78, 0.20);
 /// one UI family. `update_hp_bar_pixel_scale` re-derives the border
 /// width every frame from the play-area upscale, keeping it
 /// pixel-aligned with the play-area's grey frame.
-pub fn spawn_xp_track(parent: &mut ChildSpawnerCommands) {
+pub fn spawn_xp_track(parent: &mut ChildSpawnerCommands, thaleah: &crate::fonts::ThaleahFont) {
     parent
         .spawn((
             Node {
                 width: Val::Px(XP_BAR_WIDTH),
                 height: Val::Px(XP_BAR_HEIGHT),
-                border: UiRect::all(Val::Px(2.0)),
+                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                 position_type: PositionType::Relative,
                 overflow: Overflow::clip(),
                 ..default()
@@ -260,13 +260,16 @@ pub fn spawn_xp_track(parent: &mut ChildSpawnerCommands) {
             ))
             .with_children(|over| {
                 over.spawn((
+                    // Thaleah Fat + drop shadow — same voice as the
+                    // WAVE / LEVEL N! / GAME OVER chrome, sized to
+                    // fit inside the bar without dominating it.
                     Text::new("LV 1"),
-                    TextFont {
-                        font_size: 10.0,
-                        font_smoothing: FontSmoothing::None,
-                        ..default()
-                    },
+                    crate::fonts::thaleah_text_font(thaleah, 12.0),
                     TextColor(theme::ON_SURFACE),
+                    TextShadow {
+                        offset: Vec2::splat(1.0),
+                        color: Color::srgba(0.0, 0.0, 0.0, 0.95),
+                    },
                     XpBarLabel,
                 ));
             });
@@ -320,10 +323,11 @@ pub fn enter_level_up(
     mut choices: ResMut<LevelUpChoices>,
     xp: Res<Xp>,
     stats: Res<PlayerStats>,
+    thaleah: Res<crate::fonts::ThaleahFont>,
     mut sfx: crate::sfx::SfxPlayer,
 ) {
     choices.buffs = pick_buffs(4);
-    spawn_level_up_overlay(&mut commands, &choices, &xp, &stats);
+    spawn_level_up_overlay(&mut commands, &choices, &xp, &stats, &thaleah);
     sfx.play(crate::sfx::Sfx::LevelUp);
 }
 
@@ -390,6 +394,7 @@ pub fn handle_level_up_click(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     xp: Res<Xp>,
+    thaleah: Res<crate::fonts::ThaleahFont>,
     mode: Res<crate::multiplayer::NetMode>,
     mut local_ready: ResMut<crate::multiplayer::ready::LocalReadyState>,
     mut next: ResMut<NextState<crate::AppState>>,
@@ -406,7 +411,7 @@ pub fn handle_level_up_click(
                 commands.entity(e).despawn();
             }
             choices.buffs = pick_buffs(4);
-            spawn_level_up_overlay(&mut commands, &choices, &xp, &stats);
+            spawn_level_up_overlay(&mut commands, &choices, &xp, &stats, &thaleah);
         } else {
             // Honour the override set by `spawn_enemies` for mid-stage
             // (between-wave) drains — return the player to combat
@@ -442,6 +447,32 @@ pub fn handle_level_up_click(
     }
 }
 
+/// Hover / press focus tinting for the level-up cards. Mirrors the
+/// main-menu button feel: idle fill = `SURFACE_RAISED` + gold
+/// `ACCENT` outline; hover lifts the fill to `CHUNKY_FILL_HOVER` and
+/// brightens the outline to a pale gold; press deepens the fill to
+/// `CHUNKY_FILL_PRESS`. Watches `Changed<Interaction>` so it only
+/// runs when a card's state actually flips.
+pub fn update_level_up_button_focus(
+    mut cards: Query<
+        (&Interaction, &mut BackgroundColor, &mut BorderColor),
+        (Changed<Interaction>, With<LevelUpButton>),
+    >,
+) {
+    // Brighter gold for the hover ring — pale enough to read as a
+    // wake-up over the resting accent gold.
+    const ACCENT_HOVER: Color = Color::srgb(1.0, 0.92, 0.65);
+    for (interaction, mut bg, mut border) in &mut cards {
+        let (want_bg, want_border) = match *interaction {
+            Interaction::Hovered => (theme::CHUNKY_FILL_HOVER, ACCENT_HOVER),
+            Interaction::Pressed => (theme::CHUNKY_FILL_PRESS, ACCENT_HOVER),
+            Interaction::None    => (theme::SURFACE_RAISED, theme::ACCENT),
+        };
+        if bg.0 != want_bg { bg.0 = want_bg; }
+        if border.0 != want_border { border.0 = want_border; }
+    }
+}
+
 /// Build the overlay tree. Shared between `enter_level_up` and the
 /// click-handler reroll path so the layout stays in one place.
 fn spawn_level_up_overlay(
@@ -449,6 +480,7 @@ fn spawn_level_up_overlay(
     choices: &LevelUpChoices,
     xp: &Xp,
     stats: &PlayerStats,
+    thaleah: &crate::fonts::ThaleahFont,
 ) {
     commands
         .spawn((
@@ -480,10 +512,18 @@ fn spawn_level_up_overlay(
             LevelUpRoot,
         ))
         .with_children(|root| {
-            root.spawn(ui_kit::label(
-                format!("LEVEL {}!", xp.level),
-                theme::FONT_LG * 1.8,
-                theme::ACCENT,
+            // Title in the same voice as the GAME OVER overlay —
+            // Thaleah Fat + drop shadow — so the level-up beat sits
+            // in the same typographic family as the rest of the
+            // big-moment overlays. Gold tint matches the XP bar.
+            root.spawn((
+                Text::new(format!("LEVEL {}!", xp.level)),
+                crate::fonts::thaleah_text_font(thaleah, 56.0),
+                TextColor(theme::ACCENT),
+                TextShadow {
+                    offset: Vec2::splat(2.0),
+                    color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+                },
             ));
 
             // Main row: buff cards on the left, current-stats panel
@@ -519,7 +559,7 @@ fn spawn_level_up_overlay(
                             Node {
                                 width: Val::Px(120.0),
                                 height: Val::Px(80.0),
-                                border: UiRect::all(Val::Px(theme::BORDER_W)),
+                                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                                 padding: UiRect::all(Val::Px(theme::PAD_MD)),
                                 flex_direction: FlexDirection::Column,
                                 align_items: AlignItems::Center,

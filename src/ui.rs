@@ -16,8 +16,8 @@ mod wave_indicator;
 
 pub use hud::{
     sync_ally_hp_bars, update_ally_hp_values, update_fps_text, update_hp_bar_pixel_scale,
-    update_hp_subdividers, update_map_button, update_score_text, update_vsync_label,
-    sync_hud_dev_buttons_visibility,
+    update_hp_subdividers, update_map_button, update_score_text, update_shield_bar,
+    update_vsync_label, sync_hud_dev_buttons_visibility,
     update_wave_ui, AllyHpRow, CameraFollowButton, FpsText, ReturnToMapButton, ScoreText,
     VsyncButton, WaveHpUi,
 };
@@ -69,8 +69,11 @@ pub fn reset_damage_stats(mut stats: ResMut<DamageStats>) {
 
 // ---------- Setup ----------
 
-pub fn setup_ui(mut commands: Commands) {
-    hud::setup_hud(&mut commands);
+pub fn setup_ui(
+    mut commands: Commands,
+    thaleah: Res<crate::fonts::ThaleahFont>,
+) {
+    hud::setup_hud(&mut commands, &thaleah);
 }
 
 // ---------- Click router ----------

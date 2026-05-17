@@ -230,7 +230,6 @@ pub const BULLET_SPEED:             f32 = 200.0;
 pub const ENEMY_RANGE:           f32 = 45.0;
 pub const ENEMY_LEN:             f32 = 10.0;
 pub const ENEMY_WIDTH:           f32 = 5.0;
-pub const BOMBER_DETONATE_DIST:  f32 = 8.0;
 
 // ---------- Trails ----------
 pub const ENEMY_TRAIL_SAMPLE_HZ:  f32   = 25.0;
