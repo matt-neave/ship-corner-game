@@ -29,9 +29,13 @@ bevy = { version = "0.16", default-features = false, features = [
     "bevy_ui_picking_backend",
     "bevy_picking",
     "bevy_input_focus",
-    # Audio (Vorbis-encoded SFX assets — see `sfx.rs`).
+    # Audio. Vorbis (`.ogg`) is the project's main SFX format; MP3
+    # decode added so files dropped in from
+    # `..\..\godot\galactic-conquest\assets\sfx` (e.g. `subtle_pop.mp3`)
+    # play without a manual ogg conversion.
     "bevy_audio",
     "vorbis",
+    "mp3",
     # Image asset format used for the play render target snapshots
     # we generate at startup (`make_hash_image`, `make_scanline_image`).
     "png",

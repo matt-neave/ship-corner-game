@@ -12,3 +12,4 @@ Next steps (agentically where possible)
 - Can the homing rockets from rocket savoy have particles when they dissapear / their lifetime expires
 - can the level up stat tooltip below the 4 options only be visible if a stat is hovered
 - Can you verify spiked plates work?
+- The colour of shield in the hp bar is ugly
