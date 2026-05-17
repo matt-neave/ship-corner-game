@@ -129,7 +129,7 @@ use ui::{
     setup_wave_indicator, sync_ally_hp_bars, sync_hud_dev_buttons_visibility,
     ui_button_system, update_ally_hp_values,
     update_fps_text, update_hp_bar_pixel_scale,
-    update_hp_subdividers, update_map_button, update_shield_bar,
+    update_map_button, update_shield_bar,
     update_score_text, update_vsync_label, update_wave_indicator,
     update_wave_ui, DamageStats,
 };
@@ -480,43 +480,44 @@ pub struct SpawnTimer { pub t: f32, pub elapsed: f32 }
 pub struct Difficulty(pub u8);
 
 impl Default for Difficulty {
-    /// Default to the centre tier of the 3×3 grid (tier 4 of 0..8)
-    /// so a fresh install plays at 1.0× HP / 1.0× damage — the
-    /// originally-tuned baseline.
-    fn default() -> Self { Self(4) }
+    /// Brotato / SNKRX convention: tier 0 IS the baseline. Higher
+    /// tiers are the "harder than default" progression rungs the
+    /// player works up through. No "easier than default" option —
+    /// if 0 already feels too hard, the answer is build / hull
+    /// choice, not a softer difficulty.
+    fn default() -> Self { Self(0) }
 }
 
 impl Difficulty {
-    /// Nine tiers, displayed as a 3×3 grid in HullSelect. Tier 0 is
-    /// the gentlest, tier 4 is the baseline, tier 8 is the hardest
-    /// — every step bumps enemy HP + outgoing damage by the same
-    /// fixed fraction so the curve is even.
-    pub const VALUES: &'static [u8] = &[0, 1, 2, 3, 4, 5, 6, 7, 8];
+    /// Five tiers laid out in one row in HullSelect. 0 = the
+    /// originally-tuned baseline (1.00× HP / 1.00× damage); each
+    /// step adds +30% to both enemy HP and outgoing enemy damage.
+    /// Tier 4 = 2.20× — meaningful endgame challenge without
+    /// pushing into HP-sponge territory.
+    pub const VALUES: &'static [u8] = &[0, 1, 2, 3, 4];
 
     pub fn label(self) -> &'static str {
         match self.0 {
             0 => "0", 1 => "1", 2 => "2",
-            3 => "3", 4 => "4", 5 => "5",
-            6 => "6", 7 => "7", 8 => "8",
+            3 => "3", 4 => "4",
             _ => "?",
         }
     }
 
     /// Multiplier applied to enemy max HP at spawn (both regular
-    /// variants and bosses). Linear step of `0.125x` per tier centred
-    /// on `4 → 1.0×`, giving the extremes:
-    /// tier 0 → 0.50×, tier 4 → 1.00×, tier 8 → 1.50×.
+    /// variants and bosses). Tier 0 = 1.00×, each tier above adds
+    /// 30% — so tier 4 = 2.20× HP.
     pub fn hp_mult(self) -> f32 {
-        let t = self.0.clamp(0, 8) as f32;
-        (0.5 + t * 0.125).max(0.1)
+        let t = self.0.clamp(0, 4) as f32;
+        (1.0 + t * 0.3).max(0.1)
     }
 
     /// Multiplier applied to outgoing enemy damage at the source.
     /// Same shape + step as `hp_mult` so HP and damage scale in
-    /// lockstep through the 9 tiers.
+    /// lockstep through the 5 tiers.
     pub fn damage_mult(self) -> f32 {
-        let t = self.0.clamp(0, 8) as f32;
-        (0.5 + t * 0.125).max(0.1)
+        let t = self.0.clamp(0, 4) as f32;
+        (1.0 + t * 0.3).max(0.1)
     }
 
     /// Apply `hp_mult` to a baseline HP value, rounding to the nearest
@@ -630,6 +631,7 @@ fn main() {
             stats_panel_overlay::StatsPanelOverlayPlugin,
             win_screen::WinScreenPlugin,
             sfx::SfxPlugin,
+            sfx::MusicPlugin,
             CombatSimPlugin,
         ))
         // Workaround for a Bevy 0.16 + WebGL2/ANGLE bug: the default
@@ -832,7 +834,6 @@ fn main() {
             // camera. Gating the whole block keeps the menu clean.
             update_wave_ui,
             update_shield_bar,
-            update_hp_subdividers,
             update_hp_bar_pixel_scale,
             sync_ally_hp_bars,
             update_ally_hp_values,

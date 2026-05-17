@@ -464,23 +464,25 @@ fn spawn_overlay(
                             theme::ACCENT,
                         ),
                     ));
-                    // 3×3 grid of difficulty pills. Render as three
-                    // rows of three; the inner row uses Display::Flex
-                    // with column gaps so the pills sit side-by-side.
-                    for row_start in [0u8, 3, 6] {
-                        run.spawn(Node {
-                            flex_direction: FlexDirection::Row,
-                            align_items: AlignItems::Center,
-                            justify_content: JustifyContent::Center,
-                            column_gap: Val::Px(theme::GAP_SM),
-                            ..default()
-                        })
-                        .with_children(|row| {
-                            for v in row_start..row_start + 3 {
-                                spawn_difficulty_pill(row, font, v, v == difficulty.0);
-                            }
-                        });
-                    }
+                    // Single row of 7 difficulty pills. Tier 0
+                    // (leftmost) is the baseline; each step right
+                    // gets harder. SNKRX / Brotato convention —
+                    // progress through tiers as you get better,
+                    // not "pick a difficulty band centred on
+                    // normal". Avoids the numpad look the 3×3
+                    // grid produced.
+                    run.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        column_gap: Val::Px(theme::GAP_SM),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for &v in crate::Difficulty::VALUES {
+                            spawn_difficulty_pill(row, font, v, v == difficulty.0);
+                        }
+                    });
                     // Spacer pushes PLAY + BACK to the card bottom.
                     run.spawn(Node {
                         flex_grow: 1.0,
@@ -722,7 +724,10 @@ fn spawn_difficulty_pill(
         .spawn((
             Button,
             Node {
-                padding: UiRect::axes(Val::Px(theme::PAD_MD), Val::Px(theme::PAD_SM)),
+                // 2× the previous chip-style padding so the pill
+                // reads as a proper button rather than a numpad key.
+                padding: UiRect::axes(Val::Px(theme::PAD_LG * 1.5), Val::Px(theme::PAD_MD)),
+                min_width: Val::Px(48.0),
                 border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
@@ -736,7 +741,7 @@ fn spawn_difficulty_pill(
             DifficultyButton(value),
         ))
         .with_children(|pill| {
-            pill.spawn(ui_kit::pixel_label(font, label, theme::FONT_MD, label_color));
+            pill.spawn(ui_kit::pixel_label(font, label, theme::FONT_LG * 1.6, label_color));
         });
 }
 

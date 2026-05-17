@@ -64,9 +64,21 @@ pub struct WaveHpTrack;
 /// Coloured fill inside the track — width animated by `update_wave_ui`.
 #[derive(Component)]
 pub struct WaveHpFill;
-/// Numeric readout overlaid centered inside the track.
+/// Wrapper Node for the stacked HP readout (1 main Thaleah glyph
+/// + 8 black stroke twins at diagonal/cardinal offsets). Children
+/// are tagged with `WaveHpTextPart` so the per-frame label sync
+/// updates every twin in lockstep.
 #[derive(Component)]
 pub struct WaveHpText;
+
+/// One Text child of the `WaveHpText` wrapper. The main child paints
+/// in the readout colour; stroke children paint black behind it so
+/// the visible glyph picks up an 8-direction outline.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub enum WaveHpTextPart {
+    Stroke,
+    Main,
+}
 /// Top cyan stripe inside `WaveHpTrack`. Hidden when the build
 /// has no shield (`shield_max == 0 && cur == 0`); when hidden the
 /// HP zone expands to fill the whole bounding box so the player
@@ -82,9 +94,6 @@ pub struct ShieldBarFill;
 /// the shield stripe is active.
 #[derive(Component)]
 pub struct WaveHpZone;
-/// Vertical tick line inside the track, one per 50-HP mark.
-#[derive(Component)]
-pub struct HpBarSubdivider;
 
 /// Container below the main HP bar that holds one bar per live ally.
 #[derive(Component)]
@@ -275,7 +284,7 @@ pub fn setup_hud(
                         height: Val::Percent(100.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.35, 0.85, 0.95)),
+                    BackgroundColor(Color::srgb(0.18, 0.38, 0.78)),
                     ShieldBarFill,
                 ));
             });
@@ -308,30 +317,65 @@ pub fn setup_hud(
                     BackgroundColor(Color::srgb(0.25, 0.85, 0.30)),
                     WaveHpFill,
                 ));
-                zone.spawn((
-                    Node {
-                        position_type: PositionType::Absolute,
-                        top: Val::Px(0.0),
-                        left: Val::Px(0.0),
-                        width: Val::Percent(100.0),
-                        height: Val::Percent(100.0),
-                        justify_content: JustifyContent::FlexEnd,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::right(Val::Px(4.0)),
-                        ..default()
-                    },
-                    ZIndex(10),
-                ))
-                .with_children(|over| {
-                    over.spawn((
+            });
+
+            // ---- HP / shield readout ----
+            // Wrapper sits at the WaveHpTrack root (not inside the
+            // shrinking HP zone) so the digits stay the same size
+            // and centred regardless of whether the shield stripe is
+            // visible. Same 8-direction Thaleah stroke pattern as the
+            // WAVE indicator — 8 black twins + 1 coloured main glyph.
+            track.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(0.0),
+                    left: Val::Px(0.0),
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    justify_content: JustifyContent::FlexEnd,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::right(Val::Px(6.0)),
+                    ..default()
+                },
+                ZIndex(10),
+                WaveHpText,
+            ))
+            .with_children(|over| {
+                const STROKE_OFFSETS: &[(f32, f32)] = &[
+                    (-2.0, -2.0), ( 2.0, -2.0), (-2.0,  2.0), ( 2.0,  2.0),
+                    (-2.0,  0.0), ( 2.0,  0.0), ( 0.0, -2.0), ( 0.0,  2.0),
+                ];
+                // Wrapping inner node holds the stack — sits inside
+                // the right-aligned flex column at the wrapper level
+                // so the stroke twins overlay the main glyph cleanly.
+                over.spawn(Node {
+                    position_type: PositionType::Relative,
+                    width: Val::Auto,
+                    height: Val::Auto,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                })
+                .with_children(|stack| {
+                    for &(dx, dy) in STROKE_OFFSETS {
+                        stack.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                top: Val::Px(dy),
+                                left: Val::Px(dx),
+                                ..default()
+                            },
+                            Text::new("0/0"),
+                            crate::fonts::thaleah_text_font(thaleah, 18.0),
+                            TextColor(Color::srgba(0.0, 0.0, 0.0, 0.95)),
+                            WaveHpTextPart::Stroke,
+                        ));
+                    }
+                    stack.spawn((
                         Text::new("0/0"),
-                        crate::fonts::thaleah_text_font(thaleah, 11.0),
+                        crate::fonts::thaleah_text_font(thaleah, 18.0),
                         TextColor(theme::ON_SURFACE),
-                        TextShadow {
-                            offset: Vec2::splat(1.0),
-                            color: Color::srgba(0.0, 0.0, 0.0, 0.95),
-                        },
-                        WaveHpText,
+                        WaveHpTextPart::Main,
                     ));
                 });
             });
@@ -476,7 +520,7 @@ pub fn update_wave_ui(
     friendly: Query<(&Health, Option<&crate::stats::Shield>), With<Friendly>>,
     mut hp_root_q: Query<&mut Visibility, With<WaveHpUi>>,
     mut hp_fill_q: Query<&mut Node, With<WaveHpFill>>,
-    mut hp_text_q: Query<&mut Text, With<WaveHpText>>,
+    mut hp_text_q: Query<&mut Text, With<WaveHpTextPart>>,
 ) {
     if view.is_changed() {
         let want = if matches!(*view, ViewMode::Combat) {
@@ -570,40 +614,6 @@ pub fn update_shield_bar(
     }
 }
 
-/// Despawn + respawn the bar's vertical tick lines whenever max HP
-/// changes (PlayerStats.hp upgrades).
-pub fn update_hp_subdividers(
-    stats: Res<crate::stats::PlayerStats>,
-    mut commands: Commands,
-    track_q: Query<Entity, With<WaveHpTrack>>,
-    subdivider_q: Query<Entity, With<HpBarSubdivider>>,
-) {
-    if !stats.is_changed() { return; }
-    for e in &subdivider_q { commands.entity(e).despawn(); }
-    let Ok(track) = track_q.single() else { return; };
-
-    let max_hp = stats.max_hp();
-    commands.entity(track).with_children(|t| {
-        let step = 50;
-        let mut hp = step;
-        while hp < max_hp {
-            let pct = hp as f32 / max_hp as f32 * 100.0;
-            t.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Percent(pct),
-                    top: Val::Px(0.0),
-                    width: Val::Px(1.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                BackgroundColor(theme::BORDER_DARK),
-                HpBarSubdivider,
-            ));
-            hp += step;
-        }
-    });
-}
 
 fn spawn_ally_hp_bar(parent: &mut ChildSpawnerCommands, ally: Entity) {
     parent

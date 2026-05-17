@@ -40,12 +40,12 @@ const ACCENT: Color = Color::srgb(1.0, 0.85, 0.30);
 const BOSS_RED: Color = Color::srgb(0.95, 0.30, 0.40);
 const STROKE_COLOR: Color = Color::srgba(0.0, 0.0, 0.0, 0.95);
 
-/// 8-direction stroke at 1-px radius. Four diagonals + four cardinals
-/// for a uniform halo — at the now-smaller 22 pt glyph the 1-px ring
-/// reads as a clean outline without crowding the play area.
+/// 8-direction stroke at 2-px radius. Four diagonals + four cardinals
+/// for a uniform halo — thick enough to read clearly against the bright
+/// water without a TextShadow's directional bias.
 const STROKE_OFFSETS: &[(f32, f32)] = &[
-    (-1.0, -1.0), ( 1.0, -1.0), (-1.0,  1.0), ( 1.0,  1.0),
-    (-1.0,  0.0), ( 1.0,  0.0), ( 0.0, -1.0), ( 0.0,  1.0),
+    (-2.0, -2.0), ( 2.0, -2.0), (-2.0,  2.0), ( 2.0,  2.0),
+    (-2.0,  0.0), ( 2.0,  0.0), ( 0.0, -2.0), ( 0.0,  2.0),
 ];
 
 pub fn setup_wave_indicator(
@@ -78,7 +78,7 @@ pub fn setup_wave_indicator(
                         ..default()
                     },
                     Text::new("WAVE 1/7"),
-                    crate::fonts::thaleah_text_font(&thaleah, 22.0),
+                    crate::fonts::thaleah_text_font(&thaleah, 28.0),
                     TextColor(STROKE_COLOR),
                     WaveIndicatorPart::Stroke,
                 ));
@@ -86,7 +86,7 @@ pub fn setup_wave_indicator(
             // Main coloured glyph sits on top of the stroke stack.
             p.spawn((
                 Text::new("WAVE 1/7"),
-                crate::fonts::thaleah_text_font(&thaleah, 22.0),
+                crate::fonts::thaleah_text_font(&thaleah, 28.0),
                 TextColor(ACCENT),
                 WaveIndicatorPart::Main,
             ));

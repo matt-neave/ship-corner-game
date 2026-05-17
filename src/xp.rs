@@ -42,6 +42,7 @@ impl Plugin for LevelUpPlugin {
                     handle_level_up_click,
                     reveal_level_up_after_layout,
                     update_level_up_button_focus,
+                    update_level_up_tooltip,
                 )
                     .run_if(in_state(AppState::LevelUp)),
             );
@@ -264,7 +265,7 @@ pub fn spawn_xp_track(parent: &mut ChildSpawnerCommands, thaleah: &crate::fonts:
                     // WAVE / LEVEL N! / GAME OVER chrome, sized to
                     // fit inside the bar without dominating it.
                     Text::new("LV 1"),
-                    crate::fonts::thaleah_text_font(thaleah, 12.0),
+                    crate::fonts::thaleah_text_font(thaleah, 14.0),
                     TextColor(theme::ON_SURFACE),
                     TextShadow {
                         offset: Vec2::splat(1.0),
@@ -542,42 +543,88 @@ fn spawn_level_up_overlay(
                 BackgroundColor(Color::NONE),
             ))
             .with_children(|cols| {
-                // ---- LEFT: buff cards ----
+                // ---- LEFT: buff cards + tooltip strip stacked
+                // vertically. The tooltip sits IMMEDIATELY below
+                // the card row, width-matched to the row so it
+                // never extends across into the stats panel.
                 cols.spawn((
                     Node {
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Stretch,
-                        column_gap: Val::Px(theme::GAP_LG),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(theme::GAP_LG),
                         ..default()
                     },
                     BackgroundColor(Color::NONE),
                 ))
-                .with_children(|row| {
-                    for (i, buff) in choices.buffs.iter().enumerate() {
-                        row.spawn((
-                            Button,
-                            Node {
-                                width: Val::Px(120.0),
-                                height: Val::Px(80.0),
-                                border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
-                                padding: UiRect::all(Val::Px(theme::PAD_MD)),
-                                flex_direction: FlexDirection::Column,
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(theme::SURFACE_RAISED),
-                            BorderColor(theme::ACCENT),
-                            LevelUpButton { idx: i },
-                        ))
-                        .with_children(|card| {
-                            card.spawn(ui_kit::label(
-                                buff.label(),
-                                theme::FONT_LG,
-                                theme::ON_SURFACE,
-                            ));
-                        });
-                    }
+                .with_children(|left| {
+                    // Buff-card row.
+                    left.spawn((
+                        Node {
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Stretch,
+                            column_gap: Val::Px(theme::GAP_LG),
+                            ..default()
+                        },
+                        BackgroundColor(Color::NONE),
+                    ))
+                    .with_children(|row| {
+                        for (i, buff) in choices.buffs.iter().enumerate() {
+                            row.spawn((
+                                Button,
+                                Node {
+                                    width: Val::Px(120.0),
+                                    height: Val::Px(80.0),
+                                    border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
+                                    padding: UiRect::all(Val::Px(theme::PAD_MD)),
+                                    flex_direction: FlexDirection::Column,
+                                    align_items: AlignItems::Center,
+                                    justify_content: JustifyContent::Center,
+                                    ..default()
+                                },
+                                BackgroundColor(theme::SURFACE_RAISED),
+                                BorderColor(theme::ACCENT),
+                                LevelUpButton { idx: i },
+                            ))
+                            .with_children(|card| {
+                                card.spawn(ui_kit::label(
+                                    buff.label(),
+                                    theme::FONT_LG,
+                                    theme::ON_SURFACE,
+                                ));
+                            });
+                        }
+                    });
+
+                    // Tooltip strip — width matched to the card row
+                    // (4 × 120 + 3 × GAP_LG = 516 px). `update_level_up_tooltip`
+                    // writes the hovered card's stat description using
+                    // the same `StatKind::dynamic_description` text the
+                    // shop tooltips use. Reserved min-height so the
+                    // layout doesn't jump when the line appears.
+                    let row_w = 120.0 * choices.buffs.len() as f32
+                        + theme::GAP_LG * (choices.buffs.len().saturating_sub(1) as f32);
+                    left.spawn((
+                        Node {
+                            width: Val::Px(row_w),
+                            min_height: Val::Px(36.0),
+                            padding: UiRect::all(Val::Px(theme::PAD_MD)),
+                            border: UiRect::all(Val::Px(theme::CHUNKY_BORDER_W)),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },
+                        BackgroundColor(theme::SURFACE_RAISED),
+                        BorderColor(theme::CHUNKY_OUTLINE),
+                        LevelUpTooltipRoot,
+                    ))
+                    .with_children(|tip| {
+                        tip.spawn((
+                            Text::new(""),
+                            TextFont { font_size: theme::FONT_MD, ..default() },
+                            TextColor(theme::ON_SURFACE),
+                            LevelUpTooltipText,
+                        ));
+                    });
                 });
 
                 // ---- RIGHT: current-stats panel ----
@@ -586,4 +633,34 @@ fn spawn_level_up_overlay(
                 crate::stats_panel_overlay::spawn_stats_panel(cols, stats);
             });
         });
+}
+
+/// Marker on the bordered tooltip strip below the buff cards.
+#[derive(Component)]
+pub struct LevelUpTooltipRoot;
+
+/// Marker on the Text inside `LevelUpTooltipRoot`.
+#[derive(Component)]
+pub struct LevelUpTooltipText;
+
+/// Per-frame: scan the buff cards for `Interaction::Hovered`, look
+/// up the buff's `StatKind`, and write its dynamic description to
+/// the tooltip strip. Falls back to a blank string when no card is
+/// hovered, so the line vanishes the instant the cursor leaves.
+pub fn update_level_up_tooltip(
+    choices: Res<LevelUpChoices>,
+    stats: Res<PlayerStats>,
+    cards: Query<(&Interaction, &LevelUpButton)>,
+    mut text_q: Query<&mut Text, With<LevelUpTooltipText>>,
+) {
+    let hovered = cards.iter().find_map(|(i, btn)| {
+        matches!(*i, Interaction::Hovered | Interaction::Pressed).then_some(btn.idx)
+    });
+    let want = hovered
+        .and_then(|idx| choices.buffs.get(idx))
+        .map(|b| b.kind.dynamic_description(&stats))
+        .unwrap_or_default();
+    for mut t in &mut text_q {
+        if t.0 != want { **t = want.clone(); }
+    }
 }

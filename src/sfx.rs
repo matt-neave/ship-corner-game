@@ -52,6 +52,9 @@ pub enum Sfx {
     GameOver,
     /// Enemy entity drops in.
     EnemySpawn,
+    /// Enemy hull destroyed — short pop / break, distinct from the
+    /// scrap-pickup `Coin` jingle.
+    EnemyDestroyed,
 }
 
 /// Asset table. Filled once at Startup; read on every play.
@@ -135,6 +138,39 @@ impl Plugin for SfxPlugin {
     }
 }
 
+/// Background music plugin. Spawns a single looping `AudioPlayer`
+/// at startup that plays the Kubbi "Ember" track (licensed under CC
+/// BY 4.0 — see https://kubbimusic.com/album/ember, same track SNKRX
+/// shipped under). One track for the whole session for now; expand
+/// to a per-state playlist if the game wants scene-specific themes.
+pub struct MusicPlugin;
+
+impl Plugin for MusicPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, start_music);
+    }
+}
+
+#[derive(Component)]
+pub struct MusicTrack;
+
+/// Volume the music plays at. Tuned well below SFX so the chunky
+/// hit samples sit on top. Bump if the player can't hear it.
+const MUSIC_VOLUME: f32 = 0.35;
+
+fn start_music(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.spawn((
+        AudioPlayer::new(asset_server.load("music/kubbi_ember.ogg")),
+        // LOOP keeps the track restarting on completion; volume is
+        // dialed down so the music doesn't drown out hit / death
+        // SFX. SFX has its own `SfxVolume` resource — music stays
+        // baked at this constant for now (add a `MusicVolume`
+        // resource + slider when we want a player control).
+        PlaybackSettings::LOOP.with_volume(Volume::Linear(MUSIC_VOLUME)),
+        MusicTrack,
+    ));
+}
+
 /// Fire `Sfx::Switch` whenever any `bevy_ui::Button` transitions to
 /// `Interaction::Pressed`. `Changed<Interaction>` keeps this idle
 /// most frames — only fires on press enter, not hold. Single-source
@@ -160,14 +196,15 @@ fn load_sfx(asset_server: Res<AssetServer>, mut lib: ResMut<SfxLibrary>) {
         (Sfx::Cannon,     "sounds/cannon.ogg"),
         (Sfx::Hit,        "sounds/hit.ogg"),
         (Sfx::Explosion,  "sounds/explosion.ogg"),
-        (Sfx::PlayerHit,  "sounds/player_hit.ogg"),
+        (Sfx::PlayerHit,  "sounds/heavy_attack.ogg"),
         (Sfx::Coin,       "sounds/coin.ogg"),
         (Sfx::LevelUp,    "sounds/level_up.ogg"),
         (Sfx::UiClick,    "sounds/ui_click.ogg"),
         (Sfx::Switch,     "sounds/switch.ogg"),
         (Sfx::Victory,    "sounds/victory.ogg"),
         (Sfx::GameOver,   "sounds/game_over.ogg"),
-        (Sfx::EnemySpawn, "sounds/enemy_spawn.ogg"),
+        (Sfx::EnemySpawn,     "sounds/enemy_spawn.ogg"),
+        (Sfx::EnemyDestroyed, "sounds/subtle_pop.mp3"),
     ];
     for &(sfx, path) in map {
         lib.handles.insert(sfx, asset_server.load(path));

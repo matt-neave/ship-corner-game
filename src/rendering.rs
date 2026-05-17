@@ -686,12 +686,13 @@ pub fn update_hud_camera_viewport(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut hud: Query<&mut Camera, With<HudCamera>>,
     mut last_phys: Local<UVec2>,
+    mut last_mode: Local<Option<bevy::window::WindowMode>>,
     mut steady_frames: Local<u8>,
 ) {
     let Ok(window) = windows.single() else { return; };
     let phys_target = window.physical_size();
 
-    // Wipe the viewport in three cases so wgpu never sees a scissor
+    // Wipe the viewport in four cases so wgpu never sees a scissor
     // larger than the swap-chain target:
     //
     //   1. Window is degenerate (≤ 1 px on either axis) — minimize,
@@ -699,7 +700,18 @@ pub fn update_hud_camera_viewport(
     //   2. Physical size changed since last frame — the surface has
     //      to reconfigure, and the first re-rendered frame might
     //      still see the old 1×1 placeholder texture.
-    //   3. We haven't yet seen the current size stable for two
+    //   3. `WindowMode` flipped (fullscreen ↔ windowed). The
+    //      physical_size briefly stays stale across this transition
+    //      while the swapchain reconfigures — without this guard,
+    //      the previous frame's viewport gets validated against the
+    //      new (smaller) swapchain texture and wgpu panics in
+    //      `RenderPass::end` over scissor bounds. Tracking mode
+    //      specifically (rather than `Changed<Window>`) avoids
+    //      firing on every cursor move, which would keep the
+    //      viewport perpetually wiped — HudCamera would render
+    //      world coords to the whole window, making enemy HP bars
+    //      appear oversized and off-target.
+    //   4. We haven't yet seen the current size stable for two
     //      frames — guards against startup races where the window
     //      reports its final size before the surface is configured.
     //
@@ -718,6 +730,12 @@ pub fn update_hud_camera_viewport(
     }
     if phys_target != *last_phys {
         *last_phys = phys_target;
+        *steady_frames = 1;
+        bail(&mut hud);
+        return;
+    }
+    if last_mode.as_ref() != Some(&window.mode) {
+        *last_mode = Some(window.mode);
         *steady_frames = 1;
         bail(&mut hud);
         return;

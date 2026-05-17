@@ -1327,10 +1327,11 @@ pub fn enemy_death_check(
         if h.0 > 0 { continue; }
         commands.entity(e).despawn();
         score.0 += 10;
-        // Death feedback — Sfx::Coin matches the scrap drop beat;
-        // pitch-variation on rapid wave clears keeps the audio from
-        // turning into a flat repeat.
-        sfx.play(crate::sfx::Sfx::Coin);
+        // Death feedback — a short "destroyed" pop, distinct from
+        // the cash-money `Coin` jingle (which now stays reserved for
+        // actual pickup events). Pitch-variation on rapid wave clears
+        // keeps the audio from turning into a flat repeat.
+        sfx.play(crate::sfx::Sfx::EnemyDestroyed);
         // Harvest = chance an enemy drops 1 scrap on death. Pirate
         // synergy multiplies the chance. Most kills give nothing on
         // their own — wave clears, interest, and the boss bounty are
