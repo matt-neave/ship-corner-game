@@ -49,7 +49,7 @@ pub struct StatPanelRow(pub StatKind);
 /// Cleared every frame by the producers — no entry means no hover.
 #[derive(bevy::prelude::Resource, Default, Clone)]
 pub struct HighlightedStats {
-    pub kinds: bevy::utils::HashSet<StatKind>,
+    pub kinds: std::collections::HashSet<StatKind>,
 }
 
 /// Marker on the tooltip text node. One per spawned panel.

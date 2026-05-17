@@ -681,6 +681,7 @@ pub struct LevelUpTooltipText;
 pub fn update_level_up_tooltip(
     choices: Res<LevelUpChoices>,
     stats: Res<PlayerStats>,
+    mut highlight: ResMut<crate::stats_panel_overlay::HighlightedStats>,
     cards: Query<(&Interaction, &LevelUpButton)>,
     mut text_q: Query<&mut Text, With<LevelUpTooltipText>>,
     mut root_q: Query<&mut Visibility, With<LevelUpTooltipRoot>>,
@@ -688,8 +689,15 @@ pub fn update_level_up_tooltip(
     let hovered = cards.iter().find_map(|(i, btn)| {
         matches!(*i, Interaction::Hovered | Interaction::Pressed).then_some(btn.idx)
     });
-    let want = hovered
-        .and_then(|idx| choices.buffs.get(idx))
+    let hovered_buff = hovered.and_then(|idx| choices.buffs.get(idx));
+    // Tell the stats panel to highlight the impacted row. Each
+    // buff carries a single `StatKind`. The First-schedule clear
+    // wipes the set every frame, so a stale highlight can't
+    // linger after the cursor moves off.
+    if let Some(b) = hovered_buff {
+        highlight.kinds.insert(b.kind);
+    }
+    let want = hovered_buff
         .map(|b| b.kind.dynamic_description(&stats))
         .unwrap_or_default();
     for mut t in &mut text_q {

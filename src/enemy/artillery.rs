@@ -174,18 +174,35 @@ pub fn artillery_shell_tick(
         // Impact — AOE damage to friendly + non-submerged allies.
         // Difficulty scales damage at application time so the same
         // multiplier hits every entity in the AOE.
+        //
+        // Hit-check radius INCLUDES the target's hit radius (ship /
+        // ally extent), not just the splash circle. The visual
+        // indicator paints the splash circle; without folding the
+        // target radius in, a ship whose CENTRE is just outside the
+        // circle but whose HULL EDGE is inside takes no damage —
+        // reads as "the indicator lied". With the radius folded in,
+        // anything visually touching the reticle takes the hit.
         let center = shell.target;
-        let r2 = shell.splash_radius * shell.splash_radius;
         let damage = difficulty.scale_damage(shell.damage);
+        let splash = shell.splash_radius;
+        // Player ship hit radius — half the hull width is the
+        // conservative read (matches the bullet collision radius).
+        const SHIP_HIT_RADIUS: f32 = 5.0;
         if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
-            if ftf.translation.truncate().distance_squared(center) < r2 {
+            let r = splash + SHIP_HIT_RADIUS;
+            if ftf.translation.truncate().distance_squared(center) < r * r {
                 fx.pulse();
                 h.0 = (h.0 - damage).max(0);
             }
         }
         for (atf, ally, mut h, mut fx) in &mut allies {
             if ally_is_submerged(ally) { continue; }
-            if atf.translation.truncate().distance_squared(center) >= r2 { continue; }
+            // Use a generic ally hit radius. Most allies are roughly
+            // ship-sized; if a class-specific value matters later,
+            // swap in `crate::ally::ally_hit_radius(ally)` (same
+            // helper bullet collisions use).
+            let r = splash + crate::ally::ally_hit_radius(ally);
+            if atf.translation.truncate().distance_squared(center) >= r * r { continue; }
             fx.pulse();
             h.0 = (h.0 - damage).max(0);
         }

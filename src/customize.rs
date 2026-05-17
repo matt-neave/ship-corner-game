@@ -115,6 +115,7 @@ impl Plugin for CustomizePlugin {
                     sync_stat_debug_visibility.after(sync_customize_text),
                     handle_stat_debug_buttons,
                     update_shop_mod_cards,
+                    shop_mods::update_mod_hover_highlight,
                     handle_shop_mod_click,
                     handle_close_click,
                     handle_reroll_button,

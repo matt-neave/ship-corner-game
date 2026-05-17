@@ -14,6 +14,7 @@ use crate::balance::{CUSTOMIZE_LAYER, UPSCALE_LAYER};
 use crate::stats::PlayerStats;
 
 use super::drag::{ActiveLegendaries, CustomizeShop, DragState, ModEffect};
+use crate::stats_panel_overlay::HighlightedStats;
 use super::render::CustomizeViewport;
 use super::setup::HitArea;
 use super::CustomizeOpen;
@@ -313,6 +314,35 @@ fn set_vis(vis: &mut Visibility, want: Visibility) {
     if *vis != want { *vis = want; }
 }
 fn hide_one(vis: &mut Visibility) { set_vis(vis, Visibility::Hidden); }
+
+/// Per-frame: find which (if any) shop mod card the cursor is
+/// over, and push its impacted `StatKind`s into
+/// [`HighlightedStats`] so the customize stats panel can tint
+/// matching rows. The First-schedule clear in
+/// `StatsPanelOverlayPlugin` keeps the set fresh — no entry =
+/// nothing hovered.
+pub fn update_mod_hover_highlight(
+    open: Res<CustomizeOpen>,
+    drag: Res<DragState>,
+    shop: Option<Res<CustomizeShop>>,
+    mut highlight: ResMut<HighlightedStats>,
+    btn_q: Query<(&Transform, &HitArea, &ShopModSlot)>,
+) {
+    if !open.open { return; }
+    let Some(cursor) = drag.spec_cursor else { return };
+    let Some(shop) = shop else { return };
+    for (tf, hit, slot) in &btn_q {
+        let c = tf.translation.truncate();
+        let half = hit.size * 0.5;
+        if cursor.x < c.x - half.x || cursor.x > c.x + half.x { continue; }
+        if cursor.y < c.y - half.y || cursor.y > c.y + half.y { continue; }
+        let Some(m) = shop.mods.get(slot.idx).and_then(|m| *m) else { return };
+        for &(kind, _delta) in m.spec().changes {
+            highlight.kinds.insert(kind);
+        }
+        return;
+    }
+}
 
 /// Click handler — applies the mod and consumes the slot. Cost is
 /// per-rarity (`ModRarity::cost()` → 2/3/4/6); does nothing when the

@@ -153,6 +153,7 @@ pub fn sync_stats_panel(
     stats: Res<PlayerStats>,
     synergies: Res<crate::synergy::Synergies>,
     open: Res<super::CustomizeOpen>,
+    highlight: Res<crate::stats_panel_overlay::HighlightedStats>,
     mut commands: Commands,
     mut q: Query<(Entity, &StatPanelValue, &mut Text2d, &mut TextColor, Option<&mut StatPopState>)>,
 ) {
@@ -201,7 +202,12 @@ pub fn sync_stats_panel(
             ),
             _ => (sv.0.stat(&stats).effective(), sv.0.stat(&baseline).effective()),
         };
-        let want = if cur > base + 0.001 {
+        // Hover-highlight beats baseline tinting — when a mod card
+        // is hovered, all rows it touches paint gold so the player
+        // can scan the impact at a glance.
+        let want = if highlight.kinds.contains(&sv.0) {
+            crate::ui_kit::theme::ACCENT
+        } else if cur > base + 0.001 {
             crate::ui_kit::theme::BUFF_FG // green: buffed
         } else if cur < base - 0.001 {
             crate::ui_kit::theme::NERF_FG // red: nerfed

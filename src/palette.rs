@@ -154,7 +154,12 @@ pub const ENEMY_SNIPER_HEX:   &str = "#5d275d";
 // Dark amber for the sniper aim line and artillery splash reticle.
 // Less aggressive than bright red; reads as a warning without
 // shouting "blood imminent".
-pub const SNIPER_AIM_HEX:     &str = "#c89018";
+// Unified "incoming enemy fire" telegraph hex. Sniper aim
+// line + artillery splash reticle both pull from this constant
+// so the two telegraphs read as one visual language: "gold
+// means trouble". Keeping a single source of truth so a
+// future palette tune touches both at once.
+pub const ENEMY_INDICATOR_HEX: &str = "#c89018";
 /// Time-fused enemy landmine — same dark shell + red dot as the
 /// friendly mine so the player parses the silhouette as "stay clear".
 /// Kept in this section so future fuse-FX (pulsing dot, expanding
@@ -164,10 +169,10 @@ pub const ENEMY_MINE_DOT_HEX: &str = "#ff8a3c";
 /// red enemy family without blending into the warning-orange Rammer
 /// or the deep-purple Sniper.
 pub const ENEMY_ARTILLERY_HEX: &str = "#5a6a2c";
-/// Artillery landing reticle — bright crimson. The ring telegraphs
-/// where the lobbed shell will hit; warm hot colour reads as "danger
-/// zone" against the cool blue ocean.
-pub const ARTILLERY_RETICLE_HEX: &str = "#c89018";
+/// Artillery landing reticle. Pulls from the unified
+/// `ENEMY_INDICATOR_HEX` so the artillery splash circle reads as
+/// the same telegraph language as the sniper aim line.
+pub use self::ENEMY_INDICATOR_HEX as ARTILLERY_RETICLE_HEX;
 
 // ---------- Ship-class hull tints ----------
 //
@@ -578,8 +583,8 @@ impl PaletteMaterials {
             // what's underneath.
             artillery_reticle:     materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.40)),
             artillery_reticle_outline: materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.95)),
-            sniper_aim:            materials.add(translucent(hex(SNIPER_AIM_HEX), 0.40)),
-            sniper_aim_outline:    materials.add(translucent(darken(hex(SNIPER_AIM_HEX), 0.45), 0.55)),
+            sniper_aim:            materials.add(translucent(hex(ENEMY_INDICATOR_HEX), 0.40)),
+            sniper_aim_outline:    materials.add(translucent(darken(hex(ENEMY_INDICATOR_HEX), 0.45), 0.55)),
             enemy_mine_dot:        materials.add(hex(ENEMY_MINE_DOT_HEX)),
             // Bullet inner cores boosted into HDR so PlayCamera's
             // bloom pass haloes them. Outer rings stay clamped so

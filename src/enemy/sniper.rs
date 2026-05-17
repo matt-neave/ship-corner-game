@@ -155,6 +155,16 @@ pub fn sniper_fire(
         // a thicker dark outline child + inner colour main child so
         // it carries the same "danger telegraph" outline vocabulary
         // as the artillery reticle.
+        //
+        // Scale split: the WRAPPER carries length (Y-scale), the
+        // CHILDREN carry width (X-scale, Y=1). `sniper_aim_line_tick`
+        // then only writes the wrapper's translation, rotation and
+        // Y-scale — child widths stay constant. Earlier the tick
+        // overwrote the wrapper's full Vec3 scale, which compounded
+        // with the children's baseline length scale and stretched
+        // the line further each frame; that's the "indicator doesn't
+        // start from the sniper" symptom for snipers that lived long
+        // enough to fire multiple times.
         let mid = (pos + target_pos) * 0.5;
         let length = to.length().max(1.0);
         let angle = (-(to.x)).atan2(to.y);
@@ -165,7 +175,8 @@ pub fn sniper_fire(
         const OUTLINE_WIDTH: f32 = 2.4;
         let line = commands.spawn((
             Transform::from_xyz(mid.x, mid.y, 3.5)
-                .with_rotation(Quat::from_rotation_z(angle)),
+                .with_rotation(Quat::from_rotation_z(angle))
+                .with_scale(Vec3::new(1.0, length_scale, 1.0)),
             Visibility::default(),
             SniperAimLine {
                 sniper: entity,
@@ -179,7 +190,7 @@ pub fn sniper_fire(
                 Mesh2d(em.beam.clone()),
                 MeshMaterial2d(pm.sniper_aim_outline.clone()),
                 Transform::from_xyz(0.0, 0.0, -0.01)
-                    .with_scale(Vec3::new(OUTLINE_WIDTH, length_scale, 1.0)),
+                    .with_scale(Vec3::new(OUTLINE_WIDTH, 1.0, 1.0)),
                 RenderLayers::layer(PLAY_LAYER),
             ));
             // Inner beam (front).
@@ -187,7 +198,7 @@ pub fn sniper_fire(
                 Mesh2d(em.beam.clone()),
                 MeshMaterial2d(pm.sniper_aim.clone()),
                 Transform::from_xyz(0.0, 0.0, 0.01)
-                    .with_scale(Vec3::new(INNER_WIDTH, length_scale, 1.0)),
+                    .with_scale(Vec3::new(INNER_WIDTH, 1.0, 1.0)),
                 RenderLayers::layer(PLAY_LAYER),
             ));
         }).id();
@@ -279,6 +290,8 @@ pub fn sniper_aim_line_tick(
         tf.translation.x = mid.x;
         tf.translation.y = mid.y;
         tf.rotation = Quat::from_rotation_z(angle);
-        tf.scale = Vec3::new(1.4, length / crate::balance::BEAM_LENGTH, 1.0);
+        // Only update the wrapper's length (Y). Widths live on the
+        // child meshes' baseline scales and stay constant.
+        tf.scale = Vec3::new(1.0, length / crate::balance::BEAM_LENGTH, 1.0);
     }
 }

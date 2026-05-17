@@ -375,7 +375,7 @@ impl PlayerStats {
 /// Identifier for one displayable stat. Used by UI panels (the live
 /// stat readout, future upgrade cards) to enumerate stats and pull
 /// values without the UI hardcoding each one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum StatKind {
     Hp,
