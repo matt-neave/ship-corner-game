@@ -23,7 +23,9 @@ mod enemy;
 mod flamethrower;
 mod game_over;
 mod harpoon;
+mod hitstop;
 mod hull;
+mod low_hp_vignette;
 mod i18n;
 mod map;
 mod modes;
@@ -97,7 +99,7 @@ use map::{
     toggle_debug_ui_on_hash, update_claim_label, update_debug_button_tints,
 };
 use modes::{
-    apply_camera_follow, apply_crt_mode, apply_night_mode, apply_vsync_mode,
+    apply_camera_follow, apply_camera_punch, apply_crt_mode, apply_night_mode, apply_vsync_mode,
     apply_window_mode_setting,
     CameraFollow, CrtMode, GameMode, NightMode, VsyncMode,
 };
@@ -633,6 +635,8 @@ fn main() {
             win_screen::WinScreenPlugin,
             sfx::SfxPlugin,
             sfx::MusicPlugin,
+            hitstop::HitStopPlugin,
+            low_hp_vignette::LowHpVignettePlugin,
             CombatSimPlugin,
         ))
         // Workaround for a Bevy 0.16 + WebGL2/ANGLE bug: the default
@@ -683,6 +687,7 @@ fn main() {
         .insert_resource(BuffStacks::default())
         .insert_resource(MedicTimer::default())
         .insert_resource(modes::ScreenShake::default())
+        .insert_resource(modes::CameraPunch::default())
         .insert_resource(RunTimer::default())
         .init_state::<AppState>()
         .insert_resource(Palette::aap64_naval())
@@ -824,6 +829,7 @@ fn main() {
                 apply_vsync_mode,
                 apply_window_mode_setting,
                 apply_camera_follow,
+                apply_camera_punch,
             ),
         ))
         .add_systems(Update, (

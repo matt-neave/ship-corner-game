@@ -28,6 +28,10 @@ use super::setup::{
 use crate::rune::Rune;
 use super::CustomizeOpen;
 
+/// Real-time seconds the reroll-cost text spins for after a click.
+/// One full rotation eased out — fast start, soft landing.
+const SPIN_DURATION: f32 = 0.30;
+
 pub fn update_customize_ui(
     open: Res<CustomizeOpen>,
     scrap: Res<Scrap>,
@@ -487,21 +491,14 @@ pub fn update_sell_label(
     >,
 ) {
     if !open.open { return; }
-    let hovering = drag.spec_cursor.and_then(|cursor| {
-        sell_panel.iter().find_map(|(tf, hit)| {
-            let centre = tf.translation.truncate();
-            let half = hit.size * 0.5;
-            let inside = cursor.x >= centre.x - half.x
-                && cursor.x <= centre.x + half.x
-                && cursor.y >= centre.y - half.y
-                && cursor.y <= centre.y + half.y;
-            if inside { Some(()) } else { None }
-        })
-    }).is_some();
+    // Show the refund the moment the player picks up a ship-sourced
+    // sellable, regardless of cursor location — gives them the
+    // value at decision time, not just when they're already hovering
+    // the sell strip. Shop-sourced drags (refund == 0) stay silent.
+    let _ = sell_panel;
     let preview = drag
         .picked
         .as_ref()
-        .filter(|_| hovering)
         .map(|p| super::drag::sell_refund_for(&p.source, &cfg))
         .filter(|&r| r > 0);
 
@@ -560,13 +557,15 @@ pub fn handle_reroll_button(
     open: Res<CustomizeOpen>,
     mouse: Res<ButtonInput<bevy::input::mouse::MouseButton>>,
     drag: Res<DragState>,
+    real: Res<bevy::time::Time<bevy::time::Real>>,
+    mut spin_remaining: Local<f32>,
     shop: Option<Res<super::drag::CustomizeShop>>,
     mut scrap: ResMut<crate::Scrap>,
     mut commands: Commands,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    btn_q: Query<(&Transform, &super::setup::HitArea), With<ShopRerollBtn>>,
+    btn_q: Query<(&Transform, &super::setup::HitArea), (With<ShopRerollBtn>, Without<ShopRerollCostText>)>,
     bg_q: Query<&MeshMaterial2d<ColorMaterial>, With<ShopRerollBg>>,
-    mut cost_q: Query<&mut TextColor, With<ShopRerollCostText>>,
+    mut cost_q: Query<(&mut TextColor, &mut Transform), With<ShopRerollCostText>>,
 ) {
     if !open.open {
         return;
@@ -596,9 +595,25 @@ pub fn handle_reroll_button(
     } else {
         Color::srgb(0.85, 0.42, 0.42)
     };
-    for mut color in &mut cost_q {
+    // Decay the spin timer in real time so it resolves even when
+    // the world is hitstopped. Eased so the text decelerates as
+    // it returns to upright.
+    if *spin_remaining > 0.0 {
+        *spin_remaining = (*spin_remaining - real.delta_secs()).max(0.0);
+    }
+    let spin_t = if SPIN_DURATION > 0.0 && *spin_remaining > 0.0 {
+        (*spin_remaining / SPIN_DURATION).clamp(0.0, 1.0)
+    } else { 0.0 };
+    // Ease-out cubic — fast spin start, soft landing back at 0°.
+    let eased = 1.0 - (1.0 - spin_t).powi(3);
+    let angle = eased * std::f32::consts::TAU;
+    for (mut color, mut tf) in &mut cost_q {
         if color.0 != want_text {
             color.0 = want_text;
+        }
+        let want_rot = Quat::from_rotation_z(angle);
+        if tf.rotation != want_rot {
+            tf.rotation = want_rot;
         }
     }
 
@@ -630,6 +645,9 @@ pub fn handle_reroll_button(
                 .map(|s| s.reroll_preserving_locked())
                 .unwrap_or_else(roll_fresh_stock);
             commands.insert_resource(next_shop);
+            // Kick the spin so the cost text whips around the
+            // moment the player commits.
+            *spin_remaining = SPIN_DURATION;
             return;
         }
     }

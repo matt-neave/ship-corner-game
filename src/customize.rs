@@ -106,6 +106,10 @@ impl Plugin for CustomizePlugin {
                 Update,
                 (
                     sync_stats_panel,
+                    // Multiplies the baseline glyph scale by the pop
+                    // curve — must run AFTER sync_customize_text
+                    // writes the baseline.
+                    stats_panel::apply_stat_pop.after(sync_customize_text),
                     // After sync_customize_text so the debug-only Hidden
                     // write isn't overwritten by the generic Inherited.
                     sync_stat_debug_visibility.after(sync_customize_text),

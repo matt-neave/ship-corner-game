@@ -48,6 +48,16 @@ pub fn darken(c: Color, factor: f32) -> Color {
     Color::srgb(s.red * factor, s.green * factor, s.blue * factor)
 }
 
+/// Push every rgb channel above 1.0 (HDR) so the colour drives the
+/// PlayCamera's bloom post-process. `factor` > 1.0 boosts; the
+/// in-game sRGB tonemapper still renders these pixels as visually
+/// bright-but-clamped, but the bloom pass sees the true HDR
+/// energy and halos accordingly.
+pub fn boost_hdr(c: Color, factor: f32) -> Color {
+    let s: bevy::color::Srgba = c.into();
+    Color::srgb(s.red * factor, s.green * factor, s.blue * factor)
+}
+
 // ---------- Weapon-identity colors ----------
 //
 // Hex pairs per weapon:
@@ -356,6 +366,13 @@ pub struct PaletteMaterials {
     pub bullet_friendly_outer: Handle<ColorMaterial>,
     pub bullet_enemy_outer: Handle<ColorMaterial>,
     pub trail: Handle<ColorMaterial>,
+    /// Plain SDR white swapped onto a hit enemy's whole hull for a
+    /// few frames after damage (`HitFx::pulse`). Kept clamped at
+    /// 1.0 so the much larger surface area doesn't drown the
+    /// scene in bloom — the visual cue is the colour swap, not a
+    /// glow halo around every wounded enemy. Muzzle flashes use
+    /// the per-weapon bullet inner materials (HDR-boosted) for
+    /// their glow instead of a shared flash material.
     pub flash: Handle<ColorMaterial>,
     pub turret_sniper: Handle<ColorMaterial>,
     pub bullet_sniper: Handle<ColorMaterial>,
@@ -561,14 +578,20 @@ impl PaletteMaterials {
             // what's underneath.
             artillery_reticle:     materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.40)),
             artillery_reticle_outline: materials.add(translucent(hex(ARTILLERY_RETICLE_HEX), 0.95)),
-            sniper_aim:            materials.add(translucent(hex(SNIPER_AIM_HEX), 0.65)),
-            sniper_aim_outline:    materials.add(translucent(darken(hex(SNIPER_AIM_HEX), 0.45), 0.95)),
+            sniper_aim:            materials.add(translucent(hex(SNIPER_AIM_HEX), 0.40)),
+            sniper_aim_outline:    materials.add(translucent(darken(hex(SNIPER_AIM_HEX), 0.45), 0.55)),
             enemy_mine_dot:        materials.add(hex(ENEMY_MINE_DOT_HEX)),
-            bullet_friendly:       materials.add(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN)),
-            bullet_enemy:          materials.add(lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN)),
+            // Bullet inner cores boosted into HDR so PlayCamera's
+            // bloom pass haloes them. Outer rings stay clamped so
+            // the bloom focuses on the bright nucleus, not the
+            // dim halo, which keeps the visual hierarchy intact.
+            bullet_friendly:       materials.add(boost_hdr(lighten(palette.bullet_friendly, BULLET_INNER_LIGHTEN), 2.5)),
+            bullet_enemy:          materials.add(boost_hdr(lighten(palette.bullet_enemy, BULLET_INNER_LIGHTEN), 2.5)),
             bullet_friendly_outer: materials.add(palette.bullet_friendly),
             bullet_enemy_outer:    materials.add(palette.bullet_enemy),
             trail:                 materials.add(palette.trail),
+            // SDR white for the on-hit material swap — see the
+            // `flash` field doc.
             flash:                 materials.add(Color::WHITE),
             turret_sniper:         materials.add(sniper),
             bullet_sniper:         materials.add(hex(SNIPER_BRIGHT_HEX)),

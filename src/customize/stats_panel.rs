@@ -42,6 +42,23 @@ const ROW_WIDTH: f32 = 64.0;
 #[derive(Component, Clone, Copy)]
 pub struct StatPanelValue(pub StatKind);
 
+/// Per-row pop state. Set when the displayed text changes; decays
+/// in real time. `apply_stat_pop` reads this AFTER `sync_customize_text`
+/// runs and multiplies the baseline glyph scale by a curve so the
+/// value "pops" then settles.
+#[derive(Component, Default)]
+pub struct StatPopState {
+    pub remaining: f32,
+    /// Cached previous text — `sync_stats_panel` compares against
+    /// this to detect a meaningful change.
+    pub prev: String,
+}
+
+/// Real-time duration of the pop animation.
+const POP_DURATION: f32 = 0.22;
+/// Peak scale at the midpoint of the pop. 1.4 = +40%.
+const POP_PEAK_SCALE: f32 = 1.4;
+
 /// Marker on the row-wide hit area used to drive the hover tooltip
 /// (label + description). Read by `update_customize_tooltip`.
 #[derive(Component, Clone, Copy)]
@@ -136,14 +153,34 @@ pub fn sync_stats_panel(
     stats: Res<PlayerStats>,
     synergies: Res<crate::synergy::Synergies>,
     open: Res<super::CustomizeOpen>,
-    mut q: Query<(&StatPanelValue, &mut Text2d, &mut TextColor)>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &StatPanelValue, &mut Text2d, &mut TextColor, Option<&mut StatPopState>)>,
 ) {
     if !open.open { return; }
     let baseline = PlayerStats::default();
-    for (sv, mut text, mut color) in &mut q {
+    for (e, sv, mut text, mut color, pop) in &mut q {
         let s = sv.0.format_value(&stats, Some(&synergies));
         if text.0 != s {
-            text.0 = s;
+            text.0 = s.clone();
+        }
+        // Detect a value change via the cached prev string. First
+        // sight initialises prev without popping; subsequent changes
+        // trigger the animation.
+        match pop {
+            Some(mut p) => {
+                if p.prev != s {
+                    if !p.prev.is_empty() {
+                        p.remaining = POP_DURATION;
+                    }
+                    p.prev = s.clone();
+                }
+            }
+            None => {
+                commands.entity(e).insert(StatPopState {
+                    remaining: 0.0,
+                    prev: s.clone(),
+                });
+            }
         }
         // For most stats, the buffed/nerfed comparison runs on the
         // raw `stat.effective()`. The synergy-folded stats (WEAPON
@@ -172,6 +209,35 @@ pub fn sync_stats_panel(
             Color::srgb(0.70, 0.72, 0.78) // grey: baseline
         };
         if color.0 != want { color.0 = want; }
+    }
+}
+
+/// Run after `sync_customize_text` so it can MULTIPLY the baseline
+/// glyph scale by the pop curve. Sine curve from 1.0 → POP_PEAK
+/// → 1.0 over POP_DURATION real-time seconds. Decay uses real
+/// time so the animation resolves even if a hitstop freezes the
+/// world.
+pub fn apply_stat_pop(
+    real: Res<bevy::time::Time<bevy::time::Real>>,
+    open: Res<super::CustomizeOpen>,
+    mut q: Query<(&mut StatPopState, &mut Transform), With<StatPanelValue>>,
+) {
+    if !open.open { return; }
+    let dt = real.delta_secs();
+    for (mut pop, mut tf) in &mut q {
+        if pop.remaining > 0.0 {
+            pop.remaining = (pop.remaining - dt).max(0.0);
+        }
+        let t = if POP_DURATION > 0.0 && pop.remaining > 0.0 {
+            1.0 - (pop.remaining / POP_DURATION).clamp(0.0, 1.0)
+        } else { 0.0 };
+        // 0 at t=0, 1 at t=0.5, 0 at t=1 — bell curve.
+        let curve = (t * std::f32::consts::PI).sin();
+        let scale_mult = 1.0 + (POP_PEAK_SCALE - 1.0) * curve;
+        // Multiply in-place; sync_customize_text wrote the baseline
+        // earlier this frame, and we leave Z alone.
+        tf.scale.x *= scale_mult;
+        tf.scale.y *= scale_mult;
     }
 }
 

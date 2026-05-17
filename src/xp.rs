@@ -326,10 +326,34 @@ pub fn enter_level_up(
     stats: Res<PlayerStats>,
     thaleah: Res<crate::fonts::ThaleahFont>,
     mut sfx: crate::sfx::SfxPlayer,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    pm: Option<Res<crate::palette::PaletteMaterials>>,
+    em: Option<Res<crate::effects::EffectMeshes>>,
+    player: Query<&Transform, With<crate::components::LocalPlayer>>,
 ) {
     choices.buffs = pick_buffs(4);
     spawn_level_up_overlay(&mut commands, &choices, &xp, &stats, &thaleah);
     sfx.play(crate::sfx::Sfx::LevelUp);
+    // Golden particle burst around the player ship. Spawned in
+    // world space at the local-player transform so the splash
+    // reads as "the ship just levelled up". Uses a fresh
+    // gold material (the existing palette has no exact gold
+    // hit-particle slot to borrow from).
+    if let (Some(em), Some(_pm)) = (em.as_deref(), pm.as_deref()) {
+        if let Ok(player_tf) = player.single() {
+            let gold = materials.add(Color::srgb(1.0, 0.85, 0.30));
+            let mut rng = rand::thread_rng();
+            crate::effects::spawn_hit_particles(
+                &mut commands,
+                em,
+                &gold,
+                player_tf.translation.truncate(),
+                24,
+                40.0,
+                &mut rng,
+            );
+        }
+    }
 }
 
 /// Reveal the overlay only once Bevy UI has actually finished computing

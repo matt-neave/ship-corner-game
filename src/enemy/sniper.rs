@@ -161,8 +161,8 @@ pub fn sniper_fire(
         let length_scale = length / crate::balance::BEAM_LENGTH;
         // Outline is ~1.5× the inner-beam width. Same length so the
         // tip ends register cleanly without a halo past the line.
-        const INNER_WIDTH:   f32 = 2.2;
-        const OUTLINE_WIDTH: f32 = 3.6;
+        const INNER_WIDTH:   f32 = 1.4;
+        const OUTLINE_WIDTH: f32 = 2.4;
         let line = commands.spawn((
             Transform::from_xyz(mid.x, mid.y, 3.5)
                 .with_rotation(Quat::from_rotation_z(angle)),

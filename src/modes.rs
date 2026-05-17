@@ -744,3 +744,73 @@ const SHAKE_DECAY: f32 = 1.6;
 /// solid hit at ~0.7 trauma reads as a real punch (0.7² × 9 ≈ 4.4
 /// world units).
 const SHAKE_MAX_OFFSET: f32 = 9.0;
+
+// ---------- Camera zoom punch ----------
+
+/// One-shot camera-zoom punch (level-up, boss kill, etc.). Lerps
+/// the play camera's projection scale toward `1.0 - peak_zoom_in`
+/// at the midpoint of `duration`, easing back to 1.0 at the end.
+/// Sine curve so the punch starts soft, peaks hard, and recovers
+/// without a visible snap.
+#[derive(Resource, Default)]
+pub struct CameraPunch {
+    pub remaining: f32,
+    pub duration: f32,
+    /// Fraction to subtract from baseline scale at peak. 0.08 =
+    /// zoom in 8%. Larger reads as a bigger event.
+    pub peak_zoom_in: f32,
+}
+
+impl CameraPunch {
+    /// Start a punch. Later pushes during an active punch take the
+    /// stronger of (current, new) so a small kick can't shrink a
+    /// big one already in flight. Currently no callers — kept
+    /// because the infra (resource, apply system, registration)
+    /// is wired in and future juice triggers can call this without
+    /// re-plumbing.
+    #[allow(dead_code)]
+    pub fn punch(&mut self, duration: f32, peak_zoom_in: f32) {
+        if duration > self.remaining {
+            self.remaining = duration;
+            self.duration = duration;
+        }
+        if peak_zoom_in > self.peak_zoom_in {
+            self.peak_zoom_in = peak_zoom_in;
+        }
+    }
+}
+
+/// Apply [`CameraPunch`] to PlayCamera + HudCamera each frame. Decays
+/// in real time so the punch resolves even when virtual time is
+/// frozen by [`crate::hitstop::HitStopController`].
+pub fn apply_camera_punch(
+    real: Res<bevy::time::Time<bevy::time::Real>>,
+    mut punch: ResMut<CameraPunch>,
+    mut cams: Query<
+        &mut Projection,
+        Or<(
+            With<crate::palette::PlayCamera>,
+            With<crate::palette::HudCamera>,
+        )>,
+    >,
+) {
+    if punch.remaining > 0.0 {
+        punch.remaining = (punch.remaining - real.delta_secs()).max(0.0);
+    }
+    let t = if punch.duration > 0.0 && punch.remaining > 0.0 {
+        1.0 - (punch.remaining / punch.duration).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    // Sine curve: 0 at t=0, 1 at t=0.5, 0 at t=1.
+    let curve = (t * std::f32::consts::PI).sin();
+    let scale = (1.0 - punch.peak_zoom_in * curve).max(0.1);
+    for mut p in &mut cams {
+        if let Projection::Orthographic(o) = p.as_mut() {
+            o.scale = scale;
+        }
+    }
+    if punch.remaining <= 0.0 {
+        punch.peak_zoom_in = 0.0;
+    }
+}

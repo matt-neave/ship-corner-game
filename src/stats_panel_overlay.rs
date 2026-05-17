@@ -24,7 +24,14 @@ pub struct StatsPanelOverlayPlugin;
 
 impl Plugin for StatsPanelOverlayPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, update_stat_panel_tooltip);
+        app.init_resource::<HighlightedStats>()
+            // Clear the highlight set first thing each frame; the
+            // hover producers (level-up cards, shop mod cards)
+            // refill it later in Update. No-hover state = empty set.
+            .add_systems(First, |mut h: bevy::prelude::ResMut<HighlightedStats>| {
+                h.kinds.clear();
+            })
+            .add_systems(Update, (update_stat_panel_tooltip, apply_stat_panel_highlight));
     }
 }
 
@@ -32,6 +39,18 @@ impl Plugin for StatsPanelOverlayPlugin {
 /// `Interaction` + this kind to populate the description text.
 #[derive(Component, Clone, Copy)]
 pub struct StatPanelRow(pub StatKind);
+
+/// Shared cross-screen hover-highlight signal. Producers (level-up
+/// buff-card hover, shop mod-card hover) write the set of StatKinds
+/// the hovered offer would affect; consumers (this overlay's row
+/// tinting + the customize shop's Text2d panel tinting) read it to
+/// brighten matching rows for quick visual scanning.
+///
+/// Cleared every frame by the producers — no entry means no hover.
+#[derive(bevy::prelude::Resource, Default, Clone)]
+pub struct HighlightedStats {
+    pub kinds: bevy::utils::HashSet<StatKind>,
+}
 
 /// Marker on the tooltip text node. One per spawned panel.
 #[derive(Component)]
@@ -147,6 +166,24 @@ pub fn spawn_stats_panel(parent: &mut ChildSpawnerCommands, stats: &PlayerStats)
 /// the same markers regardless of which screen spawned them. When
 /// neither screen is up there are no entities and the system is a
 /// no-op.
+/// Tint matching rows in the shared bevy_ui stats panel based on
+/// `HighlightedStats`. Writes a translucent accent backdrop on
+/// rows whose `StatKind` is currently being targeted by a hovered
+/// mod/buff card; reverts to transparent when not.
+pub fn apply_stat_panel_highlight(
+    highlight: bevy::prelude::Res<HighlightedStats>,
+    mut rows: bevy::prelude::Query<(&StatPanelRow, &mut bevy::prelude::BackgroundColor)>,
+) {
+    // Soft golden wash — alpha low enough that the row text stays
+    // legible, high enough to pop against the surface background.
+    let on  = bevy::prelude::Color::srgba(1.0, 0.85, 0.30, 0.18);
+    let off = bevy::prelude::Color::NONE;
+    for (row, mut bg) in &mut rows {
+        let want = if highlight.kinds.contains(&row.0) { on } else { off };
+        if bg.0 != want { bg.0 = want; }
+    }
+}
+
 pub fn update_stat_panel_tooltip(
     rows: Query<(&Interaction, &StatPanelRow), Changed<Interaction>>,
     stats: Res<crate::stats::PlayerStats>,

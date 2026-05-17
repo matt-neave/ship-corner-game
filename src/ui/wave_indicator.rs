@@ -39,6 +39,11 @@ pub enum WaveIndicatorPart {
 const ACCENT: Color = Color::srgb(1.0, 0.85, 0.30);
 const BOSS_RED: Color = Color::srgb(0.95, 0.30, 0.40);
 const STROKE_COLOR: Color = Color::srgba(0.0, 0.0, 0.0, 0.95);
+/// Real-time duration the white flash fades back from on a wave
+/// advance. ~350 ms — short enough to feel like a snap, long
+/// enough to register at 60 fps.
+const WAVE_FLASH_DURATION: f32 = 0.35;
+const FLASH_COLOR: Color = Color::WHITE;
 
 /// 8-direction stroke at 2-px radius. Four diagonals + four cardinals
 /// for a uniform halo — thick enough to read clearly against the bright
@@ -98,11 +103,28 @@ pub fn update_wave_indicator(
     state: Res<State<crate::AppState>>,
     view: Res<ViewMode>,
     ctx: Res<CombatContext>,
+    real: Res<bevy::time::Time<bevy::time::Real>>,
+    mut last_wave_idx: Local<Option<u8>>,
+    mut flash_remaining: Local<f32>,
     windows: Query<&Window, With<PrimaryWindow>>,
     ui_scale: Res<bevy::ui::UiScale>,
     mut root_q: Query<(&mut Visibility, &mut Node), With<WaveIndicator>>,
     mut parts_q: Query<(&mut Text, &mut TextColor, &WaveIndicatorPart)>,
 ) {
+    // Detect wave-index advance and start a brief flash. Real time
+    // so it resolves even if a hitstop is freezing the world.
+    if last_wave_idx.is_none() {
+        *last_wave_idx = Some(ctx.wave_idx);
+    } else if *last_wave_idx != Some(ctx.wave_idx) {
+        *last_wave_idx = Some(ctx.wave_idx);
+        *flash_remaining = WAVE_FLASH_DURATION;
+    }
+    if *flash_remaining > 0.0 {
+        *flash_remaining = (*flash_remaining - real.delta_secs()).max(0.0);
+    }
+    let flash_t = if WAVE_FLASH_DURATION > 0.0 {
+        (*flash_remaining / WAVE_FLASH_DURATION).clamp(0.0, 1.0)
+    } else { 0.0 };
     let s = *state.get();
     let want_vis = if matches!(s, crate::AppState::Playing | crate::AppState::StageComplete)
         && *view == ViewMode::Combat
@@ -155,9 +177,24 @@ pub fn update_wave_indicator(
     for (mut t, mut c, part) in &mut parts_q {
         if t.0 != label { t.0 = label.clone(); }
         let want_color = match *part {
-            WaveIndicatorPart::Main => want_main_color,
+            WaveIndicatorPart::Main => lerp_color(want_main_color, FLASH_COLOR, flash_t),
             WaveIndicatorPart::Stroke => STROKE_COLOR,
         };
         if c.0 != want_color { c.0 = want_color; }
     }
+}
+
+/// Linear RGBA lerp used by the wave-flash blend. Lives here
+/// rather than in a shared utility module because the flash is
+/// the only consumer.
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    let a = a.to_srgba();
+    let b = b.to_srgba();
+    let t = t.clamp(0.0, 1.0);
+    Color::srgba(
+        a.red   + (b.red   - a.red)   * t,
+        a.green + (b.green - a.green) * t,
+        a.blue  + (b.blue  - a.blue)  * t,
+        a.alpha + (b.alpha - a.alpha) * t,
+    )
 }

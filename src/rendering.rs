@@ -469,12 +469,28 @@ pub fn setup_render(
             clear_color: ClearColorConfig::Custom(palette.ocean),
             order: -1,
             is_active: false, // map view is the default
+            // HDR drives the bloom post-process: bright muzzle /
+            // explosion / pickup materials with colour channels
+            // above 1.0 leak into the bloom buffer for a soft
+            // halo. The output target is still 8-bit sRGB — Bevy
+            // tonemaps the HDR intermediate back to it on the
+            // final blit.
+            hdr: true,
             ..default()
         },
         play_proj(),
         RenderLayers::layer(PLAY_LAYER),
         PlayCamera,
         Msaa::Off,
+        // Subtle bloom — small `intensity` so the chunky-pixel
+        // edges keep their crisp silhouette and only the very
+        // brightest pixels gain a halo.
+        bevy::core_pipeline::bloom::Bloom {
+            intensity: 0.10,
+            low_frequency_boost: 0.5,
+            ..bevy::core_pipeline::bloom::Bloom::NATURAL
+        },
+        bevy::core_pipeline::tonemapping::Tonemapping::TonyMcMapface,
     ));
 
     commands.spawn((

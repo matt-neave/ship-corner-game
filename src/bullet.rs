@@ -537,7 +537,12 @@ pub fn bullet_collisions(
                         let hit_pos = ftf.translation.truncate();
                         spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
                         // Only fire SFX if damage actually landed
-                        // (dodged / fully shield-absorbed shots stay silent).
+                        // (dodged / fully shield-absorbed shots stay
+                        // silent). Hitstop on damage was removed —
+                        // the brief world-freeze read as an FPS hitch
+                        // rather than a juice beat. Kept the
+                        // infrastructure (HitStopController) in case
+                        // a later trigger wants it back.
                         if dealt > 0 {
                             sfx.play(crate::sfx::Sfx::PlayerHit);
                         }
