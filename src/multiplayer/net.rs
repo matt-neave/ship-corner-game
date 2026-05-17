@@ -382,6 +382,8 @@ pub struct SerializedPlayerStats {
     pub shield_recharge_delay:     [f32; 3],
     pub rune_damage:               [f32; 3],
     pub turret_damage_pct:         [f32; 3],
+    pub dodge_pct:                 [f32; 3],
+    pub armour_pct:                [f32; 3],
 }
 
 /// Plain-data mirror of `crate::turret::SlotCfg`. `Option<Rune>` is

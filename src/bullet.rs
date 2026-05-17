@@ -50,13 +50,56 @@ use crate::weapon::WeaponType;
 /// returns the amount actually dealt (clamped to remaining HP, so overkill
 /// doesn't inflate stat tallies).
 ///
-/// Future damage modifiers (per-target debuffs, +N% crit, fire-vulnerable
+/// Per-target damage modifiers (per-target debuffs, +N% crit, fire-vulnerable
 /// armor, …) belong here so every source compounds them automatically.
+///
+/// **For PLAYER-side damage** (anything that reduces the local Friendly's
+/// HP), do NOT call this directly — go through [`apply_friendly_damage`]
+/// so dodge / armour / shield all run uniformly. `apply_damage` is the raw
+/// "subtract from any entity's HP" primitive.
 pub fn apply_damage(h: &mut Health, fx: &mut HitFx, amount: i32) -> i32 {
     let dealt = amount.min(h.0).max(0);
     h.0 = (h.0 - amount).max(0);
     fx.pulse();
     dealt
+}
+
+/// Central entry point for damaging a friendly ship. Bakes in the
+/// full defensive chain so every incoming damage source — enemy
+/// bullets, kamikaze detonations, hull-ram self damage, network-
+/// relayed peer damage — goes through the same dodge / armour /
+/// shield pipeline. Without this, defensive stats only apply at
+/// the call sites that remembered to call them, which is exactly
+/// the situation this helper exists to prevent.
+///
+/// Order: dodge roll (binary) → armour reduction (%) → shield
+/// absorption → HP subtraction. Dodge + armour run only when
+/// `is_local_player` is true; the host-side ghost of a peer
+/// (Friendly without LocalPlayer) takes full damage so the relay
+/// delta to that peer stays correct — the peer's own
+/// `apply_friendly_damage` call applies their stats on receipt.
+///
+/// Returns the actual HP loss so the caller can gate SFX / hit
+/// particles on "did this land?".
+pub fn apply_friendly_damage(
+    h: &mut Health,
+    fx: &mut HitFx,
+    shield: Option<&mut crate::stats::Shield>,
+    stats: &crate::stats::PlayerStats,
+    rng: &mut impl rand::Rng,
+    incoming: i32,
+    is_local_player: bool,
+) -> i32 {
+    if incoming <= 0 { return 0; }
+    let mitigated = if is_local_player {
+        stats.mitigate_incoming(rng, incoming)
+    } else {
+        incoming
+    };
+    let after_shield = shield
+        .map(|s| s.absorb(mitigated))
+        .unwrap_or(mitigated);
+    apply_damage(h, fx, after_shield)
 }
 
 /// Squared distance from point `p` to the line segment `[a, b]`.
@@ -325,7 +368,11 @@ pub fn bullet_collisions(
     >,
     mut pierces: Query<&mut Pierce>,
     enemies: Query<(Entity, &Transform, &Enemy, &mut Health, &mut HitFx, &mut Velocity), (With<Enemy>, Without<Friendly>)>,
-    mut friendly: Query<(Entity, &Transform, &mut Health, &mut HitFx, Option<&mut crate::stats::Shield>, &crate::components::Heading), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
+    mut friendly: Query<(
+        Entity, &Transform, &mut Health, &mut HitFx,
+        Option<&mut crate::stats::Shield>, &crate::components::Heading,
+        bevy::ecs::query::Has<crate::components::LocalPlayer>,
+    ), (With<Friendly>, Without<Enemy>, Without<Ally>)>,
     mut allies: Query<(Entity, &Transform, &Ally, &mut Health, &mut HitFx), (With<Ally>, Without<Enemy>, Without<Friendly>)>,
     mut harpoon_attached: EventWriter<crate::harpoon::HarpoonAttachedEvent>,
 ) {
@@ -402,7 +449,7 @@ pub fn bullet_collisions(
                         // path uses below. Bosses (Enemy + Ally) break
                         // free in 1s instead of the standard 4s.
                         let is_boss = allies.get(ee).is_ok();
-                        if let Ok((fe, _, _, _, _, _)) = friendly.single() {
+                        if let Ok((fe, _, _, _, _, _, _)) = friendly.single() {
                             crate::harpoon::attach_harpoon(
                                 &mut commands, &em, &pm, fe, ee, is_boss,
                             );
@@ -442,7 +489,7 @@ pub fn bullet_collisions(
                 // compounds with the player's mitigations.
                 let incoming = difficulty.scale_damage(b.damage);
                 let mut consumed = false;
-                for (_fe, ftf, mut h, mut fx, shield_opt, fheading) in &mut friendly {
+                for (_fe, ftf, mut h, mut fx, shield_opt, fheading, is_local) in &mut friendly {
                     let fp = ftf.translation.truncate();
                     // Swept segment vs ship hit radius (5).
                     if point_segment_dist_sq(fp, prev_bp, bp) < 5.0 * 5.0 {
@@ -451,20 +498,21 @@ pub fn bullet_collisions(
                         // slot's mount angle is closest to the impact
                         // direction and chip 1 off the incoming damage
                         // if that slot holds a Spike Plate. This is
-                        // pre-shield so an incoming hit absorbed by
-                        // the shield still gets the chip-down (matches
-                        // the "deflected by spikes before reaching the
-                        // shield" mental model).
+                        // pre-dodge/armour/shield so the spike chip
+                        // applies even to mitigated hits (matches the
+                        // "deflected by spikes before anything else"
+                        // mental model).
                         let dmg = spiked_plate_reduction(&cfg, fp, bp, fheading.0, incoming);
-                        let after_shield = shield_opt
-                            .map(|mut s| s.absorb(dmg))
-                            .unwrap_or(dmg);
-                        apply_damage(&mut h, &mut fx, after_shield);
+                        let dealt = apply_friendly_damage(
+                            &mut h, &mut fx,
+                            shield_opt.map(|s| s.into_inner()),
+                            &player_stats, &mut rng, dmg, is_local,
+                        );
                         let hit_pos = ftf.translation.truncate();
                         spawn_hit_particles(&mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng);
                         // Only fire SFX if damage actually landed
-                        // (shield-absorbed shots stay silent).
-                        if after_shield > 0 {
+                        // (dodged / fully shield-absorbed shots stay silent).
+                        if dealt > 0 {
                             sfx.play(crate::sfx::Sfx::PlayerHit);
                         }
                         consumed = true;
@@ -863,7 +911,7 @@ fn process_damage_event(
                 });
             let Some((target, target_pos, _)) = next else { break };
             excluded.push(target);
-            spawn_lightning_arc(commands, em, &pm.bullet_friendly_outer, ev.hit_pos, target_pos);
+            spawn_lightning_arc(commands, em, &pm.cascade, ev.hit_pos, target_pos);
             proc_fx.write(crate::proc_fx::ProcFxFired {
                 kind: crate::proc_fx::kind::CASCADE,
                 from: ev.hit_pos,
@@ -1007,7 +1055,7 @@ fn spawn_blast_ring(
 /// strung between sample points along the line `a → b`; interior
 /// points get a random perpendicular jitter so the bolt forks like
 /// real lightning instead of a flat ruler-line. Used by both Shock
-/// (cyan chain) and Cascade (gold on-kill snowball).
+/// (electric yellow chain) and Cascade (lime-green on-kill snowball).
 pub(crate) fn spawn_lightning_arc(
     commands: &mut Commands,
     em: &EffectMeshes,

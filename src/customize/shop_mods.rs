@@ -25,10 +25,11 @@ use super::CustomizeOpen;
 // keep the shop column anchored far enough left that the sell strip
 // fits cleanly under the ship.
 pub const MOD_CARD_W: f32 = 30.0;
-// Tall enough to fit 4 lines of card text (value + name + side
-// value + side name) on trade-off mods. Pure mods only use the
-// upper half but the consistent sizing keeps the row tidy.
-pub const MOD_CARD_H: f32 = 36.0;
+// Tightened so the mod row + cost label + reroll button all clear
+// the bottom of the canvas without scrolling. Pure mods only show
+// 2 lines anyway; trade-off cards still fit their 4 because each
+// span auto-flows tightly inside the smaller box.
+pub const MOD_CARD_H: f32 = 26.0;
 pub const MOD_CARD_GAP: f32 = 4.0;
 const Z_OUTLINE: f32 = 99.0;
 const Z_FILL: f32 = 99.5;

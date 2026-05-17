@@ -344,11 +344,18 @@ pub fn setup_customize_ui(
     let shop_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 40.0;
     spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y + 14.0), "SHOP", Color::srgb(1.0, 0.85, 0.30), 18.0, ShopHeaderTag);
     spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y), "TURRETS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
+    // Wider stride between the three turret picks so each card reads
+    // as its own option rather than a contiguous strip. Middle tile
+    // stays pinned at `shop_x`; the side picks fan out by
+    // `SHOP_TURRET_STRIDE` so the per-tile name label below has
+    // room without overlapping its neighbour.
+    const SHOP_TURRET_STRIDE: f32 = 36.0;
     for idx in 0..3usize {
-        let x = shop_x + (idx as f32 - 1.0) * (SHOP_TILE + tile_gap);
+        let x = shop_x + (idx as f32 - 1.0) * SHOP_TURRET_STRIDE;
         let y = shop_top_y - 16.0;
         spawn_shop_turret_tile(&mut commands, &mut meshes, &mut materials, &pixel_font, idx, Vec2::new(x, y));
     }
+    let _ = tile_gap;
     // Vertical layout — each row leaves room for its tile body PLUS
     // its name + cost label below before the next section header. The
     // turret-cost label hangs at -38 from `shop_top_y`, so RUNES starts
@@ -365,18 +372,20 @@ pub fn setup_customize_ui(
     }
 
     // Stat-modifier cards — 3 click-to-buy options below the runes.
-    // Header sits well above the card-row top so the taller mod
-    // cards (now 36 spec px tall to fit trade-off labels) don't
-    // creep up over the "MODS" text.
+    // Header pulled up tight against the new shorter card row so
+    // the whole shop column (TURRETS / RUNES / MODS / REROLL) fits
+    // inside the canvas without scrolling.
     spawn_text(&mut commands, &pixel_font, Vec2::new(shop_x, shop_top_y - 92.0), "MODS", Color::srgb(0.55, 0.60, 0.70), 12.0, ShopHeaderTag);
-    super::shop_mods::spawn_mod_cards(&mut commands, &pixel_font, shop_x, shop_top_y - 122.0);
+    // Mod card centre: header at -92, card top edge at -106, centre
+    // at -106 - MOD_CARD_H/2 = -106 - 13 = -119. Round to -118.
+    super::shop_mods::spawn_mod_cards(&mut commands, &pixel_font, shop_x, shop_top_y - 118.0);
 
     // Reroll button — sits at the bottom of the shop column. Costs
     // `SHOP_REROLL_COST` scrap (`drag::SHOP_REROLL_COST`); refills every
-    // sold slot with fresh offerings. Pushed further down so the
-    // taller mod cards (centre at -122, half-height 18 → bottom at
-    // -140) clear the reroll container.
-    let reroll_pos = Vec2::new(shop_x, shop_top_y - 156.0);
+    // sold slot with fresh offerings. Mod-card bottom at -118 - 13
+    // = -131; cost label at -131 - 6 = -137; reroll lifted to -148
+    // to clear it cleanly while staying inside the canvas.
+    let reroll_pos = Vec2::new(shop_x, shop_top_y - 148.0);
     spawn_container(
         &mut commands,
         &mut meshes,

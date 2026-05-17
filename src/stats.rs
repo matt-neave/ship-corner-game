@@ -129,7 +129,24 @@ pub struct PlayerStats {
     /// `sync_turret_config`. 0.0 = +0% (no change); +25.0 = ×1.25.
     /// All consumers go through `turret_damage_mult()` below.
     pub turret_damage_pct: Stat,
+    /// Chance to ignore an incoming damage instance entirely, in
+    /// percent. Capped at [`DEFENSIVE_CAP_PCT`] so the player can't
+    /// become invulnerable through stacking. Rolled per damage
+    /// instance on the local player; the host's ghost-of-peer skips
+    /// the roll so the relayed amount stays correct on the peer.
+    pub dodge_pct: Stat,
+    /// Flat percentage damage reduction applied after dodge (if not
+    /// dodged) and before shield absorption. Capped at
+    /// [`DEFENSIVE_CAP_PCT`] for the same invulnerability reason.
+    pub armour_pct: Stat,
 }
+
+/// Shared cap on both Dodge and Armour. Either stat solo at 100%
+/// would make the player invulnerable, and stacking both would let
+/// armour negate the un-dodged residual to zero. 60% is the
+/// negotiated max — high enough to be a meaningful build target,
+/// low enough that bursts still kill an unprepared player.
+pub const DEFENSIVE_CAP_PCT: f32 = 60.0;
 
 /// Baseline `move_speed` value. Pulled out as a named constant so
 /// `StatKind::format_delta` can express speed mod deltas as a
@@ -161,6 +178,8 @@ impl Default for PlayerStats {
             shield_recharge_delay: Stat::new(3.0),
             rune_damage: Stat::new(1.0),
             turret_damage_pct: Stat::new(0.0),
+            dodge_pct: Stat::new(0.0),
+            armour_pct: Stat::new(0.0),
         }
     }
 }
@@ -245,6 +264,32 @@ impl PlayerStats {
         let max = std::f32::consts::TAU; // 360°/s
         self.turret_turn_speed.effective().min(max)
     }
+
+    /// Effective dodge chance as a 0..1 probability, clamped to
+    /// [`DEFENSIVE_CAP_PCT`]. UI shows the same clamped value so
+    /// the player understands they've hit the cap.
+    pub fn dodge_chance(&self) -> f32 {
+        (self.dodge_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT)) / 100.0
+    }
+
+    /// Effective armour reduction as a 0..1 fraction of incoming
+    /// damage to remove, clamped to [`DEFENSIVE_CAP_PCT`].
+    pub fn armour_reduction(&self) -> f32 {
+        (self.armour_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT)) / 100.0
+    }
+
+    /// Apply the full defensive stack (dodge → armour) to one
+    /// incoming damage instance. Returns the post-mitigation damage
+    /// the rest of the pipeline (shield + HP) should consume.
+    /// Dodge is binary (full damage or zero); armour is a flat
+    /// percentage reduction applied on the un-dodged residual. Both
+    /// stats are independently capped at [`DEFENSIVE_CAP_PCT`].
+    pub fn mitigate_incoming(&self, rng: &mut impl Rng, damage: i32) -> i32 {
+        if damage <= 0 { return damage; }
+        if rng.r#gen::<f32>() < self.dodge_chance() { return 0; }
+        let reduced = (damage as f32 * (1.0 - self.armour_reduction())).round() as i32;
+        reduced.max(0)
+    }
 }
 
 /// Identifier for one displayable stat. Used by UI panels (the live
@@ -275,6 +320,12 @@ pub enum StatKind {
     /// composes multiplicatively with synergies in
     /// `sync_turret_config`. 0% = no change, +25% = 1.25x damage.
     TurretDamage,
+    /// Chance per incoming damage instance to take zero damage,
+    /// percent. Capped at [`DEFENSIVE_CAP_PCT`].
+    Dodge,
+    /// Flat percentage reduction on un-dodged damage, applied
+    /// before shield. Capped at [`DEFENSIVE_CAP_PCT`].
+    Armour,
 }
 
 impl StatKind {
@@ -283,10 +334,35 @@ impl StatKind {
     pub const ALL: &'static [StatKind] = &[
         StatKind::Hp,
         StatKind::Shield,
+        StatKind::Dodge,
+        StatKind::Armour,
         StatKind::MoveSpeed,
         StatKind::TurnSpeed,
         StatKind::TurretTurnSpeed,
         StatKind::TurretArcBonus,
+        StatKind::TurretDamage,
+        StatKind::Range,
+        StatKind::Crit,
+        StatKind::Luck,
+        StatKind::ProcStrength,
+        StatKind::Harvest,
+        StatKind::XpHarvest,
+        StatKind::RuneDamage,
+    ];
+    /// Subset of [`ALL`](Self::ALL) that the shop's mod-card and
+    /// level-up roll systems pick from. `TurretArcBonus` +
+    /// `TurretTurnSpeed` are deliberately omitted: they still show
+    /// in the stats panel (with the debug `+/-` buttons), still
+    /// apply at runtime, but the random roll pools shouldn't burn
+    /// a draw on them. Removing them from [`ALL`](Self::ALL) would
+    /// also hide them in the readout, which we don't want.
+    pub const ROLLABLE: &'static [StatKind] = &[
+        StatKind::Hp,
+        StatKind::Shield,
+        StatKind::Dodge,
+        StatKind::Armour,
+        StatKind::MoveSpeed,
+        StatKind::TurnSpeed,
         StatKind::TurretDamage,
         StatKind::Range,
         StatKind::Crit,
@@ -313,6 +389,8 @@ impl StatKind {
             StatKind::ShieldMax => "SHIELD",
             StatKind::RuneDamage => "RUNE EFFECT",
             StatKind::TurretDamage => "WEAPON DAMAGE",
+            StatKind::Dodge => "DODGE",
+            StatKind::Armour => "ARMOUR",
         }
     }
     /// Formatted current value (with units / sign where helpful).
@@ -408,6 +486,17 @@ impl StatKind {
                 let total_pct = base_mult * naval_mult * 100.0;
                 format!("{:.0}%", total_pct)
             }
+            // Both clamped at DEFENSIVE_CAP_PCT so the readout
+            // can't disagree with the actual mitigation that
+            // `mitigate_incoming` performs.
+            StatKind::Dodge => {
+                let v = stats.dodge_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT);
+                format!("{:.0}%", v)
+            }
+            StatKind::Armour => {
+                let v = stats.armour_pct.effective().clamp(0.0, DEFENSIVE_CAP_PCT);
+                format!("{:.0}%", v)
+            }
         }
     }
 }
@@ -434,6 +523,8 @@ impl StatKind {
             StatKind::ShieldMax => crate::i18n::tr("stat_shield_max_desc"),
             StatKind::RuneDamage => crate::i18n::tr("stat_rune_damage_desc"),
             StatKind::TurretDamage => crate::i18n::tr("stat_turret_damage_desc"),
+            StatKind::Dodge => crate::i18n::tr("stat_dodge_desc"),
+            StatKind::Armour => crate::i18n::tr("stat_armour_desc"),
         }
     }
     /// Step size for one click of the debug `+/-` button. Tuned per-stat
@@ -454,6 +545,8 @@ impl StatKind {
             StatKind::ShieldMax => 5.0,
             StatKind::RuneDamage => 0.1,
             StatKind::TurretDamage => 10.0, // +10 percentage points / step
+            StatKind::Dodge => 5.0,
+            StatKind::Armour => 5.0,
         }
     }
 
@@ -473,7 +566,9 @@ impl StatKind {
             | StatKind::ProcStrength
             | StatKind::Range
             | StatKind::Harvest
-            | StatKind::XpHarvest => format!("{:+.0}%", delta),
+            | StatKind::XpHarvest
+            | StatKind::Dodge
+            | StatKind::Armour => format!("{:+.0}%", delta),
             // Movement / turning are stored as raw world units but a
             // raw "+3" doesn't tell the player anything. Express as
             // a percentage of the baseline so "+3 SPEED" reads as
@@ -517,6 +612,8 @@ impl StatKind {
             StatKind::ShieldMax => &stats.shield_max,
             StatKind::RuneDamage => &stats.rune_damage,
             StatKind::TurretDamage => &stats.turret_damage_pct,
+            StatKind::Dodge => &stats.dodge_pct,
+            StatKind::Armour => &stats.armour_pct,
         }
     }
 
@@ -538,6 +635,8 @@ impl StatKind {
             StatKind::ShieldMax => &mut stats.shield_max,
             StatKind::RuneDamage => &mut stats.rune_damage,
             StatKind::TurretDamage => &mut stats.turret_damage_pct,
+            StatKind::Dodge => &mut stats.dodge_pct,
+            StatKind::Armour => &mut stats.armour_pct,
         }
     }
 }

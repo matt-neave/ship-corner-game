@@ -155,16 +155,26 @@ pub fn compute_synergies(cfg: Res<TurretConfig>, mut syn: ResMut<Synergies>) {
         // Multi-tag weapons (e.g. Harpoon = Pirate + Melee) count
         // toward EVERY one of their tags. Each tag pool tracks its
         // own tier independently.
+        let mut counted_autonomous = false;
         for &tag in slot.weapon.tags() {
             let i = match tag {
                 WeaponTag::Naval      => 0,
                 WeaponTag::Future     => 1,
-                WeaponTag::Autonomous => 2,
+                WeaponTag::Autonomous => { counted_autonomous = true; 2 }
                 WeaponTag::Pirate     => 3,
                 WeaponTag::Support    => 4,
                 WeaponTag::Melee      => 5,
             };
             counts[i] += 1;
+        }
+        // Hustle rune confers the Autonomous tag onto its slot so
+        // Hustle-on-anything contributes to the Autonomous synergy.
+        // Skip if the weapon was already Autonomous so a Hustle on
+        // a HeliPad doesn't double-count.
+        if !counted_autonomous
+            && slot.runes.iter().flatten().any(|r| matches!(r, crate::rune::Rune::Hustle))
+        {
+            counts[2] += 1;
         }
     }
     *syn = Synergies {

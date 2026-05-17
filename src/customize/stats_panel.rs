@@ -23,14 +23,17 @@ use crate::stats::{PlayerStats, StatKind};
 
 use super::setup::{CustomizeText, CustomizeTextSpec, HitArea};
 
-/// Native-pixel font sizes for the panel. Bigger than the rest of
-/// the customize chrome so the live stat readout is the thing the
-/// eye lands on and rows are comfortably readable.
-const LABEL_FONT: f32 = 16.0;
-const VALUE_FONT: f32 = 16.0;
-/// Spec-pixel vertical step between rows. Tall enough that the
-/// 16pt fonts above don't visually crowd one another.
-const ROW_STEP: f32 = 11.0;
+/// Native-pixel font sizes for the panel. One step smaller than
+/// the previous 16pt — the row count grew over time (Dodge,
+/// Armour, etc.) and the chunkier text was crowding the column.
+/// 13pt is the next native multiple of the Pixel Operator 8px
+/// design grid down from 16pt that still reads cleanly.
+const LABEL_FONT: f32 = 13.0;
+const VALUE_FONT: f32 = 13.0;
+/// Spec-pixel vertical step between rows. Trimmed alongside the
+/// font drop so the panel stays proportional — same ratio of row
+/// step to glyph height as before.
+const ROW_STEP: f32 = 9.0;
 /// Spec-pixel horizontal extent of one row from `label_x` to `value_x`.
 const ROW_WIDTH: f32 = 64.0;
 

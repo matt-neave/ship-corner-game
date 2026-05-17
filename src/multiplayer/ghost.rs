@@ -1219,11 +1219,15 @@ pub fn apply_received_player_damage(
                 raw_amount, max_hp,
             );
         }
-        let after_shield = shield_opt
-            .as_mut()
-            .map(|s| s.absorb(capped))
-            .unwrap_or(capped);
-        crate::bullet::apply_damage(&mut hp, &mut fx, after_shield);
+        // is_local_player = true unconditionally — `local`'s query
+        // filter (`With<LocalPlayer>`) is the gate that guarantees
+        // we're applying to the peer's own ship, never a ghost.
+        crate::bullet::apply_friendly_damage(
+            &mut hp, &mut fx,
+            shield_opt.as_deref_mut(),
+            &player_stats, &mut rng,
+            capped, true,
+        );
         crate::effects::spawn_hit_particles(
             &mut commands, &em, &pm.bullet_enemy, hit_pos, 5, 50.0, &mut rng,
         );

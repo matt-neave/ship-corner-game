@@ -1240,12 +1240,7 @@ pub fn handle_mp_menu_clicks(
     mouse: Res<ButtonInput<MouseButton>>,
     viewport: Res<MainMenuViewport>,
     view: Res<MainMenuView>,
-    mut next_state: ResMut<NextState<AppState>>,
-    mut commands: Commands,
     mut net_mode: ResMut<crate::multiplayer::NetMode>,
-    mut host_status: ResMut<crate::multiplayer::HostStatus>,
-    mut roster: ResMut<crate::multiplayer::LobbyRoster>,
-    local_name: Res<crate::multiplayer::LocalPlayerName>,
     buttons: Query<(&Transform, &HitArea, &MenuButton)>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) { return; }
@@ -1261,20 +1256,16 @@ pub fn handle_mp_menu_clicks(
 
         match btn.item {
             MenuButtonItem::Host => {
-                if let Err(e) = crate::multiplayer::start_hosting(
-                    &mut commands, &mut net_mode, &mut host_status,
-                    &mut roster, &local_name,
-                ) {
-                    bevy::log::error!("multiplayer: HOST failed: {e}");
-                } else {
-                    // HOST jumps the host straight into the lobby.
-                    // First joiner triggers a Welcome reply, then both
-                    // peers are in Lobby when handshake polling ticks.
-                    next_state.set(AppState::Lobby);
-                }
+                // Open the name-entry popover; actual socket bind +
+                // state transition happens after the user confirms
+                // their name with Enter (see `capture_name_keys`).
+                *net_mode = crate::multiplayer::NetMode::NamingForHost;
             }
             MenuButtonItem::Join => {
-                *net_mode = crate::multiplayer::NetMode::JoiningEntry;
+                // Same two-step flow as Host: name first, IP entry
+                // second. `capture_name_keys` advances to
+                // `JoiningEntry` on Enter.
+                *net_mode = crate::multiplayer::NetMode::NamingForJoin;
             }
             _ => continue,
         }

@@ -104,6 +104,15 @@ use net::{bind_socket, local_lan_ip, send_to, NetMsg, HOST_PORT};
 #[derive(Resource, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NetMode {
     Solo,
+    /// HOST clicked — popover open asking for the player's name
+    /// before any socket is bound. Enter advances to `Hosting`,
+    /// Escape returns to `Solo`. Lets the player skip the always-on
+    /// name field in Solo: no popover unless they actually want to
+    /// start an MP session.
+    NamingForHost,
+    /// JOIN clicked — same name-entry popover, but Enter advances
+    /// to `JoiningEntry` (IP input) instead of binding a host socket.
+    NamingForJoin,
     /// HOST clicked, UDP socket bound on `HOST_PORT`, waiting for the
     /// first client `Hello`. UI shows "HOSTING ON x.x.x.x — WAITING".
     Hosting,
@@ -743,9 +752,16 @@ fn tick_handshake(
     state: Res<State<AppState>>,
     local_name: Res<LocalPlayerName>,
 ) {
-    if matches!(*mode, NetMode::Solo | NetMode::JoiningEntry | NetMode::Connected) {
-        // Solo + JoiningEntry: nothing to poll yet. Connected: handled
-        // by the gameplay netloop.
+    if matches!(
+        *mode,
+        NetMode::Solo
+            | NetMode::NamingForHost
+            | NetMode::NamingForJoin
+            | NetMode::JoiningEntry
+            | NetMode::Connected,
+    ) {
+        // No socket bound yet for any of the naming / entry states;
+        // Solo is inert; Connected is handled by the gameplay netloop.
         return;
     }
     // Drain the socket so Hello / Welcome land while we're still in
@@ -905,21 +921,52 @@ fn capture_join_ip_keys(
 }
 
 /// Capture A-Z + digits + backspace into `LocalPlayerName` while the
-/// player is on the main menu (NetMode = Solo). Capped at 16 chars.
-/// Lets the player edit their display name in place — name is then
-/// sent in `Hello` / used in `Welcome` so it shows in everyone's
-/// roster. Quiet system that does nothing outside MainMenu / Solo
-/// so it can't interfere with gameplay typing in other states.
+/// player is editing their name in the HOST / JOIN popover. Capped
+/// at 16 chars. Enter confirms and advances to the next stage of
+/// the chosen flow; Escape returns to Solo. Quiet outside the two
+/// naming states so gameplay typing in other contexts can't
+/// scramble the name.
 pub fn capture_name_keys(
-    mode: Res<NetMode>,
+    mut commands: Commands,
     state: Res<State<AppState>>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut net_mode: ResMut<NetMode>,
+    mut host_status: ResMut<HostStatus>,
+    mut roster: ResMut<LobbyRoster>,
     mut name: ResMut<LocalPlayerName>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
-    // Only edit on the actual main menu in Solo mode — don't want
-    // gameplay key chatter to scramble the player's name.
     if *state.get() != AppState::MainMenu { return; }
-    if !matches!(*mode, NetMode::Solo) { return; }
+    let was = *net_mode;
+    let in_name_entry = matches!(was, NetMode::NamingForHost | NetMode::NamingForJoin);
+    if !in_name_entry { return; }
+
+    if keys.just_pressed(KeyCode::Escape) {
+        *net_mode = NetMode::Solo;
+        return;
+    }
+    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) {
+        // Empty name → bail (force the player to type something).
+        if name.0.trim().is_empty() { return; }
+        match was {
+            NetMode::NamingForHost => {
+                if let Err(e) = start_hosting(
+                    &mut commands, &mut net_mode, &mut host_status,
+                    &mut roster, &name,
+                ) {
+                    bevy::log::error!("multiplayer: HOST failed: {e}");
+                    *net_mode = NetMode::Solo;
+                } else {
+                    next_state.set(AppState::Lobby);
+                }
+            }
+            NetMode::NamingForJoin => {
+                *net_mode = NetMode::JoiningEntry;
+            }
+            _ => {}
+        }
+        return;
+    }
 
     if keys.just_pressed(KeyCode::Backspace) {
         // First backspace strips the default "PLAYER" so the user
@@ -4126,16 +4173,22 @@ mod tests {
                 "last_error should carry the kick reason");
     }
 
-    /// E2E #13 — `capture_name_keys` edits `LocalPlayerName` when on
-    /// MainMenu + Solo. Verifies the default-strip behaviour (first
-    /// keystroke wipes "PLAYER") + 16-char cap.
+    /// E2E #13 — `capture_name_keys` edits `LocalPlayerName` while
+    /// the player is in the HOST / JOIN name-entry popover. Verifies
+    /// the default-strip behaviour (first keystroke wipes "PLAYER")
+    /// + 16-char cap.
     #[test]
     fn capture_name_keys_strips_default_and_caps_length() {
         use bevy::ecs::system::RunSystemOnce;
 
         let mut world = bevy::ecs::world::World::new();
-        world.insert_resource(NetMode::Solo);
+        // The popover flow opens NamingForHost on click — same
+        // capture path runs for both NamingForHost and NamingForJoin.
+        world.insert_resource(NetMode::NamingForHost);
         world.insert_resource(LocalPlayerName::default());
+        world.insert_resource(HostStatus::default());
+        world.insert_resource(LobbyRoster::default());
+        world.insert_resource(NextState::<crate::AppState>::default());
         // Simulate AppState::MainMenu without the full state plugin
         // by inserting a minimal stub `State<AppState>` resource.
         world.insert_resource(State::new(crate::AppState::MainMenu));

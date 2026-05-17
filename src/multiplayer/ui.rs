@@ -21,6 +21,14 @@ use super::{tear_down_session, HostStatus, JoinIpEntry, NetMode, NetSession};
 #[derive(Component)]
 pub struct NetStatusOverlay;
 
+/// Full-screen semi-transparent dimmer rendered BEHIND the
+/// `NetStatusOverlay` card. Visible whenever the overlay is, so any
+/// MP pre-connection popover (name entry, host status, IP entry,
+/// connecting) reads as a true modal — the main menu beneath is
+/// greyed out and clearly inactive.
+#[derive(Component)]
+pub struct NetStatusBackdrop;
+
 /// Marker on the card's title text (e.g. "YOUR NAME" / "JOIN HOST").
 #[derive(Component)]
 pub struct NetStatusTitle;
@@ -80,6 +88,24 @@ const NET_LAG_CRIT_SEC: f32 = 1.00;
 pub fn setup_overlay(mut commands: Commands, font: Res<crate::fonts::PixelFont>) {
     use crate::ui_kit::theme;
 
+    // Full-screen dimmer behind the popover. Lower ZIndex than the
+    // overlay card so the card paints on top. `update_overlay` flips
+    // both nodes' visibility together so the modal feel is consistent.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(0.0),
+            left: Val::Px(0.0),
+            right: Val::Px(0.0),
+            bottom: Val::Px(0.0),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+        Visibility::Hidden,
+        ZIndex(499),
+        NetStatusBackdrop,
+    ));
+
     commands
         .spawn((
             Node {
@@ -94,8 +120,7 @@ pub fn setup_overlay(mut commands: Commands, font: Res<crate::fonts::PixelFont>)
             },
             Visibility::Hidden,
             // High ZIndex so the card sits above the menu chrome
-            // sprite (which is on its own render layer but the
-            // bevy_ui pass sees its ZIndex range too).
+            // sprite AND the backdrop dimmer.
             ZIndex(500),
             NetStatusOverlay,
         ))
@@ -194,7 +219,8 @@ pub fn update_overlay(
     join: Res<JoinIpEntry>,
     name: Res<super::LocalPlayerName>,
     state: Res<bevy::prelude::State<crate::AppState>>,
-    mut overlay_q: Query<&mut Visibility, With<NetStatusOverlay>>,
+    mut overlay_q: Query<&mut Visibility, (With<NetStatusOverlay>, Without<NetStatusBackdrop>)>,
+    mut backdrop_q: Query<&mut Visibility, (With<NetStatusBackdrop>, Without<NetStatusOverlay>)>,
     mut field_q: Query<&mut BorderColor, With<NetStatusInputField>>,
     mut title_q: Query<&mut Text, (With<NetStatusTitle>, Without<NetStatusInputText>, Without<NetStatusHelpText>, Without<NetStatusSubHelpText>)>,
     mut input_q: Query<&mut Text, (With<NetStatusInputText>, Without<NetStatusTitle>, Without<NetStatusHelpText>, Without<NetStatusSubHelpText>)>,
@@ -209,16 +235,28 @@ pub fn update_overlay(
     // border colour to the accent so the player can tell at a glance
     // which mode is active.
     let (visible, title, input, help, sub, focused) = match *mode {
-        NetMode::Solo if on_main_menu => (
-            true,
-            "YOUR NAME",
-            format!("{}_", name.0),
-            "TYPE TO EDIT".to_string(),
-            "DEFAULT IS OVERWRITTEN ON FIRST KEY".to_string(),
-            true,
-        ),
+        // Solo on the main menu: nothing — the name prompt only
+        // appears once the player commits to HOST or JOIN.
         NetMode::Solo | NetMode::Connected => (
             false, "", String::new(), String::new(), String::new(), false,
+        ),
+        // Same popover layout for the two naming states — title +
+        // sub-help vary so the player knows which flow they're in.
+        NetMode::NamingForHost => (
+            true,
+            "HOST: YOUR NAME",
+            format!("{}_", name.0),
+            "TYPE TO EDIT — ENTER TO HOST".to_string(),
+            "ESC TO CANCEL".to_string(),
+            true,
+        ),
+        NetMode::NamingForJoin => (
+            true,
+            "JOIN: YOUR NAME",
+            format!("{}_", name.0),
+            "TYPE TO EDIT — ENTER TO CONTINUE".to_string(),
+            "ESC TO CANCEL".to_string(),
+            true,
         ),
         NetMode::Hosting => (
             true,
@@ -253,8 +291,13 @@ pub fn update_overlay(
             false,
         ),
     };
+    let _ = on_main_menu;
 
     if let Ok(mut v) = overlay_q.single_mut() {
+        let want_vis = if visible { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want_vis { *v = want_vis; }
+    }
+    if let Ok(mut v) = backdrop_q.single_mut() {
         let want_vis = if visible { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want_vis { *v = want_vis; }
     }

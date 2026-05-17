@@ -254,6 +254,7 @@ pub const FROST_HEX: &str = "#80d8ff"; // cool sky blue (cyan-ish, distinct from
 pub const SHOCK_HEX: &str = "#ffe680"; // electric yellow (lightning arc)
 pub const BLEED_HEX: &str = "#b21030"; // deep crimson (DoT blood drips)
 pub const BLAST_HEX: &str = "#94b0c2"; // soft blue-grey shockwave (distinct from Fire's orange)
+pub const CASCADE_HEX: &str = "#5ad874"; // vibrant lime — Cascade's on-kill snowball arc
 
 // ---------- UI theme (HUD chrome) ----------
 pub const UI_TEXT:      Color = Color::srgb(0.92, 0.93, 0.96);
@@ -500,6 +501,11 @@ pub struct PaletteMaterials {
     /// the Blast AOE reads as a distinct "explosive" cue regardless
     /// of the host weapon's own bullet colour.
     pub blast: Handle<ColorMaterial>,
+    /// Cascade-rune on-kill chain arc color (vivid lime green). A
+    /// fixed hue so Cascade hops read distinctly from Shock's
+    /// electric yellow even when both runes are stacked on the
+    /// same weapon.
+    pub cascade: Handle<ColorMaterial>,
     /// Translucent green tint for owned territory. Currently unused —
     /// section fills are rendered via a pre-rasterized sprite in `map.rs`
     /// (single-quad rendering avoids alpha-blend triangle seams). Left in
@@ -654,6 +660,7 @@ impl PaletteMaterials {
             shock:                 materials.add(hex(SHOCK_HEX)),
             bleed:                 materials.add(hex(BLEED_HEX)),
             blast:                 materials.add(hex(BLAST_HEX)),
+            cascade:               materials.add(hex(CASCADE_HEX)),
             // Map tints: opaque pre-blended colors. Alpha-blended translucent
             // tints over a fan-triangulated mesh leave faint visible "rays"
             // along each fan-edge (the alpha math doesn't perfectly

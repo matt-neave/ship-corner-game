@@ -1768,10 +1768,12 @@ fn rune_dynamic_description(
         Rune::Hustle => {
             // Speed bonus applied to the deployed unit of Autonomous-
             // tagged turrets. Live value reflects the player's Rune
-            // Effect stat.
+            // Effect stat. Also confers the Autonomous tag to the
+            // socketed slot so non-Autonomous weapons count toward
+            // the Autonomous synergy ladder when Hustle is equipped.
             let per_stack = rune_dmg * 100.0;
             format!(
-                "Autonomous units get +{:.0}% move speed.",
+                "Autonomous units get +{:.0}% move speed. This weapon is now considered [AUTONOMOUS].",
                 per_stack,
             )
         }

@@ -182,6 +182,8 @@ fn short_stat_label(kind: StatKind) -> &'static str {
         StatKind::XpHarvest         => "XP GAIN",
         StatKind::RuneDamage        => "RUNE EFFECT",
         StatKind::TurretDamage      => "TURRET DAMAGE",
+        StatKind::Dodge             => "DODGE",
+        StatKind::Armour            => "ARMOUR",
     }
 }
 
@@ -267,7 +269,10 @@ pub fn roll_fresh_stock() -> CustomizeShop {
     let runes = runes_owned.into_iter().take(2).map(Some).collect();
     let mut mods = Vec::with_capacity(3);
     for _ in 0..3 {
-        let kind = *StatKind::ALL.choose(&mut rng).unwrap();
+        // Roll from `ROLLABLE` (not `ALL`) so the random pool skips
+        // `TurretArcBonus` / `TurretTurnSpeed` — those stay
+        // configurable in the panel but shouldn't burn a shop draw.
+        let kind = *StatKind::ROLLABLE.choose(&mut rng).unwrap();
         // Roughly one in three rolls is a trade-off card: bigger
         // buff on the primary stat plus a nerf on a DIFFERENT
         // stat. Forces the player to weigh each mod against their
@@ -282,7 +287,7 @@ pub fn roll_fresh_stock() -> CustomizeShop {
         if trade_off {
             // Pick a side-effect stat that isn't the primary.
             let side_kind = loop {
-                let k = *StatKind::ALL.choose(&mut rng).unwrap();
+                let k = *StatKind::ROLLABLE.choose(&mut rng).unwrap();
                 if k != kind { break k; }
             };
             let buff = kind.debug_step() * 1.5;

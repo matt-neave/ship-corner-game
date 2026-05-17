@@ -286,7 +286,7 @@ pub fn spawn_proc_fx_visuals(
             }
             k if k == crate::proc_fx::kind::CASCADE => {
                 crate::bullet::spawn_lightning_arc(
-                    &mut commands, &em, &pm.bullet_friendly_outer, ev.from, ev.to,
+                    &mut commands, &em, &pm.cascade, ev.from, ev.to,
                 );
             }
             k if k == crate::proc_fx::kind::BLAST_RING => {

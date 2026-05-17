@@ -4,8 +4,10 @@
 //! Architected as its own `AppState` variant so combat sim freezes for
 //! the duration (gameplay-affecting systems are already gated on
 //! `state == Playing`, so they idle automatically). The screen is a
-//! transparent overlay with centred accent text — no dark backdrop, so
-//! the player can still see their ship sitting in the cleared arena.
+//! full-coverage modal with a translucent dark wash so the payout
+//! readout (EARNED / INTEREST / TOTAL) is legible against the bright
+//! ocean below — same visual treatment as the multiplayer "YOU DIED"
+//! overlay so end-of-stage and team-wipe read in the same voice.
 //!
 //! Lifecycle:
 //! - `OnEnter(StageComplete)` spawns the UI + resets the timer.
@@ -179,6 +181,8 @@ pub fn enter_stage_complete(
     mut timer: ResMut<StageCompleteTimer>,
     mut scrap_earned: ResMut<ScrapEarnedThisStage>,
     mut scrap: ResMut<crate::Scrap>,
+    pixel: Option<Res<crate::fonts::PixelFont>>,
+    thaleah: Option<Res<crate::fonts::ThaleahFont>>,
 ) {
     timer.0 = 0.0;
     // Interest: +1 scrap per 5 held going INTO the stage, before this
@@ -195,18 +199,27 @@ pub fn enter_stage_complete(
     let total = earned_pre_interest + interest;
 
     // Two colours: the bright accent on the `+N` value (the thing
-    // the eye should land on), and a dim muted tone for the
-    // "EARNED" / "INTEREST" / "TOTAL" labels + the "SCRAP" unit
-    // suffix. Splitting label vs value colours is the readability
-    // win — the player used to see one homogeneous gold blob.
+    // the eye should land on), and a brighter-than-ON_SURFACE_DIM
+    // off-white for the "EARNED" / "INTEREST" / "TOTAL" labels +
+    // the "SCRAP" unit suffix. The old DIM tone disappeared into
+    // the translucent backdrop; lifting to a near-white keeps the
+    // hierarchy (label < value) while staying clearly legible.
     let value_color  = Color::srgb(1.0, 0.88, 0.40);
     let total_color  = theme::ACCENT;
-    let label_color  = theme::ON_SURFACE_DIM;
+    let label_color  = Color::srgb(0.92, 0.93, 0.96);
     let line_specs: [(&str, u32, Color); 3] = [
         ("EARNED",   earned_pre_interest, value_color),
         ("INTEREST", interest,            value_color),
         ("TOTAL",    total,               total_color),
     ];
+
+    // Drop shadow used on every text node so the chunky glyphs read
+    // cleanly against the bright ocean below. Mirrors the YOU DIED
+    // overlay's silhouette treatment.
+    let drop_shadow = TextShadow {
+        offset: Vec2::splat(2.0),
+        color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+    };
 
     commands
         .spawn((
@@ -219,9 +232,14 @@ pub fn enter_stage_complete(
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
+                row_gap: Val::Px(theme::GAP_LG),
                 ..default()
             },
-            BackgroundColor(Color::NONE),
+            // Translucent dark wash — same treatment as the
+            // multiplayer YOU DIED / WAITING FOR PARTNER overlay so
+            // the debrief reads as a real modal moment and the
+            // payout text isn't fighting the bright ocean below.
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
             ZIndex(180),
             Visibility::Inherited,
             StageCompleteUi,
@@ -243,14 +261,20 @@ pub fn enter_stage_complete(
                     // Use a non-breaking space for the gap so the
                     // glyph node doesn't collapse / get trimmed.
                     let s = if ch == ' ' { "\u{00A0}".to_string() } else { ch.to_string() };
-                    row.spawn((
-                        Text::new(s),
+                    let title_font = if let Some(t) = thaleah.as_deref() {
+                        crate::fonts::thaleah_text_font(t, 64.0)
+                    } else {
                         TextFont {
-                            font_size: 48.0,
+                            font_size: 64.0,
                             font_smoothing: FontSmoothing::None,
                             ..default()
-                        },
+                        }
+                    };
+                    row.spawn((
+                        Text::new(s),
+                        title_font,
                         TextColor(theme::ACCENT),
+                        drop_shadow,
                         Node {
                             position_type: PositionType::Relative,
                             ..default()
@@ -265,7 +289,6 @@ pub fn enter_stage_complete(
             // lands on the gain instantly. The flash-pulse on reveal
             // hits the value text only.
             root.spawn(Node {
-                margin: UiRect { top: Val::Px(28.0), ..default() },
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 row_gap: Val::Px(10.0),
@@ -274,9 +297,33 @@ pub fn enter_stage_complete(
             .with_children(|wrap| {
                 for (idx, (label, value, value_base)) in line_specs.iter().enumerate() {
                     let is_total = idx == 2;
-                    let label_font = if is_total { 22.0 } else { 18.0 };
-                    let value_font = if is_total { 56.0 } else { 40.0 };
-                    let unit_font  = if is_total { 22.0 } else { 18.0 };
+                    // One step up across the board — the previous
+                    // 18 / 22pt labels were swallowed by the
+                    // translucent backdrop even with the new drop
+                    // shadow. 24 / 28 keeps the small-vs-large
+                    // hierarchy but lifts the floor above the
+                    // "can't read at a glance" line.
+                    let label_font_size = if is_total { 28.0 } else { 24.0 };
+                    let value_font_size = if is_total { 56.0 } else { 40.0 };
+                    let unit_font_size  = if is_total { 28.0 } else { 24.0 };
+                    let label_text_font = if let Some(p) = pixel.as_deref() {
+                        crate::fonts::pixel_text_font(p, label_font_size)
+                    } else {
+                        TextFont { font_size: label_font_size, font_smoothing: FontSmoothing::None, ..default() }
+                    };
+                    let unit_text_font = if let Some(p) = pixel.as_deref() {
+                        crate::fonts::pixel_text_font(p, unit_font_size)
+                    } else {
+                        TextFont { font_size: unit_font_size, font_smoothing: FontSmoothing::None, ..default() }
+                    };
+                    // Value uses Thaleah for the loud number; the
+                    // chunkier face matches the title's shout and
+                    // gives the eye a single thing to land on per row.
+                    let value_text_font = if let Some(t) = thaleah.as_deref() {
+                        crate::fonts::thaleah_text_font(t, value_font_size)
+                    } else {
+                        TextFont { font_size: value_font_size, font_smoothing: FontSmoothing::None, ..default() }
+                    };
                     wrap.spawn((
                         Node {
                             flex_direction: FlexDirection::Row,
@@ -293,24 +340,18 @@ pub fn enter_stage_complete(
                         // bucket the value below is for.
                         row.spawn((
                             Text::new(label.to_string()),
-                            TextFont {
-                                font_size: label_font,
-                                font_smoothing: FontSmoothing::None,
-                                ..default()
-                            },
+                            label_text_font,
                             TextColor(label_color),
+                            drop_shadow,
                         ));
                         // VALUE — the bright `+N`. This is what the
                         // flash-pulse animates. Big font so the eye
                         // can read it at a glance.
                         row.spawn((
                             Text::new(format!("+{}", value)),
-                            TextFont {
-                                font_size: value_font,
-                                font_smoothing: FontSmoothing::None,
-                                ..default()
-                            },
+                            value_text_font,
                             TextColor(*value_base),
+                            drop_shadow,
                             StagePayoutValue {
                                 idx: idx as u8,
                                 base_color: *value_base,
@@ -322,12 +363,9 @@ pub fn enter_stage_complete(
                         // "label  +N  unit".
                         row.spawn((
                             Text::new("SCRAP"),
-                            TextFont {
-                                font_size: unit_font,
-                                font_smoothing: FontSmoothing::None,
-                                ..default()
-                            },
+                            unit_text_font,
                             TextColor(label_color),
+                            drop_shadow,
                         ));
                     });
                 }

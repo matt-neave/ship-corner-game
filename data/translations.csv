@@ -108,7 +108,7 @@ rune_vampire_desc,Heal a sliver of HP every few hits.
 rune_ward_desc,Killing blows refill some shield.
 rune_bleed_desc,Anti-tank DoT. Ticks a percent of the target's max HP for 4 seconds.
 rune_blast_desc,Attacks explode on impact, splashing damage to nearby enemies. This weapon is now considered [AOE].
-rune_hustle_desc,Autonomous units get +100% move speed.
+rune_hustle_desc,Autonomous units get +100% move speed. This weapon is now considered [AUTONOMOUS].
 rune_pierce_desc,Bullets pierce through enemies with falling damage. Stacks add extra pierces; Rune Effect raises the floor.
 rune_greed_desc,Every Nth kill on this weapon drops +1 scrap. Stacks lower N; Rune Effect lowers it further.
 rune_executioner_desc,Bonus damage to enemies below 30% HP.
@@ -145,6 +145,8 @@ stat_shield_rate_desc,How fast the shield refills after a delay.
 stat_shield_delay_desc,Pause after a hit before the shield starts refilling.
 stat_rune_damage_desc,Scales rune effects. Boosts Fire damage, adds chain bolts to Shock, widens AOE radius.
 stat_turret_damage_desc,Total damage multiplier on every weapon. 100% is baseline; mods and Naval synergy stack on top.
+stat_dodge_desc,Chance to negate an incoming hit entirely. Capped at 60% so the ship is never invulnerable.
+stat_armour_desc,Flat reduction on un-dodged damage before the shield absorbs. Capped at 60% so the ship is never invulnerable.
 map_popup_build,BUILD
 map_building_weaponry,WEAPONRY
 map_building_weaponry_desc,Customize turret loadout in this section.

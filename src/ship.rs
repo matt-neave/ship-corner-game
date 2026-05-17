@@ -14,7 +14,7 @@ use crate::balance::{
 };
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, LocalPlayer, Velocity};
 use crate::effects::{EffectMeshes, HitFx};
-use crate::enemy::Enemy;
+use crate::enemy::{Enemy, EnemyVariant};
 use crate::modes::play_area_screen_rect;
 use crate::palette::{Palette, PaletteMaterials};
 use crate::rune::{FireExtent, OnFrost};
@@ -617,6 +617,7 @@ pub fn friendly_ram_damage(
             &mut HitFx,
             Option<&mut crate::stats::Shield>,
             Option<&mut RamSelfGrace>,
+            bevy::ecs::query::Has<crate::components::LocalPlayer>,
         ),
         (With<Friendly>, Without<Enemy>),
     >,
@@ -631,7 +632,7 @@ pub fn friendly_ram_damage(
     // — that's why "bullets work but rams don't" on host. Iterate
     // every friendly so both ships take their own contact hits;
     // `relay_ghost_damage` forwards the ghost's damage to the peer.
-    for (fe, f_tf, f_heading, mut fh, mut ffx, f_shield, f_self_grace) in &mut friendly {
+    for (fe, f_tf, f_heading, mut fh, mut ffx, f_shield, f_self_grace, f_is_local) in &mut friendly {
         let f_pos = f_tf.translation.truncate();
         let hull_yaw = f_heading.0;
 
@@ -648,6 +649,17 @@ pub fn friendly_ram_damage(
         let mut shield_opt = f_shield;
 
     for (e, etf, en, mut h, mut fx, grace) in &mut enemies {
+        // Kamikaze variants (Bomber, Rammer) damage the player
+        // exclusively through `bomber_detonate` — their whole point
+        // is the contact explosion at `BOMBER_DETONATE_DIST`. Letting
+        // the ram path fire too would chunk them with 5 ram damage
+        // (RAM_DAMAGE_TO_ENEMY) on first touch, killing their tiny
+        // 2-HP hull BEFORE they ever close to detonate range, so the
+        // player only takes RAM_DAMAGE_TO_SELF = 5 instead of the
+        // intended 15-damage detonation.
+        if matches!(en.variant, EnemyVariant::Bomber | EnemyVariant::Rammer) {
+            continue;
+        }
         // Tick down any active enemy grace and skip damage while it's hot.
         if let Some(mut g) = grace {
             g.remaining -= dt;
@@ -685,11 +697,13 @@ pub fn friendly_ram_damage(
             // gated by the global self-grace so simultaneous contacts
             // don't stack in one frame.
             if self_grace_remaining <= 0.0 {
-                let after_shield = shield_opt
-                    .as_mut()
-                    .map(|s| s.absorb(RAM_DAMAGE_TO_SELF))
-                    .unwrap_or(RAM_DAMAGE_TO_SELF);
-                crate::bullet::apply_damage(&mut fh, &mut ffx, after_shield);
+                let mut rng = rand::thread_rng();
+                crate::bullet::apply_friendly_damage(
+                    &mut fh, &mut ffx,
+                    shield_opt.as_deref_mut(),
+                    &stats, &mut rng,
+                    RAM_DAMAGE_TO_SELF, f_is_local,
+                );
                 commands.entity(fe).insert(RamSelfGrace { remaining: RAM_GRACE });
                 self_grace_remaining = RAM_GRACE;
             }

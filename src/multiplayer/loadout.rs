@@ -188,6 +188,8 @@ fn serialize_player_stats(s: &PlayerStats) -> SerializedPlayerStats {
         shield_recharge_delay:    ser_stat(&s.shield_recharge_delay),
         rune_damage:              ser_stat(&s.rune_damage),
         turret_damage_pct:        ser_stat(&s.turret_damage_pct),
+        dodge_pct:                ser_stat(&s.dodge_pct),
+        armour_pct:               ser_stat(&s.armour_pct),
     }
 }
 
@@ -209,6 +211,8 @@ fn deserialize_player_stats(s: &SerializedPlayerStats) -> PlayerStats {
         shield_recharge_delay:    de_stat(s.shield_recharge_delay),
         rune_damage:              de_stat(s.rune_damage),
         turret_damage_pct:        de_stat(s.turret_damage_pct),
+        dodge_pct:                de_stat(s.dodge_pct),
+        armour_pct:               de_stat(s.armour_pct),
     }
 }
 

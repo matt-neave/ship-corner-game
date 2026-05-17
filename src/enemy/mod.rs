@@ -1242,15 +1242,22 @@ pub fn enemy_fire(
 
 /// Bombers + Rammers don't shoot — they self-destruct on contact
 /// with the closest of the friendly ship or an ally. Pulses the hit
-/// hull and spawns a particle burst. Bomber hits hard (5 dmg) at
+/// hull and spawns a particle burst. Bomber hits hard (15 dmg) at
 /// `BOMBER_DETONATE_DIST`; Rammer is a smaller threat (3 dmg, 60%
 /// of the radius) but its real punch is the time-fused landmine
 /// dropped by `enemy_death_check` after this drives HP to 0.
+///
+/// `friendly_ram_damage` deliberately skips these two variants so
+/// the kamikaze hull doesn't get chunked for 5 ram damage before
+/// it can close to detonate range — without that skip the bomber
+/// dies on first touch and the player only takes RAM_DAMAGE_TO_SELF
+/// instead of the intended detonation damage.
 pub fn bomber_detonate(
     mut commands: Commands,
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     difficulty: Res<crate::Difficulty>,
+    stats: Res<crate::stats::PlayerStats>,
     mut sfx: crate::sfx::SfxPlayer,
     // `Without<Ally>` keeps boss ships (which carry both Enemy and
     // Ally) out of the kamikaze branch — they're not actually
@@ -1259,7 +1266,11 @@ pub fn bomber_detonate(
     // self-destructors.
     mut bombers: Query<(Entity, &Transform, &Enemy, &mut Health), Without<Ally>>,
     mut friendly: Query<
-        (&Transform, &mut Health, &mut HitFx),
+        (
+            &Transform, &mut Health, &mut HitFx,
+            Option<&mut crate::stats::Shield>,
+            bevy::ecs::query::Has<crate::components::LocalPlayer>,
+        ),
         (With<Friendly>, Without<Ally>, Without<Enemy>),
     >,
     mut allies: Query<
@@ -1290,10 +1301,14 @@ pub fn bomber_detonate(
         // the blast radius (ghost included — `relay_ghost_damage`
         // forwards its share to the peer).
         let mut detonated = false;
-        for (ftf, mut h, mut fx) in &mut friendly {
+        for (ftf, mut h, mut fx, shield_opt, is_local) in &mut friendly {
             if bp.distance(ftf.translation.truncate()) < radius {
-                fx.pulse();
-                h.0 = (h.0 - contact_damage).max(0);
+                crate::bullet::apply_friendly_damage(
+                    &mut h, &mut fx,
+                    shield_opt.map(|s| s.into_inner()),
+                    &stats, &mut rng,
+                    contact_damage, is_local,
+                );
                 detonated = true;
             }
         }
