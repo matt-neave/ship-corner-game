@@ -567,9 +567,17 @@ pub fn apply_bloom_mode(
     for (e, mut cam) in &mut cams {
         cam.hdr = bloom.active;
         if bloom.active {
+            // With `Tonemapping::None` the HDR intermediate isn't
+            // compressed before being added to the bloom buffer, so
+            // many boosted bullets/muzzles pumping into the wide
+            // blur kernels would wash the entire scene. Keep the
+            // glow tight: small `intensity` paints a halo around
+            // the actual bright source, and `low_frequency_boost: 0`
+            // disables the wide-kernel bleed that was the main
+            // cause of "everything looks bright" with bloom on.
             commands.entity(e).insert(bevy::core_pipeline::bloom::Bloom {
-                intensity: 0.25,
-                low_frequency_boost: 0.7,
+                intensity: 0.12,
+                low_frequency_boost: 0.0,
                 ..bevy::core_pipeline::bloom::Bloom::NATURAL
             });
         } else {

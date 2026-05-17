@@ -61,9 +61,16 @@ pub fn enemy_landmine_tick(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     difficulty: Res<crate::Difficulty>,
+    stats: Res<crate::stats::PlayerStats>,
     mut mines: Query<(Entity, &Transform, &mut EnemyLandmine)>,
     mut friendly: Query<
-        (&Transform, &mut Health, &mut HitFx),
+        (
+            &Transform,
+            &mut Health,
+            &mut HitFx,
+            Option<&mut crate::stats::Shield>,
+            Has<crate::components::LocalPlayer>,
+        ),
         (With<Friendly>, Without<Ally>, Without<EnemyLandmine>),
     >,
     mut allies: Query<
@@ -86,7 +93,7 @@ pub fn enemy_landmine_tick(
         // fuse hasn't expired yet.
         let mut detonate = mine.fuse <= 0.0;
         if !detonate {
-            if let Ok((ftf, _, _)) = friendly.single_mut() {
+            if let Ok((ftf, _, _, _, _)) = friendly.single_mut() {
                 if ftf.translation.truncate().distance_squared(center) < r2 {
                     detonate = true;
                 }
@@ -106,10 +113,18 @@ pub fn enemy_landmine_tick(
         // Difficulty scales the AOE damage at the moment of
         // application, identically for friendly + each ally hit.
         let damage = difficulty.scale_damage(mine.damage);
-        if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
+        if let Ok((ftf, mut h, mut fx, shield_opt, is_local)) = friendly.single_mut() {
             if ftf.translation.truncate().distance_squared(center) < r2 {
                 fx.pulse();
-                h.0 = (h.0 - damage).max(0);
+                // Route through `apply_friendly_damage` so the mine's
+                // AOE goes through dodge → armour → shield → HP like
+                // every other player-damage source. Direct
+                // `h.0 -= damage` bypassed all three.
+                crate::bullet::apply_friendly_damage(
+                    &mut h, &mut fx,
+                    shield_opt.map(|s| s.into_inner()),
+                    &stats, &mut rng, damage, is_local,
+                );
             }
         }
         for (atf, ally, mut h, mut fx) in &mut allies {

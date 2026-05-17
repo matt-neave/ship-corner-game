@@ -928,12 +928,12 @@ fn process_damage_event(
         // above max, so the overflow only decays by absorbing hits.
         let ward_stacks = ev.runes.iter().filter(|&&r| r == Rune::Ward).count();
         if ward_stacks > 0 {
-            // Base 3 shield per Ward stack per kill, scaled by
+            // Base 1 shield per Ward stack per kill, scaled by
             // rune-damage strength. With default `rune_damage_mult`
-            // (1.0), a single Ward gives 3 shield/kill; a +50%
-            // RuneDamage build pushes that to 4.5. Stacks add
-            // linearly so three Wards yield 9–13.5 per kill.
-            const WARD_BASE_PER_STACK: f32 = 3.0;
+            // (1.0), a single Ward gives 1 shield/kill; a +50%
+            // RuneDamage build pushes that to 1.5. Stacks add
+            // linearly so three Wards yield 3–4.5 per kill.
+            const WARD_BASE_PER_STACK: f32 = 1.0;
             let gain = ward_stacks as f32
                 * WARD_BASE_PER_STACK
                 * player_stats.rune_damage_mult();

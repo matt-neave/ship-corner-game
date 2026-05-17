@@ -385,6 +385,7 @@ pub struct SerializedPlayerStats {
     pub cooldown_pct:              [f32; 3],
     pub dodge_pct:                 [f32; 3],
     pub armour_pct:                [f32; 3],
+    pub chest_chance_pct:          [f32; 3],
 }
 
 /// Plain-data mirror of `crate::turret::SlotCfg`. `Option<Rune>` is

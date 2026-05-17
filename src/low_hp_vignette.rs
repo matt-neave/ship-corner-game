@@ -141,6 +141,7 @@ fn update_vignette(
     time: Res<Time<bevy::time::Real>>,
     state: Res<State<crate::AppState>>,
     view: Res<ViewMode>,
+    night: Res<crate::modes::NightMode>,
     stats: Res<crate::stats::PlayerStats>,
     windows: Query<&Window, With<PrimaryWindow>>,
     player: Query<&Health, (With<Friendly>, With<LocalPlayer>)>,
@@ -165,7 +166,12 @@ fn update_vignette(
     // pulses up — same shape as a heart-monitor blip.
     let phase = time.elapsed_secs() * HEARTBEAT_HZ * std::f32::consts::TAU;
     let pulse = 0.7 + 0.3 * (phase.sin() * 0.5 + 0.5);
-    let alpha = if active { PEAK_ALPHA * tension * pulse } else { 0.0 };
+    // Night mode reads the vignette much louder (saturated red on a
+    // near-black ocean), so soften both the colour and the peak
+    // alpha to keep the warning legible without burning out the
+    // play area.
+    let peak_alpha = if night.active { PEAK_ALPHA * 0.55 } else { PEAK_ALPHA };
+    let alpha = if active { peak_alpha * tension * pulse } else { 0.0 };
 
     // Resize + reposition each frame to match the on-screen play area.
     let (left, top, play_w, play_h) = windows
@@ -182,7 +188,14 @@ fn update_vignette(
         let want_vis = if active { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want_vis { *vis = want_vis; }
         if !active { continue; }
-        let want_color = Color::srgba(1.0, 0.18, 0.18, alpha);
+        // Darker, less-saturated red in night mode so the dither
+        // ring reads as "low HP" rather than "everything is red".
+        // Day mode keeps the punchier bright tint.
+        let want_color = if night.active {
+            Color::srgba(0.55, 0.10, 0.12, alpha)
+        } else {
+            Color::srgba(1.0, 0.18, 0.18, alpha)
+        };
         if sprite.color != want_color { sprite.color = want_color; }
         let want_size = Vec2::new(play_w, play_h);
         if sprite.custom_size != Some(want_size) { sprite.custom_size = Some(want_size); }

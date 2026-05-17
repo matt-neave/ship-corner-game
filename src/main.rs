@@ -14,6 +14,7 @@ mod boss_intro;
 mod boss_reward;
 mod bullet;
 mod cannon;
+mod chest;
 mod components;
 mod crows_nest;
 mod customize;
@@ -132,7 +133,7 @@ use ui::{
     setup_wave_indicator, setup_map_hint, sync_ally_hp_bars, sync_hud_dev_buttons_visibility,
     ui_button_system, update_ally_hp_values,
     update_fps_text, update_hp_bar_pixel_scale,
-    update_map_button, update_shield_bar,
+    update_map_button,
     update_score_text, update_vsync_label, update_wave_indicator, update_map_hint,
     update_wave_ui, DamageStats,
 };
@@ -183,6 +184,12 @@ pub enum AppState {
     /// with host-only menus and frees the client from running their
     /// own divergent menu logic.
     WaitingForHost,
+    /// Chest-opening modal — entered when `PendingChests` is non-empty
+    /// after a stage clears. Shows one chest's rolled mod at a time
+    /// with TAKE / SELL buttons. Loops back to itself until the
+    /// queue drains, then routes to BossReward / LevelUp / Customize
+    /// via the same chain `StageComplete` uses.
+    ChestOpen,
 }
 
 impl AppState {
@@ -207,6 +214,7 @@ impl AppState {
             AppState::Win            => 11,
             AppState::Lobby          => 12,
             AppState::WaitingForHost => 13,
+            AppState::ChestOpen      => 14,
         }
     }
     /// Inverse of `to_u8`. `None` for unknown discriminants so older
@@ -227,6 +235,7 @@ impl AppState {
             11 => AppState::Win,
             12 => AppState::Lobby,
             13 => AppState::WaitingForHost,
+            14 => AppState::ChestOpen,
              _ => return None,
         })
     }
@@ -623,6 +632,7 @@ fn main() {
             customize::CustomizePlugin,
             hull::HullSelectPlugin,
         ))
+        .add_plugins(chest::ChestPlugin)
         // Multiplayer plugin is native-only — UDP sockets don't exist
         // in browsers, and `bincode` / `local-ip-address` are cfg-
         // gated out of the WASM build's deps in Cargo.toml.
@@ -852,7 +862,6 @@ fn main() {
             // MainMenu sets ViewMode::Combat to wake up the menu fleet
             // camera. Gating the whole block keeps the menu clean.
             update_wave_ui,
-            update_shield_bar,
             update_hp_bar_pixel_scale,
             sync_ally_hp_bars,
             update_ally_hp_values,

@@ -165,9 +165,18 @@ pub fn sniper_fire(
         // the line further each frame; that's the "indicator doesn't
         // start from the sniper" symptom for snipers that lived long
         // enough to fire multiple times.
-        let mid = (pos + target_pos) * 0.5;
-        let length = to.length().max(1.0);
-        let angle = (-(to.x)).atan2(to.y);
+        // Render the aim line long enough that it always reaches
+        // past every screen edge from any sniper position, in any
+        // fire direction. `ARENA_W + ARENA_H` is comfortably larger
+        // than the playable diagonal regardless of `wide_play`, so
+        // the visible portion always reads as "this line crosses
+        // your whole screen — get out of it." Mid sits at
+        // `sniper + dir * length/2` so the sniper is the line's
+        // near end and the line extends forward only.
+        let dir = to.normalize_or(Vec2::Y);
+        let length = (crate::balance::ARENA_W + crate::balance::ARENA_H).max(1.0);
+        let mid = pos + dir * (length * 0.5);
+        let angle = (-dir.x).atan2(dir.y);
         let length_scale = length / crate::balance::BEAM_LENGTH;
         // Outline is ~1.5× the inner-beam width. Same length so the
         // tip ends register cleanly without a halo past the line.
@@ -276,17 +285,16 @@ pub fn sniper_aim_line_tick(
 
         let pos = sniper_tf.translation.truncate();
         let to = line.target_world - pos;
-        // Render the aim-line at 3× the sniper-to-target distance,
-        // extending past the target. The intent is to telegraph the
-        // shot direction, not just the impact point, so a player
-        // who's about to walk into the line sees it sooner.
-        const AIM_LINE_LENGTH_MULT: f32 = 3.0;
-        let length = to.length().max(1.0) * AIM_LINE_LENGTH_MULT;
-        // Mid-point of the elongated line — sniper is the start,
-        // the far end sits `AIM_LINE_LENGTH_MULT × distance` along
-        // the direction-to-target.
-        let mid = pos + to * (AIM_LINE_LENGTH_MULT * 0.5);
-        let angle = (-(to.x)).atan2(to.y);
+        // Aim line always crosses the whole arena past every edge,
+        // regardless of sniper position or target distance — see
+        // the spawn site for rationale. Length anchored to
+        // `ARENA_W + ARENA_H` (comfortably larger than the
+        // playable diagonal), centred so the sniper sits at the
+        // near end and the line extends forward only.
+        let dir = to.normalize_or(Vec2::Y);
+        let length = (crate::balance::ARENA_W + crate::balance::ARENA_H).max(1.0);
+        let mid = pos + dir * (length * 0.5);
+        let angle = (-dir.x).atan2(dir.y);
         tf.translation.x = mid.x;
         tf.translation.y = mid.y;
         tf.rotation = Quat::from_rotation_z(angle);

@@ -150,6 +150,11 @@ pub struct PlayerStats {
     /// dodged) and before shield absorption. Capped at
     /// [`DEFENSIVE_CAP_PCT`] for the same invulnerability reason.
     pub armour_pct: Stat,
+    /// Additive bonus chest drop chance, in percent. Stacks with the
+    /// base `chest::CHEST_DROP_CHANCE` (1%) so a player with +4%
+    /// from mods sees ~5% per-kill chance. No cap — chest rolls are
+    /// rare events even at high stack counts.
+    pub chest_chance_pct: Stat,
 }
 
 /// Shared cap on both Dodge and Armour. Either stat solo at 100%
@@ -210,6 +215,7 @@ impl Default for PlayerStats {
             cooldown_pct: Stat::new(0.0),
             dodge_pct: Stat::new(0.0),
             armour_pct: Stat::new(0.0),
+            chest_chance_pct: Stat::new(0.0),
         }
     }
 }
@@ -414,6 +420,10 @@ pub enum StatKind {
     /// cooldown ≈ +33% effective fire rate. Capped server-side at
     /// 90% via `cooldown_mult()`.
     Cooldown,
+    /// Additive percentage chest drop chance, stacked onto the
+    /// base 1% in `enemy_death_check`. Each pickup point = 1% more
+    /// chests per kill on average.
+    ChestChance,
 }
 
 impl StatKind {
@@ -435,6 +445,7 @@ impl StatKind {
         StatKind::Harvest,
         StatKind::XpHarvest,
         StatKind::RuneDamage,
+        StatKind::ChestChance,
     ];
     /// Subset of [`ALL`](Self::ALL) that the shop's mod-card and
     /// level-up roll systems pick from. `TurretArcBonus` +
@@ -458,6 +469,7 @@ impl StatKind {
         StatKind::Harvest,
         StatKind::XpHarvest,
         StatKind::RuneDamage,
+        StatKind::ChestChance,
     ];
     /// Full label rendered in the panel. Plain words, no shorthand.
     pub fn label(self) -> &'static str {
@@ -479,6 +491,7 @@ impl StatKind {
             StatKind::Dodge => "DODGE",
             StatKind::Armour => "ARMOUR",
             StatKind::Cooldown => "COOLDOWN",
+            StatKind::ChestChance => "CHEST CHANCE",
         }
     }
     /// Formatted current value (with units / sign where helpful).
@@ -589,6 +602,12 @@ impl StatKind {
                 let v = stats.cooldown_pct.effective();
                 format!("{:+.0}%", v)
             }
+            StatKind::ChestChance => {
+                // Effective per-kill chance: base 1% + stat. No cap.
+                let v = crate::chest::CHEST_DROP_CHANCE * 100.0
+                    + stats.chest_chance_pct.effective();
+                format!("{:.0}%", v)
+            }
         }
     }
 }
@@ -621,6 +640,7 @@ impl StatKind {
             StatKind::Dodge => crate::i18n::tr("stat_dodge_desc"),
             StatKind::Armour => crate::i18n::tr("stat_armour_desc"),
             StatKind::Cooldown => crate::i18n::tr("stat_cooldown_desc"),
+            StatKind::ChestChance => crate::i18n::tr("stat_chest_chance_desc"),
         }
     }
 
@@ -741,6 +761,15 @@ impl StatKind {
                     pct,
                 )
             }
+            StatKind::ChestChance => {
+                let base = crate::chest::CHEST_DROP_CHANCE * 100.0;
+                let bonus = stats.chest_chance_pct.effective();
+                let total = base + bonus;
+                format!(
+                    "Chance an enemy drops a chest on death. Base {:.0}%, currently {:.0}%.",
+                    base, total,
+                )
+            }
             // Stats whose static blurb already reads cleanly (the
             // raw value is visible in the readout column right next
             // to the description tooltip, so no need to fold it in).
@@ -775,6 +804,7 @@ impl StatKind {
             StatKind::Dodge => 5.0,
             StatKind::Armour => 5.0,
             StatKind::Cooldown => 10.0,
+            StatKind::ChestChance => 5.0,
         }
     }
 
@@ -802,6 +832,7 @@ impl StatKind {
             StatKind::Dodge => 3.0,               // 20 picks to hit the 60% cap
             StatKind::Armour => 3.0,
             StatKind::Cooldown => 5.0,
+            StatKind::ChestChance => 1.0,         // +1% per pick; +5 picks = doubles base
         }
     }
 
@@ -824,7 +855,8 @@ impl StatKind {
             | StatKind::XpHarvest
             | StatKind::Dodge
             | StatKind::Armour
-            | StatKind::Cooldown => format!("{:+.0}%", delta),
+            | StatKind::Cooldown
+            | StatKind::ChestChance => format!("{:+.0}%", delta),
             // Movement / turning are stored as raw world units but a
             // raw "+3" doesn't tell the player anything. Express as
             // a percentage of the baseline so "+3 SPEED" reads as
@@ -871,6 +903,7 @@ impl StatKind {
             StatKind::Dodge => &stats.dodge_pct,
             StatKind::Armour => &stats.armour_pct,
             StatKind::Cooldown => &stats.cooldown_pct,
+            StatKind::ChestChance => &stats.chest_chance_pct,
         }
     }
 
@@ -895,6 +928,7 @@ impl StatKind {
             StatKind::Dodge => &mut stats.dodge_pct,
             StatKind::Armour => &mut stats.armour_pct,
             StatKind::Cooldown => &mut stats.cooldown_pct,
+            StatKind::ChestChance => &mut stats.chest_chance_pct,
         }
     }
 }

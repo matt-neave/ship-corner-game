@@ -17,7 +17,7 @@ mod wave_indicator;
 
 pub use hud::{
     sync_ally_hp_bars, update_ally_hp_values, update_fps_text, update_hp_bar_pixel_scale,
-    update_map_button, update_score_text, update_shield_bar,
+    update_map_button, update_score_text,
     update_vsync_label, sync_hud_dev_buttons_visibility,
     update_wave_ui, AllyHpRow, CameraFollowButton, FpsText, ReturnToMapButton, ScoreText,
     VsyncButton, WaveHpUi,

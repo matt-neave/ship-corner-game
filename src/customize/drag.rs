@@ -652,6 +652,7 @@ fn short_stat_label(kind: StatKind) -> &'static str {
         StatKind::Dodge             => "DODGE",
         StatKind::Armour            => "ARMOUR",
         StatKind::Cooldown          => "CDR",
+        StatKind::ChestChance       => "CHESTS",
     }
 }
 
@@ -695,6 +696,18 @@ fn roll_turret_tier(rng: &mut impl rand::Rng) -> u8 {
 /// returns the picked library index. Used by the shop reroll +
 /// initial roll so the three slots draw distinct mods with rarity
 /// frequencies that match the per-tier weight table.
+/// Roll one mod from the full library using the per-rarity weight
+/// table. Used by chests to surface a single random pick (the shop
+/// uses a 3-pick variant with replacement disabled — see
+/// `weighted_pick_without_replacement`).
+pub fn roll_one_mod() -> ShopMod {
+    let mut rng = rand::thread_rng();
+    let mut pool: Vec<usize> = (0..MOD_LIBRARY.len()).collect();
+    let idx = weighted_pick_without_replacement(&mut rng, &mut pool)
+        .unwrap_or(0);
+    ShopMod { spec_idx: idx }
+}
+
 fn weighted_pick_without_replacement(
     rng: &mut impl rand::Rng,
     pool: &mut Vec<usize>,
@@ -1475,6 +1488,16 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
         (Payload::Rune(rune), DropTargetKind::ShipRune { slot, rune_idx }) => {
             if !cfg.slots[slot].equipped {
                 return false;
+            }
+            // Amplifier sockets beyond its broadcast tier are
+            // blocked — a T1 Amp shares only socket 0, so 1 and 2
+            // refuse drops. Visible to the player via the hash
+            // overlay handled in `update_customize_ship`.
+            if matches!(cfg.slots[slot].weapon, WeaponType::Amplifier) {
+                let cap = cfg.slots[slot].barrels.clamp(1, 3) as usize;
+                if rune_idx >= cap {
+                    return false;
+                }
             }
             if let DragSourceKind::ShipRune { slot: s, rune_idx: r } = picked.source {
                 if s == slot && r == rune_idx {

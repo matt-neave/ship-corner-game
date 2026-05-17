@@ -10,7 +10,7 @@ use bevy::window::PrimaryWindow;
 use crate::balance::{
     ARENA_H, ARENA_W, BEAM_LENGTH, ENEMY_LEN, ENEMY_WIDTH,
     HULL_HALF_LEN, HULL_LEN, HULL_WIDTH,
-    PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W, TURRET_MOUNTS, TURRET_POSITIONS, TURRET_RANGE,
+    PLAY_LAYER, PLAY_WORLD_H, PLAY_WORLD_W, TURRET_MOUNTS, TURRET_POSITIONS,
 };
 use crate::components::{Faction, FactionKind, Friendly, Health, Heading, LocalPlayer, Velocity};
 use crate::effects::{EffectMeshes, HitFx};
@@ -391,9 +391,11 @@ fn build_effect_meshes(meshes: &mut Assets<Mesh>) -> EffectMeshes {
 
 // ---------- Movement ----------
 
-/// The friendly ship follows the cursor when it's over the play area;
-/// otherwise it auto-engages the nearest enemy at a comfortable range.
-/// (Wave mode is gone, so the auto-battle short-circuit went with it.)
+/// The friendly ship follows the cursor when it's over the play area.
+/// Cursor outside the play area → ship holds station (zero velocity,
+/// keeps current heading). The previous behaviour was an auto-engage
+/// branch that picked the nearest enemy and orbited at range — that
+/// "auto-pathing" is disabled for now per the player's request.
 pub fn friendly_movement(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -450,49 +452,20 @@ pub fn friendly_movement(
         }
     });
 
+    // `enemies` query is unused while auto-engage is disabled but
+    // kept in the signature so re-enabling the branch is a one-line
+    // restore.
+    let _ = &enemies;
+
     for (mut tf, mut vel, mut heading) in &mut q {
         let pos = tf.translation.truncate();
 
-        // Pick a steering target. Cursor over play area → follow it. Otherwise
-        // compute a "tactical" target that engages the nearest enemy at a
-        // comfortable range, biased toward the centroid when multiple are around.
-        let target = if let Some(t) = target_world {
-            t
-        } else {
-            let mut nearest: Option<(f32, Vec2)> = None;
-            let mut centroid_sum = Vec2::ZERO;
-            let mut centroid_count = 0u32;
-            for etf in &enemies {
-                let ep = etf.translation.truncate();
-                let d = ep.distance(pos);
-                if nearest.map_or(true, |(bd, _)| d < bd) { nearest = Some((d, ep)); }
-                if d < TURRET_RANGE * 1.5 {
-                    centroid_sum += ep;
-                    centroid_count += 1;
-                }
-            }
-            if let Some((d, ep)) = nearest {
-                let to = ep - pos;
-                let unit = to.normalize_or_zero();
-                let desired_range = TURRET_RANGE * 0.7;
-                if d > desired_range + 8.0 {
-                    ep // approach
-                } else if d < desired_range - 8.0 {
-                    pos - unit * 30.0 // back away
-                } else {
-                    // Hold range: orbit perpendicularly so multiple turrets bear.
-                    // Bias the orbit direction toward the enemy centroid so we
-                    // sweep toward where the action is.
-                    let perp = Vec2::new(-unit.y, unit.x);
-                    let bias = if centroid_count > 0 {
-                        let c = centroid_sum / centroid_count as f32;
-                        if perp.dot(c - pos) >= 0.0 { 1.0 } else { -1.0 }
-                    } else { 1.0 };
-                    pos + perp * (bias * 30.0)
-                }
-            } else {
-                Vec2::ZERO // no enemies — drift toward play-area center
-            }
+        // Cursor outside the play area → hold station. Zero velocity,
+        // keep current heading. No tactical auto-engage.
+        let Some(target) = target_world else {
+            vel.0 = Vec2::ZERO;
+            tf.rotation = Quat::from_rotation_z(heading.0);
+            continue;
         };
 
         // Keep target inside the playable area so we don't crash the wall.
@@ -694,9 +667,14 @@ pub fn friendly_ram_damage(
         // explosion. They one-shot themselves on impact and deal
         // their full detonation damage to the player.
         let kamikaze_payload = match en.variant {
-            EnemyVariant::Bomber => Some(15),
-            EnemyVariant::Rammer => Some(5),
-            _                    => None,
+            EnemyVariant::Bomber  => Some(15),
+            EnemyVariant::Rammer  => Some(5),
+            // Swarmer: 5 per hit, multiplied by the cluster size —
+            // a 5-swarmer cloud all landing simultaneously deals
+            // 25 total. Dodgeable (the cloud is small) but a
+            // standing player gets shredded.
+            EnemyVariant::Swarmer => Some(5),
+            _                     => None,
         };
         // Tick down any active enemy grace and skip damage while it's hot.
         if let Some(mut g) = grace {
@@ -770,8 +748,12 @@ pub fn friendly_ram_damage(
                 let _ = payload;
                 sfx.play(crate::sfx::Sfx::Explosion);
                 let (n1, n2, sp1, sp2) = match en.variant {
-                    EnemyVariant::Bomber => (14, 8, 80.0, 100.0),
-                    EnemyVariant::Rammer => (8,  4, 60.0, 80.0),
+                    EnemyVariant::Bomber  => (14, 8, 80.0, 100.0),
+                    EnemyVariant::Rammer  => (8,  4, 60.0, 80.0),
+                    // Swarmer: small puff per pop, but a cluster
+                    // simultaneously detonating reads as a solid
+                    // burst regardless.
+                    EnemyVariant::Swarmer => (4,  2, 50.0, 65.0),
                     _ => (0, 0, 0.0, 0.0),
                 };
                 if n1 > 0 {

@@ -153,8 +153,29 @@ pub fn build_map_fill_image(state: &MapState, palette: &Palette) -> Image {
     let h = PLAY_INTERNAL;
     let mut data = vec![0u8; (w * h * 4) as usize];
 
-    let owned = blend_to_rgba(palette.ocean, Color::srgb(0.18, 0.98, 0.40), 0.70);
-    let enemy = blend_to_rgba(palette.ocean, Color::srgb(1.00, 0.05, 0.15), 0.70);
+    // Detect night mode from the ocean colour itself (NightMode
+    // swaps `palette.ocean` to a near-black navy). Saturated green
+    // and red over a near-black ocean read as glaring — soften both
+    // the tint colour and the blend weight so the map stays
+    // readable without burning out the eye.
+    let ocean_srgb: bevy::color::Srgba = palette.ocean.into();
+    let ocean_luma = ocean_srgb.red + ocean_srgb.green + ocean_srgb.blue;
+    let night = ocean_luma < 0.6;
+    let (owned_tint, enemy_tint, weight) = if night {
+        (
+            Color::srgb(0.32, 0.62, 0.36),
+            Color::srgb(0.62, 0.20, 0.22),
+            0.55,
+        )
+    } else {
+        (
+            Color::srgb(0.18, 0.98, 0.40),
+            Color::srgb(1.00, 0.05, 0.15),
+            0.70,
+        )
+    };
+    let owned = blend_to_rgba(palette.ocean, owned_tint, weight);
+    let enemy = blend_to_rgba(palette.ocean, enemy_tint, weight);
     let transparent: [u8; 4] = [0, 0, 0, 0];
 
     for py in 0..h {

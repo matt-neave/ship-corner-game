@@ -83,14 +83,15 @@ pub struct Shark {
 }
 
 /// Seconds the shark drifts before locking a target and charging.
-pub const WANDER_DURATION: f32 = 3.0;
+/// Effectively the between-charges cooldown.
+pub const WANDER_DURATION: f32 = 2.0;
 /// World units per second during a charge.
 pub const CHARGE_SPEED: f32 = 65.0;
 /// Maximum charge duration. After this many seconds the shark
 /// stops the sprint and returns to Wander even if it hasn't left
-/// the arena. Long enough that the burst actually reaches a target
-/// at reasonable wander-pack range at `CHARGE_SPEED`.
-pub const CHARGE_MAX_DURATION: f32 = 1.4;
+/// the arena. Longer charge → more chances to graze multiple
+/// enemies in a single dash before the cooldown reasserts.
+pub const CHARGE_MAX_DURATION: f32 = 2.5;
 /// Extra seconds added to `state_timer` on the first damaging
 /// contact of a charge. Gives the shark a satisfying over-shoot
 /// past its target instead of stopping the instant it draws blood.

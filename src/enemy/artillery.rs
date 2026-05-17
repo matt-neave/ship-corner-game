@@ -143,10 +143,17 @@ pub fn artillery_shell_tick(
     pm: Option<Res<PaletteMaterials>>,
     em: Option<Res<EffectMeshes>>,
     difficulty: Res<crate::Difficulty>,
+    stats: Res<crate::stats::PlayerStats>,
     mut shells: Query<(Entity, &mut ArtilleryShell)>,
     mut reticles: Query<(&mut ArtilleryReticle, &mut Transform), Without<ArtilleryShell>>,
     mut friendly: Query<
-        (&Transform, &mut Health, &mut HitFx),
+        (
+            &Transform,
+            &mut Health,
+            &mut HitFx,
+            Option<&mut crate::stats::Shield>,
+            Has<crate::components::LocalPlayer>,
+        ),
         (With<Friendly>, Without<Ally>, Without<ArtilleryShell>, Without<ArtilleryReticle>),
     >,
     mut allies: Query<
@@ -188,11 +195,19 @@ pub fn artillery_shell_tick(
         // Player ship hit radius — half the hull width is the
         // conservative read (matches the bullet collision radius).
         const SHIP_HIT_RADIUS: f32 = 5.0;
-        if let Ok((ftf, mut h, mut fx)) = friendly.single_mut() {
+        if let Ok((ftf, mut h, mut fx, shield_opt, is_local)) = friendly.single_mut() {
             let r = splash + SHIP_HIT_RADIUS;
             if ftf.translation.truncate().distance_squared(center) < r * r {
                 fx.pulse();
-                h.0 = (h.0 - damage).max(0);
+                // Route through the central friendly-damage pipeline
+                // so dodge / armour / shield all apply. Direct
+                // `h.0 -= damage` bypassed all three and the shell
+                // chunked HP even with a full shield up.
+                crate::bullet::apply_friendly_damage(
+                    &mut h, &mut fx,
+                    shield_opt.map(|s| s.into_inner()),
+                    &stats, &mut rng, damage, is_local,
+                );
             }
         }
         for (atf, ally, mut h, mut fx) in &mut allies {

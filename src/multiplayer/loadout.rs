@@ -191,6 +191,7 @@ fn serialize_player_stats(s: &PlayerStats) -> SerializedPlayerStats {
         cooldown_pct:             ser_stat(&s.cooldown_pct),
         dodge_pct:                ser_stat(&s.dodge_pct),
         armour_pct:               ser_stat(&s.armour_pct),
+        chest_chance_pct:         ser_stat(&s.chest_chance_pct),
     }
 }
 
@@ -215,6 +216,7 @@ fn deserialize_player_stats(s: &SerializedPlayerStats) -> PlayerStats {
         cooldown_pct:             de_stat(s.cooldown_pct),
         dodge_pct:                de_stat(s.dodge_pct),
         armour_pct:               de_stat(s.armour_pct),
+        chest_chance_pct:         de_stat(s.chest_chance_pct),
     }
 }
 

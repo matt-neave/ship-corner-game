@@ -540,6 +540,7 @@ fn spawn_enemy_mirror(
         EnemyVariant::Rammer    => pm.enemy_rammer.clone(),
         EnemyVariant::Sniper    => pm.enemy_sniper.clone(),
         EnemyVariant::Artillery => pm.enemy_artillery.clone(),
+        EnemyVariant::Swarmer   => pm.enemy_swarmer.clone(),
     };
     let scale = variant.scale();
     let id_entity = commands.spawn((

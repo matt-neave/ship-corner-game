@@ -695,7 +695,17 @@ pub fn update_level_up_tooltip(
     // wipes the set every frame, so a stale highlight can't
     // linger after the cursor moves off.
     if let Some(b) = hovered_buff {
-        highlight.kinds.insert(b.kind);
+        let sign = if b.delta >= 0.0 {
+            crate::stats_panel_overlay::HighlightSign::Buff
+        } else {
+            crate::stats_panel_overlay::HighlightSign::Nerf
+        };
+        highlight.kinds.insert(
+            b.kind,
+            crate::stats_panel_overlay::HighlightEntry {
+                sign, delta: b.delta, to_flat: b.flat,
+            },
+        );
     }
     let want = hovered_buff
         .map(|b| b.kind.dynamic_description(&stats))

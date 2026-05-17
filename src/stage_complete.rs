@@ -185,13 +185,13 @@ pub fn enter_stage_complete(
     thaleah: Option<Res<crate::fonts::ThaleahFont>>,
 ) {
     timer.0 = 0.0;
-    // Interest: +1 scrap per 5 held going INTO the stage, before this
+    // Interest: +1 scrap per 3 held going INTO the stage, before this
     // round's wave-clear earnings stack onto the pile. Subtracting
     // `scrap_earned.0` from the current total gives the principal the
     // player walked into the stage with.
     let earned_pre_interest = scrap_earned.0;
     let pre_round_principal = scrap.0.saturating_sub(scrap_earned.0);
-    let interest = pre_round_principal / 5;
+    let interest = pre_round_principal / 3;
     if interest > 0 {
         scrap.0 = scrap.0.saturating_add(interest);
         scrap_earned.0 = scrap_earned.0.saturating_add(interest);
@@ -486,14 +486,19 @@ pub fn tick_stage_complete(
     mut materials: ResMut<Assets<ColorMaterial>>,
     pending: Res<crate::xp::LevelUpsPending>,
     boss_reward: Res<crate::boss_reward::BossRewardPending>,
+    chests: Res<crate::chest::PendingChests>,
     mut next: ResMut<NextState<crate::AppState>>,
 ) {
     timer.0 += time.delta_secs();
     if timer.0 < DURATION { return; }
-    // Pick order: boss reward → level-up cards → shop. The wipe only
-    // fires on the shop hop (last step before Customize); the other
-    // hops are interstitial overlays that don't need a screen wipe.
-    if boss_reward.0.is_some() {
+    // Pick order: chests → boss reward → level-up cards → shop. The
+    // chest modal loops back to itself until the queue drains, then
+    // continues with the same chain via `next_state_after_chests`.
+    // The wipe only fires on the shop hop (last step before
+    // Customize); other hops are interstitial overlays.
+    if !chests.0.is_empty() {
+        next.set(crate::AppState::ChestOpen);
+    } else if boss_reward.0.is_some() {
         next.set(crate::AppState::BossReward);
     } else if pending.0 > 0 {
         next.set(crate::AppState::LevelUp);

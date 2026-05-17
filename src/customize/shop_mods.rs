@@ -337,8 +337,19 @@ pub fn update_mod_hover_highlight(
         if cursor.x < c.x - half.x || cursor.x > c.x + half.x { continue; }
         if cursor.y < c.y - half.y || cursor.y > c.y + half.y { continue; }
         let Some(m) = shop.mods.get(slot.idx).and_then(|m| *m) else { return };
-        for &(kind, _delta) in m.spec().changes {
-            highlight.kinds.insert(kind);
+        for &(kind, delta) in m.spec().changes {
+            let sign = if delta >= 0.0 {
+                crate::stats_panel_overlay::HighlightSign::Buff
+            } else {
+                crate::stats_panel_overlay::HighlightSign::Nerf
+            };
+            // Mods always add to `.flat` (see the click handler).
+            highlight.kinds.insert(
+                kind,
+                crate::stats_panel_overlay::HighlightEntry {
+                    sign, delta, to_flat: true,
+                },
+            );
         }
         return;
     }

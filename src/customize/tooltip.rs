@@ -470,7 +470,7 @@ pub fn update_customize_tooltip(
         }
         info = Some((
             "SCRAP".to_string(),
-            "\u{1F}+1 per wave cleared. +1 interest per 5 scrap held coming into a stage. Boss kills pay a bounty. Harvest stat rolls drops on kills (Pirate multiplies).".to_string(),
+            "\u{1F}+1 per wave cleared. +1 interest per 3 scrap held coming into a stage. Boss kills pay a bounty. Harvest stat rolls drops on kills (Pirate multiplies).".to_string(),
             centre,
             half,
         ));
@@ -1824,7 +1824,7 @@ fn rune_dynamic_description(
         }
         Rune::Ward => format!(
             "Killing blows grant {:.0} shield. Can overflow above Shield Max as a one-time buffer (no recharge above).",
-            3.0 * rune_dmg,
+            1.0 * rune_dmg,
         ),
         Rune::Bleed => {
             let pct = crate::balance::BLEED_PCT_PER_TICK * 100.0 * rune_dmg;
@@ -1873,12 +1873,12 @@ fn rune_dynamic_description(
         Rune::Hustle => {
             // Speed bonus applied to the deployed unit of Autonomous-
             // tagged turrets. Live value reflects the player's Rune
-            // Effect stat. Also confers the Autonomous tag to the
-            // socketed slot so non-Autonomous weapons count toward
-            // the Autonomous synergy ladder when Hustle is equipped.
+            // Effect stat. The first sentence's `[AUTONOMOUS]`
+            // resolves to the inline tag chip via the standard
+            // bracket-tag renderer (no plaintext "autonomous").
             let per_stack = rune_dmg * 100.0;
             format!(
-                "Autonomous units get +{:.0}% move speed. This weapon is now considered [AUTONOMOUS].",
+                "[AUTONOMOUS] units get +{:.0}% move speed.",
                 per_stack,
             )
         }

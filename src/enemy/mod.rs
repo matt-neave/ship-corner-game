@@ -129,6 +129,13 @@ pub enum EnemyVariant {
     /// then arcs a shell that explodes for splash damage. The
     /// telegraph is dodgeable — punishes "stand and shoot".
     Artillery,
+    /// Paper-thin kamikaze with 1 HP. Spawns in clusters of 4-7
+    /// from one direction so the player faces a swarm rather than
+    /// individual hits. Faster than Bomber/Rammer but pops on a
+    /// single bullet — the threat is volume + spread, not
+    /// durability. Carries no gun. See queue-build in
+    /// `spawn_enemies` for the cluster expansion.
+    Swarmer,
 }
 
 impl EnemyVariant {
@@ -145,6 +152,7 @@ impl EnemyVariant {
             EnemyVariant::Rammer    => 4,
             EnemyVariant::Sniper    => 5,
             EnemyVariant::Artillery => 6,
+            EnemyVariant::Swarmer   => 7,
         }
     }
     /// Inverse of `to_u8`. Returns `None` for unknown numbers (peer
@@ -159,6 +167,7 @@ impl EnemyVariant {
             4 => EnemyVariant::Rammer,
             5 => EnemyVariant::Sniper,
             6 => EnemyVariant::Artillery,
+            7 => EnemyVariant::Swarmer,
             _ => return None,
         })
     }
@@ -178,6 +187,7 @@ impl EnemyVariant {
             EnemyVariant::Sniper   => 14,  // intro: stage 4
             EnemyVariant::Heavy    => 104,  // intro: stage 5
             EnemyVariant::Artillery=> 52,  // intro: stage 6 — apex AOE tank
+            EnemyVariant::Swarmer  => 1,   // intro: stage 1 — paper-thin, dies to anything
         }
     }
     pub fn speed(self) -> f32 {
@@ -189,6 +199,7 @@ impl EnemyVariant {
             EnemyVariant::Rammer   => 45.0,
             EnemyVariant::Sniper   => 26.0,
             EnemyVariant::Artillery=> 6.0,
+            EnemyVariant::Swarmer  => 50.0, // fastest, beelines in a cloud
         }
     }
     pub fn turn_rate(self) -> f32 {
@@ -200,6 +211,7 @@ impl EnemyVariant {
             EnemyVariant::Rammer   => 1.4,
             EnemyVariant::Sniper   => 0.5,
             EnemyVariant::Artillery=> 0.4,
+            EnemyVariant::Swarmer  => 1.7, // agile, hard to dodge as a cloud
         }
     }
     /// Visual + collision scale applied via Transform.scale on the parent.
@@ -212,6 +224,7 @@ impl EnemyVariant {
             EnemyVariant::Rammer   => 0.65,
             EnemyVariant::Sniper   => 0.95,
             EnemyVariant::Artillery=> 1.05,
+            EnemyVariant::Swarmer  => 0.65, // small but readable; cluster reads as a cloud
         }
     }
     pub fn fire_rate(self) -> f32 {
@@ -228,6 +241,7 @@ impl EnemyVariant {
             // Artillery: ~3s between shots (1.5s telegraph + 1.5s
             // recovery). Cooldown gates the next reticle spawn.
             EnemyVariant::Artillery=> 0.33,
+            EnemyVariant::Swarmer  => 0.0,
         }
     }
     pub fn fire_damage(self) -> i32 {
@@ -241,13 +255,14 @@ impl EnemyVariant {
         }
     }
     pub fn has_gun(self) -> bool {
-        // Bomber + Rammer have no gun; Artillery has a "gun" only
-        // in the loose sense — it has its own bespoke firing path
+        // Bomber + Rammer + Swarmer have no gun; Artillery has a "gun"
+        // only in the loose sense — it has its own bespoke firing path
         // (`artillery_fire`) so the standard `enemy_fire` bullet
         // dispatch must skip it.
         !matches!(
             self,
             EnemyVariant::Bomber | EnemyVariant::Rammer | EnemyVariant::Artillery
+                | EnemyVariant::Swarmer
         )
     }
 
@@ -262,6 +277,7 @@ impl EnemyVariant {
             EnemyVariant::Rammer    => "RAMMER",
             EnemyVariant::Sniper    => "SNIPER",
             EnemyVariant::Artillery => "ARTILLERY",
+            EnemyVariant::Swarmer   => "SWARMER",
         }
     }
 
@@ -275,7 +291,7 @@ impl EnemyVariant {
 ///
 /// Bomber stays ≥30% even at peak progression so the rhythm of "loads
 /// of kamikazes plus some spice" remains the through-line.
-fn variant_mix_for_stage(battles_cleared: u32, boss_wave: bool) -> [(EnemyVariant, f32); 7] {
+fn variant_mix_for_stage(battles_cleared: u32, boss_wave: bool) -> [(EnemyVariant, f32); 8] {
     let c = battles_cleared;
     if boss_wave {
         // Boss-wave mix — heavier on tough variants, but Bomber stays
@@ -289,6 +305,7 @@ fn variant_mix_for_stage(battles_cleared: u32, boss_wave: bool) -> [(EnemyVarian
             (EnemyVariant::Sniper,    boss_sniper_weight(c)),
             (EnemyVariant::Standard,  boss_standard_weight(c)),
             (EnemyVariant::Scout,     boss_scout_weight(c)),
+            (EnemyVariant::Swarmer,   boss_swarmer_weight(c)),
         ];
     }
     [
@@ -301,6 +318,7 @@ fn variant_mix_for_stage(battles_cleared: u32, boss_wave: bool) -> [(EnemyVarian
         (EnemyVariant::Rammer,    rammer_weight(c)),
         (EnemyVariant::Sniper,    sniper_weight(c)),
         (EnemyVariant::Artillery, artillery_weight(c)),
+        (EnemyVariant::Swarmer,   swarmer_weight(c)),
     ]
 }
 
@@ -364,6 +382,17 @@ fn artillery_weight(c: u32) -> f32 {
         _     => 0.08,
     }
 }
+/// Swarmer unlocks second (c=1, right after Bomber's solo opener).
+/// Low per-pick weight because each rolled Swarmer expands into a
+/// 4-7 cluster, so the effective spawn share is ~5× this number.
+fn swarmer_weight(c: u32) -> f32 {
+    match c {
+        0 => 0.0,
+        1 => 0.04,
+        2 => 0.05,
+        _ => 0.06,
+    }
+}
 
 // ---- Boss-wave per-variant weight schedules ----
 
@@ -391,6 +420,12 @@ fn boss_standard_weight(c: u32) -> f32 {
     match c { 0..=1 => 0.0, _ => 0.08 }
 }
 fn boss_scout_weight(c: u32) -> f32 {
+    match c { 0 => 0.0, _ => 0.05 }
+}
+fn boss_swarmer_weight(c: u32) -> f32 {
+    // Same early-unlock as the standard schedule (c=1), but lower
+    // share so the swarm doesn't drown out the boss's own pressure.
+    // Each pick still expands to 4-7.
     match c { 0 => 0.0, _ => 0.05 }
 }
 
@@ -427,6 +462,7 @@ pub const ALL_VARIANTS: &[EnemyVariant] = &[
     EnemyVariant::Rammer,
     EnemyVariant::Sniper,
     EnemyVariant::Artillery,
+    EnemyVariant::Swarmer,
 ];
 
 // ---------- Spawn helper ----------
@@ -452,6 +488,7 @@ pub fn spawn_enemy(
         EnemyVariant::Rammer   => pm.enemy_rammer.clone(),
         EnemyVariant::Sniper   => pm.enemy_sniper.clone(),
         EnemyVariant::Artillery=> pm.enemy_artillery.clone(),
+        EnemyVariant::Swarmer  => pm.enemy_swarmer.clone(),
     };
     let scale = variant.scale();
     let dir = Vec2::new(-heading.sin(), heading.cos());
@@ -560,6 +597,20 @@ pub fn spawn_enemy(
         commands.entity(warhead).insert(ChildOf(id));
     }
 
+    if variant == EnemyVariant::Swarmer {
+        // Tiny bright warhead — sells "this thing wants to ram you"
+        // even at the 0.4 hull scale. Same mesh as Bomber/Rammer,
+        // shrunk further. The chartreuse hull is the main read.
+        let warhead = commands.spawn((
+            Mesh2d(em.bomber_warhead.clone()),
+            MeshMaterial2d(pm.bullet_enemy.clone()),
+            Transform::from_xyz(0.0, ENEMY_LEN / 2.0 - 1.8, 0.2)
+                .with_scale(Vec3::splat(0.45)),
+            RenderLayers::layer(PLAY_LAYER),
+        )).id();
+        commands.entity(warhead).insert(ChildOf(id));
+    }
+
     // Short white wake trail behind the enemy (lives on its own entity in
     // world space; despawns when the enemy is gone — see `update_enemy_trails`).
     let trail_mesh = meshes.add(empty_dynamic_mesh());
@@ -636,6 +687,31 @@ pub fn spawn_enemies(
                 };
                 let mut remaining = total;
                 while remaining > 0 {
+                    // Pre-roll variant FIRST so a rolled Swarmer can
+                    // override the normal cluster logic with a
+                    // forced 4-7 cluster of identical Swarmers from
+                    // one direction. The drip phase reads
+                    // PendingSpawn.variant directly and skips the
+                    // per-drip roll.
+                    let v = EnemyVariant::roll_weighted(
+                        combat_ctx.battles_cleared, combat_ctx.is_boss_wave, &mut rng,
+                    );
+                    if v == EnemyVariant::Swarmer {
+                        let size = rng.gen_range(4..=7).min(remaining);
+                        let center = random_edge_pos(&mut rng);
+                        for _ in 0..size {
+                            // Tighter spread than the generic cluster
+                            // so the swarm reads as one cloud.
+                            let pos = center + Vec2::new(
+                                rng.gen_range(-4.0..4.0),
+                                rng.gen_range(-4.0..4.0),
+                            );
+                            let indicator = spawn_indicator(&mut commands, &indicator_assets, pos);
+                            queue.push(PendingSpawn { pos, indicator, variant: Some(v) });
+                        }
+                        remaining -= size;
+                        continue;
+                    }
                     let use_cluster = remaining >= 2 && rng.gen::<f32>() < cluster_chance;
                     if use_cluster {
                         let size = rng.gen_range(2..=4).min(remaining);
@@ -646,13 +722,13 @@ pub fn spawn_enemies(
                                 rng.gen_range(-6.0..6.0),
                             );
                             let indicator = spawn_indicator(&mut commands, &indicator_assets, pos);
-                            queue.push(PendingSpawn { pos, indicator });
+                            queue.push(PendingSpawn { pos, indicator, variant: Some(v) });
                         }
                         remaining -= size;
                     } else {
                         let pos = random_edge_pos(&mut rng);
                         let indicator = spawn_indicator(&mut commands, &indicator_assets, pos);
-                        queue.push(PendingSpawn { pos, indicator });
+                        queue.push(PendingSpawn { pos, indicator, variant: Some(v) });
                         remaining -= 1;
                     }
                 }
@@ -692,12 +768,25 @@ pub fn spawn_enemies(
             // Indicator served its purpose — remove the visual.
             commands.entity(spawn.indicator).despawn();
 
-            let spawned_variant = spawn_one_at(
-                &mut commands, &pm, &em, &mut meshes,
-                spawn.pos, combat_ctx.is_boss_wave,
-                combat_ctx.battles_cleared,
-                *difficulty,
-            );
+            // Drip path: if the queue-build pre-rolled a variant
+            // (always true now — None is the legacy fallback), use
+            // it directly so cluster expansion (e.g. Swarmer's 4-7)
+            // actually produces the intended variant per slot
+            // instead of re-rolling and getting a random mix.
+            let spawned_variant = match spawn.variant {
+                Some(v) => {
+                    let inward = (-spawn.pos).normalize_or(Vec2::Y);
+                    let heading = (-inward.x).atan2(inward.y);
+                    spawn_enemy(&mut commands, &pm, &em, &mut meshes, spawn.pos, heading, v, *difficulty);
+                    v
+                }
+                None => spawn_one_at(
+                    &mut commands, &pm, &em, &mut meshes,
+                    spawn.pos, combat_ctx.is_boss_wave,
+                    combat_ctx.battles_cleared,
+                    *difficulty,
+                ),
+            };
             // First-encounter banner: if the player hasn't seen this
             // variant yet THIS run, mark it + drop the bottom-left
             // panel so they get a heads-up about the new threat.
@@ -1018,12 +1107,16 @@ pub fn enemy_ai(
         // ally that drifts into range pulls aggro naturally.
         let target_pos = nearest_target(pos, &friendly_positions, ally_positions);
 
-        // Bombers + Rammers skip the state machine — head straight
-        // at their target, no waypoints, no firing. Contact damage
-        // and despawn handled by `bomber_detonate` (which also
-        // covers Rammer). On Rammer death `enemy_death_check` drops
-        // the time-fused landmine.
-        if matches!(enemy.variant, EnemyVariant::Bomber | EnemyVariant::Rammer) {
+        // Kamikazes (Bomber / Rammer / Swarmer) skip the state
+        // machine — head straight at their target, no waypoints,
+        // no firing. Contact damage + despawn flow through
+        // `friendly_ram_damage` (was `bomber_detonate`). On Rammer
+        // death `enemy_death_check` drops the time-fused landmine.
+        // Swarmers just pop on contact (low payload, no mine).
+        if matches!(
+            enemy.variant,
+            EnemyVariant::Bomber | EnemyVariant::Rammer | EnemyVariant::Swarmer
+        ) {
             let to = target_pos - pos;
             if to.length_squared() > 1.0 {
                 let desired = (-to.x).atan2(to.y);
@@ -1357,6 +1450,18 @@ pub fn enemy_death_check(
                 &mut commands, &mut meshes, &mut materials,
                 tf.translation.truncate(),
                 scrap_drop,
+            );
+        }
+        // Chest drop — Brotato-style supply crate. Base 1% per kill
+        // plus the player's `ChestChance` stat (in percent, additive).
+        // Pickup rolls a mod that the player TAKEs or SELLs in the
+        // post-stage ChestOpen modal.
+        let chest_chance = crate::chest::CHEST_DROP_CHANCE
+            + player_stats.chest_chance_pct.effective() / 100.0;
+        if rng.gen::<f32>() < chest_chance {
+            crate::chest::spawn_chest_pickup(
+                &mut commands, &mut meshes, &mut materials,
+                tf.translation.truncate(),
             );
         }
         // XP grant. Boss-tier detection by max_hp threshold (smallest

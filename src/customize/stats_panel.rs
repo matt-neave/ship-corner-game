@@ -168,7 +168,20 @@ pub fn sync_stats_panel(
     if !open.open { return; }
     let baseline = PlayerStats::default();
     for (e, sv, mut text, mut color, pop) in &mut q {
-        let s = sv.0.format_value(&stats, Some(&synergies));
+        let cur_str = sv.0.format_value(&stats, Some(&synergies));
+        // If the hovered mod / level-up card touches this stat,
+        // probe what the value would be after the change and
+        // append `(current -> new)` so the player can see the
+        // result before clicking.
+        let s = if let Some(entry) = highlight.kinds.get(&sv.0) {
+            let mut probe = stats.clone();
+            let stat = sv.0.stat_mut(&mut probe);
+            if entry.to_flat { stat.flat += entry.delta; } else { stat.percent += entry.delta; }
+            let new_str = sv.0.format_value(&probe, Some(&synergies));
+            format!("{} -> {}", cur_str, new_str)
+        } else {
+            cur_str
+        };
         if text.0 != s {
             text.0 = s.clone();
         }
@@ -237,9 +250,15 @@ pub fn apply_stats_label_highlight(
 ) {
     if !open.open { return; }
     const NEUTRAL: Color = Color::srgb(0.92, 0.94, 0.97);
-    let accent = crate::ui_kit::theme::ACCENT;
+    let buff = crate::ui_kit::theme::BUFF_FG;
+    let nerf = crate::ui_kit::theme::NERF_FG;
     for (label, mut color) in &mut q {
-        let want = if highlight.kinds.contains(&label.0) { accent } else { NEUTRAL };
+        use crate::stats_panel_overlay::HighlightSign;
+        let want = match highlight.kinds.get(&label.0).map(|e| e.sign) {
+            Some(HighlightSign::Buff) => buff,
+            Some(HighlightSign::Nerf) => nerf,
+            None => NEUTRAL,
+        };
         if color.0 != want { color.0 = want; }
     }
 }

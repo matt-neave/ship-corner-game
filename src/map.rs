@@ -157,6 +157,12 @@ pub struct CombatContext {
 pub struct PendingSpawn {
     pub pos: Vec2,
     pub indicator: Entity,
+    /// Pre-rolled variant. `None` means "let the drip site roll one
+    /// from the stage's mix" (the default path). `Some(v)` forces a
+    /// specific variant — used by Swarmer cluster expansion so a
+    /// rolled Swarmer balloons into 4-7 PendingSpawns that all
+    /// spawn the same variant from one direction.
+    pub variant: Option<crate::enemy::EnemyVariant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

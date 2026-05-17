@@ -31,7 +31,22 @@ impl Plugin for StatsPanelOverlayPlugin {
             .add_systems(First, |mut h: bevy::prelude::ResMut<HighlightedStats>| {
                 h.kinds.clear();
             })
-            .add_systems(Update, (update_stat_panel_tooltip, apply_stat_panel_highlight));
+            // Tooltip is hover-driven via `Changed<Interaction>`.
+            // The row-tint consumer reads `HighlightedStats` so it
+            // ordered AFTER the customize producer + the level-up
+            // producer — without these `.after`s, the producer
+            // sometimes ran in the same frame AFTER this consumer,
+            // and the next-frame interleaving flicker showed up
+            // as "highlight blinks on/off every other frame".
+            .add_systems(
+                Update,
+                (
+                    update_stat_panel_tooltip,
+                    apply_stat_panel_highlight
+                        .after(crate::customize::shop_mods::update_mod_hover_highlight)
+                        .after(crate::xp::update_level_up_tooltip),
+                ),
+            );
     }
 }
 
@@ -40,16 +55,37 @@ impl Plugin for StatsPanelOverlayPlugin {
 #[derive(Component, Clone, Copy)]
 pub struct StatPanelRow(pub StatKind);
 
+/// Sign of a hover-highlight entry. Producers tag each affected
+/// stat with `Buff` (delta positive, paint green) or `Nerf`
+/// (delta negative, paint red). When two producers conflict on
+/// the same stat the later writer wins — fine in practice since
+/// only one card is hovered at a time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HighlightSign { Buff, Nerf }
+
+/// One affected stat in a hover-highlight set. `delta` + `to_flat`
+/// describe how the producer would apply the change to a `Stat`:
+/// `to_flat=true` adds to `.flat`, `to_flat=false` adds to `.percent`.
+/// The consumer (customize stats panel) clones `PlayerStats`,
+/// re-applies the delta into a probe copy, and renders both the
+/// current and the would-be value in the row.
+#[derive(Clone, Copy, Debug)]
+pub struct HighlightEntry {
+    pub sign: HighlightSign,
+    pub delta: f32,
+    pub to_flat: bool,
+}
+
 /// Shared cross-screen hover-highlight signal. Producers (level-up
-/// buff-card hover, shop mod-card hover) write the set of StatKinds
-/// the hovered offer would affect; consumers (this overlay's row
-/// tinting + the customize shop's Text2d panel tinting) read it to
-/// brighten matching rows for quick visual scanning.
+/// buff-card hover, shop mod-card hover) write each affected
+/// `StatKind` along with the sign of the change + the delta the
+/// producer would apply; consumers tint rows (sign-based) AND
+/// render before / after numbers (delta-based).
 ///
-/// Cleared every frame by the producers — no entry means no hover.
+/// Cleared every frame by `First` — no entry means no hover.
 #[derive(bevy::prelude::Resource, Default, Clone)]
 pub struct HighlightedStats {
-    pub kinds: std::collections::HashSet<StatKind>,
+    pub kinds: std::collections::HashMap<StatKind, HighlightEntry>,
 }
 
 /// Marker on the tooltip text node. One per spawned panel.
@@ -174,12 +210,18 @@ pub fn apply_stat_panel_highlight(
     highlight: bevy::prelude::Res<HighlightedStats>,
     mut rows: bevy::prelude::Query<(&StatPanelRow, &mut bevy::prelude::BackgroundColor)>,
 ) {
-    // Soft golden wash — alpha low enough that the row text stays
-    // legible, high enough to pop against the surface background.
-    let on  = bevy::prelude::Color::srgba(1.0, 0.85, 0.30, 0.18);
+    // Translucent green / red wash sized to match the row text's
+    // BUFF_FG / NERF_FG so the backdrop colour-codes the change
+    // sign at a glance. Alpha low enough that text stays legible.
+    let on_buff = bevy::prelude::Color::srgba(0.45, 0.92, 0.55, 0.20);
+    let on_nerf = bevy::prelude::Color::srgba(0.95, 0.45, 0.45, 0.20);
     let off = bevy::prelude::Color::NONE;
     for (row, mut bg) in &mut rows {
-        let want = if highlight.kinds.contains(&row.0) { on } else { off };
+        let want = match highlight.kinds.get(&row.0).map(|e| e.sign) {
+            Some(HighlightSign::Buff) => on_buff,
+            Some(HighlightSign::Nerf) => on_nerf,
+            None => off,
+        };
         if bg.0 != want { bg.0 = want; }
     }
 }

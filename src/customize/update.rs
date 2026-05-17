@@ -123,6 +123,18 @@ pub fn update_customize_ship(
             i != rune_idx && r.map_or(false, |rune| rune.is_targeting())
         })
     };
+    // Amplifier sockets beyond the tier cap are permanently blocked —
+    // a T1 Amplifier broadcasts only its first rune, so sockets 1+2
+    // are unusable; T2 frees socket 1; T3 frees all three. The hash
+    // overlay is ALWAYS shown here (not gated on active drag) so the
+    // player can see at a glance which sockets are off-limits.
+    let amp_locked = |slot_idx: usize, rune_idx: usize| -> bool {
+        let s = cfg.slots[slot_idx];
+        if !s.equipped { return false; }
+        if !matches!(s.weapon, crate::weapon::WeaponType::Amplifier) { return false; }
+        let cap = s.barrels.clamp(1, 3) as usize;
+        rune_idx >= cap
+    };
     for (part, mat_handle) in &socket_parts {
         let s = cfg.slots[part.slot];
         let slot_dragged = dragged_slot == Some(part.slot);
@@ -142,7 +154,9 @@ pub fn update_customize_ship(
         }
     }
     for (hash, mut vis) in &mut hash_overlays {
-        let want = if lock_state(hash.slot, hash.rune_idx) {
+        let want = if lock_state(hash.slot, hash.rune_idx)
+            || amp_locked(hash.slot, hash.rune_idx)
+        {
             Visibility::Inherited
         } else {
             Visibility::Hidden

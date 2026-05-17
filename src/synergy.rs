@@ -167,15 +167,7 @@ pub fn compute_synergies(cfg: Res<TurretConfig>, mut syn: ResMut<Synergies>) {
             };
             counts[i] += 1;
         }
-        // Hustle rune confers the Autonomous tag onto its slot so
-        // Hustle-on-anything contributes to the Autonomous synergy.
-        // Skip if the weapon was already Autonomous so a Hustle on
-        // a HeliPad doesn't double-count.
-        if !counted_autonomous
-            && slot.runes.iter().flatten().any(|r| matches!(r, crate::rune::Rune::Hustle))
-        {
-            counts[2] += 1;
-        }
+        let _ = counted_autonomous;
     }
     *syn = Synergies {
         naval:      tier_for(counts[0]),

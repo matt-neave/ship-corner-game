@@ -169,6 +169,10 @@ pub const ENEMY_MINE_DOT_HEX: &str = "#ff8a3c";
 /// red enemy family without blending into the warning-orange Rammer
 /// or the deep-purple Sniper.
 pub const ENEMY_ARTILLERY_HEX: &str = "#5a6a2c";
+/// Swarmer hull — bright chartreuse so the 4-7 swarm reads as one
+/// distinct cloud against the red/orange kamikaze family. Picked
+/// to stand apart from Rammer orange + Bomber dark-red + ocean blue.
+pub const ENEMY_SWARMER_HEX: &str = "#9bc94d";
 /// Artillery landing reticle. Pulls from the unified
 /// `ENEMY_INDICATOR_HEX` so the artillery splash circle reads as
 /// the same telegraph language as the sniper aim line.
@@ -346,6 +350,10 @@ pub struct PaletteMaterials {
     /// Artillery hull — dark olive siege piece. Spawn in
     /// `enemy::spawn_enemy` for the Artillery variant.
     pub enemy_artillery: Handle<ColorMaterial>,
+    /// Swarmer hull — bright chartreuse paper-thin kamikaze. Spawn
+    /// in `enemy::spawn_enemy` for the Swarmer variant; cluster of
+    /// 4-7 arrives from one direction.
+    pub enemy_swarmer: Handle<ColorMaterial>,
     /// Tint for the artillery landing-reticle ring. Bright crimson
     /// "danger zone" colour painted over the impact point during the
     /// 1.5s telegraph.
@@ -586,6 +594,7 @@ impl PaletteMaterials {
             enemy_rammer:          materials.add(hex(ENEMY_RAMMER_HEX)),
             enemy_sniper:          materials.add(hex(ENEMY_SNIPER_HEX)),
             enemy_artillery:       materials.add(hex(ENEMY_ARTILLERY_HEX)),
+            enemy_swarmer:         materials.add(hex(ENEMY_SWARMER_HEX)),
             // Telegraphs are intentionally faded: a Final-Fantasy-style
             // warning, not a solid colour wall. The sniper line + the
             // artillery reticle both sit on top of gameplay so a low

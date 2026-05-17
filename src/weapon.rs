@@ -407,11 +407,12 @@ impl WeaponType {
             // ship isn't a meat-grinder; one harpoon at a time keeps
             // the chain visual readable.
             WeaponType::Harpoon    => (1, 0.7),
-            // Spread Rockets: 4 rockets per shot, fire rate = 0.4Hz
-            // (one volley every 2.5s). Damage per rocket — modest so
+            // Spread Rockets: 4 rockets per shot, fire rate = 0.22Hz
+            // (one volley every ~4.5s). Damage per rocket — modest so
             // a full salvo lands as a satisfying chunk without being
-            // a Mortar-replacement.
-            WeaponType::SpreadRockets => (2, 0.4),
+            // a Mortar-replacement. Slow cadence reins in the
+            // multi-rocket-per-volley DPS so the weapon isn't OP.
+            WeaponType::SpreadRockets => (2, 0.22),
             // Flamethrower: damage / tick repurposed by `flamethrower.rs`
             // as "1 damage every 0.5s during the active burn phase".
             // Fire rate = 2.0Hz drives the per-tick cadence; the
@@ -501,7 +502,7 @@ impl WeaponType {
     /// Half-angle (rad) of random firing cone. 0 means perfectly accurate.
     pub fn spread(self) -> f32 {
         match self {
-            WeaponType::MachineGun => 0.18, // ~±10°
+            WeaponType::MachineGun => 0.32, // ~±18°
             _ => 0.0,
         }
     }
