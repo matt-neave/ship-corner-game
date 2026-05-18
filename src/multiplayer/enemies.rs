@@ -123,6 +123,7 @@ pub fn send_enemy_snapshot(
                 hp: hp.0,
                 status_flags: flags,
                 boss_class,
+                trait_kind: en.trait_kind.map(|t| t.to_u8()).unwrap_or(0),
             }
         })
         .collect();
@@ -424,6 +425,7 @@ pub fn apply_enemy_snapshot(
                 let boss = (entry.boss_class != super::net::NOT_A_BOSS)
                     .then(|| crate::ally::ShipClass::from_u8(entry.boss_class))
                     .flatten();
+                let trait_kind = crate::enemy::traits::EnemyTrait::from_u8(entry.trait_kind);
                 let e = match (boss, meshes.as_mut()) {
                     (Some(class), Some(meshes)) => spawn_boss_mirror(
                         &mut commands,
@@ -436,15 +438,29 @@ pub fn apply_enemy_snapshot(
                         entry.hp,
                         entry.id,
                     ),
-                    _ => spawn_enemy_mirror(
+                    (None, Some(meshes)) => spawn_enemy_mirror(
                         &mut commands,
                         pm,
                         em,
+                        Some(meshes),
                         Vec2::new(entry.pos[0], entry.pos[1]),
                         entry.rot,
                         variant,
                         entry.hp,
                         entry.id,
+                        trait_kind,
+                    ),
+                    _ => spawn_enemy_mirror(
+                        &mut commands,
+                        pm,
+                        em,
+                        None,
+                        Vec2::new(entry.pos[0], entry.pos[1]),
+                        entry.rot,
+                        variant,
+                        entry.hp,
+                        entry.id,
+                        trait_kind,
                     ),
                 };
                 // Attach MirrorTarget at the spawn pose so the
@@ -503,6 +519,8 @@ fn spawn_boss_mirror(
             waypoint: Vec2::ZERO,
             fire_cd: 0.0,
             max_hp: hp.max(1),
+            // Bosses never roll a trait — see `spawn_boss` host-side.
+            trait_kind: None,
         },
         crate::ally::Ally {
             class,
@@ -526,11 +544,16 @@ fn spawn_enemy_mirror(
     commands: &mut Commands,
     pm: &PaletteMaterials,
     em: &EffectMeshes,
+    // `Some` in production (the apply system has Assets<Mesh>);
+    // `None` in headless tests so we can skip the trail without
+    // dragging the mesh resource into every test fixture.
+    meshes: Option<&mut Assets<Mesh>>,
     pos: Vec2,
     heading: f32,
     variant: EnemyVariant,
     hp: i32,
     id: u32,
+    trait_kind: Option<crate::enemy::traits::EnemyTrait>,
 ) -> Entity {
     let body_mat = match variant {
         EnemyVariant::Standard  => pm.enemy.clone(),
@@ -560,6 +583,7 @@ fn spawn_enemy_mirror(
             waypoint: Vec2::ZERO,
             fire_cd: 0.0,
             max_hp: hp.max(1),
+            trait_kind,
         },
         Health(hp),
         // PreviousHp lets the local `track_enemy_damage_for_hp_bars`
@@ -637,6 +661,31 @@ fn spawn_enemy_mirror(
             RenderLayers::layer(PLAY_LAYER),
         )).id();
         commands.entity(warhead).insert(ChildOf(id_entity));
+    }
+
+    // Trait-tinted wake trail. Spawned only when the apply path
+    // has `Assets<Mesh>` (i.e. not in headless tests) and the
+    // host rolled a trait — vanilla mirrors stay trail-less to
+    // match the original mirror's lean visual budget.
+    if let (Some(meshes), Some(t)) = (meshes, trait_kind) {
+        let trail_mat = match t {
+            crate::enemy::traits::EnemyTrait::Frenzy => pm.trail_frenzy.clone(),
+            crate::enemy::traits::EnemyTrait::Armored => pm.trail_armored.clone(),
+            crate::enemy::traits::EnemyTrait::Berserk => pm.trail_berserk.clone(),
+            crate::enemy::traits::EnemyTrait::PackLeader => pm.trail_pack_leader.clone(),
+        };
+        let trail_mesh = meshes.add(crate::trails::empty_dynamic_mesh());
+        commands.spawn((
+            Mesh2d(trail_mesh),
+            MeshMaterial2d(trail_mat),
+            Transform::from_xyz(0.0, 0.0, 0.4),
+            crate::trails::EnemyTrail {
+                enemy: id_entity,
+                points: std::collections::VecDeque::new(),
+                sample_timer: 0.0,
+            },
+            RenderLayers::layer(PLAY_LAYER),
+        ));
     }
 
     id_entity
@@ -967,6 +1016,7 @@ mod tests {
         latest.0 = Some(vec![EnemyEntry {
             id: 1, kind: 0, pos: [0.0; 2], rot: 0.0, hp: 1, status_flags: 0,
             boss_class: super::super::net::NOT_A_BOSS,
+            trait_kind: 0,
         }]);
         assert!(latest.0.take().is_some(), "first take returns the buffer");
         assert!(latest.0.take().is_none(), "second take is None");

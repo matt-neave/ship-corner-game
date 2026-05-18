@@ -90,6 +90,8 @@ pub fn enter_win(
     run_timer: Res<crate::RunTimer>,
     pixel: Option<Res<crate::fonts::PixelFont>>,
     thaleah: Option<Res<crate::fonts::ThaleahFont>>,
+    cfg: Res<crate::turret::TurretConfig>,
+    purchased: Res<crate::customize::drag::PurchasedMods>,
 ) {
     sfx.play(crate::sfx::Sfx::Victory);
     timer.0 = 0.0;
@@ -259,6 +261,17 @@ pub fn enter_win(
                     });
                 }
             });
+
+            // Build summary — slots between the staggered-reveal
+            // summary card and the navigation buttons so the player
+            // sees their numbers AND what they built.
+            crate::build_summary::spawn_build_summary(
+                root,
+                cfg.as_ref(),
+                purchased.as_ref(),
+                pixel.as_deref(),
+                thaleah.as_deref(),
+            );
 
             root.spawn((ui_kit::button(theme::SURFACE_RAISED), WinMainMenuButton))
                 .with_children(|b| {

@@ -41,6 +41,7 @@ pub mod artillery;
 pub mod hp_bar;
 pub mod rammer;
 pub mod sniper;
+pub mod traits;
 
 pub use hp_bar::{
     setup_enemy_hp_bar_assets, track_enemy_damage_for_hp_bars,
@@ -70,6 +71,10 @@ pub struct Enemy {
     /// as the denominator for the on-hit HP bar so the bar's fill
     /// stays accurate even for bosses with custom HP overrides.
     pub max_hp: i32,
+    /// Spawn-time trait roll (`None` = vanilla). Multiplies movement
+    /// speed + recolours the wake trail; chance is driven by
+    /// [`traits::EnemyTrait::roll`] off `battles_cleared`.
+    pub trait_kind: Option<traits::EnemyTrait>,
 }
 
 /// Per-enemy snapshot of last frame's HP. The HP-bar system reads this
@@ -479,6 +484,7 @@ pub fn spawn_enemy(
     heading: f32,
     variant: EnemyVariant,
     difficulty: crate::Difficulty,
+    battles_cleared: u32,
 ) {
     let body_mat = match variant {
         EnemyVariant::Standard => pm.enemy.clone(),
@@ -492,7 +498,22 @@ pub fn spawn_enemy(
     };
     let scale = variant.scale();
     let dir = Vec2::new(-heading.sin(), heading.cos());
-    let scaled_hp = difficulty.scale_hp(variant.hp());
+    // Roll a trait. `None` is the common case at low `battles_cleared`;
+    // chance ramps with run progression — see `EnemyTrait::roll`.
+    let trait_kind = {
+        let mut rng = rand::thread_rng();
+        traits::EnemyTrait::roll(battles_cleared, &mut rng)
+    };
+    // HP fold: difficulty scale FIRST, then the trait's hp_mult.
+    // Order matters — Armored's +50% applies on top of a
+    // difficulty-scaled base so the late-campaign Armored enemy
+    // reads as a real wall.
+    let base_hp = difficulty.scale_hp(variant.hp());
+    let scaled_hp = {
+        let mult = trait_kind.map(|t| t.hp_mult()).unwrap_or(1.0);
+        ((base_hp as f32) * mult).round().max(1.0) as i32
+    };
+    let speed_mult = trait_kind.map(|t| t.speed_mult()).unwrap_or(1.0);
 
     let id = commands.spawn((
         Mesh2d(em.enemy_body.clone()),
@@ -507,10 +528,11 @@ pub fn spawn_enemy(
             waypoint: Vec2::ZERO,
             fire_cd: 0.5,
             max_hp: scaled_hp,
+            trait_kind,
         },
         Health(scaled_hp),
         PreviousHp(scaled_hp),
-        Velocity(dir * variant.speed()),
+        Velocity(dir * variant.speed() * speed_mult),
         Heading(heading),
         Faction(FactionKind::Enemy),
         HitFx::new(body_mat).with_rest_scale(scale),
@@ -611,12 +633,24 @@ pub fn spawn_enemy(
         commands.entity(warhead).insert(ChildOf(id));
     }
 
-    // Short white wake trail behind the enemy (lives on its own entity in
-    // world space; despawns when the enemy is gone — see `update_enemy_trails`).
+    // Short wake trail behind the enemy (lives on its own entity in
+    // world space; despawns when the enemy is gone — see
+    // `update_enemy_trails`). Trait-tinted: Frenzy enemies get the
+    // hot-orange `trail_frenzy` material, vanilla gets `trail`.
+    // The trail-tint table lives here rather than off the trait so
+    // the per-trait `Handle<ColorMaterial>` stays a `PaletteMaterials`
+    // concern.
+    let trail_mat = match trait_kind {
+        Some(traits::EnemyTrait::Frenzy) => pm.trail_frenzy.clone(),
+        Some(traits::EnemyTrait::Armored) => pm.trail_armored.clone(),
+        Some(traits::EnemyTrait::Berserk) => pm.trail_berserk.clone(),
+        Some(traits::EnemyTrait::PackLeader) => pm.trail_pack_leader.clone(),
+        None => pm.trail.clone(),
+    };
     let trail_mesh = meshes.add(empty_dynamic_mesh());
     commands.spawn((
         Mesh2d(trail_mesh),
-        MeshMaterial2d(pm.trail.clone()),
+        MeshMaterial2d(trail_mat),
         Transform::from_xyz(0.0, 0.0, 0.4),
         EnemyTrail { enemy: id, points: VecDeque::new(), sample_timer: 0.0 },
         RenderLayers::layer(PLAY_LAYER),
@@ -777,7 +811,7 @@ pub fn spawn_enemies(
                 Some(v) => {
                     let inward = (-spawn.pos).normalize_or(Vec2::Y);
                     let heading = (-inward.x).atan2(inward.y);
-                    spawn_enemy(&mut commands, &pm, &em, &mut meshes, spawn.pos, heading, v, *difficulty);
+                    spawn_enemy(&mut commands, &pm, &em, &mut meshes, spawn.pos, heading, v, *difficulty, combat_ctx.battles_cleared);
                     v
                 }
                 None => spawn_one_at(
@@ -962,7 +996,7 @@ fn spawn_one_at(
     let variant = EnemyVariant::roll_weighted(battles_cleared, boss_wave, &mut rng);
     let inward = (-pos).normalize_or(Vec2::Y);
     let heading = (-inward.x).atan2(inward.y);
-    spawn_enemy(commands, pm, em, meshes, pos, heading, variant, difficulty);
+    spawn_enemy(commands, pm, em, meshes, pos, heading, variant, difficulty, battles_cleared);
     variant
 }
 
@@ -1076,7 +1110,7 @@ pub fn enemy_ai(
     // `ally_ai`), so generic enemy AI must NOT also fight to drive
     // their velocity each frame.
     mut q: Query<
-        (&mut Transform, &mut Velocity, &mut Heading, &mut Enemy),
+        (&mut Transform, &mut Velocity, &mut Heading, &mut Enemy, &Health),
         (Without<crate::components::Stunned>, Without<Ally>),
     >,
 ) {
@@ -1095,11 +1129,38 @@ pub fn enemy_ai(
     let ally_positions = &ally_cache.positions;
     let mut rng = rand::thread_rng();
 
-    for (mut tf, mut vel, mut heading, mut enemy) in &mut q {
+    // Pre-collect Pack Leader positions so the per-enemy aura check
+    // in the main loop is O(N × L) where L is the (typically tiny)
+    // number of leaders alive. Reading-iter first, mutable-iter
+    // after is allowed by the borrow checker because they're
+    // sequential.
+    let leader_positions: Vec<Vec2> = q
+        .iter()
+        .filter(|(_, _, _, enemy, _)| {
+            matches!(enemy.trait_kind, Some(traits::EnemyTrait::PackLeader))
+        })
+        .map(|(tf, _, _, _, _)| tf.translation.truncate())
+        .collect();
+    let aura_r2 = traits::PACK_LEADER_RADIUS * traits::PACK_LEADER_RADIUS;
+
+    for (mut tf, mut vel, mut heading, mut enemy, hp) in &mut q {
         let pos = tf.translation.truncate();
         enemy.state_timer -= dt;
         enemy.fire_cd -= dt;
-        let speed = enemy.variant.speed();
+        // Fold every trait-driven speed input into one multiplier:
+        //   - spawn-time constant (Frenzy 1.5, Armored 0.8, etc.)
+        //   - Berserk's live <50%-HP bonus
+        //   - Pack Leader's aura buff if any OTHER leader is within
+        //     range (leaders don't buff themselves)
+        let trait_speed = enemy.trait_kind.map(|t| t.speed_mult()).unwrap_or(1.0);
+        let berserk_speed = enemy.trait_kind
+            .map(|t| t.berserk_bonus_if_low(hp.0, enemy.max_hp))
+            .unwrap_or(1.0);
+        let in_leader_aura = matches!(enemy.trait_kind, Some(traits::EnemyTrait::PackLeader))
+            == false
+            && leader_positions.iter().any(|&lp| pos.distance_squared(lp) < aura_r2);
+        let aura_speed = if in_leader_aura { traits::PACK_LEADER_AURA_MULT } else { 1.0 };
+        let speed = enemy.variant.speed() * trait_speed * berserk_speed * aura_speed;
         let turn  = enemy.variant.turn_rate();
 
         // Per-enemy nearest-target pick — chooses among

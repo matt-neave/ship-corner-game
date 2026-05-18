@@ -8,7 +8,10 @@
 use bevy::app::AppExit;
 use bevy::prelude::*;
 
+use crate::build_summary::spawn_build_summary;
+use crate::customize::drag::PurchasedMods;
 use crate::main_menu::{SettingsItem, SettingsItemLabel};
+use crate::turret::TurretConfig;
 use crate::ui_kit::{self, theme};
 use crate::AppState;
 
@@ -25,6 +28,11 @@ impl Plugin for PausePlugin {
             .insert_resource(PrePauseState::default())
             .add_systems(Startup, setup_pause_menu)
             .add_systems(Update, (toggle_pause_on_esc, sync_pause_menu_visibility))
+            // Rebuild the embedded build-summary every time the
+            // player pauses so the panel reflects the *current*
+            // loadout / mod stacks instead of whatever snapshot
+            // was active when the pause overlay was first spawned.
+            .add_systems(OnEnter(AppState::Paused), refresh_pause_build_summary)
             .add_systems(
                 Update,
                 (handle_resume_click, handle_main_menu_click, handle_quit_click)
@@ -48,6 +56,14 @@ pub struct Paused(pub bool);
 
 #[derive(Component)]
 pub struct PauseRoot;
+
+/// Empty container slotted between the PAUSED title and the
+/// RESUME button. `refresh_pause_build_summary` despawns its
+/// children on every pause-enter and respawns from the live
+/// TurretConfig + PurchasedMods — keeps the panel in sync with
+/// purchases made mid-run.
+#[derive(Component)]
+pub struct PauseBuildSummary;
 
 #[derive(Component)]
 pub struct ResumeButton;
@@ -85,6 +101,28 @@ pub fn setup_pause_menu(mut commands: Commands) {
         .with_children(|root| {
             root.spawn(ui_kit::label("PAUSED", theme::FONT_LG * 1.6, theme::ACCENT));
 
+            // Build-summary container — populated `OnEnter(Paused)`
+            // by `refresh_pause_build_summary`. Positioned ABSOLUTE
+            // and anchored to the LEFT edge of the overlay so the
+            // central column (PAUSED title + buttons) stays at the
+            // screen's vertical centre. `justify_content: Center`
+            // on this wrapper vertically centres the build card
+            // against the full overlay height.
+            root.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(theme::PAD_LG * 2.0),
+                    top: Val::Px(0.0),
+                    bottom: Val::Px(0.0),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::FlexStart,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+                PauseBuildSummary,
+            ));
+
             root.spawn((
                 ui_kit::button(theme::SURFACE_RAISED),
                 ResumeButton,
@@ -102,6 +140,7 @@ pub fn setup_pause_menu(mut commands: Commands) {
             spawn_pause_settings_button(root, SettingsItem::Crt,        "CRT");
             spawn_pause_settings_button(root, SettingsItem::Vsync,      "VSYNC");
             spawn_pause_settings_button(root, SettingsItem::Bloom,      "BLOOM");
+            spawn_pause_settings_button(root, SettingsItem::Identify,   "IDENTIFY");
             spawn_pause_settings_button(root, SettingsItem::WindowMode, "WINDOW");
             spawn_pause_settings_button(root, SettingsItem::Resolution, "RES");
             spawn_pause_settings_button(root, SettingsItem::SfxVolume,  "SFX");
@@ -241,4 +280,33 @@ pub fn handle_main_menu_click(
             next.set(crate::AppState::MainMenu);
         }
     }
+}
+
+/// Rebuild the build-summary panel inside the pause overlay
+/// whenever the player opens it. Despawns any prior children of
+/// the `PauseBuildSummary` container and spawns a fresh tree from
+/// the live [`TurretConfig`] + [`PurchasedMods`] snapshots.
+///
+/// Cheap to run — only fires on the pause-state transition, not
+/// every frame. Returns silently if the container hasn't been
+/// spawned yet (very-early-frame race after Startup).
+pub fn refresh_pause_build_summary(
+    mut commands: Commands,
+    container_q: Query<Entity, With<PauseBuildSummary>>,
+    cfg: Res<TurretConfig>,
+    purchased: Res<PurchasedMods>,
+    pixel: Option<Res<crate::fonts::PixelFont>>,
+    thaleah: Option<Res<crate::fonts::ThaleahFont>>,
+) {
+    let Ok(container) = container_q.single() else { return };
+    commands.entity(container).despawn_related::<Children>();
+    commands.entity(container).with_children(|parent| {
+        spawn_build_summary(
+            parent,
+            cfg.as_ref(),
+            purchased.as_ref(),
+            pixel.as_deref(),
+            thaleah.as_deref(),
+        );
+    });
 }

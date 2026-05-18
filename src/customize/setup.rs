@@ -325,6 +325,37 @@ pub fn setup_customize_ui(
         RenderLayers::layer(CUSTOMIZE_LAYER),
     ));
 
+    // ---------- VIEW MAP button (left of READY) ----------
+    // Lets the player peek at the strategic map without committing
+    // a move. Click transitions to `AppState::Map` with `MapPeek`
+    // active; the map gates click-to-move and surfaces a
+    // BACK TO SHOP button.
+    let view_map_w: f32 = 50.0;
+    let view_map_pos = Vec2::new(
+        close_pos.x - 34.0 * 0.5 - view_map_w * 0.5 - 4.0,
+        close_pos.y,
+    );
+    spawn_container(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        view_map_pos,
+        Vec2::new(view_map_w, 12.0),
+        SHOP_TILE_RADIUS.min(5.0),
+        // Neutral dark slab — distinct from READY's commit-green
+        // so the eye reads it as a side affordance.
+        Color::srgb(0.22, 0.25, 0.32),
+        Z_TILE_BG,
+        super::ViewMapBtn,
+    );
+    spawn_text(&mut commands, &pixel_font, view_map_pos, "VIEW MAP", Color::WHITE, 12.0, ViewMapLabelTag);
+    commands.spawn((
+        Transform::from_translation(view_map_pos.extend(Z_TILE_BG)),
+        HitArea { size: Vec2::new(view_map_w, 12.0) },
+        super::ViewMapBtn,
+        RenderLayers::layer(CUSTOMIZE_LAYER),
+    ));
+
     // ---------- LHS shop ----------
     // Anchor the shop column far enough from the canvas left edge
     // that every row fits. The mod-card row (3 × MOD_CARD_W + 2
@@ -430,6 +461,11 @@ pub fn setup_customize_ui(
     let ship_centre = Vec2::new(5.0, 0.0);
     spawn_hull(&mut commands, ship_centre, hull_capsule, hull_mat);
 
+    // Collect every rune socket's spec position alongside the slot
+    // spawn so the orphan-mark spawner downstream has the same
+    // (slot, rune_idx) → spec_pos table the sockets use, without
+    // re-deriving the geometry.
+    let mut socket_positions: [[Vec2; 3]; 8] = [[Vec2::ZERO; 3]; 8];
     for (slot, &(gx, gy)) in TURRET_POSITIONS.iter().enumerate() {
         // Rotate game (+Y bow) → spec (+X bow). 2D CW 90°: (x,y) → (y, -x).
         // Game port (-X) → spec +Y (top).
@@ -437,7 +473,27 @@ pub fn setup_customize_ui(
         let pos = ship_centre + spec;
         spawn_ship_slot(&mut commands, &mut meshes, &mut materials, &pixel_font, slot, pos);
         spawn_rune_triplet_for_slot(&mut commands, &mut meshes, &mut materials, slot, pos);
+        // Mirror the socket-position math from
+        // `spawn_rune_triplet_for_slot` so the orphan marks line
+        // up with their sockets without exposing internals.
+        let side = socket_side_for(slot);
+        for rune_idx in 0..3usize {
+            let (sx, sy) = socket_offset(side, rune_idx);
+            socket_positions[slot][rune_idx] = pos + Vec2::new(sx, sy);
+        }
     }
+
+    // ---------- Orphan-rune warning marks ----------
+    // One `!` Text2d per (slot, socket). Hidden by default;
+    // toggled visible by `update_orphan_marks` whenever the
+    // corresponding socket holds an orphan rune. The shaking
+    // alert is the player's cue to drag it onto a turret before
+    // the shop closes and wipes it.
+    super::orphan_runes::spawn_orphan_marks(
+        &mut commands,
+        &pixel_font,
+        socket_positions,
+    );
 
     // ---------- RHS live stats readout ----------
     // Right edge of the panel sits a few px in from the canvas edge;
@@ -445,6 +501,24 @@ pub fn setup_customize_ui(
     let stats_right_edge = canvas_half_w - 6.0;
     let stats_top_y = (CUSTOMIZE_INTERNAL_H as f32) * 0.5 - 28.0;
     super::stats_panel::spawn_stats_panel(&mut commands, &pixel_font, stats_right_edge, stats_top_y);
+
+    // ---------- Equipped-mods read-out grid ----------
+    // Spans the band below the sell strip out to the canvas right
+    // edge — two rows of six cells. Right-edge-aligned with the
+    // stats column above for a clean vertical seam.
+    //
+    // Sell strip's bottom edge sits at `sell_pos.y - SELL_PANEL_H/2`
+    // = `-75 - 6.5 = -81.5`. First-row centre at `-86` keeps a 1px
+    // margin between the strip and the row's top edge; the second
+    // row's bottom edge then lands a few px above the canvas
+    // bottom.
+    let equipped_first_row_y = -86.0;
+    super::equipped_mods::spawn_equipped_mods_grid(
+        &mut commands,
+        &pixel_font,
+        stats_right_edge,
+        equipped_first_row_y,
+    );
 
     // ---------- Sell strip ----------
     // Stacked two-line block below the ship: bold "SELL" header on
@@ -524,6 +598,11 @@ pub fn setup_customize_ui(
 pub struct CloseLabelTag;
 #[derive(Component)]
 pub struct CloseHitTag;
+/// Marker on the "VIEW MAP" button's text label. Lives alongside
+/// `CloseLabelTag` so the shared `CustomizeText` sync picks it up
+/// for visibility / position.
+#[derive(Component)]
+pub struct ViewMapLabelTag;
 #[derive(Component)]
 pub struct ShopHeaderTag;
 

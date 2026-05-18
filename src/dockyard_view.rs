@@ -223,5 +223,7 @@ fn preview_hull_color(hull: Hull) -> Color {
         Hull::Corsair     => Color::srgb(0.88, 0.78, 0.42),
         Hull::Harpooner   => Color::srgb(0.50, 0.70, 0.95),
         Hull::Revenant    => Color::srgb(0.70, 0.78, 0.88),
+        Hull::Cutter      => Color::srgb(0.85, 0.85, 0.78),
+        Hull::Marauder    => Color::srgb(0.85, 0.55, 0.25),
     }
 }

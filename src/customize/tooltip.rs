@@ -142,6 +142,10 @@ pub struct HoverQueries<'w, 's> {
         (&'static Transform, &'static HitArea, &'static super::shop_mods::ShopModSlot),
         (Without<DragSourceMarker>, Without<super::stats_panel::StatHover>, Without<ScrapTooltipHover>),
     >,
+    pub equipped_mod_hovers: Query<'w, 's,
+        (&'static Transform, &'static HitArea, &'static super::equipped_mods::EquippedModHover),
+        (Without<DragSourceMarker>, Without<super::stats_panel::StatHover>, Without<ScrapTooltipHover>, Without<super::shop_mods::ShopModSlot>),
+    >,
 }
 
 /// Minimum tooltip box dims in spec pixels — the box grows beyond this
@@ -345,6 +349,7 @@ pub fn update_customize_tooltip(
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
             Without<super::shop_mods::ShopModSlot>,
+            Without<super::equipped_mods::EquippedModHover>,
         ),
     >,
     mut fill_q: Query<
@@ -358,6 +363,7 @@ pub fn update_customize_tooltip(
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
             Without<super::shop_mods::ShopModSlot>,
+            Without<super::equipped_mods::EquippedModHover>,
         ),
     >,
     mut title_q: Query<
@@ -371,6 +377,7 @@ pub fn update_customize_tooltip(
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
             Without<super::shop_mods::ShopModSlot>,
+            Without<super::equipped_mods::EquippedModHover>,
         ),
     >,
     mut body_q: Query<
@@ -384,6 +391,7 @@ pub fn update_customize_tooltip(
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
             Without<super::shop_mods::ShopModSlot>,
+            Without<super::equipped_mods::EquippedModHover>,
         ),
     >,
 ) {
@@ -510,6 +518,35 @@ pub fn update_customize_tooltip(
             info_tags = None;
             best_area = area;
         }
+    }
+    // Equipped-mods grid hovers — same tooltip body as the shop
+    // card. `spec_idx` is `None` when the cell is empty, so the
+    // panel reads as solid below the last filled cell.
+    for (tf, hit, hover) in &hovers.equipped_mod_hovers {
+        let Some(spec_idx) = hover.spec_idx else { continue };
+        let centre = tf.translation.truncate();
+        let half = hit.size * 0.5;
+        if cursor.x < centre.x - half.x
+            || cursor.x > centre.x + half.x
+            || cursor.y < centre.y - half.y
+            || cursor.y > centre.y + half.y
+        {
+            continue;
+        }
+        let area = hit.size.x * hit.size.y;
+        if area >= best_area {
+            continue;
+        }
+        let Some(spec) = super::drag::MOD_LIBRARY.get(spec_idx) else { continue };
+        let title = format!("{} - {}", spec.name, spec.rarity.label());
+        info = Some((
+            title,
+            super::drag::mod_tooltip_body(spec),
+            centre,
+            half,
+        ));
+        info_tags = None;
+        best_area = area;
     }
 
     let Some((title, body, source_centre, source_half)) = info else {
@@ -1264,6 +1301,7 @@ fn hide_all(
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
             Without<super::shop_mods::ShopModSlot>,
+            Without<super::equipped_mods::EquippedModHover>,
         ),
     >,
     fill_q: &mut Query<
@@ -1277,6 +1315,7 @@ fn hide_all(
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
             Without<super::shop_mods::ShopModSlot>,
+            Without<super::equipped_mods::EquippedModHover>,
         ),
     >,
     title_q: &mut Query<
@@ -1290,6 +1329,7 @@ fn hide_all(
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
             Without<super::shop_mods::ShopModSlot>,
+            Without<super::equipped_mods::EquippedModHover>,
         ),
     >,
     body_q: &mut Query<
@@ -1303,6 +1343,7 @@ fn hide_all(
             Without<super::stats_panel::StatHover>,
             Without<ScrapTooltipHover>,
             Without<super::shop_mods::ShopModSlot>,
+            Without<super::equipped_mods::EquippedModHover>,
         ),
     >,
 ) {
@@ -1359,8 +1400,20 @@ fn describe_source(
         }
         DragSourceKind::ShipRune { slot, rune_idx } => {
             let s = cfg.slots[slot];
+            // Orphaned-rune state: the slot is unequipped but a
+            // rune is still sitting in this socket from a recent
+            // stack-merge. Surface the rune's normal tooltip plus
+            // a one-line warning so the player knows to drag it
+            // somewhere or lose it on shop close.
             if !s.equipped {
-                return None;
+                return s.runes[rune_idx].map(|r| {
+                    let (title, mut body) = rune_tooltip(r, stats, Some(&s.runes));
+                    if !body.is_empty() { body.push('\n'); body.push('\n'); }
+                    body.push_str(
+                        "This rune will vanish if it is not equipped to a turret.",
+                    );
+                    (title, body)
+                });
             }
             // Pass the slot's full rune array so Blast can fold in any
             // sibling Splash runes when displaying its splash radius.

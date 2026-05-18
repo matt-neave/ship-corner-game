@@ -720,6 +720,36 @@ pub fn handle_right_click_lock(
     }
 }
 
+/// Click handler for the VIEW MAP button. Flips `MapPeek` active
+/// and transitions to the strategic map; the player can wander
+/// and inspect, then return via the in-map BACK TO SHOP button.
+pub fn handle_view_map_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    drag: Res<super::drag::DragState>,
+    open: Res<CustomizeOpen>,
+    mut peek: ResMut<super::MapPeek>,
+    mut next: ResMut<NextState<crate::AppState>>,
+    btn_q: Query<(&Transform, &super::setup::HitArea), With<super::ViewMapBtn>>,
+) {
+    if !open.open { return; }
+    if !mouse.just_pressed(MouseButton::Left) { return; }
+    if drag.picked.is_some() { return; }
+    let Some(cursor) = drag.spec_cursor else { return };
+    for (tf, hit) in &btn_q {
+        let centre = tf.translation.truncate();
+        let half = hit.size * 0.5;
+        if cursor.x >= centre.x - half.x
+            && cursor.x <= centre.x + half.x
+            && cursor.y >= centre.y - half.y
+            && cursor.y <= centre.y + half.y
+        {
+            peek.active = true;
+            next.set(crate::AppState::Map);
+            return;
+        }
+    }
+}
+
 pub fn handle_close_click(
     mouse: Res<ButtonInput<MouseButton>>,
     drag: Res<super::drag::DragState>,

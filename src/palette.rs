@@ -379,6 +379,13 @@ pub struct PaletteMaterials {
     pub bullet_friendly_outer: Handle<ColorMaterial>,
     pub bullet_enemy_outer: Handle<ColorMaterial>,
     pub trail: Handle<ColorMaterial>,
+    /// Pre-baked trail tint per [`EnemyTrait`]. Source of truth for
+    /// the colour is the trait's `trail_color()`; the handles live
+    /// here so spawn sites don't need `ResMut<Assets<ColorMaterial>>`.
+    pub trail_frenzy: Handle<ColorMaterial>,
+    pub trail_armored: Handle<ColorMaterial>,
+    pub trail_berserk: Handle<ColorMaterial>,
+    pub trail_pack_leader: Handle<ColorMaterial>,
     /// Plain SDR white swapped onto a hit enemy's whole hull for a
     /// few frames after damage (`HitFx::pulse`). Kept clamped at
     /// 1.0 so the much larger surface area doesn't drown the
@@ -616,6 +623,18 @@ impl PaletteMaterials {
             bullet_friendly_outer: materials.add(palette.bullet_friendly),
             bullet_enemy_outer:    materials.add(palette.bullet_enemy),
             trail:                 materials.add(palette.trail),
+            trail_frenzy:          materials.add(
+                crate::enemy::traits::EnemyTrait::Frenzy.trail_color(),
+            ),
+            trail_armored:         materials.add(
+                crate::enemy::traits::EnemyTrait::Armored.trail_color(),
+            ),
+            trail_berserk:         materials.add(
+                crate::enemy::traits::EnemyTrait::Berserk.trail_color(),
+            ),
+            trail_pack_leader:     materials.add(
+                crate::enemy::traits::EnemyTrait::PackLeader.trail_color(),
+            ),
             // SDR white for the on-hit material swap — see the
             // `flash` field doc.
             flash:                 materials.add(Color::WHITE),

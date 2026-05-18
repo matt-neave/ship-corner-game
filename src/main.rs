@@ -12,9 +12,11 @@ mod blade;
 mod booster;
 mod boss_intro;
 mod boss_reward;
+mod build_summary;
 mod bullet;
 mod cannon;
 mod chest;
+mod identify;
 mod components;
 mod crows_nest;
 mod customize;
@@ -130,11 +132,14 @@ use turret::{
 };
 use ui::{
     setup_ui,
-    setup_wave_indicator, setup_map_hint, sync_ally_hp_bars, sync_hud_dev_buttons_visibility,
+    setup_wave_indicator, setup_map_hint, setup_difficulty_meter, setup_peek_back,
+    sync_ally_hp_bars,
+    sync_hud_dev_buttons_visibility,
     ui_button_system, update_ally_hp_values,
     update_fps_text, update_hp_bar_pixel_scale,
     update_map_button,
     update_score_text, update_vsync_label, update_wave_indicator, update_map_hint,
+    update_difficulty_meter, update_peek_back, handle_peek_back_click,
     update_wave_ui, DamageStats,
 };
 
@@ -633,6 +638,7 @@ fn main() {
             hull::HullSelectPlugin,
         ))
         .add_plugins(chest::ChestPlugin)
+        .add_plugins(identify::IdentifyPlugin)
         // Multiplayer plugin is native-only — UDP sockets don't exist
         // in browsers, and `bincode` / `local-ip-address` are cfg-
         // gated out of the WASM build's deps in Cargo.toml.
@@ -738,7 +744,10 @@ fn main() {
             #[cfg(not(feature = "demo"))]
             setup_debug_ui,
             setup_level_status_ui, setup_enemy_hp_bar_assets,
-            setup_wave_indicator, setup_map_hint, setup_spawn_indicator_assets,
+            setup_wave_indicator, setup_map_hint, setup_difficulty_meter,
+            setup_peek_back,
+            build_summary::setup_build_summary_tooltip,
+            setup_spawn_indicator_assets,
         ).chain())
         // Bridge runs first so the rest of Update sees synced flags.
         .add_systems(Update, sync_state_to_open_resources)
@@ -918,6 +927,10 @@ fn main() {
                 sync_hud_dev_buttons_visibility,
                 update_wave_indicator,
                 update_map_hint,
+                update_difficulty_meter,
+                update_peek_back,
+                handle_peek_back_click,
+                build_summary::update_build_summary_tooltip,
                 tick_spawn_indicators,
                 xp::update_xp_bar,
             ),

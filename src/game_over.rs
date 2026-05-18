@@ -57,6 +57,9 @@ pub fn enter_game_over(
     mut commands: Commands,
     mut sfx: crate::sfx::SfxPlayer,
     thaleah: Option<Res<crate::fonts::ThaleahFont>>,
+    pixel: Option<Res<crate::fonts::PixelFont>>,
+    cfg: Res<crate::turret::TurretConfig>,
+    purchased: Res<crate::customize::drag::PurchasedMods>,
 ) {
     sfx.play(crate::sfx::Sfx::GameOver);
     commands
@@ -107,6 +110,18 @@ pub fn enter_game_over(
                     Color::srgb(0.95, 0.30, 0.30),
                 ));
             }
+
+            // Build-summary roll-up between the title and the
+            // action buttons. Reads the live loadout straight off
+            // the resources; despawns alongside `GameOverRoot` via
+            // `exit_game_over` since it's a descendant of the root.
+            crate::build_summary::spawn_build_summary(
+                root,
+                cfg.as_ref(),
+                purchased.as_ref(),
+                pixel.as_deref(),
+                thaleah.as_deref(),
+            );
 
             root.spawn((ui_kit::button(theme::SURFACE_RAISED), RestartButton))
                 .with_children(|b| {
@@ -199,6 +214,7 @@ pub fn reset_run_for_restart(
     // any legendary effects picked up from chests this run.
     commands.insert_resource(crate::chest::PendingChests::default());
     commands.insert_resource(crate::customize::drag::ActiveLegendaries::default());
+    commands.insert_resource(crate::customize::drag::PurchasedMods::default());
 
     if let Ok(mut h) = friendly.single_mut() {
         h.0 = stats.max_hp();

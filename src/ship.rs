@@ -392,10 +392,16 @@ fn build_effect_meshes(meshes: &mut Assets<Mesh>) -> EffectMeshes {
 // ---------- Movement ----------
 
 /// The friendly ship follows the cursor when it's over the play area.
-/// Cursor outside the play area → ship holds station (zero velocity,
-/// keeps current heading). The previous behaviour was an auto-engage
-/// branch that picked the nearest enemy and orbited at range — that
-/// "auto-pathing" is disabled for now per the player's request.
+/// Cursor outside the play area → ship continues sailing toward
+/// the LAST cursor position it saw inside the area (cached in
+/// `last_target`). Holds station only when the cache is empty
+/// (first frame of a run / never had a valid cursor reading).
+///
+/// The previous behaviour zeroed velocity the moment the cursor
+/// left; the player would lose momentum every time they nudged
+/// the mouse onto the HUD chrome. Continuing toward last-known
+/// keeps the ship moving while the player glances at stats /
+/// scrap / wave counters.
 pub fn friendly_movement(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -418,6 +424,10 @@ pub fn friendly_movement(
             Without<crate::palette::PlayCamera>,
         ),
     >,
+    // Last cursor-in-play-area world position. Persists across
+    // frames; refreshed whenever the cursor reads inside the
+    // play rect, consumed when the cursor reads outside.
+    mut last_target: Local<Option<Vec2>>,
 ) {
     let dt = time.delta_secs();
     let Ok(win) = windows.single() else { return; };
@@ -435,9 +445,9 @@ pub fn friendly_movement(
         .map(|t| t.translation.truncate())
         .unwrap_or(Vec2::ZERO);
 
-    // Cursor over the play area pulls the ship toward it; outside
-    // the play area falls through to the auto-engage branch below.
-    let target_world: Option<Vec2> = cursor.and_then(|c| {
+    // Cursor over the play area refreshes the target each frame;
+    // cursor outside falls back to the last in-area reading.
+    let live_target: Option<Vec2> = cursor.and_then(|c| {
         if c.x >= play_left && c.x <= play_left + play_screen_w
             && c.y >= play_top && c.y <= play_top + play_screen_h
         {
@@ -451,6 +461,12 @@ pub fn friendly_movement(
             None
         }
     });
+    // Refresh the cache on a live read; the cache is the fallback
+    // when the cursor is off-screen or over HUD chrome.
+    if let Some(t) = live_target {
+        *last_target = Some(t);
+    }
+    let target_world = live_target.or(*last_target);
 
     // `enemies` query is unused while auto-engage is disabled but
     // kept in the signature so re-enabling the branch is a one-line
@@ -460,8 +476,8 @@ pub fn friendly_movement(
     for (mut tf, mut vel, mut heading) in &mut q {
         let pos = tf.translation.truncate();
 
-        // Cursor outside the play area → hold station. Zero velocity,
-        // keep current heading. No tactical auto-engage.
+        // No target at all (cache empty AND no live cursor) →
+        // hold station. Otherwise sail toward the cached point.
         let Some(target) = target_world else {
             vel.0 = Vec2::ZERO;
             tf.rotation = Quat::from_rotation_z(heading.0);

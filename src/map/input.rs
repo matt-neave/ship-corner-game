@@ -28,6 +28,7 @@ pub fn map_click_input(
     windows: Query<&Window, With<PrimaryWindow>>,
     view: Res<ViewMode>,
     claim_mode: Res<DebugClaimMode>,
+    peek: Res<crate::customize::MapPeek>,
     mut state: ResMut<MapState>,
     mut commands: Commands,
     interactions: Query<&Interaction, With<Button>>,
@@ -35,6 +36,10 @@ pub fn map_click_input(
     pm: Option<Res<PaletteMaterials>>,
 ) {
     if *view != ViewMode::Map { return; }
+    // Peek mode = read-only map view from the shop. Clicks don't
+    // pick a new sail target and don't run debug-claim either —
+    // the player came here to look, not commit.
+    if peek.active { return; }
     if !mouse.just_pressed(MouseButton::Left) { return; }
 
     if interactions.iter().any(|i| matches!(i, Interaction::Pressed)) {

@@ -123,6 +123,17 @@ pub enum Hull {
     Harpooner,
     /// Shield-tank ghost ship. Big shield + fast recharge, low HP.
     Revenant,
+    /// Stripped-down chassis — only 4 turret slots out of the usual 8.
+    /// Trade-off compensates with huge damage / fire-rate buffs and
+    /// extra HP so each remaining slot punches above its weight.
+    /// Cuts decision overhead by half: fewer slots, sharper build.
+    Cutter,
+    /// Pirate-only chassis. Refuses every weapon that doesn't carry
+    /// the [`WeaponTag::Pirate`] tag (Cannon / Harpoon / Anchor
+    /// Flail / Crow's Nest). Pirate-tag synergy stays maxed by
+    /// construction, plus a flat scrap + crit boost from the
+    /// `Privateer` lineage.
+    Marauder,
 }
 
 impl Hull {
@@ -136,6 +147,8 @@ impl Hull {
             Hull::Corsair     => "CORSAIR",
             Hull::Harpooner   => "HARPOONER",
             Hull::Revenant    => "REVENANT",
+            Hull::Cutter      => "CUTTER-4",
+            Hull::Marauder    => "MARAUDER",
         }
     }
 
@@ -151,6 +164,8 @@ impl Hull {
             Hull::Corsair     => "Fast scout. Move + luck + crit, low HP.",
             Hull::Harpooner   => "Rune specialist. Long range, big procs, narrow arc.",
             Hull::Revenant    => "Ghost ship. Big shield, fast recharge, low HP.",
+            Hull::Cutter      => "Only 4 turret slots. Each one punches twice as hard.",
+            Hull::Marauder    => "Pirate-only chassis. Tag synergy locked in.",
         }
     }
 
@@ -194,6 +209,17 @@ impl Hull {
                 "+5/s shield recharge",
                 "-1.5s shield recharge delay",
             ],
+            Hull::Cutter => &[
+                "+100% turret damage",
+                "+30% fire rate (cooldown reduction)",
+                "+100 HP",
+            ],
+            Hull::Marauder => &[
+                "+100% scrap harvest",
+                "+15% crit chance",
+                "+15% luck",
+                "+10% move speed",
+            ],
         }
     }
 
@@ -227,6 +253,13 @@ impl Hull {
             Hull::Revenant => &[
                 "-50 HP",
                 "-10% turret range",
+            ],
+            Hull::Cutter => &[
+                "Only 4 turret slots (vs 8)",
+            ],
+            Hull::Marauder => &[
+                "Pirate-tag weapons only",
+                "-40 HP",
             ],
         }
     }
@@ -284,6 +317,57 @@ impl Hull {
                 stats.hp.flat                       =  -50.0;
                 stats.range_pct.flat                =  -10.0;
             }
+            Hull::Cutter => {
+                // Stat-side compensation for losing 4 slots.
+                // turret_damage_pct + cooldown_pct are the two
+                // levers that affect every weapon equally, so the
+                // remaining 4 slots scale up cleanly.
+                stats.turret_damage_pct.flat = 100.0;
+                stats.cooldown_pct.flat      =  30.0;
+                stats.hp.flat                = 100.0;
+            }
+            Hull::Marauder => {
+                stats.harvest_pct.flat = 100.0;
+                stats.crit_pct.flat    =  15.0;
+                stats.luck_pct.flat    =  15.0;
+                stats.move_speed.flat  =  10.0;
+                stats.hp.flat          = -40.0;
+            }
+        }
+    }
+
+    /// How many of the 8 turret slots this hull can actually use.
+    /// Slots beyond this index are visually marked locked and the
+    /// equip path refuses drops onto them. Default is 8 — only
+    /// hulls that explicitly trade slot count for stat compensation
+    /// override.
+    pub fn turret_slot_cap(self) -> usize {
+        match self {
+            Hull::Cutter => 4,
+            _ => 8,
+        }
+    }
+
+    /// True if this hull restricts weapon equipping to a specific
+    /// `WeaponTag`. Returns `None` if any weapon is allowed.
+    /// Enforced by the customize drag/drop path — drops of a
+    /// disallowed weapon are rejected silently (same UX as
+    /// invalid-slot drops).
+    pub fn weapon_tag_lock(self) -> Option<crate::weapon::WeaponTag> {
+        match self {
+            Hull::Marauder => Some(crate::weapon::WeaponTag::Pirate),
+            _ => None,
+        }
+    }
+
+    /// True if `weapon` is allowed by this hull's tag lock. Always
+    /// true for hulls without a lock. The shop's mod cards + the
+    /// drag-and-drop resolver both call this before committing an
+    /// equip / merge.
+    pub fn allows_weapon(self, weapon: crate::weapon::WeaponType) -> bool {
+        match self.weapon_tag_lock() {
+            Some(lock) => weapon.tags().iter().any(|t| *t == lock),
+            None => true,
         }
     }
 }
@@ -590,6 +674,8 @@ const HULL_ORDER: &[Hull] = &[
     Hull::Corsair,
     Hull::Harpooner,
     Hull::Revenant,
+    Hull::Cutter,
+    Hull::Marauder,
 ];
 
 /// Ship-preview dimensions in UI pixels. Matches the internal
@@ -635,6 +721,8 @@ fn preview_hull_color(hull: Hull) -> Color {
         Hull::Corsair     => Color::srgb(0.88, 0.78, 0.42),
         Hull::Harpooner   => Color::srgb(0.50, 0.70, 0.95),
         Hull::Revenant    => Color::srgb(0.70, 0.78, 0.88),
+        Hull::Cutter      => Color::srgb(0.85, 0.85, 0.78),
+        Hull::Marauder    => Color::srgb(0.85, 0.55, 0.25),
     }
 }
 

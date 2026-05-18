@@ -38,6 +38,8 @@ use crate::AppState;
 mod render;
 mod setup;
 pub mod drag;
+pub mod equipped_mods;
+pub mod orphan_runes;
 mod shop_lock;
 pub mod shop_mods;
 mod stats_panel;
@@ -58,6 +60,8 @@ impl Plugin for CustomizePlugin {
             .insert_resource(DragState::default())
             .insert_resource(TooltipLayout::default())
             .insert_resource(drag::ActiveLegendaries::default())
+            .insert_resource(drag::PurchasedMods::default())
+            .insert_resource(MapPeek::default())
             .add_systems(
                 Startup,
                 (init_customize_shop, setup_customize_render, setup_customize_ui).chain(),
@@ -70,11 +74,22 @@ impl Plugin for CustomizePlugin {
             // main menu so a fresh run starts clean.
             .add_systems(
                 OnEnter(AppState::MainMenu),
-                |mut active: ResMut<drag::ActiveLegendaries>| {
+                |mut active: ResMut<drag::ActiveLegendaries>,
+                 mut purchased: ResMut<drag::PurchasedMods>| {
                     *active = drag::ActiveLegendaries::default();
+                    *purchased = drag::PurchasedMods::default();
                 },
             )
-            .add_systems(OnExit(AppState::Customize), crate::ui::reset_damage_stats)
+            .add_systems(
+                OnExit(AppState::Customize),
+                (
+                    crate::ui::reset_damage_stats,
+                    // Wipe any rune still orphaned in an unequipped
+                    // slot — the shop's closing, those runes don't
+                    // come along.
+                    orphan_runes::clear_orphan_runes_on_exit,
+                ),
+            )
             // Cursor tracker is registered FIRST and on its own so
             // every downstream click / drag system can `.after()` it.
             // Without this explicit ordering, Bevy is free to run
@@ -127,9 +142,18 @@ impl Plugin for CustomizePlugin {
                     sync_stat_debug_visibility.after(sync_customize_text),
                     handle_stat_debug_buttons,
                     update_shop_mod_cards,
+                    // After sync_customize_text so the header's
+                    // Hidden override (when no mods bought yet)
+                    // wins over the generic Inherited.
+                    equipped_mods::update_equipped_mods_grid.after(sync_customize_text),
+                    // Orphan-rune `!` markers: visibility + position
+                    // + shake jitter. Cheap (24 entities); gates
+                    // on `CustomizeOpen` internally.
+                    orphan_runes::update_orphan_marks,
                     shop_mods::update_mod_hover_highlight,
                     handle_shop_mod_click,
                     handle_close_click,
+                    handle_view_map_click,
                     handle_reroll_button,
                     update::handle_right_click_lock,
                     shop_lock::sync_lock_badges,
@@ -164,7 +188,7 @@ impl Plugin for CustomizePlugin {
 pub use render::{
     resize_customize_display, setup_customize_render, toggle_customize_render,
 };
-pub use setup::{setup_customize_ui, sync_customize_text};
+pub use setup::{setup_customize_ui, sync_customize_text, rune_color_for, turret_color_for};
 pub use drag::{
     complete_drag, init_customize_shop, promote_pending_drag, start_drag,
     tick_purchase_particles, track_customize_cursor, update_drag_ghost, DragState,
@@ -173,8 +197,8 @@ pub use shop_mods::{handle_shop_mod_click, update_shop_mod_cards};
 pub use stats_panel::{handle_stat_debug_buttons, sync_stat_debug_visibility, sync_stats_panel};
 pub use tooltip::{update_customize_tooltip, update_synergy_banner, TooltipLayout};
 pub use update::{
-    handle_close_click, handle_reroll_button, update_customize_ship, update_customize_shop,
-    update_customize_ui, update_sell_label,
+    handle_close_click, handle_reroll_button, handle_view_map_click,
+    update_customize_ship, update_customize_shop, update_customize_ui, update_sell_label,
 };
 
 // ---------- Resources ----------
@@ -184,6 +208,21 @@ pub struct CustomizeOpen {
     pub open: bool,
 }
 
+/// `true` while the player is peeking at the map from the shop —
+/// the boat is frozen, the BACK TO SHOP button is shown, and the
+/// next entry into Customize will skip the per-stage shop reroll
+/// (peek is a read-only side trip, not a new stage).
+///
+/// Flow:
+///   1. Shop click VIEW MAP → `active = true`, transition to Map.
+///   2. Map sees `active`, gates click-to-move and shows BACK.
+///   3. BACK click → transition to Customize; `init_customize_shop`
+///      sees the flag, skips the reroll, clears it.
+#[derive(Resource, Default)]
+pub struct MapPeek {
+    pub active: bool,
+}
+
 // ---------- Marker components ----------
 
 #[derive(Component)]
@@ -191,3 +230,10 @@ pub struct CustomizeRoot;
 
 #[derive(Component, Clone, Copy)]
 pub struct CustomizeCloseBtn;
+
+/// Top-right "VIEW MAP" button — peeks the strategic map without
+/// committing a move. Click sets [`MapPeek`] active and transitions
+/// to `AppState::Map`; the boat freezes and a BACK TO SHOP button
+/// surfaces inside the map view.
+#[derive(Component, Clone, Copy)]
+pub struct ViewMapBtn;

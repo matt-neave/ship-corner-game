@@ -335,6 +335,7 @@ pub enum MenuButtonItem {
     Crt,
     Vsync,
     Bloom,
+    Identify,
     WindowMode,
     Resolution,
     SfxVolume,
@@ -768,6 +769,7 @@ pub fn setup_main_menu_chrome(
         MenuButtonItem::Crt,
         MenuButtonItem::Vsync,
         MenuButtonItem::Bloom,
+        MenuButtonItem::Identify,
         MenuButtonItem::WindowMode,
         MenuButtonItem::Resolution,
         MenuButtonItem::SfxVolume,
@@ -1113,6 +1115,7 @@ pub fn update_menu_label_text(
     crt: Res<CrtMode>,
     vsync: Res<VsyncMode>,
     bloom: Res<crate::modes::BloomMode>,
+    identify: Res<crate::modes::IdentifyMode>,
     win_mode: Res<crate::modes::WindowModeSetting>,
     res: Res<crate::modes::ResolutionSetting>,
     sfx_vol: Res<crate::sfx::SfxVolume>,
@@ -1131,6 +1134,7 @@ pub fn update_menu_label_text(
             MenuButtonItem::Crt         => format!("CRT: {}",   on_off(crt.active)),
             MenuButtonItem::Vsync       => format!("VSYNC: {}", on_off(vsync.enabled)),
             MenuButtonItem::Bloom       => format!("BLOOM: {}", on_off(bloom.active)),
+            MenuButtonItem::Identify    => format!("IDENTIFY: {}", on_off(identify.active)),
             MenuButtonItem::WindowMode  => format!("WINDOW: {}", win_mode.mode.label()),
             MenuButtonItem::Resolution  => format!("RES: {}",    res.res.label()),
             MenuButtonItem::SfxVolume   => format!("SFX: {}",    sfx_vol.label()),
@@ -1168,6 +1172,23 @@ pub fn tick_title_pulse(
 
 // ---------- Click handling ----------
 
+/// Bundled mutable access to every mode toggle the click handler
+/// flips. Pulled into a `SystemParam` so `handle_menu_click` stays
+/// under Bevy 0.16's 16-arg `IntoSystem` cap as we add toggles
+/// (Bloom + Identify already pushed us against the wall).
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct MenuToggles<'w> {
+    pub night: ResMut<'w, NightMode>,
+    pub crt: ResMut<'w, CrtMode>,
+    pub vsync: ResMut<'w, VsyncMode>,
+    pub bloom: ResMut<'w, crate::modes::BloomMode>,
+    pub identify: ResMut<'w, crate::modes::IdentifyMode>,
+    pub win_mode: ResMut<'w, crate::modes::WindowModeSetting>,
+    pub res: ResMut<'w, crate::modes::ResolutionSetting>,
+    pub sfx_vol: ResMut<'w, crate::sfx::SfxVolume>,
+    pub music_vol: ResMut<'w, crate::sfx::MusicVolume>,
+}
+
 /// One click router for every menu button. Tests the cursor against
 /// each button's HitArea; on a hit, performs the action (start game /
 /// open settings / flip a mode). Runs only in `AppState::MainMenu`.
@@ -1176,14 +1197,7 @@ pub fn handle_menu_click(
     viewport: Res<MainMenuViewport>,
     mut view: ResMut<MainMenuView>,
     mut next_state: ResMut<NextState<AppState>>,
-    mut night: ResMut<NightMode>,
-    mut crt: ResMut<CrtMode>,
-    mut vsync: ResMut<VsyncMode>,
-    mut bloom: ResMut<crate::modes::BloomMode>,
-    mut win_mode: ResMut<crate::modes::WindowModeSetting>,
-    mut res: ResMut<crate::modes::ResolutionSetting>,
-    mut sfx_vol: ResMut<crate::sfx::SfxVolume>,
-    mut music_vol: ResMut<crate::sfx::MusicVolume>,
+    mut menu_toggles: MenuToggles,
     mut bg: ResMut<crate::modes::BackgroundSetting>,
     mut exit: EventWriter<bevy::app::AppExit>,
     buttons: Query<(&Transform, &HitArea, &MenuButton)>,
@@ -1209,14 +1223,15 @@ pub fn handle_menu_click(
             MenuButtonItem::Join       => { /* see handle_mp_menu_clicks */ }
             MenuButtonItem::Settings   => *view = MainMenuView::Settings,
             MenuButtonItem::Quit       => { exit.write(bevy::app::AppExit::Success); }
-            MenuButtonItem::Night      => night.active = !night.active,
-            MenuButtonItem::Crt        => crt.active = !crt.active,
-            MenuButtonItem::Vsync      => vsync.enabled = !vsync.enabled,
-            MenuButtonItem::Bloom      => bloom.active = !bloom.active,
-            MenuButtonItem::WindowMode => win_mode.mode = win_mode.mode.cycle(),
-            MenuButtonItem::Resolution => res.res = res.res.cycle(),
-            MenuButtonItem::SfxVolume   => *sfx_vol = sfx_vol.cycle(),
-            MenuButtonItem::MusicVolume => *music_vol = music_vol.cycle(),
+            MenuButtonItem::Night      => menu_toggles.night.active = !menu_toggles.night.active,
+            MenuButtonItem::Crt        => menu_toggles.crt.active = !menu_toggles.crt.active,
+            MenuButtonItem::Vsync      => menu_toggles.vsync.enabled = !menu_toggles.vsync.enabled,
+            MenuButtonItem::Bloom      => menu_toggles.bloom.active = !menu_toggles.bloom.active,
+            MenuButtonItem::Identify   => menu_toggles.identify.active = !menu_toggles.identify.active,
+            MenuButtonItem::WindowMode => menu_toggles.win_mode.mode = menu_toggles.win_mode.mode.cycle(),
+            MenuButtonItem::Resolution => menu_toggles.res.res = menu_toggles.res.res.cycle(),
+            MenuButtonItem::SfxVolume   => { let n = menu_toggles.sfx_vol.cycle(); *menu_toggles.sfx_vol = n; }
+            MenuButtonItem::MusicVolume => { let n = menu_toggles.music_vol.cycle(); *menu_toggles.music_vol = n; }
             MenuButtonItem::Background  => bg.kind = bg.kind.cycle(),
             MenuButtonItem::Back        => *view = MainMenuView::Root,
         }
@@ -1306,6 +1321,7 @@ fn initial_label_for(item: MenuButtonItem) -> &'static str {
         MenuButtonItem::Crt        => "CRT",
         MenuButtonItem::Vsync      => "VSYNC",
         MenuButtonItem::Bloom      => "BLOOM",
+        MenuButtonItem::Identify   => "IDENTIFY",
         MenuButtonItem::WindowMode => "WINDOW",
         MenuButtonItem::Resolution => "RES",
         MenuButtonItem::SfxVolume   => "SFX",
@@ -1759,6 +1775,7 @@ pub enum SettingsItem {
     Crt,
     Vsync,
     Bloom,
+    Identify,
     WindowMode,
     Resolution,
     SfxVolume,
@@ -1775,27 +1792,21 @@ pub struct SettingsItemLabel(pub SettingsItem);
 /// own dismiss elsewhere).
 pub fn handle_settings_item_click(
     interactions: Query<(&Interaction, &SettingsItem), Changed<Interaction>>,
-    mut night: ResMut<NightMode>,
-    mut crt: ResMut<CrtMode>,
-    mut vsync: ResMut<VsyncMode>,
-    mut bloom: ResMut<crate::modes::BloomMode>,
-    mut win_mode: ResMut<crate::modes::WindowModeSetting>,
-    mut res: ResMut<crate::modes::ResolutionSetting>,
-    mut sfx_vol: ResMut<crate::sfx::SfxVolume>,
-    mut music_vol: ResMut<crate::sfx::MusicVolume>,
+    mut menu_toggles: MenuToggles,
     mut bg: ResMut<crate::modes::BackgroundSetting>,
 ) {
     for (interaction, item) in &interactions {
         if !matches!(*interaction, Interaction::Pressed) { continue; }
         match *item {
-            SettingsItem::Night       => night.active = !night.active,
-            SettingsItem::Crt         => crt.active = !crt.active,
-            SettingsItem::Vsync       => vsync.enabled = !vsync.enabled,
-            SettingsItem::Bloom       => bloom.active = !bloom.active,
-            SettingsItem::WindowMode  => win_mode.mode = win_mode.mode.cycle(),
-            SettingsItem::Resolution  => res.res = res.res.cycle(),
-            SettingsItem::SfxVolume   => *sfx_vol = sfx_vol.cycle(),
-            SettingsItem::MusicVolume => *music_vol = music_vol.cycle(),
+            SettingsItem::Night       => menu_toggles.night.active = !menu_toggles.night.active,
+            SettingsItem::Crt         => menu_toggles.crt.active = !menu_toggles.crt.active,
+            SettingsItem::Vsync       => menu_toggles.vsync.enabled = !menu_toggles.vsync.enabled,
+            SettingsItem::Bloom       => menu_toggles.bloom.active = !menu_toggles.bloom.active,
+            SettingsItem::Identify    => menu_toggles.identify.active = !menu_toggles.identify.active,
+            SettingsItem::WindowMode  => menu_toggles.win_mode.mode = menu_toggles.win_mode.mode.cycle(),
+            SettingsItem::Resolution  => menu_toggles.res.res = menu_toggles.res.res.cycle(),
+            SettingsItem::SfxVolume   => { let n = menu_toggles.sfx_vol.cycle(); *menu_toggles.sfx_vol = n; }
+            SettingsItem::MusicVolume => { let n = menu_toggles.music_vol.cycle(); *menu_toggles.music_vol = n; }
             SettingsItem::Background  => bg.kind = bg.kind.cycle(),
         }
     }
@@ -1824,6 +1835,7 @@ pub fn update_settings_labels(
     crt: Res<CrtMode>,
     vsync: Res<VsyncMode>,
     bloom: Res<crate::modes::BloomMode>,
+    identify: Res<crate::modes::IdentifyMode>,
     win_mode: Res<crate::modes::WindowModeSetting>,
     res: Res<crate::modes::ResolutionSetting>,
     sfx_vol: Res<crate::sfx::SfxVolume>,
@@ -1837,6 +1849,7 @@ pub fn update_settings_labels(
             SettingsItem::Crt         => format!("CRT: {}",   on_off(crt.active)),
             SettingsItem::Vsync       => format!("VSYNC: {}", on_off(vsync.enabled)),
             SettingsItem::Bloom       => format!("BLOOM: {}", on_off(bloom.active)),
+            SettingsItem::Identify    => format!("IDENTIFY: {}", on_off(identify.active)),
             SettingsItem::WindowMode  => format!("WINDOW: {}", win_mode.mode.label()),
             SettingsItem::Resolution  => format!("RES: {}",    res.res.label()),
             SettingsItem::SfxVolume   => format!("SFX: {}",    sfx_vol.label()),

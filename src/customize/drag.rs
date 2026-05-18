@@ -306,6 +306,30 @@ pub struct ActiveLegendaries {
     pub specialist: bool,
 }
 
+/// Running tally of which mods the player has bought this run.
+/// Duplicates are grouped: one entry per unique mod with its
+/// stacked count, in the order the first copy was bought. Drives
+/// the equipped-mods grid (one cell per unique mod + a count
+/// badge for stacks > 1). Reset on new run / MainMenu alongside
+/// [`ActiveLegendaries`].
+#[derive(Resource, Default, Clone)]
+pub struct PurchasedMods {
+    /// `(spec_idx, count)` — indices into [`MOD_LIBRARY`].
+    pub entries: Vec<(usize, u32)>,
+}
+
+impl PurchasedMods {
+    /// Record one purchase of the mod at `spec_idx`. Bumps the
+    /// existing entry's count, or appends a new entry at the end.
+    pub fn push(&mut self, spec_idx: usize) {
+        if let Some(entry) = self.entries.iter_mut().find(|(i, _)| *i == spec_idx) {
+            entry.1 = entry.1.saturating_add(1);
+        } else {
+            self.entries.push((spec_idx, 1));
+        }
+    }
+}
+
 /// Bundled `SystemParam` for the two resources every legendary-aware
 /// hook needs (`ActiveLegendaries` + `TurretConfig`). Used by
 /// `bullet::process_damage_events` to stay under Bevy 0.16's
@@ -814,7 +838,17 @@ pub fn roll_fresh_stock() -> CustomizeShop {
 pub fn init_customize_shop(
     mut commands: Commands,
     existing: Option<Res<CustomizeShop>>,
+    mut peek: ResMut<super::MapPeek>,
 ) {
+    // Return-from-peek path: the player popped over to the map view
+    // and came back. Don't reroll — the shop they were looking at
+    // is the same shop they wanted to be looking at. Just clear the
+    // flag and keep `existing` as-is (the resource is already in
+    // the World, so emitting nothing is fine).
+    if peek.active {
+        peek.active = false;
+        return;
+    }
     // Cold start (Startup, no resource yet) rolls a fresh shop.
     // Subsequent entries (OnEnter(Customize) between stages) re-roll
     // only the unlocked slots so the player's locked picks survive
@@ -927,19 +961,23 @@ fn click_buy_shop(
     cfg: &mut TurretConfig,
     shop: &mut CustomizeShop,
     scrap: &mut crate::Scrap,
+    hull: crate::hull::Hull,
 ) -> bool {
     // Cost depends on what the player is buying — turret cost scales
     // with tier (barrels), rune is flat.
     let cost = match source {
         DragSourceKind::ShopTurret(idx) => {
             let Some(offer) = shop.turrets.get(idx).copied().flatten() else { return false };
+            // Hull tag-lock check happens early so the cost isn't
+            // even sampled when the buy would be rejected anyway.
+            if !hull.allows_weapon(offer.weapon) { return false; }
             turret_cost_for_barrels(offer.barrels)
         }
         DragSourceKind::ShopRune(_)   => SHOP_RUNE_COST,
         _ => return false,
     };
     if scrap.0 < cost { return false; }
-    let placed = try_place_shop_item(source, cfg, shop);
+    let placed = try_place_shop_item(source, cfg, shop, hull);
     if placed {
         scrap.0 = scrap.0.saturating_sub(cost);
     }
@@ -950,11 +988,14 @@ fn try_place_shop_item(
     source: DragSourceKind,
     cfg: &mut TurretConfig,
     shop: &mut CustomizeShop,
+    hull: crate::hull::Hull,
 ) -> bool {
     match source {
         DragSourceKind::ShopTurret(idx) => {
             let Some(offering) = shop.turrets.get(idx).and_then(|o| *o) else { return false };
-            let Some(slot_i) = (0..cfg.slots.len()).find(|&i| !cfg.slots[i].equipped) else {
+            if !hull.allows_weapon(offering.weapon) { return false; }
+            let cap = hull.turret_slot_cap().min(cfg.slots.len());
+            let Some(slot_i) = (0..cap).find(|&i| !cfg.slots[i].equipped) else {
                 return false;
             };
             cfg.slots[slot_i] = SlotCfg {
@@ -1151,6 +1192,7 @@ pub fn complete_drag(
     mut scrap: ResMut<crate::Scrap>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    selected_hull: Res<crate::hull::SelectedHull>,
     targets: Query<(&Transform, &HitArea, &DropTargetMarker)>,
     ship_slots: Query<(&Transform, &super::setup::ShipSlotBase)>,
     ghosts: Query<Entity, With<DragGhost>>,
@@ -1182,7 +1224,7 @@ pub fn complete_drag(
                     shop.as_deref(),
                 );
                 if let (Some(mut shop_ref), Some(cursor)) = (shop.as_mut(), drag.spec_cursor) {
-                    if click_buy_shop(pending.source, &mut cfg, &mut shop_ref, &mut scrap) {
+                    if click_buy_shop(pending.source, &mut cfg, &mut shop_ref, &mut scrap, selected_hull.0) {
                         if let Some(color) = burst_color {
                             spawn_purchase_burst(
                                 &mut commands, &mut meshes, &mut materials, cursor, color,
@@ -1272,7 +1314,7 @@ pub fn complete_drag(
             } else {
                 None
             };
-            if resolve_drop(&picked, target, &mut cfg) {
+            if resolve_drop(&picked, target, &mut cfg, selected_hull.0) {
                 if from_shop {
                     scrap.0 = scrap.0.saturating_sub(shop_cost);
                     if let Some(shop) = shop.as_mut() {
@@ -1428,13 +1470,30 @@ fn consume_shop_slot(source: &DragSourceKind, shop: &mut CustomizeShop) {
 /// Invalid drops (type mismatch, self-drop, mismatch on occupied target)
 /// return `false` so the caller can leave the source untouched and the
 /// shop unchanged.
-fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig) -> bool {
+fn resolve_drop(
+    picked: &Picked,
+    target: DropTargetKind,
+    cfg: &mut TurretConfig,
+    hull: crate::hull::Hull,
+) -> bool {
     match (picked.payload, target) {
         (Payload::Turret { weapon, barrels }, DropTargetKind::ShipSlot(target_slot)) => {
             if let DragSourceKind::ShipSlot(src) = picked.source {
                 if src == target_slot {
                     return false;
                 }
+            }
+            // Hull constraints. Slot count cap (Cutter has 4 slots
+            // instead of 8) silently rejects drops onto locked slots
+            // — the shop side is the source of the turret, the cap
+            // is an equip-time gate. Weapon-tag lock (Marauder is
+            // Pirate-only) is also enforced here so the equip never
+            // commits a banned weapon.
+            if target_slot >= hull.turret_slot_cap() {
+                return false;
+            }
+            if !hull.allows_weapon(weapon) {
+                return false;
             }
             // Runes carry with the turret: when picking up a ship-
             // slot turret and dropping it on a fresh slot, the
@@ -1460,18 +1519,33 @@ fn resolve_drop(picked: &Picked, target: DropTargetKind, cfg: &mut TurretConfig)
                 && target_state.barrels == barrels
                 && target_state.barrels < 3
             {
-                // Stack-merge: bump barrels and slot any carried
-                // runes into the target's empty sockets so they
-                // don't vanish into the void.
+                // Stack-merge: bump barrels. Source's runes do NOT
+                // auto-shove into the target — they stay BEHIND in
+                // the source slot as "orphans" so the player picks
+                // which ones to keep. `update_orphan_*` systems
+                // highlight orphans with a shaking `!` and the
+                // tooltip; `clear_orphan_runes_on_exit` wipes any
+                // unsaved orphans when the shop closes.
                 cfg.slots[target_slot].barrels = (target_state.barrels + 1).min(3);
-                let mut merged = cfg.slots[target_slot].runes;
-                for r in carried_runes.iter().flatten() {
-                    if let Some(slot) = merged.iter_mut().find(|s| s.is_none()) {
-                        *slot = Some(*r);
-                    }
+                if let DragSourceKind::ShipSlot(src) = picked.source {
+                    // Preserve runes; clear weapon / damage / fire
+                    // rate / barrels / equipped so the turret base
+                    // hides but the rune sockets stay visible.
+                    let preserved_runes = cfg.slots[src].runes;
+                    cfg.slots[src] = SlotCfg {
+                        equipped: false,
+                        weapon: crate::weapon::WeaponType::Standard,
+                        damage: 0,
+                        fire_rate: 0.0,
+                        barrels: 0,
+                        runes: preserved_runes,
+                    };
+                } else {
+                    // Shop-sourced merge: standard cleanup, no
+                    // orphans because shop turrets have empty
+                    // sockets to start with.
+                    clear_source_if_ship(picked, cfg);
                 }
-                cfg.slots[target_slot].runes = merged;
-                clear_source_if_ship(picked, cfg);
                 true
             } else if let DragSourceKind::ShipSlot(src) = picked.source {
                 // Ship-to-ship swap: target is occupied with a

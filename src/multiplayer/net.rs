@@ -429,6 +429,12 @@ pub struct EnemyEntry {
     /// Subsequent updates ignore this field — boss HP / transform are
     /// reconciled through the same path as regular mirrors.
     pub boss_class: u8,
+    /// `EnemyTrait::to_u8` if the host rolled a trait at spawn;
+    /// `0` for vanilla. Read on the client at first-sight to pick
+    /// the right trail material on the mirror entity (Frenzy =
+    /// hot-orange). Subsequent updates ignore this field — the
+    /// trait is spawn-time-only.
+    pub trait_kind: u8,
 }
 
 /// Sentinel for `EnemyEntry.boss_class` meaning "not a boss." Read by
@@ -683,9 +689,9 @@ mod tests {
     #[test]
     fn netmsg_enemy_snapshot_round_trip() {
         let entries = vec![
-            EnemyEntry { id: 1, kind: 0, pos: [10.5, -20.0], rot: 0.0,  hp: 8,  status_flags: 0, boss_class: NOT_A_BOSS },
-            EnemyEntry { id: 2, kind: 6, pos: [-50.0, 50.0], rot: 3.14, hp: 52, status_flags: 1, boss_class: NOT_A_BOSS },
-            EnemyEntry { id: 42, kind: 3, pos: [0.0, 0.0],   rot: -1.5, hp: 2,  status_flags: 7, boss_class: 4 /* Tender boss */ },
+            EnemyEntry { id: 1, kind: 0, pos: [10.5, -20.0], rot: 0.0,  hp: 8,  status_flags: 0, boss_class: NOT_A_BOSS, trait_kind: 0 },
+            EnemyEntry { id: 2, kind: 6, pos: [-50.0, 50.0], rot: 3.14, hp: 52, status_flags: 1, boss_class: NOT_A_BOSS, trait_kind: 1 },
+            EnemyEntry { id: 42, kind: 3, pos: [0.0, 0.0],   rot: -1.5, hp: 2,  status_flags: 7, boss_class: 4 /* Tender boss */, trait_kind: 0 },
         ];
         let msg = NetMsg::EnemySnapshot { entries: entries.clone() };
         let bytes = bincode::serialize(&msg).unwrap();
@@ -788,6 +794,7 @@ mod tests {
             hp: 9999,
             status_flags: 0b101,
             boss_class: NOT_A_BOSS,
+            trait_kind: 1,
         };
         let bytes = bincode::serialize(&e).unwrap();
         let back: EnemyEntry = bincode::deserialize(&bytes).unwrap();
@@ -941,9 +948,9 @@ mod tests {
     }
 
     /// 30-enemy snapshot stays well under a typical 1400-byte UDP MTU
-    /// so we don't fragment. Per entry: 4 + 1 + 8 + 4 + 4 + 1 + 1 = 23
-    /// bytes after adding status_flags + boss_class; 30 entries = 690
-    /// bytes; plus 12 bytes of NetMsg+Vec framing = 702 bytes total.
+    /// so we don't fragment. Per entry: 4 + 1 + 8 + 4 + 4 + 1 + 1 + 1
+    /// = 24 bytes after adding trait_kind; 30 entries = 720 bytes;
+    /// plus 12 bytes of NetMsg+Vec framing = 732 bytes total.
     /// Generous headroom against a 1400-byte typical MTU.
     #[test]
     fn full_enemy_snapshot_fits_in_one_packet() {
@@ -952,6 +959,7 @@ mod tests {
                 id: i, kind: (i as u8) % 7, pos: [i as f32, -(i as f32)],
                 rot: 0.0, hp: 100 - i as i32, status_flags: 0,
                 boss_class: NOT_A_BOSS,
+                trait_kind: 0,
             })
             .collect();
         let bytes = bincode::serialize(&NetMsg::EnemySnapshot { entries }).unwrap();

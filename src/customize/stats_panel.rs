@@ -178,7 +178,10 @@ pub fn sync_stats_panel(
             let stat = sv.0.stat_mut(&mut probe);
             if entry.to_flat { stat.flat += entry.delta; } else { stat.percent += entry.delta; }
             let new_str = sv.0.format_value(&probe, Some(&synergies));
-            format!("{} -> {}", cur_str, new_str)
+            // Bracket form rather than arrow — reads as "current
+            // value (preview after this mod)" without the visual
+            // weight of an arrow glyph.
+            format!("{} ({})", cur_str, new_str)
         } else {
             cur_str
         };

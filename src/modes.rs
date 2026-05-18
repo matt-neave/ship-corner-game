@@ -54,6 +54,17 @@ pub struct BloomMode {
     pub last_applied: Option<bool>,
 }
 
+/// Toggled by the IDENTIFY button. When on, every enemy gets a soft
+/// red halo and every friendly / ally gets a soft green halo so the
+/// two sides read as visually distinct at a glance. Default off.
+/// `last_applied` is unused (the halo sync system handles toggle
+/// transitions itself) but kept on the struct for shape parity with
+/// every other mode toggle.
+#[derive(Resource, Default)]
+pub struct IdentifyMode {
+    pub active: bool,
+}
+
 /// Toggled by the VSYNC button (top-right corner). When active, the primary
 /// window uses `AutoVsync`; when off, `AutoNoVsync` so the FPS counter can
 /// show the engine's true headroom rather than the monitor's refresh cap.

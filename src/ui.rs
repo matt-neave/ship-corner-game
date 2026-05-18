@@ -11,8 +11,10 @@
 
 use bevy::prelude::*;
 
+mod difficulty_meter;
 mod hud;
 mod map_hint;
+mod peek_back;
 mod wave_indicator;
 
 pub use hud::{
@@ -24,6 +26,8 @@ pub use hud::{
 };
 pub use wave_indicator::{setup_wave_indicator, update_wave_indicator};
 pub use map_hint::{setup_map_hint, update_map_hint};
+pub use difficulty_meter::{setup_difficulty_meter, update_difficulty_meter};
+pub use peek_back::{setup_peek_back, update_peek_back, handle_peek_back_click};
 
 use crate::map::ViewMode;
 use crate::modes::VsyncMode;

@@ -585,6 +585,10 @@ pub fn spawn_boss(
             waypoint: Vec2::ZERO,
             fire_cd: 0.5,
             max_hp: boss_hp,
+            // Bosses don't roll traits — they own their own
+            // stage-progression scaling via `boss_hp() * stars` +
+            // the per-battles_cleared multiplier above.
+            trait_kind: None,
         },
         Ally {
             class,

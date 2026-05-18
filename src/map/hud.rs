@@ -318,6 +318,10 @@ pub fn handle_debug_buttons(
                     &mut commands, pm_ref, em_ref, &mut meshes,
                     pos, heading, variant,
                     *difficulty,
+                    // Debug spawn — no campaign context in the
+                    // debug button's argument list, so use 0 so
+                    // no trait rolls and the test enemy is vanilla.
+                    0,
                 );
             }
         }

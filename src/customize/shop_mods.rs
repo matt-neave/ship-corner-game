@@ -13,7 +13,7 @@ use bevy::render::view::RenderLayers;
 use crate::balance::{CUSTOMIZE_LAYER, UPSCALE_LAYER};
 use crate::stats::PlayerStats;
 
-use super::drag::{ActiveLegendaries, CustomizeShop, DragState, ModEffect};
+use super::drag::{ActiveLegendaries, CustomizeShop, DragState, ModEffect, PurchasedMods};
 use crate::stats_panel_overlay::HighlightedStats;
 use super::render::CustomizeViewport;
 use super::setup::HitArea;
@@ -366,6 +366,7 @@ pub fn handle_shop_mod_click(
     mut stats: ResMut<PlayerStats>,
     mut scrap: ResMut<crate::Scrap>,
     mut active: ResMut<ActiveLegendaries>,
+    mut purchased: ResMut<PurchasedMods>,
     btn_q: Query<(&Transform, &HitArea, &ShopModSlot)>,
 ) {
     if !open.open { return; }
@@ -414,6 +415,7 @@ pub fn handle_shop_mod_click(
                 }
             }
         }
+        purchased.push(m.spec_idx);
         *slot_entry = None;
         // Buying clears the lock — locks only protect held inventory,
         // they don't auto-reapply to whatever rolls into the empty
